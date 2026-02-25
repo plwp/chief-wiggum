@@ -116,14 +116,15 @@ Launch a **Sonnet sub-agent** in a worktree to do the implementation (`subagent_
 The sub-agent should:
 1. Create a feature branch named after the ticket (e.g., `feat/42-add-dark-mode`)
 2. Implement the approved approach
-3. Run the project's test suite:
+3. Run the project's **full** test suite — not just the new tests, ALL existing tests too:
    - Look for `Makefile`, `package.json`, or common test commands
    - Go projects: `go test ./...`
    - Node projects: `npm test`
    - Python projects: `pytest`
-4. Run Playwright/E2E tests if they exist in the target repo
-5. Fix issues iteratively until tests pass
-6. If stuck after 3 attempts at the same error, report back to the user
+4. Run linting if the project has a linter configured (golangci-lint, eslint, etc.)
+5. Run Playwright/E2E tests if they exist in the target repo
+6. Fix **all** failures — including pre-existing ones. Every PR must leave CI green. Do not dismiss failures as "pre-existing" or "not ours".
+7. If stuck after 3 attempts at the same error, report back to the user
 
 ### Step 5: Multi-AI code review
 
@@ -159,13 +160,26 @@ The sub-agent should:
 
 ### Step 6: Browser-use validation
 
-Check if the target repo has a browser-use setup:
+**Do not skip this step** unless `--skip-browser-use` was explicitly passed.
+
+Check if the target repo has a browser-use or E2E setup:
 
 ```bash
-ls tests/browser-use/run.py 2>/dev/null || ls e2e/ 2>/dev/null || ls tests/e2e/ 2>/dev/null
+ls "$TARGET_REPO/tests/browser-use/run.py" 2>/dev/null
+ls "$TARGET_REPO/e2e/" 2>/dev/null
+ls "$TARGET_REPO/tests/e2e/" 2>/dev/null
+ls "$TARGET_REPO/ui/tests/" 2>/dev/null
 ```
 
-If browser-use exists in the target repo:
+If **Playwright tests** exist (e.g. `ui/tests/*.spec.ts`, `e2e/*.spec.ts`):
+1. Identify which test files are relevant to this ticket (match by feature area)
+2. Run them:
+   ```bash
+   cd "$TARGET_REPO/ui" && npx playwright test <relevant-spec-files>
+   ```
+3. If all relevant specs pass, move on. If failures occur, fix them.
+
+If **browser-use** exists (e.g. `tests/browser-use/run.py`):
 1. Identify which scenarios are relevant to this ticket (match by tags or description)
 2. Run the relevant scenarios:
    ```bash
@@ -174,21 +188,9 @@ If browser-use exists in the target repo:
 3. Capture results and screenshots
 4. Report pass/fail with details
 
-If no browser-use setup exists, skip this step (or note it as a gap).
+If no browser-use or E2E setup exists at all, note it as a gap in the final summary and move on.
 
-### Step 7: Final check & ship
-
-Present a concise summary to the user:
-
-1. **Summary**: What was implemented (files changed, approach taken)
-2. **Test results**: All test output (unit, integration, E2E)
-3. **Review feedback**: What was addressed, what was deferred
-4. **Browser-use results**: Screenshots and pass/fail (if applicable)
-5. **Lingering questions**: Anything unresolved
-
-Then **proceed to ship** unless there are unresolved blockers. Do not ask "ready to ship?" — just do it.
-
-### Step 8: Ship PR
+### Step 7: Ship PR
 
 Create the PR using the `/ship` skill workflow:
 
@@ -205,6 +207,27 @@ gh pr create \
   --base "$DEFAULT_BRANCH"
 ```
 
+### Step 8: Verify CI green
+
+**Do not declare the PR done until CI is green.** This is a hard gate — no exceptions.
+
+1. After pushing, poll CI status:
+   ```bash
+   gh pr checks <pr_number> --repo "$owner_repo" --watch
+   ```
+2. If any check fails:
+   - Fetch the failed job logs: `gh run view <run_id> --repo "$owner_repo" --log-failed`
+   - Fix the failures (including pre-existing ones — every PR must leave CI green)
+   - Push fixes and re-check
+   - Repeat until all checks pass
+3. Only after all checks are green, present the final summary:
+   - **Summary**: What was implemented (files changed, approach taken)
+   - **Test results**: CI status (all green)
+   - **Review feedback**: What was addressed, what was deferred
+   - **Browser-use results**: Screenshots and pass/fail (if applicable)
+   - **Pre-existing fixes**: Any broken tests/lint we fixed that weren't ours
+   - **Lingering questions**: Anything unresolved
+4. Show the PR URL
+
 Close the loop:
-- Show the PR URL
 - Ask if the issue should be updated with a comment linking to the PR
