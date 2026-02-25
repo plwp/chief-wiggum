@@ -68,18 +68,48 @@ Use `gemini-vertex` as the tool name in `consult_ai.py` to route through Vertex 
 
 See `models.md` for current model IDs, library versions, and default choices. Refresh with `/update`.
 
+## User Data Directory
+
+Chief-wiggum stores all user-space data under `~/.chief-wiggum/`:
+
+```
+~/.chief-wiggum/
+├── repos/           # Cached target repo clones
+└── tmp/             # Temporary files (prompts, reviews, diffs)
+```
+
+Temp files go in `~/.chief-wiggum/tmp/`, **not** `/tmp/`. This keeps them isolated from other users/agents and makes cleanup easy.
+
+## Path Resolution
+
+**Chief-wiggum install path**: Never hardcode `~/repos/chief-wiggum`. Skills should resolve the install directory dynamically at the start of each session:
+
+```bash
+CW_HOME=$(python3 -c "from pathlib import Path; print(Path(__file__).resolve().parent.parent)" --fake 2>/dev/null || python3 scripts/repo.py home)
+```
+
+Or from any location, since `repo.py` computes it from its own `__file__`:
+
+```bash
+# From a skill that knows its own path:
+CW_HOME=$(cd "$(dirname "$0")/../.." && pwd)
+```
+
+In practice, skills reference scripts as `python3 "$CW_HOME/scripts/..."` after resolving `CW_HOME` once.
+
 ## Target Repo Resolution
 
 When a skill receives `owner/repo`, it resolves to a local path using `scripts/repo.py`:
 
-1. If cwd is already inside the repo, use cwd
+1. If cwd is already inside the repo, use `git rev-parse --show-toplevel` for the root
 2. If cached in `~/.chief-wiggum/repos/owner/repo`, pull latest and use that
 3. Otherwise clone via `gh repo clone` into the cache
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/repo.py resolve plwp/dgrd  # prints local path
-python3 ~/repos/chief-wiggum/scripts/repo.py list                # show cached repos
-python3 ~/repos/chief-wiggum/scripts/repo.py clean plwp/dgrd    # remove cache
+python3 "$CW_HOME/scripts/repo.py" resolve plwp/dgrd  # prints local path
+python3 "$CW_HOME/scripts/repo.py" home                # prints chief-wiggum install dir
+python3 "$CW_HOME/scripts/repo.py" list                # show cached repos
+python3 "$CW_HOME/scripts/repo.py" clean plwp/dgrd     # remove cache
 ```
 
 ## Repo Layout

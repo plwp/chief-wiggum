@@ -12,6 +12,14 @@ Transcribe an audio or video recording of a client conversation and parse it int
 
 ## Workflow
 
+### Step 0: Resolve CW_HOME
+
+```bash
+CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+CW_TMP="$HOME/.chief-wiggum/tmp"
+mkdir -p "$CW_TMP"
+```
+
 ### Step 1: Validate input
 
 Check the file exists and determine if it's audio or video:
@@ -24,7 +32,7 @@ ffmpeg -i "$file_path" 2>&1 | head -20
 If it's a video file, extract the audio track first:
 
 ```bash
-ffmpeg -i "$file_path" -vn -acodec pcm_s16le -ar 16000 -ac 1 /tmp/cw-transcribe-audio.wav -y
+ffmpeg -i "$file_path" -vn -acodec pcm_s16le -ar 16000 -ac 1 $CW_TMP/transcribe-audio.wav -y
 ```
 
 ### Step 2: Transcribe with Whisper
@@ -44,10 +52,10 @@ for seg in result['segments']:
 If the file is a video AND the user wants screenshot cross-references, use the full transcription script:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/transcribe_with_screenshots.py \
+python3 "$CW_HOME/scripts/transcribe_with_screenshots.py" \
   --audio "$audio_path" \
   --video "$file_path" \
-  --out /tmp/cw-transcription/
+  --out $CW_TMP/transcription/
 ```
 
 ### Step 3: Parse transcript into structured requirements

@@ -27,10 +27,13 @@ DEFAULT_VERTEX_MODEL = "gemini-3-pro"
 
 
 def consult_codex(prompt: str, model: str | None = None) -> str:
-    """Call codex CLI in read-only mode. Uses its own auth session."""
+    """Call codex CLI in read-only sandbox. Uses its own auth session."""
+    cmd = ["codex", "exec", "--sandbox", "read-only"]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append(prompt)
     result = subprocess.run(
-        ["codex", "exec", "--approval-mode", "plan", prompt],
-        capture_output=True, text=True, check=True, timeout=TIMEOUT,
+        cmd, capture_output=True, text=True, check=True, timeout=TIMEOUT,
     )
     return result.stdout
 

@@ -14,14 +14,21 @@ Create a well-documented pull request with mermaid architecture diagrams, test e
 
 ## Workflow
 
+### Step 0: Resolve paths
+
+```bash
+CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+```
+
 ### Step 1: Analyse the diff
 
 Get the full diff and commit history for the current branch:
 
 ```bash
-git log --oneline main..HEAD
-git diff --stat main...HEAD
-git diff main...HEAD
+git log --oneline $DEFAULT_BRANCH..HEAD
+git diff --stat $DEFAULT_BRANCH...HEAD
+git diff $DEFAULT_BRANCH...HEAD
 ```
 
 Understand:
@@ -85,7 +92,7 @@ If browser-use screenshots exist, reference them.
 
 ### Step 4: Draft the PR
 
-Using the template at `~/repos/chief-wiggum/templates/pr.md`, fill in:
+Using the template at `$CW_HOME/templates/pr.md`, fill in:
 
 - **Title**: From the ticket title or derived from changes. Keep under 70 characters.
   - Format: `feat: Add dark mode toggle` or `fix: Resolve login crash on empty form`

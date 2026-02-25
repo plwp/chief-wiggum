@@ -9,12 +9,18 @@ Check that all tools required by chief-wiggum are installed and working.
 
 ## Workflow
 
+### Step 0: Resolve CW_HOME
+
+```bash
+CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+```
+
 ### Step 1: Run dependency check
 
 Run the check script to see what's installed and what's missing:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/check_deps.py
+python3 $CW_HOME/scripts/check_deps.py
 ```
 
 ### Step 2: Report results
@@ -39,12 +45,12 @@ If anything is missing, ask the user if they want to install it. For each missin
 If the user agrees, run the installer for specific missing tools:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/install_deps.py --tool <tool_name>
+python3 $CW_HOME/scripts/install_deps.py --tool <tool_name>
 ```
 
 For Vertex AI packages:
 ```bash
-python3 ~/repos/chief-wiggum/scripts/install_deps.py --vertex
+python3 $CW_HOME/scripts/install_deps.py --vertex
 ```
 
 ### Step 4: Set up secrets in Keychain
@@ -53,14 +59,14 @@ For any missing secrets, help the user store them securely in macOS Keychain. Se
 
 Show current keychain status:
 ```bash
-python3 ~/repos/chief-wiggum/scripts/keychain.py list
+python3 $CW_HOME/scripts/keychain.py list
 ```
 
 To store each key (prompts securely, no echo):
 ```bash
-python3 ~/repos/chief-wiggum/scripts/keychain.py set ANTHROPIC_API_KEY
-python3 ~/repos/chief-wiggum/scripts/keychain.py set OPENAI_API_KEY
-python3 ~/repos/chief-wiggum/scripts/keychain.py set GEMINI_API_KEY
+python3 $CW_HOME/scripts/keychain.py set ANTHROPIC_API_KEY
+python3 $CW_HOME/scripts/keychain.py set OPENAI_API_KEY
+python3 $CW_HOME/scripts/keychain.py set GEMINI_API_KEY
 ```
 
 Explain where to get each key:
@@ -70,8 +76,8 @@ Explain where to get each key:
 
 For Vertex AI (alternative to GEMINI_API_KEY):
 ```bash
-python3 ~/repos/chief-wiggum/scripts/keychain.py set GOOGLE_CLOUD_PROJECT
-python3 ~/repos/chief-wiggum/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
+python3 $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_PROJECT
+python3 $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
 ```
 
 ### Step 5: Final verification
@@ -79,5 +85,5 @@ python3 ~/repos/chief-wiggum/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
 Re-run the check script to confirm everything is green:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/check_deps.py
+python3 $CW_HOME/scripts/check_deps.py
 ```

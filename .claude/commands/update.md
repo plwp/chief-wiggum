@@ -9,6 +9,12 @@ Fetch the latest AI model IDs and library versions, update `models.md`, and push
 
 ## Workflow
 
+### Step 0: Resolve CW_HOME
+
+```bash
+CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+```
+
 ### Step 1: Fetch latest model information
 
 Research the current state of each provider's models by checking their official sources:
@@ -43,7 +49,7 @@ pip3 index versions google-cloud-aiplatform 2>/dev/null | head -1
 
 ### Step 3: Update models.md
 
-Read the current `~/repos/chief-wiggum/models.md` and update it with the new information:
+Read the current `$CW_HOME/models.md` and update it with the new information:
 - Update the "Last updated" date
 - Update model tables with any new/changed/deprecated models
 - Update library version table
@@ -61,7 +67,7 @@ Show the user a diff of what changed in `models.md`:
 ### Step 5: Commit and push
 
 ```bash
-cd ~/repos/chief-wiggum
+cd "$CW_HOME"
 git add models.md
 git commit -m "docs: update models and library versions — $(date +%Y-%m-%d)"
 git push

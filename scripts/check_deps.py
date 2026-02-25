@@ -83,9 +83,11 @@ def main():
     print("\n--- Python Packages ---")
     check_python_pkg("keyring", "keyring")
     check_python_pkg("whisper", "whisper")
-    check_python_pkg("browser-use", "browser_use")
-    check_python_pkg("playwright", "playwright")
-    check_python_pkg("langchain-anthropic", "langchain_anthropic")
+
+    print("\n--- Python Packages (browser-use — optional, for /implement validation) ---")
+    check_python_pkg("browser-use", "browser_use", optional=True)
+    check_python_pkg("playwright", "playwright", optional=True)
+    check_python_pkg("langchain-anthropic", "langchain_anthropic", optional=True)
 
     print("\n--- Python Packages (Vertex AI — optional) ---")
     check_python_pkg("langchain-google-vertexai", "langchain_google_vertexai", optional=True)

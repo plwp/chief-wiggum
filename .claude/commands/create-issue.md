@@ -13,6 +13,12 @@ Create a well-structured GitHub issue with clear title, description, acceptance 
 
 ## Workflow
 
+### Step 0: Resolve CW_HOME
+
+```bash
+CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+```
+
 ### Step 1: Gather requirements
 
 If a description was provided, parse it. Otherwise, ask the user:
@@ -23,7 +29,7 @@ If a description was provided, parse it. Otherwise, ask the user:
 
 ### Step 2: Draft the issue
 
-Using the template at `~/repos/chief-wiggum/templates/issue.md`, fill in:
+Using the template at `$CW_HOME/templates/issue.md`, fill in:
 
 - **Title**: Clear, concise, imperative. Examples:
   - Bug: "Fix crash when submitting empty form"

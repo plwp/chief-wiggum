@@ -14,15 +14,19 @@ The core orchestration skill. Takes a ticket and drives it through the full impl
 
 ## Workflow
 
-### Step 0: Resolve target repo
+### Step 0: Resolve paths
 
-Resolve the `owner/repo` to a local path (clones via `gh` if not cached):
+Resolve the chief-wiggum install directory and the target repo path. **Never hardcode paths.**
 
 ```bash
-TARGET_REPO=$(python3 ~/repos/chief-wiggum/scripts/repo.py resolve "$owner_repo")
+CW_HOME=$(python3 "$(dirname "$0")/../../scripts/repo.py" home 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+CW_TMP="$HOME/.chief-wiggum/tmp"
+mkdir -p "$CW_TMP"
+TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
 ```
 
-All subsequent steps should work within `$TARGET_REPO`.
+All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief-wiggum scripts/templates. Use `$CW_TMP` for temporary files (not `/tmp/`). Use `$DEFAULT_BRANCH` instead of hardcoding `main`.
 
 ### Step 1: Pick and read the ticket
 
@@ -61,13 +65,13 @@ Prepare a prompt describing the ticket, the codebase context, and ask for an imp
 - Codebase context (key files, architecture notes, relevant patterns)
 - Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
-Save it to `/tmp/cw-approach-prompt.md`.
+Save it to `$CW_TMP/approach-prompt.md`.
 
 Run consultations in parallel:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/consult_ai.py codex /tmp/cw-approach-prompt.md > /tmp/cw-review-codex.md 2>&1 &
-python3 ~/repos/chief-wiggum/scripts/consult_ai.py gemini /tmp/cw-approach-prompt.md > /tmp/cw-review-gemini.md 2>&1 &
+python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/approach-prompt.md > $CW_TMP/approach-codex.md 2>&1 &
+python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/approach-prompt.md > $CW_TMP/approach-gemini.md 2>&1 &
 wait
 ```
 
@@ -103,16 +107,16 @@ The sub-agent should:
 Get the diff from the implementation:
 
 ```bash
-git diff main...HEAD > /tmp/cw-impl-diff.txt
+git diff "$DEFAULT_BRANCH"...HEAD > $CW_TMP/impl-diff.txt
 ```
 
-Prepare a review prompt using `~/repos/chief-wiggum/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values, and write to `/tmp/cw-review-prompt.md`.
+Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values, and write to `$CW_TMP/review-prompt.md`.
 
 Run reviews in parallel:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/consult_ai.py codex /tmp/cw-review-prompt.md > /tmp/cw-review-codex.md 2>&1 &
-python3 ~/repos/chief-wiggum/scripts/consult_ai.py gemini /tmp/cw-review-prompt.md > /tmp/cw-review-gemini.md 2>&1 &
+python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/review-prompt.md > $CW_TMP/review-codex.md 2>&1 &
+python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/review-prompt.md > $CW_TMP/review-gemini.md 2>&1 &
 wait
 ```
 
@@ -121,7 +125,7 @@ Also perform your own (Opus) review of the diff.
 Synthesize using:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/synthesize_reviews.py /tmp/cw-review-codex.md /tmp/cw-review-gemini.md
+python3 "$CW_HOME/scripts/synthesize_reviews.py" $CW_TMP/review-codex.md $CW_TMP/review-gemini.md
 ```
 
 For each piece of feedback:
@@ -141,7 +145,7 @@ If browser-use exists in the target repo:
 1. Identify which scenarios are relevant to this ticket (match by tags or description)
 2. Run the relevant scenarios:
    ```bash
-   cd "$target_repo" && python3 tests/browser-use/run.py --scenario <ids>
+   cd "$TARGET_REPO" && python3 tests/browser-use/run.py --scenario <ids>
    ```
 3. Capture results and screenshots
 4. Report pass/fail with details
@@ -174,7 +178,7 @@ gh pr create \
   --repo "$owner_repo" \
   --title "$pr_title" \
   --body "$pr_body" \
-  --base main
+  --base "$DEFAULT_BRANCH"
 ```
 
 Close the loop:

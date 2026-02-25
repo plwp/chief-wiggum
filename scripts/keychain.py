@@ -53,10 +53,9 @@ def get_secret(name: str) -> str | None:
 
 
 def has_secret(name: str) -> bool:
-    """Check if a secret exists in the keyring without retrieving its value."""
+    """Check if a secret exists in the keyring."""
     try:
-        cred = keyring.get_credential(SERVICE, name)
-        return cred is not None
+        return keyring.get_password(SERVICE, name) is not None
     except Exception:
         return False
 
