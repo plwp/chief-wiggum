@@ -2,6 +2,17 @@
 
 The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → implement → review → validate → ship.
 
+## Autonomy
+
+**Run the full pipeline autonomously.** Do NOT pause between steps to ask "ready to proceed?" or "want to skip this?". Move through every step without asking for permission unless you genuinely need user input (e.g., ambiguous requirements in Step 2, a design decision where approaches conflict and there's no clear winner, or a blocking error you can't resolve).
+
+Checkpoints where you MUST get user input:
+- **Step 2** (Clarify requirements): Only if requirements are genuinely unclear or ambiguous
+- **Step 3 Phase B** (Approach reconciliation): Only if approaches fundamentally conflict with no clear winner — present the trade-off and ask
+- **Step 7** (Final check): Present the summary, then proceed to ship unless the user intervenes
+
+Everything else — just do it.
+
 ## Usage
 ```
 /implement <owner/repo#number> [--skip-browser-use] [--skip-review]
@@ -44,20 +55,14 @@ Present to the user:
 - Labels and current status
 - Any comments with additional context
 
-### Step 2: Clarify requirements
+### Step 2: Clarify requirements (only if needed)
 
-Interactive session with the user:
+Present a concise summary of what needs building (scope in/out). Only ask the user questions if the ticket is genuinely ambiguous — unclear acceptance criteria, conflicting requirements, or missing critical details. If the ticket is well-specified, state your understanding and move on.
 
+If you do need to ask, keep it tight:
 1. Summarise your understanding of what needs to be built
-2. Ask clarifying questions:
-   - Are there edge cases not covered in the acceptance criteria?
-   - What's the expected error behaviour?
-   - Are there UI/UX preferences?
-   - What files or areas of the codebase are likely affected?
-3. Confirm the scope — what's in, what's out
-4. Agree on how to verify it works (which tests, which scenarios)
-
-Do NOT proceed until the user confirms the requirements are clear.
+2. Ask ONLY questions where the answer isn't inferrable from the ticket or codebase
+3. Confirm scope and proceed
 
 ### Step 3: Consult AIs on approach
 
@@ -100,7 +105,7 @@ Once all three approaches are ready, launch a **second Opus sub-agent** (`subage
 4. Write the full plan to `$CW_TMP/implementation-plan.md`
 5. Return a concise summary for the main thread
 
-Present the sub-agent's summary to the user and get approval before proceeding.
+Present a concise summary to the user. If there are open questions that genuinely need user input (e.g., conflicting approaches with no clear winner), ask. Otherwise, proceed directly to Step 4.
 
 ### Step 4: Implement
 
@@ -171,9 +176,9 @@ If browser-use exists in the target repo:
 
 If no browser-use setup exists, skip this step (or note it as a gap).
 
-### Step 7: Final check
+### Step 7: Final check & ship
 
-Present to the user:
+Present a concise summary to the user:
 
 1. **Summary**: What was implemented (files changed, approach taken)
 2. **Test results**: All test output (unit, integration, E2E)
@@ -181,11 +186,11 @@ Present to the user:
 4. **Browser-use results**: Screenshots and pass/fail (if applicable)
 5. **Lingering questions**: Anything unresolved
 
-Ask: "Ready to ship this as a PR?"
+Then **proceed to ship** unless there are unresolved blockers. Do not ask "ready to ship?" — just do it.
 
 ### Step 8: Ship PR
 
-If the user approves, create the PR using the `/ship` skill workflow:
+Create the PR using the `/ship` skill workflow:
 
 1. Push the branch
 2. Generate mermaid diagrams
