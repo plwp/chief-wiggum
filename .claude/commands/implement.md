@@ -67,8 +67,8 @@ Run three consultations in parallel:
 
 1. **Codex + Gemini** — Launch as background bash commands:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/approach-prompt.md > $CW_TMP/approach-codex.md 2>&1 &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/approach-prompt.md > $CW_TMP/approach-gemini.md 2>&1 &
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/approach-prompt.md -o $CW_TMP/approach-codex.md &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/approach-prompt.md -o $CW_TMP/approach-gemini.md &
    wait
    ```
 
@@ -133,8 +133,8 @@ The sub-agent should:
 
 3. Run external AI reviews in parallel:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/review-prompt.md > $CW_TMP/review-codex.md 2>&1 &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/review-prompt.md > $CW_TMP/review-gemini.md 2>&1 &
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/review-prompt.md -o $CW_TMP/review-codex.md &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/review-prompt.md -o $CW_TMP/review-gemini.md &
    wait
    ```
 

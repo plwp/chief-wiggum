@@ -6,7 +6,7 @@ Secrets are fetched from the system keyring at call time and passed directly
 to SDK constructors — never set as env vars, never printed.
 
 Usage:
-    python3 consult_ai.py <tool> <prompt_file> [--context <file>] [--model <model_id>]
+    python3 consult_ai.py <tool> <prompt_file> [--output <file>] [--context <file>] [--model <model_id>]
 
 Tools: codex, gemini, gemini-vertex, claude
 """
@@ -117,6 +117,7 @@ def main():
     )
     parser.add_argument("tool", choices=TOOLS.keys(), help="AI tool to consult")
     parser.add_argument("prompt_file", help="Path to the prompt file")
+    parser.add_argument("-o", "--output", help="Write response to file instead of stdout")
     parser.add_argument("--context", help="Optional context file to append")
     parser.add_argument("--model", help="Override model ID for this call")
     args = parser.parse_args()
@@ -137,20 +138,29 @@ def main():
     tool_timeout = TOOL_TIMEOUTS.get(args.tool, TIMEOUT)
     try:
         output = fn(prompt, model=args.model)
-        print(output)
+        if args.output:
+            out_path = Path(args.output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(output)
+            print(f"OK: {args.tool} response written to {args.output}")
+        else:
+            print(output)
     except subprocess.TimeoutExpired:
         msg = f"Timeout: {args.tool} did not respond within {tool_timeout}s"
-        print(msg)  # stdout so callers capturing output always see it
+        if args.output:
+            Path(args.output).write_text(msg)
         print(msg, file=sys.stderr)
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         msg = f"Error calling {args.tool}: {e.stderr or e}"
-        print(msg)
+        if args.output:
+            Path(args.output).write_text(msg)
         print(msg, file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         msg = f"Error: {e}"
-        print(msg)
+        if args.output:
+            Path(args.output).write_text(msg)
         print(msg, file=sys.stderr)
         sys.exit(1)
 
