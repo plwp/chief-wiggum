@@ -23,7 +23,7 @@ from keychain import get_secret
 TIMEOUT = 300  # 5 minute timeout for all AI calls
 
 # Default model for Vertex AI path (override with --model)
-DEFAULT_VERTEX_MODEL = "gemini-2.5-flash"
+DEFAULT_VERTEX_MODEL = "gemini-3-pro"
 
 
 def consult_codex(prompt: str, model: str | None = None) -> str:

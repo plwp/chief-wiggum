@@ -20,8 +20,9 @@ Refresh with `/update`.
 
 | Model | ID | Use for |
 |-------|-----|---------|
+| 3 Pro | `gemini-3-pro` | Latest flagship (default) |
 | 2.5 Pro | `gemini-2.5-pro` | Quality-critical reasoning |
-| 2.5 Flash | `gemini-2.5-flash` | Fast, cost-effective (default) |
+| 2.5 Flash | `gemini-2.5-flash` | Fast, cost-effective |
 | 2.5 Flash Lite | `gemini-2.5-flash-lite` | Highest throughput, lowest cost |
 
 **Deprecated** (do not use): `gemini-2.0-flash`, `gemini-2.0-flash-lite`
@@ -67,4 +68,4 @@ For `/implement` multi-AI consultation:
 
 For browser-use (langchain):
 - Default: `claude-sonnet-4-6` (via langchain-anthropic)
-- Vertex AI alternative: `gemini-2.5-flash` (via langchain-google-vertexai)
+- Vertex AI alternative: `gemini-3-pro` (via langchain-google-vertexai)
