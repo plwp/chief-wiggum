@@ -27,14 +27,28 @@ check_cmd() {
   fi
 }
 
-check_env() {
+CW_KEYCHAIN_SERVICE="chief-wiggum"
+
+check_secret() {
+  # Check env var, then macOS Keychain. Never prints the value.
   local name="$1"
-  if [ -n "${!name:-}" ]; then
-    local masked="${!name:0:4}****"
-    printf "${GREEN}[OK]${NC}  %-14s %s\n" "$name" "$masked"
+  local in_env=false
+  local in_keychain=false
+
+  [ -n "${!name:-}" ] && in_env=true
+  security find-generic-password -a "$name" -s "$CW_KEYCHAIN_SERVICE" -w &>/dev/null && in_keychain=true
+
+  if $in_keychain && $in_env; then
+    printf "${GREEN}[OK]${NC}  %-24s keychain + env\n" "$name"
+    PASS=$((PASS + 1))
+  elif $in_keychain; then
+    printf "${GREEN}[OK]${NC}  %-24s keychain\n" "$name"
+    PASS=$((PASS + 1))
+  elif $in_env; then
+    printf "${GREEN}[OK]${NC}  %-24s env\n" "$name"
     PASS=$((PASS + 1))
   else
-    printf "${YELLOW}[NOT SET]${NC}  %-14s\n" "$name"
+    printf "${YELLOW}[NOT SET]${NC}  %-24s\n" "$name"
     WARN=$((WARN + 1))
   fi
 }
@@ -76,14 +90,15 @@ check_python_pkg "langchain-google-vertexai" "langchain_google_vertexai"
 check_python_pkg "google-cloud-aiplatform"   "google.cloud.aiplatform"
 
 echo ""
-echo "--- API Keys (optional — CLIs use their own auth, keys needed for SDK calls) ---"
-check_env "ANTHROPIC_API_KEY"
-check_env "OPENAI_API_KEY"
-check_env "GEMINI_API_KEY"
+echo "--- Secrets (optional — CLIs use their own auth, keys needed for SDK calls) ---"
+echo "  (checked in: env vars → macOS Keychain)"
+echo "  (manage with: bash scripts/keychain.sh set|get|delete|list)"
 echo ""
-echo "--- Vertex AI (optional — alternative to API keys for Gemini/browser-use) ---"
-check_env "GOOGLE_CLOUD_PROJECT"
-check_env "GOOGLE_CLOUD_LOCATION"
+check_secret "ANTHROPIC_API_KEY"
+check_secret "OPENAI_API_KEY"
+check_secret "GEMINI_API_KEY"
+check_secret "GOOGLE_CLOUD_PROJECT"
+check_secret "GOOGLE_CLOUD_LOCATION"
 
 echo ""
 echo "=== Results: ${PASS} ok, ${FAIL} missing, ${WARN} warnings ==="

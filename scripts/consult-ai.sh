@@ -6,7 +6,13 @@
 # Output goes to stdout. Errors go to stderr.
 #
 # For gemini-vertex, requires GOOGLE_CLOUD_PROJECT and gcloud auth.
+# Secrets are loaded from macOS Keychain via keychain.sh — never leaked to stdout.
 set -euo pipefail
+
+# Load secrets from keychain (env vars take precedence)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/keychain.sh"
+cw_load_all
 
 TOOL="${1:?Usage: consult-ai.sh <codex|gemini|gemini-vertex|claude> <prompt_file> [--context <file>]}"
 PROMPT_FILE="${2:?Usage: consult-ai.sh <tool> <prompt_file>}"
