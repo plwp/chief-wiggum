@@ -41,7 +41,7 @@ Using the template at `$CW_HOME/templates/issue.md`, fill in:
 - **User Story** (for features):
   - As a [role], I want [capability] so that [benefit]
 
-- **Acceptance Criteria**: Specific, testable checkboxes. Write 3-6 criteria that define "done".
+- **Acceptance Criteria**: Specific, **mechanically verifiable** checkboxes. Write 3-6 criteria that define "done". Each criterion must be something an automated system can independently verify — not vague ("works well") but concrete ("GET /health returns 200 with `{"status":"ok"}`"). Good criteria answer: "How would I prove this is done without reading the code?"
 
 - **Technical Notes**: Implementation hints, affected files, API changes. Only if relevant.
 

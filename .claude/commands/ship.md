@@ -73,9 +73,9 @@ Guidelines for diagrams:
 - Highlight new components vs modified ones
 - Maximum 15 nodes per diagram (simplify if larger)
 
-### Step 3: Compile test evidence
+### Step 3: Verify and compile test evidence
 
-Gather test results from the current session or re-run:
+**Always re-run tests before shipping.** Do not rely on stale results from earlier in the session — code may have changed since tests last ran.
 
 ```bash
 # Find and run tests (detect project type)
@@ -87,6 +87,8 @@ elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
   pytest 2>&1 | tail -20
 fi
 ```
+
+If tests fail, **stop and fix them**. Do not create a PR with failing tests.
 
 If browser-use screenshots exist, reference them.
 

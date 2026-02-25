@@ -8,6 +8,9 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 
 ## Key Principles
 
+- **Own the solution, not just the code**: The validation loop is not negotiable. Before shipping, ask: "Am I proud of this? Is it clean and elegant?" If not, fix it.
+- **Orchestrator verifies independently**: Never trust a sub-agent's self-reported results. The orchestrator must run tests, start services, and hit endpoints itself. Sub-agents optimise for speed and will take shortcuts.
+- **Never punt to the user**: If Docker isn't running, start it. If a dependency is missing, install it. "Want to skip?" is never the right question.
 - **Project-agnostic**: Skills reference "the target repo" — never hardcode project names or local paths
 - **Auto-cloning**: Target repos are resolved and cloned via `gh` on demand, cached in `~/.chief-wiggum/repos/`
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)

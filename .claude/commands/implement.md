@@ -1,6 +1,19 @@
 # Implement - Full Implementation Loop
 
-The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → implement → review → validate → ship.
+The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → implement → **verify** → review → validate → ship.
+
+## Ownership
+
+**You own the solution, not just the code.** Before shipping ANY implementation, ask yourself:
+- Am I proud of this work?
+- Is it clean and elegant?
+- Have I verified it actually works end-to-end?
+
+If the answer to any of these is no — fix it. Don't ship "good enough."
+
+**The validation loop is not negotiable.** Sub-agents will take shortcuts. The orchestrator is the quality gate. Never trust a sub-agent's self-reported "tests pass" — independently verify.
+
+**Never punt to the user.** If Docker isn't running, start it. If a dependency is missing, install it. If you can't run the tests, that's YOUR problem to solve. "Want to skip this step?" is never the right question.
 
 ## Autonomy
 
@@ -117,7 +130,8 @@ The sub-agent should:
 1. Create a feature branch named after the ticket (e.g., `feat/42-add-dark-mode`)
 2. Implement the approved approach
 3. Run the project's **full** test suite — not just the new tests, ALL existing tests too:
-   - Look for `Makefile`, `package.json`, or common test commands
+   - **Preferred**: If the target repo has a `/test` skill or `make ci` target, use it — these replicate CI exactly
+   - Otherwise look for `Makefile`, `package.json`, or common test commands
    - Go projects: `go test ./...`
    - Node projects: `npm test`
    - Python projects: `pytest`
@@ -125,6 +139,39 @@ The sub-agent should:
 5. Run Playwright/E2E tests if they exist in the target repo
 6. Fix **all** failures — including pre-existing ones. Every PR must leave CI green. Do not dismiss failures as "pre-existing" or "not ours".
 7. If stuck after 3 attempts at the same error, report back to the user
+8. **Report honestly.** If you could not run a test or validation step, say so clearly with the reason. Do NOT silently skip steps or mark them as passed when they were not executed. The orchestrator will verify independently — discrepancies will be caught.
+
+### Step 4.5: Orchestrator Validation
+
+**This step is not delegatable.** The orchestrator (main thread) independently verifies the implementation. Do not trust the coding sub-agent's self-reported results — verify everything yourself.
+
+1. **Navigate to the implementation worktree** (the sub-agent returns the worktree path)
+
+2. **Run the full test suite** from the repo root:
+   - If a `/test` skill or `make ci` target exists, use it
+   - Otherwise: `pytest` (Python), `npm test` (Node), `go test ./...` (Go)
+   - ALL tests must pass. Zero tolerance.
+
+3. **Start services** and verify they work:
+   - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
+   - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
+   - Hit key endpoints (health checks, any endpoints the ticket specifies)
+   - Verify responses match expectations
+
+4. **Walk the acceptance criteria** from the ticket:
+   - For each checkbox in the AC, verify it's actually met — not just "code exists" but "it works"
+   - If the ticket says "health endpoint returns 200", curl it and confirm
+   - If the ticket says "tests pass", run them yourself and confirm
+
+5. **Quality check** — Read the key files the sub-agent produced:
+   - Is the code idiomatic for the language?
+   - Are there any obvious issues (missing error handling, security gaps, dead code)?
+   - Does it follow existing patterns in the codebase?
+   - Would you be proud to ship this?
+
+6. **Clean up** — Stop any services you started (`docker compose down`)
+
+If ANY verification fails: fix it directly (don't send it back to a sub-agent for trivial fixes), or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to review until validation passes.
 
 ### Step 5: Multi-AI code review
 
