@@ -4,14 +4,15 @@ Project-agnostic orchestration layer for AI-powered software development lifecyc
 
 ## What This Repo Is
 
-A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-sprint`, `/create-issue`, `/implement`, `/ship`) that orchestrate a full development pipeline: transcribe client conversations, triage requirements, plan sprints, create issues, implement with multi-AI consultation, test, review, validate, and ship PRs.
+A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-sprint`, `/create-issue`, `/implement`, `/ship`, `/update`) that orchestrate a full development pipeline: transcribe client conversations, triage requirements, plan sprints, create issues, implement with multi-AI consultation, test, review, validate, and ship PRs.
 
 ## Key Principles
 
 - **Project-agnostic**: Skills reference "the target repo" — never hardcode project names
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)
 - **Skills are markdown prompts**: They instruct Claude Code what to do, not executable code
-- **Scripts are thin wrappers**: `consult-ai.sh` calls codex/gemini with a prompt and captures output
+- **Scripts are Python**: All helpers are Python — no bash scripts
+- **Secrets never touch env vars**: API keys are fetched from macOS Keychain at call time by Python wrappers and passed directly to SDK constructors. They are never set as environment variables, never printed, never logged. This prevents secrets from leaking into conversation history.
 - **Same prompt for all AIs**: codex, gemini, and opus get identical context. Value is in natural divergence, not roleplay
 - **Browser-use stays in target repos**: `/implement` looks for and uses the target repo's browser-use setup
 - **Worktree for implementation**: Sub-agents always work in isolated git worktrees
@@ -27,11 +28,24 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 - `playwright` - Browser automation (via target repo)
 - `browser-use` - AI browser agent (via target repo)
 
-## Authentication
+## Secret Management
 
-CLI tools (`claude`, `codex`, `gemini`, `gh`) use their own login sessions — no API keys needed.
+Secrets are stored in **macOS Keychain** under the `chief-wiggum` service. They are NEVER stored as environment variables.
 
-API keys are only required for SDK-level calls (browser-use, direct API scripts):
+```bash
+python3 scripts/keychain.py list                       # show status (not values)
+python3 scripts/keychain.py set ANTHROPIC_API_KEY      # store (prompts securely)
+python3 scripts/keychain.py delete ANTHROPIC_API_KEY   # remove
+```
+
+In Python scripts, secrets are loaded on demand:
+```python
+from keychain import get_secret
+api_key = get_secret("ANTHROPIC_API_KEY")  # fetched from Keychain, never env
+client = Anthropic(api_key=api_key)        # passed directly to constructor
+```
+
+### Required secrets (for SDK calls)
 
 - `ANTHROPIC_API_KEY` - For browser-use (langchain-anthropic SDK)
 - `OPENAI_API_KEY` - Optional, if calling OpenAI APIs directly
@@ -39,21 +53,23 @@ API keys are only required for SDK-level calls (browser-use, direct API scripts)
 
 ### Vertex AI (alternative to API keys for Google)
 
-For Gemini and browser-use via GCP instead of API keys:
-
 - `GOOGLE_CLOUD_PROJECT` - Your GCP project ID
 - `GOOGLE_CLOUD_LOCATION` - Region (default: `us-central1`)
 - Authenticate via `gcloud auth application-default login`
-- Python packages: `langchain-google-vertexai`, `google-cloud-aiplatform`
 
-Use `gemini-vertex` as the tool name in `consult-ai.sh` to route through Vertex AI.
+Use `gemini-vertex` as the tool name in `consult_ai.py` to route through Vertex AI.
+
+## AI Models Reference
+
+See `models.md` for current model IDs, library versions, and default choices. Refresh with `/update`.
 
 ## Repo Layout
 
 ```
 .claude/commands/    # Claude Code skills (the core of this repo)
-scripts/             # Shell/Python helpers called by skills
+scripts/             # Python helpers called by skills
 templates/           # Issue, PR, and review prompt templates
+models.md            # AI model IDs and library versions (refresh with /update)
 ```
 
 ## Usage
@@ -71,4 +87,5 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /create-issue owner/repo        # Create a GitHub issue
 /implement owner/repo#42        # Full implementation loop for ticket #42
 /ship                           # Create PR with mermaid diagrams
+/update                         # Refresh model IDs and library versions
 ```

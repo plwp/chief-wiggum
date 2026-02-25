@@ -14,14 +14,14 @@ Check that all tools required by chief-wiggum are installed and working.
 Run the check script to see what's installed and what's missing:
 
 ```bash
-bash ~/repos/chief-wiggum/scripts/check-deps.sh
+python3 ~/repos/chief-wiggum/scripts/check_deps.py
 ```
 
 ### Step 2: Report results
 
 Present the results to the user in a clear summary table showing:
 - Tool name, installed version, and status (OK / MISSING / NOT SET)
-- Group by: CLI tools, Python packages, API keys
+- Group by: CLI tools, Python packages, Keychain secrets
 
 ### Step 3: Offer to install missing dependencies
 
@@ -39,22 +39,45 @@ If anything is missing, ask the user if they want to install it. For each missin
 If the user agrees, run the installer for specific missing tools:
 
 ```bash
-bash ~/repos/chief-wiggum/scripts/install-deps.sh --tool <tool_name>
+python3 ~/repos/chief-wiggum/scripts/install_deps.py --tool <tool_name>
 ```
 
-### Step 4: Verify API keys
+For Vertex AI packages:
+```bash
+python3 ~/repos/chief-wiggum/scripts/install_deps.py --vertex
+```
 
-For any missing API keys, explain where to set them:
+### Step 4: Set up secrets in Keychain
+
+For any missing secrets, help the user store them securely in macOS Keychain. Secrets are NEVER stored as environment variables — they are fetched from Keychain at runtime by Python wrappers.
+
+Show current keychain status:
+```bash
+python3 ~/repos/chief-wiggum/scripts/keychain.py list
+```
+
+To store each key (prompts securely, no echo):
+```bash
+python3 ~/repos/chief-wiggum/scripts/keychain.py set ANTHROPIC_API_KEY
+python3 ~/repos/chief-wiggum/scripts/keychain.py set OPENAI_API_KEY
+python3 ~/repos/chief-wiggum/scripts/keychain.py set GEMINI_API_KEY
+```
+
+Explain where to get each key:
 - `ANTHROPIC_API_KEY`: https://console.anthropic.com/
 - `OPENAI_API_KEY`: https://platform.openai.com/api-keys
 - `GEMINI_API_KEY`: https://aistudio.google.com/apikey
 
-Suggest adding them to `~/.zshrc` or `~/.bashrc`.
+For Vertex AI (alternative to GEMINI_API_KEY):
+```bash
+python3 ~/repos/chief-wiggum/scripts/keychain.py set GOOGLE_CLOUD_PROJECT
+python3 ~/repos/chief-wiggum/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
+```
 
 ### Step 5: Final verification
 
 Re-run the check script to confirm everything is green:
 
 ```bash
-bash ~/repos/chief-wiggum/scripts/check-deps.sh
+python3 ~/repos/chief-wiggum/scripts/check_deps.py
 ```

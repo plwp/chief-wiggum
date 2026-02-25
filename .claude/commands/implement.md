@@ -45,35 +45,19 @@ Do NOT proceed until the user confirms the requirements are clear.
 
 ### Step 3: Consult AIs on approach
 
-Prepare a prompt describing the ticket, the codebase context, and ask for an implementation approach. Save it to a temp file:
+Prepare a prompt describing the ticket, the codebase context, and ask for an implementation approach. Write it to a temp file using the Write tool. The prompt should include:
 
-```bash
-cat > /tmp/cw-approach-prompt.md << 'PROMPT'
-# Implementation Approach Request
+- Ticket title, description, and acceptance criteria
+- Codebase context (key files, architecture notes, relevant patterns)
+- Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
-## Ticket
-Title: [ticket title]
-Description: [ticket description]
-Acceptance Criteria: [criteria]
-
-## Codebase Context
-[Key files, architecture notes, relevant patterns from the repo]
-
-## Question
-Propose an implementation approach for this ticket. Include:
-1. Files to modify/create
-2. Step-by-step implementation plan
-3. Key design decisions and trade-offs
-4. Potential risks or gotchas
-5. Testing strategy
-PROMPT
-```
+Save it to `/tmp/cw-approach-prompt.md`.
 
 Run consultations in parallel:
 
 ```bash
-bash ~/repos/chief-wiggum/scripts/consult-ai.sh codex /tmp/cw-approach-prompt.md > /tmp/cw-review-codex.md 2>&1 &
-bash ~/repos/chief-wiggum/scripts/consult-ai.sh gemini /tmp/cw-approach-prompt.md > /tmp/cw-review-gemini.md 2>&1 &
+python3 ~/repos/chief-wiggum/scripts/consult_ai.py codex /tmp/cw-approach-prompt.md > /tmp/cw-review-codex.md 2>&1 &
+python3 ~/repos/chief-wiggum/scripts/consult_ai.py gemini /tmp/cw-approach-prompt.md > /tmp/cw-review-gemini.md 2>&1 &
 wait
 ```
 
@@ -112,20 +96,13 @@ Get the diff from the implementation:
 git diff main...HEAD > /tmp/cw-impl-diff.txt
 ```
 
-Prepare a review prompt using the template:
-
-```bash
-cat ~/repos/chief-wiggum/templates/review-prompt.md | \
-  sed "s/{{TICKET_TITLE}}/$title/" | \
-  sed "s/{{TICKET_DESCRIPTION}}/$description/" > /tmp/cw-review-prompt.md
-cat /tmp/cw-impl-diff.txt >> /tmp/cw-review-prompt.md
-```
+Prepare a review prompt using `~/repos/chief-wiggum/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values, and write to `/tmp/cw-review-prompt.md`.
 
 Run reviews in parallel:
 
 ```bash
-bash ~/repos/chief-wiggum/scripts/consult-ai.sh codex /tmp/cw-review-prompt.md > /tmp/cw-review-codex.md 2>&1 &
-bash ~/repos/chief-wiggum/scripts/consult-ai.sh gemini /tmp/cw-review-prompt.md > /tmp/cw-review-gemini.md 2>&1 &
+python3 ~/repos/chief-wiggum/scripts/consult_ai.py codex /tmp/cw-review-prompt.md > /tmp/cw-review-codex.md 2>&1 &
+python3 ~/repos/chief-wiggum/scripts/consult_ai.py gemini /tmp/cw-review-prompt.md > /tmp/cw-review-gemini.md 2>&1 &
 wait
 ```
 
@@ -134,7 +111,7 @@ Also perform your own (Opus) review of the diff.
 Synthesize using:
 
 ```bash
-python3 ~/repos/chief-wiggum/scripts/synthesize-reviews.py /tmp/cw-review-codex.md /tmp/cw-review-gemini.md
+python3 ~/repos/chief-wiggum/scripts/synthesize_reviews.py /tmp/cw-review-codex.md /tmp/cw-review-gemini.md
 ```
 
 For each piece of feedback:
