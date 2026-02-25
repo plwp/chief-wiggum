@@ -17,6 +17,7 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 - **Same prompt for all AIs**: codex, gemini, and opus get identical context. Value is in natural divergence, not roleplay
 - **Browser-use stays in target repos**: `/implement` looks for and uses the target repo's browser-use setup
 - **Worktree for implementation**: Sub-agents always work in isolated git worktrees
+- **Validate before acting**: Never assume a root cause — always test the hypothesis first. When debugging, reproduce the failure, verify the fix, then move on. Do not make speculative changes based on untested assumptions.
 
 ## Requirements
 

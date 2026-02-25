@@ -20,20 +20,39 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from keychain import get_secret
 
-TIMEOUT = 300  # 5 minute timeout for all AI calls
+# Per-tool timeouts (seconds). These are generous — better to wait than to
+# lose a good response to a premature timeout.
+TOOL_TIMEOUTS: dict[str, int] = {
+    "codex": 600,       # 10 minutes — xhigh reasoning is slow on large prompts
+    "gemini": 600,      # 10 minutes
+    "gemini-vertex": 600,
+    "claude": 600,
+}
+TIMEOUT = 600  # fallback
 
 # Default model for Vertex AI path (override with --model)
 DEFAULT_VERTEX_MODEL = "gemini-3-pro"
 
 
 def consult_codex(prompt: str, model: str | None = None) -> str:
-    """Call codex CLI in read-only sandbox. Uses its own auth session."""
-    cmd = ["codex", "exec", "--sandbox", "read-only"]
+    """Call codex CLI in read-only sandbox. Uses its own auth session.
+
+    Passes prompt via stdin (``-``) to avoid shell argument length issues
+    and to match how codex exec expects large prompts.
+
+    Overrides reasoning effort to ``high`` (instead of user's default which
+    may be ``xhigh``) to keep response times reasonable for consultations.
+    """
+    cmd = [
+        "codex", "exec", "--sandbox", "read-only",
+        "-c", 'model_reasoning_effort="high"',
+    ]
     if model:
         cmd.extend(["--model", model])
-    cmd.append(prompt)
+    cmd.append("-")  # read prompt from stdin
     result = subprocess.run(
-        cmd, capture_output=True, text=True, check=True, timeout=TIMEOUT,
+        cmd, input=prompt, capture_output=True, text=True, check=True,
+        timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
     )
     return result.stdout
 
@@ -44,7 +63,8 @@ def consult_gemini(prompt: str, model: str | None = None) -> str:
     if model:
         cmd.extend(["-m", model])
     result = subprocess.run(
-        cmd, capture_output=True, text=True, check=True, timeout=TIMEOUT,
+        cmd, capture_output=True, text=True, check=True,
+        timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
     )
     return result.stdout
 
@@ -78,7 +98,7 @@ def consult_claude(prompt: str, model: str | None = None) -> str:
         cmd.extend(["--model", model])
     result = subprocess.run(
         cmd, input=prompt, capture_output=True, text=True,
-        check=True, timeout=TIMEOUT,
+        check=True, timeout=TOOL_TIMEOUTS.get("claude", TIMEOUT),
     )
     return result.stdout
 
@@ -114,17 +134,24 @@ def main():
             prompt += f"\n\n---\nContext:\n{ctx_path.read_text()}"
 
     fn = TOOLS[args.tool]
+    tool_timeout = TOOL_TIMEOUTS.get(args.tool, TIMEOUT)
     try:
         output = fn(prompt, model=args.model)
         print(output)
     except subprocess.TimeoutExpired:
-        print(f"Timeout: {args.tool} did not respond within {TIMEOUT}s", file=sys.stderr)
+        msg = f"Timeout: {args.tool} did not respond within {tool_timeout}s"
+        print(msg)  # stdout so callers capturing output always see it
+        print(msg, file=sys.stderr)
         sys.exit(1)
     except subprocess.CalledProcessError as e:
-        print(f"Error calling {args.tool}: {e.stderr or e}", file=sys.stderr)
+        msg = f"Error calling {args.tool}: {e.stderr or e}"
+        print(msg)
+        print(msg, file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        msg = f"Error: {e}"
+        print(msg)
+        print(msg, file=sys.stderr)
         sys.exit(1)
 
 

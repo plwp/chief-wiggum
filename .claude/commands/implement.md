@@ -59,34 +59,50 @@ Do NOT proceed until the user confirms the requirements are clear.
 
 ### Step 3: Consult AIs on approach
 
-Prepare a prompt describing the ticket, the codebase context, and ask for an implementation approach. Write it to a temp file using the Write tool. The prompt should include:
+This step has two phases, each in its own sub-agent. This keeps the heavy codebase exploration and synthesis out of the main context window.
 
+#### Phase A: Gather approaches (parallel)
+
+Run three consultations in parallel:
+
+1. **Codex + Gemini** — Launch as background bash commands:
+   ```bash
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/approach-prompt.md > $CW_TMP/approach-codex.md 2>&1 &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/approach-prompt.md > $CW_TMP/approach-gemini.md 2>&1 &
+   wait
+   ```
+
+2. **Opus exploration** — Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel with the above. This sub-agent should:
+   - Explore the target repo codebase thoroughly (read key files, understand patterns)
+   - Form its own implementation approach
+   - Write its findings to `$CW_TMP/approach-opus.md`
+
+Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` including:
 - Ticket title, description, and acceptance criteria
 - Codebase context (key files, architecture notes, relevant patterns)
 - Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
-Save it to `$CW_TMP/approach-prompt.md`.
+#### Phase B: Reconcile into implementation plan
 
-Run consultations in parallel:
+Once all three approaches are ready, launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
 
-```bash
-python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/approach-prompt.md > $CW_TMP/approach-codex.md 2>&1 &
-python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/approach-prompt.md > $CW_TMP/approach-gemini.md 2>&1 &
-wait
-```
+1. Read all three approach files (`approach-codex.md`, `approach-gemini.md`, `approach-opus.md`)
+2. Identify consensus, conflicts, and unique insights
+3. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
+   - **Files to create/modify** with specific paths
+   - **Ordered implementation steps** — each step should specify exactly what to do, in which file, with enough detail that no further codebase exploration is needed
+   - **Code patterns to follow** — reference specific existing files/functions as templates
+   - **Key design decisions** — where AIs agreed vs diverged, with a clear recommendation
+   - **Test plan** — specific test cases to write and how to run them
+   - **Open questions** for the user (if any)
+4. Write the full plan to `$CW_TMP/implementation-plan.md`
+5. Return a concise summary for the main thread
 
-Also generate your own (Opus) approach analysis.
-
-Synthesize all three approaches:
-- **Where all agree**: High confidence, likely the right path
-- **Where they disagree**: Present the trade-offs to the user
-- **Unique suggestions**: Note which AI suggested it and why it might matter
-
-Present the synthesized approach to the user and get approval before proceeding.
+Present the sub-agent's summary to the user and get approval before proceeding.
 
 ### Step 4: Implement
 
-Launch a sub-agent in a worktree to do the implementation:
+Launch a **Sonnet sub-agent** in a worktree to do the implementation (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Sonnet is fast and cost-effective for coding tasks. Pass it the **full implementation plan** from `$CW_TMP/implementation-plan.md` (produced in Step 3 Phase B) plus any user feedback. The plan should be detailed enough that Sonnet can execute it step-by-step without needing to explore the codebase.
 
 **Important**: The sub-agent should work in the target repo, not in chief-wiggum.
 
@@ -104,34 +120,35 @@ The sub-agent should:
 
 ### Step 5: Multi-AI code review
 
-Get the diff from the implementation:
+**IMPORTANT**: Run this entire step inside a **Sonnet sub-agent** (`subagent_type: "general-purpose"`, `model: "sonnet"`). The main thread should only receive the synthesized review summary with actionable items.
 
-```bash
-git diff "$DEFAULT_BRANCH"...HEAD > $CW_TMP/impl-diff.txt
-```
+The sub-agent should:
 
-Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values, and write to `$CW_TMP/review-prompt.md`.
+1. Get the diff from the implementation:
+   ```bash
+   git diff "$DEFAULT_BRANCH"...HEAD > $CW_TMP/impl-diff.txt
+   ```
 
-Run reviews in parallel:
+2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values, and write to `$CW_TMP/review-prompt.md`.
 
-```bash
-python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/review-prompt.md > $CW_TMP/review-codex.md 2>&1 &
-python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/review-prompt.md > $CW_TMP/review-gemini.md 2>&1 &
-wait
-```
+3. Run external AI reviews in parallel:
+   ```bash
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/review-prompt.md > $CW_TMP/review-codex.md 2>&1 &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/review-prompt.md > $CW_TMP/review-gemini.md 2>&1 &
+   wait
+   ```
 
-Also perform your own (Opus) review of the diff.
+4. Perform its own review of the diff.
 
-Synthesize using:
+5. Synthesize using:
+   ```bash
+   python3 "$CW_HOME/scripts/synthesize_reviews.py" $CW_TMP/review-codex.md $CW_TMP/review-gemini.md
+   ```
 
-```bash
-python3 "$CW_HOME/scripts/synthesize_reviews.py" $CW_TMP/review-codex.md $CW_TMP/review-gemini.md
-```
-
-For each piece of feedback:
-- **Clear-cut fixes** (typos, obvious bugs, missing error handling): Apply automatically
-- **Style/preference issues**: Skip unless all reviewers agree
-- **Ambiguous or architectural feedback**: Present to user for decision
+6. Return a concise summary categorising each piece of feedback:
+   - **Clear-cut fixes** (typos, obvious bugs, missing error handling): Apply automatically
+   - **Style/preference issues**: Skip unless all reviewers agree
+   - **Ambiguous or architectural feedback**: Flag for user decision
 
 ### Step 6: Browser-use validation
 

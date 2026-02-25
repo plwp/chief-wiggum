@@ -10,7 +10,18 @@ Read all open issues from a GitHub repo and present a prioritised view for sprin
 ## Parameters
 - `owner/repo`: GitHub repository in `owner/repo` format (e.g., `patwork/dgrd`)
 
-## Workflow
+## Execution Strategy
+
+**IMPORTANT**: Run the entire triage workflow (Steps 1-4) inside a **sonnet subagent** using the Task tool (`subagent_type: "general-purpose"`, `model: "sonnet"`). This keeps the heavy data fetching and analysis out of the main context window.
+
+The subagent prompt should instruct it to:
+1. Fetch all open issues (Step 1)
+2. Group, categorise, and rank them (Steps 2-3)
+3. Return ONLY the concise summary output described in Step 4
+
+Then present the subagent's summary to the user and proceed to Step 5 (interactive discussion) in the main thread.
+
+## Workflow (executed by subagent)
 
 ### Step 1: Fetch all open issues
 
@@ -41,27 +52,28 @@ Rank issues using this heuristic:
 5. **Medium features** (significant value, moderate effort)
 6. **Nice-to-haves** (low priority, can wait)
 
-### Step 4: Present the backlog
+### Step 4: Return concise summary
 
-Display a prioritised table:
+The subagent must return ONLY:
 
+1. **Prioritised table** — all open issues in priority order:
 ```
-Priority | # | Title | Type | Effort | Labels
----------|---|-------|------|--------|-------
-1        | 42| Fix login crash | bug | S | bug, critical
-2        | 38| Add dark mode   | feat| L | feature
+Pri | # | Title | Type | Effort | Labels
+----|---|-------|------|--------|-------
+1   | 42| Fix login crash | bug | S | bug, critical
+2   | 38| Add dark mode   | feat| L | feature
 ...
 ```
 
-Then provide:
-- Total open issues count
-- Breakdown by type (X bugs, Y features, Z chores)
-- Issues needing triage (unlabelled or unclear)
-- Suggested "next sprint" shortlist (top 5-8 items)
+2. **Stats line** — total count and breakdown (X bugs, Y features, Z chores, W unlabelled)
 
-### Step 5: Interactive discussion
+3. **Top 3 picks** — the 3 best candidates for next sprint, each with a one-sentence rationale
 
-Ask the user:
+Nothing else. No raw issue bodies, no verbose analysis.
+
+### Step 5: Interactive discussion (main thread)
+
+After presenting the subagent's summary, ask the user:
 1. Does this priority ordering look right?
 2. Any items that should be promoted or demoted?
 3. Are there issues that should be closed (stale, duplicate, won't-fix)?
