@@ -44,7 +44,7 @@ for seg in result['segments']:
 If the file is a video AND the user wants screenshot cross-references, use the full transcription script:
 
 ```bash
-python3 ~/repos/dgrd/scripts/transcribe_with_screenshots.py \
+python3 ~/repos/chief-wiggum/scripts/transcribe_with_screenshots.py \
   --audio "$audio_path" \
   --video "$file_path" \
   --out /tmp/cw-transcription/

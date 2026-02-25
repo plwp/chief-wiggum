@@ -14,6 +14,16 @@ The core orchestration skill. Takes a ticket and drives it through the full impl
 
 ## Workflow
 
+### Step 0: Resolve target repo
+
+Resolve the `owner/repo` to a local path (clones via `gh` if not cached):
+
+```bash
+TARGET_REPO=$(python3 ~/repos/chief-wiggum/scripts/repo.py resolve "$owner_repo")
+```
+
+All subsequent steps should work within `$TARGET_REPO`.
+
 ### Step 1: Pick and read the ticket
 
 Fetch the issue details:

@@ -2,9 +2,11 @@
 """
 Keychain secret management for chief-wiggum.
 
-Secrets are fetched from macOS Keychain on demand and passed directly to
-API constructors. They are NEVER set as environment variables, NEVER printed,
-and NEVER logged.
+Uses the `keyring` library for secure cross-platform secret storage.
+On macOS this uses Keychain, on Linux it uses SecretService/KWallet.
+
+Secrets are fetched on demand and passed directly to API constructors.
+They are NEVER set as environment variables, NEVER printed, and NEVER logged.
 
 As a module:
     from keychain import get_secret, has_secret, set_secret
@@ -18,8 +20,17 @@ As a CLI:
 """
 
 import getpass
-import subprocess
 import sys
+
+try:
+    import keyring
+except ImportError:
+    print(
+        "Missing dependency: keyring\n"
+        "Install with: pip3 install keyring",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 SERVICE = "chief-wiggum"
 
@@ -33,42 +44,35 @@ KNOWN_KEYS = [
 
 
 def get_secret(name: str) -> str | None:
-    """Fetch a secret from macOS Keychain. Returns None if not found."""
+    """Fetch a secret from the system keyring. Returns None if not found."""
     try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-a", name, "-s", SERVICE, "-w"],
-            capture_output=True, text=True, check=True,
-        )
-        return result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        val = keyring.get_password(SERVICE, name)
+        return val  # None if not found, str if found
+    except Exception:
         return None
 
 
 def has_secret(name: str) -> bool:
-    """Check if a secret exists in Keychain without retrieving it."""
-    return get_secret(name) is not None
+    """Check if a secret exists in the keyring without retrieving its value."""
+    try:
+        cred = keyring.get_credential(SERVICE, name)
+        return cred is not None
+    except Exception:
+        return False
 
 
 def set_secret(name: str, value: str) -> None:
-    """Store a secret in macOS Keychain. Overwrites if exists."""
-    # Delete existing entry (security errors on duplicate)
-    subprocess.run(
-        ["security", "delete-generic-password", "-a", name, "-s", SERVICE],
-        capture_output=True, check=False,
-    )
-    subprocess.run(
-        ["security", "add-generic-password", "-a", name, "-s", SERVICE, "-w", value],
-        check=True,
-    )
+    """Store a secret in the system keyring. Overwrites if exists."""
+    keyring.set_password(SERVICE, name, value)
 
 
 def delete_secret(name: str) -> bool:
-    """Delete a secret from Keychain. Returns True if it existed."""
-    result = subprocess.run(
-        ["security", "delete-generic-password", "-a", name, "-s", SERVICE],
-        capture_output=True, check=False,
-    )
-    return result.returncode == 0
+    """Delete a secret from the keyring. Returns True if it existed."""
+    try:
+        keyring.delete_password(SERVICE, name)
+        return True
+    except keyring.errors.PasswordDeleteError:
+        return False
 
 
 def list_secrets() -> list[dict]:
@@ -89,9 +93,9 @@ def main():
         print("Usage: keychain.py <set|get|delete|list> [KEY_NAME]")
         print()
         print("Commands:")
-        print("  set KEY_NAME      Store a key in macOS Keychain (prompts for value)")
+        print("  set KEY_NAME      Store a key in system keyring (prompts for value)")
         print("  get KEY_NAME      Check if a key exists (does NOT print the value)")
-        print("  delete KEY_NAME   Remove a key from Keychain")
+        print("  delete KEY_NAME   Remove a key from keyring")
         print("  list              Show status of all known keys")
         print()
         print(f"Known keys: {', '.join(KNOWN_KEYS)}")
@@ -100,10 +104,10 @@ def main():
     cmd = sys.argv[1]
 
     if cmd == "list":
-        print(f"=== Chief Wiggum Keychain (service: {SERVICE}) ===")
+        print(f"=== Chief Wiggum Keyring (service: {SERVICE}) ===")
         print()
         for s in list_secrets():
-            status = "[keychain]" if s["in_keychain"] else "[not set] "
+            status = "[stored]  " if s["in_keychain"] else "[not set] "
             print(f"  {status}  {s['name']}")
         return
 
@@ -119,20 +123,20 @@ def main():
             print("Error: empty value", file=sys.stderr)
             sys.exit(1)
         set_secret(key_name, value)
-        print(f"Stored {key_name} in keychain (service: {SERVICE})")
+        print(f"Stored {key_name} in keyring (service: {SERVICE})")
 
     elif cmd == "get":
         if has_secret(key_name):
-            print(f"{key_name}: stored in keychain")
+            print(f"{key_name}: stored in keyring")
         else:
             print(f"{key_name}: not found")
             sys.exit(1)
 
     elif cmd == "delete":
         if delete_secret(key_name):
-            print(f"Deleted {key_name} from keychain")
+            print(f"Deleted {key_name} from keyring")
         else:
-            print(f"{key_name} not found in keychain")
+            print(f"{key_name} not found in keyring")
             sys.exit(1)
 
     else:

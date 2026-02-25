@@ -2,11 +2,11 @@
 """
 Consult an AI tool with a prompt and capture its output.
 
-Secrets are fetched from macOS Keychain at call time and passed directly
+Secrets are fetched from the system keyring at call time and passed directly
 to SDK constructors — never set as env vars, never printed.
 
 Usage:
-    python3 consult_ai.py <tool> <prompt_file> [--context <file>]
+    python3 consult_ai.py <tool> <prompt_file> [--context <file>] [--model <model_id>]
 
 Tools: codex, gemini, gemini-vertex, claude
 """
@@ -20,32 +20,39 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from keychain import get_secret
 
+TIMEOUT = 300  # 5 minute timeout for all AI calls
 
-def consult_codex(prompt: str) -> str:
-    """Call codex CLI. Uses its own auth session."""
+# Default model for Vertex AI path (override with --model)
+DEFAULT_VERTEX_MODEL = "gemini-2.5-flash"
+
+
+def consult_codex(prompt: str, model: str | None = None) -> str:
+    """Call codex CLI in read-only mode. Uses its own auth session."""
     result = subprocess.run(
-        ["codex", "-q", "--full-auto"],
-        input=prompt, capture_output=True, text=True, check=True,
+        ["codex", "exec", "--approval-mode", "plan", prompt],
+        capture_output=True, text=True, check=True, timeout=TIMEOUT,
     )
     return result.stdout
 
 
-def consult_gemini(prompt: str) -> str:
+def consult_gemini(prompt: str, model: str | None = None) -> str:
     """Call gemini CLI. Uses its own auth session."""
+    cmd = ["gemini", "-p", prompt]
+    if model:
+        cmd.extend(["-m", model])
     result = subprocess.run(
-        ["gemini"],
-        input=prompt, capture_output=True, text=True, check=True,
+        cmd, capture_output=True, text=True, check=True, timeout=TIMEOUT,
     )
     return result.stdout
 
 
-def consult_gemini_vertex(prompt: str) -> str:
-    """Call Gemini via Vertex AI SDK. Fetches credentials from keychain."""
+def consult_gemini_vertex(prompt: str, model: str | None = None) -> str:
+    """Call Gemini via Vertex AI SDK. Fetches credentials from keyring."""
     project = get_secret("GOOGLE_CLOUD_PROJECT")
     location = get_secret("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     if not project:
-        print("Error: GOOGLE_CLOUD_PROJECT not found in keychain. "
+        print("Error: GOOGLE_CLOUD_PROJECT not found in keyring. "
               "Run: python3 scripts/keychain.py set GOOGLE_CLOUD_PROJECT",
               file=sys.stderr)
         sys.exit(1)
@@ -55,16 +62,20 @@ def consult_gemini_vertex(prompt: str) -> str:
     from vertexai.generative_models import GenerativeModel  # type: ignore
 
     aiplatform.init(project=project, location=location)
-    model = GenerativeModel("gemini-2.5-flash")
-    response = model.generate_content(prompt)
+    model_id = model or DEFAULT_VERTEX_MODEL
+    gen_model = GenerativeModel(model_id)
+    response = gen_model.generate_content(prompt)
     return response.text
 
 
-def consult_claude(prompt: str) -> str:
+def consult_claude(prompt: str, model: str | None = None) -> str:
     """Call claude CLI. Uses its own auth session."""
+    cmd = ["claude", "-p", "--output-format", "text"]
+    if model:
+        cmd.extend(["--model", model])
     result = subprocess.run(
-        ["claude", "-p", "--output-format", "text"],
-        input=prompt, capture_output=True, text=True, check=True,
+        cmd, input=prompt, capture_output=True, text=True,
+        check=True, timeout=TIMEOUT,
     )
     return result.stdout
 
@@ -84,6 +95,7 @@ def main():
     parser.add_argument("tool", choices=TOOLS.keys(), help="AI tool to consult")
     parser.add_argument("prompt_file", help="Path to the prompt file")
     parser.add_argument("--context", help="Optional context file to append")
+    parser.add_argument("--model", help="Override model ID for this call")
     args = parser.parse_args()
 
     prompt_path = Path(args.prompt_file)
@@ -100,8 +112,11 @@ def main():
 
     fn = TOOLS[args.tool]
     try:
-        output = fn(prompt)
+        output = fn(prompt, model=args.model)
         print(output)
+    except subprocess.TimeoutExpired:
+        print(f"Timeout: {args.tool} did not respond within {TIMEOUT}s", file=sys.stderr)
+        sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f"Error calling {args.tool}: {e.stderr or e}", file=sys.stderr)
         sys.exit(1)

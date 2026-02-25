@@ -8,7 +8,8 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 
 ## Key Principles
 
-- **Project-agnostic**: Skills reference "the target repo" — never hardcode project names
+- **Project-agnostic**: Skills reference "the target repo" — never hardcode project names or local paths
+- **Auto-cloning**: Target repos are resolved and cloned via `gh` on demand, cached in `~/.chief-wiggum/repos/`
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)
 - **Skills are markdown prompts**: They instruct Claude Code what to do, not executable code
 - **Scripts are Python**: All helpers are Python — no bash scripts
@@ -16,6 +17,10 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 - **Same prompt for all AIs**: codex, gemini, and opus get identical context. Value is in natural divergence, not roleplay
 - **Browser-use stays in target repos**: `/implement` looks for and uses the target repo's browser-use setup
 - **Worktree for implementation**: Sub-agents always work in isolated git worktrees
+
+## Requirements
+
+- **Python >= 3.11** (for type hints and browser-use)
 
 ## Required Tools
 
@@ -30,7 +35,7 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 
 ## Secret Management
 
-Secrets are stored in **macOS Keychain** under the `chief-wiggum` service. They are NEVER stored as environment variables.
+Secrets are stored in the **system keyring** (macOS Keychain, Linux SecretService, etc.) via the `keyring` Python library under the `chief-wiggum` service. They are NEVER stored as environment variables.
 
 ```bash
 python3 scripts/keychain.py list                       # show status (not values)
@@ -62,6 +67,20 @@ Use `gemini-vertex` as the tool name in `consult_ai.py` to route through Vertex 
 ## AI Models Reference
 
 See `models.md` for current model IDs, library versions, and default choices. Refresh with `/update`.
+
+## Target Repo Resolution
+
+When a skill receives `owner/repo`, it resolves to a local path using `scripts/repo.py`:
+
+1. If cwd is already inside the repo, use cwd
+2. If cached in `~/.chief-wiggum/repos/owner/repo`, pull latest and use that
+3. Otherwise clone via `gh repo clone` into the cache
+
+```bash
+python3 ~/repos/chief-wiggum/scripts/repo.py resolve plwp/dgrd  # prints local path
+python3 ~/repos/chief-wiggum/scripts/repo.py list                # show cached repos
+python3 ~/repos/chief-wiggum/scripts/repo.py clean plwp/dgrd    # remove cache
+```
 
 ## Repo Layout
 

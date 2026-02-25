@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Check that all required dependencies are installed and report their versions.
-Checks macOS Keychain for secrets (never prints values).
+Checks system keyring for secrets (never prints values).
+
+Requires Python >= 3.11.
 """
 
 import importlib
@@ -41,16 +43,20 @@ def check_cmd(name: str, cmd: str, version_flag: str = "--version"):
         fail_count += 1
 
 
-def check_python_pkg(name: str, import_name: str):
-    global pass_count, fail_count
+def check_python_pkg(name: str, import_name: str, optional: bool = False):
+    global pass_count, fail_count, warn_count
     try:
         mod = importlib.import_module(import_name)
         ver = getattr(mod, "__version__", "installed")
         print(f"{GREEN}[OK]{NC}  {name:<14s} {ver}")
         pass_count += 1
     except ImportError:
-        print(f"{RED}[MISSING]{NC}  {name:<14s} python package not found")
-        fail_count += 1
+        if optional:
+            print(f"{YELLOW}[OPTIONAL]{NC}  {name:<14s} not installed")
+            warn_count += 1
+        else:
+            print(f"{RED}[MISSING]{NC}  {name:<14s} python package not found")
+            fail_count += 1
 
 
 def check_secret(name: str):
@@ -75,16 +81,17 @@ def main():
     check_cmd("git", "git", "--version")
 
     print("\n--- Python Packages ---")
+    check_python_pkg("keyring", "keyring")
     check_python_pkg("whisper", "whisper")
     check_python_pkg("browser-use", "browser_use")
     check_python_pkg("playwright", "playwright")
     check_python_pkg("langchain-anthropic", "langchain_anthropic")
 
     print("\n--- Python Packages (Vertex AI — optional) ---")
-    check_python_pkg("langchain-google-vertexai", "langchain_google_vertexai")
-    check_python_pkg("google-cloud-aiplatform", "google.cloud.aiplatform")
+    check_python_pkg("langchain-google-vertexai", "langchain_google_vertexai", optional=True)
+    check_python_pkg("google-cloud-aiplatform", "google.cloud.aiplatform", optional=True)
 
-    print("\n--- Secrets (macOS Keychain) ---")
+    print("\n--- Secrets (system keyring) ---")
     print("  (manage with: python3 scripts/keychain.py set|get|delete|list)")
     print()
     check_secret("ANTHROPIC_API_KEY")

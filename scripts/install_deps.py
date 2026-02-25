@@ -8,34 +8,39 @@ Usage:
 
 import argparse
 import importlib
+import shlex
 import shutil
 import subprocess
 import sys
 
 CLI_TOOLS = {
-    "claude": "npm install -g @anthropic-ai/claude-code",
-    "codex": "npm install -g @openai/codex",
-    "gemini": "npm install -g @anthropic-ai/gemini || npm install -g @google/gemini-cli",
-    "gh": "brew install gh",
-    "ffmpeg": "brew install ffmpeg",
+    "claude": ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+    "codex": ["npm", "install", "-g", "@openai/codex"],
+    "gemini": ["npm", "install", "-g", "@google/gemini-cli"],
+    "gh": ["brew", "install", "gh"],
+    "ffmpeg": ["brew", "install", "ffmpeg"],
 }
 
 PYTHON_PKGS = {
-    "whisper": ("whisper", "pip3 install openai-whisper"),
-    "browser-use": ("browser_use", "pip3 install browser-use"),
-    "playwright": ("playwright", "pip3 install playwright && python3 -m playwright install chromium"),
-    "langchain-anthropic": ("langchain_anthropic", "pip3 install langchain-anthropic"),
+    "keyring": ("keyring", [["pip3", "install", "keyring"]]),
+    "whisper": ("whisper", [["pip3", "install", "openai-whisper"]]),
+    "browser-use": ("browser_use", [["pip3", "install", "browser-use"]]),
+    "playwright": ("playwright", [
+        ["pip3", "install", "playwright"],
+        ["python3", "-m", "playwright", "install", "chromium"],
+    ]),
+    "langchain-anthropic": ("langchain_anthropic", [["pip3", "install", "langchain-anthropic"]]),
 }
 
 VERTEX_PKGS = {
-    "langchain-google-vertexai": ("langchain_google_vertexai", "pip3 install langchain-google-vertexai"),
-    "google-cloud-aiplatform": ("google.cloud.aiplatform", "pip3 install google-cloud-aiplatform"),
+    "langchain-google-vertexai": ("langchain_google_vertexai", [["pip3", "install", "langchain-google-vertexai"]]),
+    "google-cloud-aiplatform": ("google.cloud.aiplatform", [["pip3", "install", "google-cloud-aiplatform"]]),
 }
 
 
-def run(cmd: str) -> bool:
-    print(f"  Running: {cmd}")
-    result = subprocess.run(cmd, shell=True)
+def run(cmd: list[str]) -> bool:
+    print(f"  Running: {shlex.join(cmd)}")
+    result = subprocess.run(cmd)
     return result.returncode == 0
 
 
@@ -49,22 +54,25 @@ def install_cli_tools():
 
 
 def install_python_pkgs(pkgs: dict):
-    for name, (import_name, cmd) in pkgs.items():
+    for name, (import_name, cmds) in pkgs.items():
         try:
             importlib.import_module(import_name)
             print(f"  {name}: already installed")
         except ImportError:
             print(f"\nInstalling {name}...")
-            run(cmd)
+            for cmd in cmds:
+                run(cmd)
 
 
 def install_single(name: str):
     if name in CLI_TOOLS:
         run(CLI_TOOLS[name])
     elif name in PYTHON_PKGS:
-        run(PYTHON_PKGS[name][1])
+        for cmd in PYTHON_PKGS[name][1]:
+            run(cmd)
     elif name in VERTEX_PKGS:
-        run(VERTEX_PKGS[name][1])
+        for cmd in VERTEX_PKGS[name][1]:
+            run(cmd)
     else:
         print(f"Unknown tool: {name}", file=sys.stderr)
         sys.exit(1)
