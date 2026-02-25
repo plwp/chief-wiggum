@@ -1,6 +1,6 @@
 # Implement - Full Implementation Loop
 
-The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → implement → **verify** → review → validate → ship.
+The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → implement → review → apply fixes → **verify** → validate → ship.
 
 ## Ownership
 
@@ -20,9 +20,9 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 **Run the full pipeline autonomously.** Do NOT pause between steps to ask "ready to proceed?" or "want to skip this?". Move through every step without asking for permission unless you genuinely need user input (e.g., ambiguous requirements in Step 2, a design decision where approaches conflict and there's no clear winner, or a blocking error you can't resolve).
 
 Checkpoints where you MUST get user input:
-- **Step 2** (Clarify requirements): Only if requirements are genuinely unclear or ambiguous
-- **Step 3 Phase B** (Approach reconciliation): Only if approaches fundamentally conflict with no clear winner — present the trade-off and ask
-- **Step 7** (Final check): Present the summary, then proceed to ship unless the user intervenes
+- **Step 3** (Clarify requirements): Only if requirements are genuinely unclear or ambiguous
+- **Step 4 Phase B** (Approach reconciliation): Only if approaches fundamentally conflict with no clear winner — present the trade-off and ask
+- **Step 9** (Final check): Present the summary, then proceed to ship unless the user intervenes
 
 Everything else — just do it.
 
@@ -38,7 +38,7 @@ Everything else — just do it.
 
 ## Workflow
 
-### Step 0: Resolve paths
+### Step 1: Resolve paths
 
 Resolve the chief-wiggum install directory and the target repo path. **Never hardcode paths.**
 
@@ -54,7 +54,7 @@ DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultB
 
 All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief-wiggum scripts/templates. Use `$CW_TMP` for temporary files (not `/tmp/`). Use `$DEFAULT_BRANCH` instead of hardcoding `main`.
 
-### Step 1: Pick and read the ticket
+### Step 2: Pick and read the ticket
 
 Fetch the issue details:
 
@@ -68,7 +68,7 @@ Present to the user:
 - Labels and current status
 - Any comments with additional context
 
-### Step 2: Clarify requirements (only if needed)
+### Step 3: Clarify requirements (only if needed)
 
 Present a concise summary of what needs building (scope in/out). Only ask the user questions if the ticket is genuinely ambiguous — unclear acceptance criteria, conflicting requirements, or missing critical details. If the ticket is well-specified, state your understanding and move on.
 
@@ -77,7 +77,7 @@ If you do need to ask, keep it tight:
 2. Ask ONLY questions where the answer isn't inferrable from the ticket or codebase
 3. Confirm scope and proceed
 
-### Step 3: Consult AIs on approach
+### Step 4: Consult AIs on approach
 
 This step has two phases, each in its own sub-agent. This keeps the heavy codebase exploration and synthesis out of the main context window.
 
@@ -118,9 +118,9 @@ Once all three approaches are ready, launch a **second Opus sub-agent** (`subage
 4. Write the full plan to `$CW_TMP/implementation-plan.md`
 5. Return a concise summary for the main thread
 
-Present a concise summary to the user. If there are open questions that genuinely need user input (e.g., conflicting approaches with no clear winner), ask. Otherwise, proceed directly to Step 4.
+Present a concise summary to the user. If there are open questions that genuinely need user input (e.g., conflicting approaches with no clear winner), ask. Otherwise, proceed directly to Step 5.
 
-### Step 4: Implement
+### Step 5: Implement
 
 Launch a **Sonnet sub-agent** in a worktree to do the implementation (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Sonnet is fast and cost-effective for coding tasks. Pass it the **full implementation plan** from `$CW_TMP/implementation-plan.md` (produced in Step 3 Phase B) plus any user feedback. The plan should be detailed enough that Sonnet can execute it step-by-step without needing to explore the codebase.
 
@@ -141,39 +141,7 @@ The sub-agent should:
 7. If stuck after 3 attempts at the same error, report back to the user
 8. **Report honestly.** If you could not run a test or validation step, say so clearly with the reason. Do NOT silently skip steps or mark them as passed when they were not executed. The orchestrator will verify independently — discrepancies will be caught.
 
-### Step 4.5: Orchestrator Validation
-
-**This step is not delegatable.** The orchestrator (main thread) independently verifies the implementation. Do not trust the coding sub-agent's self-reported results — verify everything yourself.
-
-1. **Navigate to the implementation worktree** (the sub-agent returns the worktree path)
-
-2. **Run the full test suite** from the repo root:
-   - If a `/test` skill or `make ci` target exists, use it
-   - Otherwise: `pytest` (Python), `npm test` (Node), `go test ./...` (Go)
-   - ALL tests must pass. Zero tolerance.
-
-3. **Start services** and verify they work:
-   - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
-   - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
-   - Hit key endpoints (health checks, any endpoints the ticket specifies)
-   - Verify responses match expectations
-
-4. **Walk the acceptance criteria** from the ticket:
-   - For each checkbox in the AC, verify it's actually met — not just "code exists" but "it works"
-   - If the ticket says "health endpoint returns 200", curl it and confirm
-   - If the ticket says "tests pass", run them yourself and confirm
-
-5. **Quality check** — Read the key files the sub-agent produced:
-   - Is the code idiomatic for the language?
-   - Are there any obvious issues (missing error handling, security gaps, dead code)?
-   - Does it follow existing patterns in the codebase?
-   - Would you be proud to ship this?
-
-6. **Clean up** — Stop any services you started (`docker compose down`)
-
-If ANY verification fails: fix it directly (don't send it back to a sub-agent for trivial fixes), or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to review until validation passes.
-
-### Step 5: Multi-AI code review
+### Step 6: Multi-AI code review
 
 **IMPORTANT**: Run this entire step inside a **Sonnet sub-agent** (`subagent_type: "general-purpose"`, `model: "sonnet"`). The main thread should only receive the synthesized review summary with actionable items.
 
@@ -205,7 +173,35 @@ The sub-agent should:
    - **Style/preference issues**: Skip unless all reviewers agree
    - **Ambiguous or architectural feedback**: Flag for user decision
 
-### Step 6: Browser-use validation
+### Step 7: Apply review fixes and verify
+
+Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then **the orchestrator independently verifies the final state** — this is not delegatable.
+
+1. **Apply clear-cut fixes** directly (don't re-launch a sub-agent for trivial changes)
+2. **Flag ambiguous feedback** for user decision — only block on items that genuinely need input
+3. **Run the full test suite** from the repo root:
+   - If a `/test` skill or `make ci` target exists, use it
+   - Otherwise: `pytest` (Python), `npm test` (Node), `go test ./...` (Go)
+   - ALL tests must pass. Zero tolerance.
+4. **Start services** and verify they work:
+   - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
+   - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
+   - Hit key endpoints (health checks, any endpoints the ticket specifies)
+   - Verify responses match expectations
+5. **Walk the acceptance criteria** from the ticket:
+   - For each checkbox in the AC, verify it's actually met — not just "code exists" but "it works"
+   - If the ticket says "health endpoint returns 200", curl it and confirm
+   - If the ticket says "tests pass", run them yourself and confirm
+6. **Quality check** — Read the key files produced:
+   - Is the code idiomatic for the language?
+   - Are there any obvious issues (missing error handling, security gaps, dead code)?
+   - Does it follow existing patterns in the codebase?
+   - Would you be proud to ship this?
+7. **Clean up** — Stop any services you started (`docker compose down`)
+
+If ANY verification fails: fix it directly, or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
+
+### Step 8: Browser-use validation
 
 **Do not skip this step** unless `--skip-browser-use` was explicitly passed.
 
@@ -237,7 +233,9 @@ If **browser-use** exists (e.g. `tests/browser-use/run.py`):
 
 If no browser-use or E2E setup exists at all, note it as a gap in the final summary and move on.
 
-### Step 7: Ship PR
+### Step 9: Ship PR
+
+**Do not create a PR until Steps 6-8 are complete.** The PR is the final artifact, not an intermediate checkpoint.
 
 Create the PR using the `/ship` skill workflow:
 
@@ -254,7 +252,7 @@ gh pr create \
   --base "$DEFAULT_BRANCH"
 ```
 
-### Step 8: Verify CI green
+### Step 10: Verify CI green
 
 **Do not declare the PR done until CI is green.** This is a hard gate — no exceptions.
 
