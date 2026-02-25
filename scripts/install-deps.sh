@@ -53,6 +53,14 @@ install_python_pkg() {
       echo "Installing langchain-anthropic..."
       pip3 install --user langchain-anthropic
       ;;
+    langchain-google-vertexai)
+      echo "Installing langchain-google-vertexai..."
+      pip3 install --user langchain-google-vertexai
+      ;;
+    google-cloud-aiplatform)
+      echo "Installing google-cloud-aiplatform..."
+      pip3 install --user google-cloud-aiplatform
+      ;;
     *)
       echo "Unknown Python package: $name"
       return 1
@@ -90,11 +98,21 @@ case "${1:---all}" in
       fi
     done
     ;;
+  --vertex)
+    echo "=== Installing Vertex AI packages ==="
+    for pkg in langchain-google-vertexai google-cloud-aiplatform; do
+      import_name="${pkg//-/_}"
+      import_name="${import_name/google_cloud_aiplatform/google.cloud.aiplatform}"
+      if ! python3 -c "import $import_name" 2>/dev/null; then
+        install_python_pkg "$pkg" || true
+      fi
+    done
+    ;;
   --tool)
     install_cli_tool "${2:?Usage: --tool TOOL_NAME}" || install_python_pkg "$2"
     ;;
   *)
-    echo "Usage: $0 [--all | --cli | --python | --tool TOOL_NAME]"
+    echo "Usage: $0 [--all | --cli | --python | --vertex | --tool TOOL_NAME]"
     exit 1
     ;;
 esac

@@ -27,11 +27,26 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 - `playwright` - Browser automation (via target repo)
 - `browser-use` - AI browser agent (via target repo)
 
-## Required Environment Variables
+## Authentication
 
-- `ANTHROPIC_API_KEY` - For Claude
-- `OPENAI_API_KEY` - For Codex and Whisper
-- `GEMINI_API_KEY` or `GOOGLE_API_KEY` - For Gemini
+CLI tools (`claude`, `codex`, `gemini`, `gh`) use their own login sessions — no API keys needed.
+
+API keys are only required for SDK-level calls (browser-use, direct API scripts):
+
+- `ANTHROPIC_API_KEY` - For browser-use (langchain-anthropic SDK)
+- `OPENAI_API_KEY` - Optional, if calling OpenAI APIs directly
+- `GEMINI_API_KEY` - Optional, if calling Gemini APIs directly
+
+### Vertex AI (alternative to API keys for Google)
+
+For Gemini and browser-use via GCP instead of API keys:
+
+- `GOOGLE_CLOUD_PROJECT` - Your GCP project ID
+- `GOOGLE_CLOUD_LOCATION` - Region (default: `us-central1`)
+- Authenticate via `gcloud auth application-default login`
+- Python packages: `langchain-google-vertexai`, `google-cloud-aiplatform`
+
+Use `gemini-vertex` as the tool name in `consult-ai.sh` to route through Vertex AI.
 
 ## Repo Layout
 

@@ -2,11 +2,13 @@
 # Consult an AI tool with a prompt and capture its output.
 # Usage: ./consult-ai.sh <tool> <prompt_file> [--context <file>]
 #
-# Tools: codex, gemini, claude
+# Tools: codex, gemini, gemini-vertex, claude
 # Output goes to stdout. Errors go to stderr.
+#
+# For gemini-vertex, requires GOOGLE_CLOUD_PROJECT and gcloud auth.
 set -euo pipefail
 
-TOOL="${1:?Usage: consult-ai.sh <codex|gemini|claude> <prompt_file> [--context <file>]}"
+TOOL="${1:?Usage: consult-ai.sh <codex|gemini|gemini-vertex|claude> <prompt_file> [--context <file>]}"
 PROMPT_FILE="${2:?Usage: consult-ai.sh <tool> <prompt_file>}"
 CONTEXT_FILE=""
 
@@ -47,11 +49,25 @@ case "$TOOL" in
   gemini)
     echo "$PROMPT" | gemini 2>/dev/null
     ;;
+  gemini-vertex)
+    # Call Gemini via Vertex AI using the Python SDK
+    PROJECT="${GOOGLE_CLOUD_PROJECT:?GOOGLE_CLOUD_PROJECT must be set for gemini-vertex}"
+    LOCATION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
+    python3 -c "
+import sys
+from google.cloud import aiplatform
+from vertexai.generative_models import GenerativeModel
+aiplatform.init(project='$PROJECT', location='$LOCATION')
+model = GenerativeModel('gemini-2.0-flash')
+response = model.generate_content(sys.stdin.read())
+print(response.text)
+" <<< "$PROMPT" 2>/dev/null
+    ;;
   claude)
     echo "$PROMPT" | claude -p --output-format text 2>/dev/null
     ;;
   *)
-    echo "Unknown tool: $TOOL (expected codex, gemini, or claude)" >&2
+    echo "Unknown tool: $TOOL (expected codex, gemini, gemini-vertex, or claude)" >&2
     exit 1
     ;;
 esac
