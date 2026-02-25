@@ -77,9 +77,17 @@ Chief-wiggum stores all user-space data under `~/.chief-wiggum/`:
 ~/.chief-wiggum/
 ├── repos/           # Cached target repo clones
 └── tmp/             # Temporary files (prompts, reviews, diffs)
+    └── <session-id>/ # Per-session subdirectory to avoid collisions
 ```
 
-Temp files go in `~/.chief-wiggum/tmp/`, **not** `/tmp/`. This keeps them isolated from other users/agents and makes cleanup easy.
+Temp files go in `~/.chief-wiggum/tmp/`, **not** `/tmp/`. Each session must create a **unique subdirectory** to avoid collisions when multiple sessions run concurrently:
+
+```bash
+CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
+mkdir -p "$CW_TMP"
+```
+
+All temp file references (`approach-prompt.md`, `approach-codex.md`, etc.) go inside `$CW_TMP`.
 
 ## Path Resolution
 
