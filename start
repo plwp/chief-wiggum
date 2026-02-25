@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Launch Claude Code with permissions pre-approved for chief-wiggum skills.
+exec claude --dangerously-skip-permissions "$@"
