@@ -134,6 +134,12 @@ For each issue, define:
 - Acceptance criteria (checkboxes)
 - Labels (create labels first if they don't exist)
 
+**Always include these repo-specific skill issues in the foundation set:**
+- **Create /test skill** — A `.claude/commands/test.md` skill for the target repo that runs the full test suite (backend + frontend + E2E), reports results, and optionally fixes failures. Should detect the project's test framework and run the appropriate commands.
+- **Create /deploy skill** — A `.claude/commands/deploy.md` skill for the target repo that handles deployment to the target environment (build, push, deploy, verify health). Should match the project's infrastructure (e.g. Cloud Run, Vercel, AWS, etc.) and include smoke tests post-deploy.
+
+These go in the first sprint — they're needed as soon as there's code to test and deploy.
+
 Run issue creation in a **sub-agent** (`subagent_type: "general-purpose"`) to keep the main context clean. The sub-agent should use `gh issue create` for each issue and `gh label create` for any new labels.
 
 ### Step 9: Report
