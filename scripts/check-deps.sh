@@ -71,10 +71,8 @@ check_python_pkg "playwright"   "playwright"
 check_python_pkg "langchain-anthropic" "langchain_anthropic"
 
 echo ""
-echo "--- API Keys ---"
+echo "--- API Keys (only needed for browser-use, CLIs use their own auth) ---"
 check_env "ANTHROPIC_API_KEY"
-check_env "OPENAI_API_KEY"
-check_env "GEMINI_API_KEY"
 
 echo ""
 echo "=== Results: ${PASS} ok, ${FAIL} missing, ${WARN} warnings ==="
