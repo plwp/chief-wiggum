@@ -40,20 +40,51 @@ Understand:
 
 Based on the diff analysis, generate appropriate mermaid diagrams:
 
+**Color palette** — all mermaid diagrams must use this palette via `%%{init:}%%` theme overrides:
+
+```
+#003f5c  (deep navy)
+#2f4b7c  (slate blue)
+#665191  (muted purple)
+#a05195  (plum)
+#d45087  (rose)
+#f95d6a  (coral)
+#ff7c43  (tangerine)
+#ffa600  (amber)
+```
+
+Apply it by adding a theme init block at the top of every mermaid diagram:
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333'}}}%%
+```
+
+Use `style` directives to assign specific palette colours to nodes based on their role:
+- `#003f5c` / `#2f4b7c` — existing infrastructure, databases, external services
+- `#665191` / `#a05195` — modified components
+- `#d45087` / `#f95d6a` — new components added in this PR
+- `#ff7c43` / `#ffa600` — user-facing / entry points
+
 **Component Relationship Diagram** (always include):
 Show the components that were changed and how they relate to each other.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333'}}}%%
 graph TD
-    A[Modified Component] --> B[Dependency]
-    A --> C[New Component]
-    C --> D[Existing Service]
+    A[Modified Component]:::modified --> B[Dependency]:::existing
+    A --> C[New Component]:::new
+    C --> D[Existing Service]:::existing
+    classDef existing fill:#003f5c,stroke:#2f4b7c,color:#fff
+    classDef modified fill:#665191,stroke:#a05195,color:#fff
+    classDef new fill:#d45087,stroke:#f95d6a,color:#fff
+    classDef entry fill:#ff7c43,stroke:#ffa600,color:#fff
 ```
 
 **Data Flow Diagram** (include if data flow changed):
 Show how data moves through the modified components.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333', 'actorTextColor': '#fff', 'actorBkg': '#003f5c', 'actorBorder': '#2f4b7c', 'activationBorderColor': '#d45087', 'activationBkgColor': '#f95d6a', 'signalColor': '#2f4b7c'}}}%%
 sequenceDiagram
     participant U as User
     participant A as API
@@ -70,7 +101,7 @@ Show the structural change.
 Guidelines for diagrams:
 - Keep them focused on what changed, not the entire system
 - Use descriptive node labels
-- Highlight new components vs modified ones
+- Highlight new components vs modified ones using the classDef colour roles above
 - Maximum 15 nodes per diagram (simplify if larger)
 
 ### Step 3: Verify and compile test evidence

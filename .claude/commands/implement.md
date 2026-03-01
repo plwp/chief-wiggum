@@ -15,6 +15,12 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 
 **Never punt to the user.** If Docker isn't running, start it. If a dependency is missing, install it. If you can't run the tests, that's YOUR problem to solve. "Want to skip this step?" is never the right question.
 
+**Every step is mandatory.** You do NOT get to decide that a change is "too small" to warrant code review, or that consultations are "good enough" with only 2 of 3 responses. The process exists for a reason — follow it completely every time, no exceptions. Specifically:
+- **Never skip the multi-AI code review** (Step 6), regardless of change size. A one-line fix gets the same review process as a 500-line feature. No developer gets to self-certify their own code.
+- **Never skip AI consultations** (Step 4). Wait for ALL consultations (Codex, Gemini, Opus) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
+- **Never skip browser-use/E2E validation** (Step 8) unless `--skip-browser-use` was explicitly passed by the user.
+- **Never create a PR before review is complete.** The PR is the final artifact (Step 9), not an intermediate checkpoint.
+
 ## Autonomy
 
 **Run the full pipeline autonomously.** Do NOT pause between steps to ask "ready to proceed?" or "want to skip this?". Move through every step without asking for permission unless you genuinely need user input (e.g., ambiguous requirements in Step 2, a design decision where approaches conflict and there's no clear winner, or a blocking error you can't resolve).
@@ -28,13 +34,12 @@ Everything else — just do it.
 
 ## Usage
 ```
-/implement <owner/repo#number> [--skip-browser-use] [--skip-review]
+/implement <owner/repo#number> [--skip-browser-use]
 ```
 
 ## Parameters
 - `owner/repo#number`: GitHub issue to implement (e.g., `patwork/dgrd#42`)
 - `--skip-browser-use`: Skip browser-use validation step (useful if target repo has no browser-use setup)
-- `--skip-review`: Skip multi-AI review step
 
 ## Workflow
 
@@ -102,6 +107,8 @@ Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` in
 - Codebase context (key files, architecture notes, relevant patterns)
 - Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
+**HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (Codex, Gemini, Opus) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
+
 #### Phase B: Reconcile into implementation plan
 
 Once all three approaches are ready, launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
@@ -142,6 +149,8 @@ The sub-agent should:
 8. **Report honestly.** If you could not run a test or validation step, say so clearly with the reason. Do NOT silently skip steps or mark them as passed when they were not executed. The orchestrator will verify independently — discrepancies will be caught.
 
 ### Step 6: Multi-AI code review
+
+**THIS STEP IS NEVER OPTIONAL.** Every implementation gets a multi-AI code review, regardless of change size. A one-line typo fix, a 10-line config change, a 500-line feature — all get the same review process. You do not get to self-certify your own code. No exceptions, no shortcuts.
 
 **IMPORTANT**: Run this entire step inside a **Sonnet sub-agent** (`subagent_type: "general-purpose"`, `model: "sonnet"`). The main thread should only receive the synthesized review summary with actionable items.
 
@@ -237,20 +246,61 @@ If no browser-use or E2E setup exists at all, note it as a gap in the final summ
 
 **Do not create a PR until Steps 6-8 are complete.** The PR is the final artifact, not an intermediate checkpoint.
 
-Create the PR using the `/ship` skill workflow:
-
 1. Push the branch
-2. Generate mermaid diagrams
-3. Create the PR with full documentation
-4. Link to the original issue
+2. **Generate mermaid diagrams** — this is NOT optional. Every PR must include at least one mermaid diagram. Generate them based on the diff:
+
+   **Color palette** (mandatory):
+   ```
+   #003f5c (deep navy)    — existing infrastructure, databases
+   #2f4b7c (slate blue)   — existing dependencies
+   #665191 (muted purple) — modified components
+   #a05195 (plum)         — modified internals
+   #d45087 (rose)         — new components
+   #f95d6a (coral)        — new internals
+   #ff7c43 (tangerine)    — user-facing / entry points
+   #ffa600 (amber)        — highlights
+   ```
+
+   Every diagram MUST include the theme init block and classDef styles:
+   ```mermaid
+   %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333'}}}%%
+   graph TD
+       classDef existing fill:#003f5c,stroke:#2f4b7c,color:#fff
+       classDef modified fill:#665191,stroke:#a05195,color:#fff
+       classDef new fill:#d45087,stroke:#f95d6a,color:#fff
+       classDef entry fill:#ff7c43,stroke:#ffa600,color:#fff
+   ```
+
+   Include at minimum a **Component Relationship Diagram** showing what was added/modified. Add a **Sequence Diagram** if data flow changed. Keep diagrams focused (max 15 nodes).
+
+3. Create the PR with full documentation using a HEREDOC:
 
 ```bash
 gh pr create \
   --repo "$owner_repo" \
   --title "$pr_title" \
-  --body "$pr_body" \
+  --body "$(cat <<'EOF'
+## Summary
+[2-3 sentences]
+
+## Architecture
+[Mermaid diagrams here — REQUIRED]
+
+## Changes
+[Bullet list of significant changes]
+
+## Test plan
+[Test evidence]
+
+Closes #issue_number
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)" \
   --base "$DEFAULT_BRANCH"
 ```
+
+4. Link to the original issue via `Closes #N` in the body
 
 ### Step 10: Verify CI green
 
