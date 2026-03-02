@@ -106,18 +106,33 @@ def diff_boundary(
     """Diff fields across a single boundary between two layers."""
     findings: list[Finding] = []
 
-    # Build canonical name maps
-    source_map: dict[str, tuple[Field, Schema]] = {}
+    # Build canonical name maps — track all occurrences per name
+    source_by_canon: dict[str, list[tuple[Field, Schema]]] = {}
     for f, s in source_fields:
         name = _resolve_name(f, source_layer)
         canon = _canonical(name)
-        source_map[canon] = (f, s)
+        source_by_canon.setdefault(canon, []).append((f, s))
 
-    target_map: dict[str, tuple[Field, Schema]] = {}
+    target_by_canon: dict[str, list[tuple[Field, Schema]]] = {}
     for f, s in target_fields:
         name = _resolve_name(f, target_layer)
         canon = _canonical(name)
-        target_map[canon] = (f, s)
+        target_by_canon.setdefault(canon, []).append((f, s))
+
+    # Deduplicate: use first occurrence per canonical name.
+    # When a field appears in multiple schemas (different endpoints),
+    # type comparisons become unreliable — different endpoints legitimately
+    # use the same field name with different types.
+    source_map: dict[str, tuple[Field, Schema]] = {
+        k: v[0] for k, v in source_by_canon.items()
+    }
+    target_map: dict[str, tuple[Field, Schema]] = {
+        k: v[0] for k, v in target_by_canon.items()
+    }
+
+    # Track ambiguous field names (appear in multiple schemas per layer)
+    ambiguous_source = {k for k, v in source_by_canon.items() if len(v) > 1}
+    ambiguous_target = {k for k, v in target_by_canon.items() if len(v) > 1}
 
     # Fields in source but not in target -> data lost or data hidden
     for canon, (sf, ss) in source_map.items():
@@ -169,22 +184,43 @@ def diff_boundary(
                 target_line=tf.line,
             ))
 
-        # Type mismatch
+        # Type mismatch — skip if field name is ambiguous (appears in
+        # multiple schemas in either layer, meaning we may be comparing
+        # fields from unrelated endpoints)
         if sf.type and tf.type and not _types_compatible(sf.type, tf.type):
-            findings.append(Finding(
-                severity="BREAK",
-                category="type_mismatch",
-                message=f"Type mismatch for '{src_name}': {sf.type} ({source_layer}) vs {tf.type} ({target_layer})",
-                source_layer=source_layer,
-                target_layer=target_layer,
-                source_file=ss.file,
-                target_file=ts.file,
-                source_field=src_name,
-                target_field=tgt_name,
-                source_line=sf.line,
-                target_line=tf.line,
-                details={"source_type": sf.type, "target_type": tf.type},
-            ))
+            if canon in ambiguous_source or canon in ambiguous_target:
+                findings.append(Finding(
+                    severity="INFO",
+                    category="type_mismatch",
+                    message=(
+                        f"Possible type mismatch for '{src_name}': {sf.type} ({source_layer}) vs "
+                        f"{tf.type} ({target_layer}) — field appears in multiple schemas, may be different endpoints"
+                    ),
+                    source_layer=source_layer,
+                    target_layer=target_layer,
+                    source_file=ss.file,
+                    target_file=ts.file,
+                    source_field=src_name,
+                    target_field=tgt_name,
+                    source_line=sf.line,
+                    target_line=tf.line,
+                    details={"source_type": sf.type, "target_type": tf.type, "ambiguous": True},
+                ))
+            else:
+                findings.append(Finding(
+                    severity="BREAK",
+                    category="type_mismatch",
+                    message=f"Type mismatch for '{src_name}': {sf.type} ({source_layer}) vs {tf.type} ({target_layer})",
+                    source_layer=source_layer,
+                    target_layer=target_layer,
+                    source_file=ss.file,
+                    target_file=ts.file,
+                    source_field=src_name,
+                    target_field=tgt_name,
+                    source_line=sf.line,
+                    target_line=tf.line,
+                    details={"source_type": sf.type, "target_type": tf.type},
+                ))
 
         # Required/optional divergence
         if sf.required is not None and tf.required is not None:
@@ -235,6 +271,12 @@ _TYPE_ALIASES: dict[str, set[str]] = {
     "date": {"date", "time.time", "datetime", "timestamp"},
 }
 
+# TS string union pattern: 'value1' | 'value2' | ...
+_TS_STRING_UNION_RE = re.compile(r"^'[^']+'\s*(\|\s*'[^']+')*$")
+
+# TS nullable pattern: Type | null or Type | undefined
+_TS_NULLABLE_RE = re.compile(r"\s*\|\s*(?:null|undefined)\s*")
+
 
 def _types_compatible(t1: str, t2: str) -> bool:
     """Check if two type strings are semantically compatible across languages."""
@@ -242,6 +284,24 @@ def _types_compatible(t1: str, t2: str) -> bool:
     c2 = t2.lower().strip("*&")
 
     if c1 == c2:
+        return True
+
+    # Strip TS nullable annotations (| null, | undefined) for comparison
+    c1_clean = _TS_NULLABLE_RE.sub("", c1).strip()
+    c2_clean = _TS_NULLABLE_RE.sub("", c2).strip()
+    if c1_clean == c2_clean:
+        return True
+
+    # TS string union types ('male' | 'female' | ...) are compatible with string
+    if _TS_STRING_UNION_RE.match(c1) and c2_clean in ("string", "str"):
+        return True
+    if _TS_STRING_UNION_RE.match(c2) and c1_clean in ("string", "str"):
+        return True
+
+    # Date | null is compatible with string (ISO 8601 wire format)
+    if c1_clean in ("date",) and c2_clean in ("string", "str"):
+        return True
+    if c2_clean in ("date",) and c1_clean in ("string", "str"):
         return True
 
     # Check array types: []string vs string[]
@@ -256,7 +316,7 @@ def _types_compatible(t1: str, t2: str) -> bool:
 
     # Check aliases
     for _group, aliases in _TYPE_ALIASES.items():
-        if c1 in aliases and c2 in aliases:
+        if c1_clean in aliases and c2_clean in aliases:
             return True
 
     return False

@@ -90,6 +90,9 @@ class GoMongoExtractor(Extractor):
         for go_file in repo_path.rglob("*.go"):
             if go_file.is_relative_to(repo_path / "vendor"):
                 continue
+            # Skip test files — test data setup is not production DB ops
+            if go_file.name.endswith("_test.go"):
+                continue
             try:
                 content = go_file.read_text(errors="replace")
             except OSError:
@@ -296,36 +299,67 @@ class GoMongoExtractor(Extractor):
         missing_json = 0
         missing_bson = 0
         total_fields = 0
+        # Track fields in structs that have at least one json tag
+        # (bson-only internal structs shouldn't count as "missing json")
+        serialized_structs_missing_json = 0
 
         for go_file in root.rglob("*.go"):
             if go_file.is_relative_to(repo_path / "vendor"):
+                continue
+            if go_file.name.endswith("_test.go"):
                 continue
             try:
                 content = go_file.read_text(errors="replace")
             except OSError:
                 continue
 
-            for match in _FIELD_RE.finditer(content):
-                tags_str = match.group(3) or ""
-                total_fields += 1
+            # Process struct by struct to track which have json tags
+            for struct_match in _STRUCT_RE.finditer(content):
+                struct_start = struct_match.start()
+                brace_depth = 0
+                struct_end = struct_start
+                for i, ch in enumerate(content[struct_start:], struct_start):
+                    if ch == "{":
+                        brace_depth += 1
+                    elif ch == "}":
+                        brace_depth -= 1
+                        if brace_depth == 0:
+                            struct_end = i
+                            break
 
-                # Check json tag
-                json_match = re.search(r'json:"([^"]*)"', tags_str)
-                if json_match:
-                    tag_val = json_match.group(1).split(",")[0]
-                    if tag_val != "-":
-                        json_styles[_classify_naming(tag_val)] += 1
-                else:
-                    missing_json += 1
+                struct_body = content[struct_start:struct_end + 1]
+                struct_fields = list(_FIELD_RE.finditer(struct_body))
+                if not struct_fields:
+                    continue
 
-                # Check bson tag
-                bson_match = re.search(r'bson:"([^"]*)"', tags_str)
-                if bson_match:
-                    tag_val = bson_match.group(1).split(",")[0]
-                    if tag_val != "-":
-                        bson_styles[_classify_naming(tag_val)] += 1
-                else:
-                    missing_bson += 1
+                has_any_json = any(
+                    'json:"' in (m.group(3) or "") for m in struct_fields
+                )
+
+                for match in struct_fields:
+                    tags_str = match.group(3) or ""
+                    total_fields += 1
+
+                    json_match = re.search(r'json:"([^"]*)"', tags_str)
+                    if json_match:
+                        tag_val = json_match.group(1).split(",")[0]
+                        if tag_val != "-":
+                            json_styles[_classify_naming(tag_val)] += 1
+                    else:
+                        missing_json += 1
+                        # Only count as "should have json" if the struct
+                        # has other fields with json tags (i.e., it's
+                        # serialized, not a bson-only internal struct)
+                        if has_any_json:
+                            serialized_structs_missing_json += 1
+
+                    bson_match = re.search(r'bson:"([^"]*)"', tags_str)
+                    if bson_match:
+                        tag_val = bson_match.group(1).split(",")[0]
+                        if tag_val != "-":
+                            bson_styles[_classify_naming(tag_val)] += 1
+                    else:
+                        missing_bson += 1
 
         return {
             "extractor": self.name(),
@@ -333,6 +367,7 @@ class GoMongoExtractor(Extractor):
             "json_tag_styles": dict(json_styles),
             "bson_tag_styles": dict(bson_styles),
             "missing_json_tags": missing_json,
+            "missing_json_tags_in_serialized_structs": serialized_structs_missing_json,
             "missing_bson_tags": missing_bson,
         }
 

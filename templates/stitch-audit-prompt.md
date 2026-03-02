@@ -26,6 +26,19 @@ For BREAK/WARN findings, here is the git history showing how each side was intro
 {{PROVENANCE}}
 ```
 
+## Known False Positive Patterns
+
+The automated diff above uses regex-based extraction and produces false positives. **Your job is to filter these out.** Common patterns to watch for:
+
+- **Same field name, different endpoint**: e.g., `days` appears as `Array<{date, day_type}>` in an availability response and `int` in a pricing response — they're unrelated fields
+- **TS string union vs Go string**: `Gender = 'male' | 'female'` serializes to a string — compatible with `*string`, not a real type mismatch
+- **Date serialization**: `Date | null` on the frontend becomes an ISO 8601 string on the wire — compatible with Go `string`
+- **Request vs response conflation**: A response field (e.g., `add_ons: map[string]float64` as pricing totals) compared against a request field (e.g., `add_ons: AddOnSelection[]`) — different data shapes serving different purposes
+- **Internal storage types**: `bson.M`, `[]bson.M` are MongoDB internal representations, not API contract types
+- **Test file data**: Fields from `*_test.go` files are test setup, not production DB operations
+
+For each automated finding, determine whether it's a **real data flow issue** or one of these false positive patterns. Only report real issues.
+
 ## Your Analysis
 
 Go beyond what regex diffing can detect. Look for:

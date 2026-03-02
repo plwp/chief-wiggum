@@ -90,6 +90,9 @@ class TypeScriptExtractor(Extractor):
             for ts_file in repo_path.rglob(pattern):
                 if "node_modules" in ts_file.parts or ".next" in ts_file.parts:
                     continue
+                # Skip test/spec files
+                if ts_file.stem.endswith((".test", ".spec", "_test", "_spec")):
+                    continue
 
                 try:
                     content = ts_file.read_text(errors="replace")
@@ -318,6 +321,10 @@ class TypeScriptExtractor(Extractor):
         root = repo_path / scan_path if scan_path else repo_path
 
         naming_styles: Counter[str] = Counter()
+        # Single-word fields (id, name, email) are convention-neutral —
+        # track them separately so they don't inflate the "inconsistency"
+        single_word_count = 0
+        multi_word_count = 0
         total_fields = 0
         zod_count = 0
         interface_count = 0
@@ -338,12 +345,21 @@ class TypeScriptExtractor(Extractor):
                 # Classify field naming
                 for match in _TS_FIELD_RE.finditer(content):
                     fname = match.group(1)
-                    naming_styles[_classify_naming(fname)] += 1
+                    style = _classify_naming(fname)
+                    naming_styles[style] += 1
                     total_fields += 1
+
+                    # Single-word lowercase fields are convention-neutral
+                    if style == "lowercase" and "_" not in fname:
+                        single_word_count += 1
+                    else:
+                        multi_word_count += 1
 
         return {
             "extractor": self.name(),
             "total_fields": total_fields,
+            "multi_word_fields": multi_word_count,
+            "single_word_fields": single_word_count,
             "naming_styles": dict(naming_styles),
             "interface_count": interface_count,
             "zod_schema_count": zod_count,

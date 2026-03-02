@@ -108,7 +108,11 @@ python3 "$CW_HOME/scripts/consult_ai.py" gemini "$CW_TMP/stitch-prompt.md" -o "$
 
 If Gemini times out, retry once. If it fails again, proceed without it — the automated findings are still valuable.
 
+**Gemini's analysis is the most important step.** The regex-based extraction and diffing produce false positives (see Known Limitations). Gemini reads the actual source and can determine whether a "BREAK" is a real data loss bug or a false positive from cross-endpoint name collision. Treat Gemini's verdict as the primary signal and the automated findings as supporting evidence.
+
 ### Step 6: Report
+
+**Use Gemini's analysis as the primary source of truth.** Cross-reference the automated findings with Gemini's verdict — if Gemini says a BREAK is a false positive, downgrade or omit it. If Gemini finds issues the regex missed, add them.
 
 Present the final report to the user, structured as:
 
@@ -162,14 +166,25 @@ Flag specific files that diverge from the codebase norm. No provenance or Gemini
 
 ---
 
-## Known Limitations
+## Known Limitations & False Positive Sources
 
-This is a Tier 1 regex-based analysis. It catches 80-85% of issues — good enough for an audit tool. Known gaps:
+This is a Tier 1 regex-based analysis. The automated findings are a starting point — **Gemini's semantic analysis in Step 5 is critical for filtering out false positives.** The orchestrator should use both automated and Gemini findings when building the final report.
 
+### Regex extraction gaps
 - Embedded Go structs (anonymous fields) — tags inherited but not inlined
 - TypeScript `Pick<T, K>`, `Omit<T, K>`, mapped types — not resolved
 - Multi-file type composition (`type A extends B` across files) — not traced
 - Complex nested `bson.M` inside `$set` / `$push` — partially captured
 - Zod `.transform()` / `.pipe()` chains — partially captured
+- `map[string]any` / `interface{}` field access (e.g., `Requirements["medication_name"]`) — opaque to regex
 
-False negatives are acceptable. False positives should be rare.
+### Known false positive patterns (discovered in first audit)
+- **Same field name, different endpoint**: `days`, `pets`, `flags` appear in multiple unrelated API responses. The differ now downgrades ambiguous fields to INFO.
+- **TS string union vs Go string**: `Gender = 'male' | 'female'` serializes to a string — compatible with `*string`. The differ now handles this.
+- **Date serialization**: `Date | null` → ISO 8601 string is standard, not a mismatch. The differ now treats Date as compatible with string.
+- **Internal-only structs**: bson-only query containers (no json tags) are not API types. The pattern scanner now distinguishes serialized vs internal structs.
+- **Test files as DB ops**: `*_test.go` data setup is not production DB ops. Both extractors now skip test files.
+- **Single-word "lowercase" inflation**: Fields like `id`, `name`, `email` are convention-neutral. The TS pattern scanner now tracks single-word vs multi-word separately.
+- **Request vs response conflation**: The extractor may find a response struct's field and compare it against a request struct's field from a different flow.
+
+False negatives are acceptable. False positives are reduced but not eliminated — Gemini analysis helps catch the rest.
