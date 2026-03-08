@@ -104,7 +104,12 @@ Run three consultations in parallel:
 
 Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` including:
 - Ticket title, description, and acceptance criteria
-- Codebase context (key files, architecture notes, relevant patterns)
+- **Orientation context** (give them the lay of the land, NOT the answer):
+  - Tech stack and key dependencies
+  - Repo structure (top-level tree or directory layout)
+  - Conventions and idioms (naming, patterns, test style)
+  - How to run tests and linting
+  - **Do NOT include**: specific files suspected to be relevant, suggested root causes, or preliminary solution directions. Let each AI discover what's relevant independently — the divergence is the value.
 - Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
 **HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (Codex, Gemini, Opus) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
@@ -305,18 +310,25 @@ EOF
 
 ### Step 10: Verify CI green
 
-**Do not declare the PR done until CI is green.** This is a hard gate — no exceptions.
+**Do not declare the PR done until all checks pass.** This is a hard gate — no exceptions.
 
-1. After pushing, poll CI status:
+> **TEMPORARY (until 2026-04-02):** GitHub Actions minutes are exhausted for this billing cycle. Do NOT rely on remote CI. Instead, run the full CI-equivalent checks **locally** before merging:
+> - **Backend**: `golangci-lint run ./...`, `go test ./...`, `go build ./...`
+> - **UI**: `npm run lint`, `npx vitest run`, `npm run build`
+> - **E2E** (if applicable): `npx playwright test`
+>
+> If all local checks pass, merge the PR directly with `gh pr merge --squash --delete-branch`. Remove this temporary block when Actions minutes reset.
+
+1. **If CI is available**, poll CI status:
    ```bash
    gh pr checks <pr_number> --repo "$owner_repo" --watch
    ```
-2. If any check fails:
-   - Fetch the failed job logs: `gh run view <run_id> --repo "$owner_repo" --log-failed`
+2. **If CI is unavailable (minutes exhausted)**, run checks locally as described above.
+3. If any check fails:
    - Fix the failures (including pre-existing ones — every PR must leave CI green)
    - Push fixes and re-check
    - Repeat until all checks pass
-3. Only after all checks are green, present the final summary:
+4. Only after all checks pass, present the final summary:
    - **Summary**: What was implemented (files changed, approach taken)
    - **Test results**: CI status (all green)
    - **Review feedback**: What was addressed, what was deferred
