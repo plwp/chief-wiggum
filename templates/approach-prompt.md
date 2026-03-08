@@ -24,7 +24,13 @@ List every file that needs to change, with a one-line description of what change
 Ordered list of implementation steps. Be specific about what code to write, not just "add a function".
 
 ### 3. Key Design Decisions
-Trade-offs you considered and why you chose this approach over alternatives.
+For each non-trivial decision in your approach, explain:
+- **What** the decision is (e.g., "use middleware vs decorator for auth")
+- **Alternatives** you considered
+- **Why** you chose this approach over the alternatives
+- **Trade-offs** — what you're giving up
+
+This section is critical for the reconciliation step. Do not skip it.
 
 ### 4. Risks and Gotchas
 Things that could go wrong, edge cases to watch for, backwards compatibility concerns.
