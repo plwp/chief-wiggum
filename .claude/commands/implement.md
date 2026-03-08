@@ -178,9 +178,10 @@ The sub-agent should:
    ```
 
 6. Return a concise summary categorising each piece of feedback:
-   - **Clear-cut fixes** (typos, obvious bugs, missing error handling): Apply automatically
-   - **Style/preference issues**: Skip unless all reviewers agree
-   - **Ambiguous or architectural feedback**: Flag for user decision
+   - **High-confidence fixes**: Concrete bugs/regressions with clear failure scenarios. Apply automatically.
+   - **Medium-confidence findings**: Plausible issues that need a quick local verification before applying.
+   - **Low-confidence or architectural feedback**: Speculative concerns or design trade-offs. Flag for user decision.
+   - Ignore style-only comments unless they point to a real defect.
 
 ### Step 7: Apply review fixes and verify
 
