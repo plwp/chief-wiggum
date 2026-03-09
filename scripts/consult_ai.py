@@ -31,10 +31,10 @@ TOOL_TIMEOUTS: dict[str, int] = {
 TIMEOUT = 600  # fallback
 
 # Default model for Vertex AI path (override with --model)
-DEFAULT_VERTEX_MODEL = "gemini-3-pro"
+DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
 
 
-def consult_codex(prompt: str, model: str | None = None) -> str:
+def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
     """Call codex CLI in read-only sandbox. Uses its own auth session.
 
     Passes prompt via stdin (``-``) to avoid shell argument length issues
@@ -53,11 +53,12 @@ def consult_codex(prompt: str, model: str | None = None) -> str:
     result = subprocess.run(
         cmd, input=prompt, capture_output=True, text=True, check=True,
         timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
+        cwd=cwd,
     )
     return result.stdout
 
 
-def consult_gemini(prompt: str, model: str | None = None) -> str:
+def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
     """Call gemini CLI. Uses its own auth session."""
     cmd = ["gemini", "-p", prompt]
     if model:
@@ -65,11 +66,12 @@ def consult_gemini(prompt: str, model: str | None = None) -> str:
     result = subprocess.run(
         cmd, capture_output=True, text=True, check=True,
         timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
+        cwd=cwd,
     )
     return result.stdout
 
 
-def consult_gemini_vertex(prompt: str, model: str | None = None) -> str:
+def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
     """Call Gemini via Vertex AI SDK. Fetches credentials from keyring."""
     project = get_secret("GOOGLE_CLOUD_PROJECT")
     location = get_secret("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -91,7 +93,7 @@ def consult_gemini_vertex(prompt: str, model: str | None = None) -> str:
     return response.text
 
 
-def consult_claude(prompt: str, model: str | None = None) -> str:
+def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
     """Call claude CLI. Uses its own auth session."""
     cmd = ["claude", "-p", "--output-format", "text"]
     if model:
@@ -99,6 +101,7 @@ def consult_claude(prompt: str, model: str | None = None) -> str:
     result = subprocess.run(
         cmd, input=prompt, capture_output=True, text=True,
         check=True, timeout=TOOL_TIMEOUTS.get("claude", TIMEOUT),
+        cwd=cwd,
     )
     return result.stdout
 
@@ -120,6 +123,7 @@ def main():
     parser.add_argument("-o", "--output", help="Write response to file instead of stdout")
     parser.add_argument("--context", help="Optional context file to append")
     parser.add_argument("--model", help="Override model ID for this call")
+    parser.add_argument("--cwd", help="Working directory for the AI tool (e.g., target repo path)")
     args = parser.parse_args()
 
     prompt_path = Path(args.prompt_file)
@@ -137,7 +141,7 @@ def main():
     fn = TOOLS[args.tool]
     tool_timeout = TOOL_TIMEOUTS.get(args.tool, TIMEOUT)
     try:
-        output = fn(prompt, model=args.model)
+        output = fn(prompt, model=args.model, cwd=args.cwd)
         if args.output:
             out_path = Path(args.output)
             out_path.parent.mkdir(parents=True, exist_ok=True)
