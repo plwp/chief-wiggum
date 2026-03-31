@@ -54,7 +54,7 @@ graph LR
 ## `/implement` — Orchestration Detail
 
 ```mermaid
-%%{init: {'theme': 'default'}}%%
+%%{init: {'theme': 'dark'}}%%
 sequenceDiagram
     participant U as User
     participant O as Orchestrator
