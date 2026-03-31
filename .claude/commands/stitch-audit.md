@@ -20,8 +20,8 @@ No existing tool does this. Contract testing covers one boundary. OpenAPI codege
 
 ## Parameters
 
-- `owner/repo`: Target GitHub repository (e.g., `plwp/dgrd`)
-- `--trace <keyword>`: Trace a feature's data flow across all layers (e.g., `waitlist`, `booking`, `psychosocial`)
+- `owner/repo`: Target GitHub repository (e.g., `acme/app`)
+- `--trace <keyword>`: Trace a feature's data flow across all layers (e.g., `auth`, `payments`, `notifications`)
 - `--patterns [path]`: Scan for convention inconsistencies, optionally scoped to a sub-path (e.g., `backend/`)
 
 ## Autonomy

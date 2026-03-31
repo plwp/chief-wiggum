@@ -38,7 +38,7 @@ Everything else — just do it.
 ```
 
 ## Parameters
-- `owner/repo#number`: GitHub issue to implement (e.g., `patwork/dgrd#42`)
+- `owner/repo#number`: GitHub issue to implement (e.g., `acme/app#42`)
 - `--skip-browser-use`: Skip browser-use validation step (useful if target repo has no browser-use setup)
 
 ## Workflow

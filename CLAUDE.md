@@ -118,10 +118,10 @@ When a skill receives `owner/repo`, it resolves to a local path using `scripts/r
 3. Otherwise clone via `gh repo clone` into the cache
 
 ```bash
-python3 "$CW_HOME/scripts/repo.py" resolve plwp/dgrd  # prints local path
-python3 "$CW_HOME/scripts/repo.py" home                # prints chief-wiggum install dir
-python3 "$CW_HOME/scripts/repo.py" list                # show cached repos
-python3 "$CW_HOME/scripts/repo.py" clean plwp/dgrd     # remove cache
+python3 "$CW_HOME/scripts/repo.py" resolve acme/app  # prints local path
+python3 "$CW_HOME/scripts/repo.py" home               # prints chief-wiggum install dir
+python3 "$CW_HOME/scripts/repo.py" list               # show cached repos
+python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 ```
 
 ## Repo Layout

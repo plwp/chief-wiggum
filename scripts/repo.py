@@ -7,12 +7,12 @@ Repos are cached in ~/.chief-wiggum/repos/ to avoid re-cloning.
 
 As a module:
     from repo import resolve_repo
-    path = resolve_repo("plwp/dgrd")  # returns Path to local clone
+    path = resolve_repo("acme/app")  # returns Path to local clone
 
 As a CLI:
-    python3 repo.py resolve plwp/dgrd       # print local path (clone if needed)
-    python3 repo.py list                      # list cached repos
-    python3 repo.py clean plwp/dgrd          # remove a cached clone
+    python3 repo.py resolve acme/app        # print local path (clone if needed)
+    python3 repo.py list                     # list cached repos
+    python3 repo.py clean acme/app           # remove a cached clone
 """
 
 import re

@@ -215,7 +215,7 @@ def main() -> None:
     )
     parser.add_argument("findings_json", help="Path to findings JSON file")
     parser.add_argument("--repo", required=True, help="Path to target repo")
-    parser.add_argument("--gh-repo", required=True, help="GitHub owner/repo (e.g. plwp/dgrd)")
+    parser.add_argument("--gh-repo", required=True, help="GitHub owner/repo (e.g. acme/app)")
     parser.add_argument("-o", "--output", help="Write output to file")
     args = parser.parse_args()
 

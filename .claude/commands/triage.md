@@ -8,7 +8,7 @@ Read all open issues from a GitHub repo and present a prioritised view for sprin
 ```
 
 ## Parameters
-- `owner/repo`: GitHub repository in `owner/repo` format (e.g., `patwork/dgrd`)
+- `owner/repo`: GitHub repository in `owner/repo` format (e.g., `acme/app`)
 
 ## Execution Strategy
 
