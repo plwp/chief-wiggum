@@ -54,7 +54,7 @@ graph LR
 ## `/implement` — Orchestration Detail
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333', 'actorTextColor': '#fff', 'actorBkg': '#003f5c', 'actorBorder': '#2f4b7c', 'activationBorderColor': '#d45087', 'activationBkgColor': '#f95d6a', 'signalColor': '#2f4b7c'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#003f5c', 'textColor': '#1a1a1a', 'actorTextColor': '#fff', 'actorBkg': '#003f5c', 'actorBorder': '#003f5c', 'activationBorderColor': '#d45087', 'activationBkgColor': '#fce4ec', 'signalColor': '#003f5c', 'signalTextColor': '#1a1a1a', 'noteBkgColor': '#fff3e0', 'noteTextColor': '#1a1a1a', 'noteBorderColor': '#ff7c43', 'labelTextColor': '#1a1a1a'}}}%%
 sequenceDiagram
     participant U as User
     participant O as Orchestrator
@@ -64,7 +64,7 @@ sequenceDiagram
     U->>O: /implement owner/repo#42
     O->>O: Resolve paths & read ticket
 
-    rect rgba(102, 81, 145, 0.15)
+    rect rgba(102, 81, 145, 0.25)
         note right of O: Step 4 — Multi-AI consultation
         par Approach gathering
             O->>AI: Codex consultation
@@ -78,14 +78,14 @@ sequenceDiagram
 
     O-->>U: Approach summary (checkpoint)
 
-    rect rgba(212, 80, 135, 0.15)
+    rect rgba(212, 80, 135, 0.25)
         note right of O: Step 5 — Implementation
         O->>S: Plan + feature branch
         S->>S: Code, test, lint, fix
         S-->>O: Done
     end
 
-    rect rgba(102, 81, 145, 0.15)
+    rect rgba(102, 81, 145, 0.25)
         note right of O: Step 6 — Code review
         par Review
             O->>AI: Codex review
