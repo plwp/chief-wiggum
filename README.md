@@ -54,7 +54,7 @@ graph LR
 ## `/implement` — Orchestration Detail
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#003f5c', 'textColor': '#1a1a1a', 'actorTextColor': '#fff', 'actorBkg': '#003f5c', 'actorBorder': '#003f5c', 'activationBorderColor': '#d45087', 'activationBkgColor': '#fce4ec', 'signalColor': '#003f5c', 'signalTextColor': '#1a1a1a', 'noteBkgColor': '#fff3e0', 'noteTextColor': '#1a1a1a', 'noteBorderColor': '#ff7c43', 'labelTextColor': '#1a1a1a'}}}%%
+%%{init: {'theme': 'default'}}%%
 sequenceDiagram
     participant U as User
     participant O as Orchestrator
