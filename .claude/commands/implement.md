@@ -1,6 +1,6 @@
 # Implement - Full Implementation Loop
 
-The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → implement → review → apply fixes → **verify** → validate → ship.
+The core orchestration skill. Takes a ticket and drives it through the full implementation lifecycle: clarify → consult → **test-first specification** → implement → **static analysis** → structured review → apply fixes → **verify** → validate → ship.
 
 ## Ownership
 
@@ -16,10 +16,10 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 **Never punt to the user.** If Docker isn't running, start it. If a dependency is missing, install it. If you can't run the tests, that's YOUR problem to solve. "Want to skip this step?" is never the right question.
 
 **Every step is mandatory.** You do NOT get to decide that a change is "too small" to warrant code review, or that consultations are "good enough" with only 2 of 3 responses. The process exists for a reason — follow it completely every time, no exceptions. Specifically:
-- **Never skip the multi-AI code review** (Step 6), regardless of change size. A one-line fix gets the same review process as a 500-line feature. No developer gets to self-certify their own code.
+- **Never skip the multi-AI code review** (Step 7), regardless of change size. A one-line fix gets the same review process as a 500-line feature. No developer gets to self-certify their own code.
 - **Never skip AI consultations** (Step 4). Wait for ALL consultations (Codex, Gemini, Opus) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
-- **Never skip browser-use/E2E validation** (Step 8) unless `--skip-browser-use` was explicitly passed by the user.
-- **Never create a PR before review is complete.** The PR is the final artifact (Step 9), not an intermediate checkpoint.
+- **Never skip browser-use/E2E validation** (Step 9) unless `--skip-browser-use` was explicitly passed by the user.
+- **Never create a PR before review is complete.** The PR is the final artifact (Step 10), not an intermediate checkpoint.
 
 ## Autonomy
 
@@ -28,7 +28,7 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 Checkpoints where you MUST get user input:
 - **Step 3** (Clarify requirements): Only if requirements are genuinely unclear or ambiguous
 - **Step 4 Phase B** (Approach reconciliation): Only if approaches fundamentally conflict with no clear winner — present the trade-off and ask
-- **Step 9** (Final check): Present the summary, then proceed to ship unless the user intervenes
+- **Step 10** (Final check): Present the summary, then proceed to ship unless the user intervenes
 
 Everything else — just do it.
 
@@ -43,7 +43,7 @@ Everything else — just do it.
 
 ## Workflow
 
-### Step 1: Resolve paths
+### Step 1: Resolve paths and load epic context
 
 Resolve the chief-wiggum install directory and the target repo path. **Never hardcode paths.**
 
@@ -56,6 +56,23 @@ DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultB
 ```
 
 **Important**: `$CW_TMP` uses a unique session ID so concurrent `/implement` runs don't clobber each other's temp files.
+
+**Load epic context** (if this ticket belongs to an epic):
+
+```bash
+# Find the ticket's milestone
+MILESTONE=$(gh issue view "$issue_number" --repo "$owner_repo" --json milestone -q '.milestone.title // empty')
+```
+
+If a milestone exists and `docs/epics/[epic-slug]/` exists in the target repo, load:
+- `contracts.md` — REQUIRES/ENSURES for APIs and entities
+- `state-machines.md` — valid state transitions
+- `invariants.md` — cross-cutting rules
+- `traceability.md` — which acceptance criteria need which tests
+
+These artifacts are **hard constraints** on the implementation. The coding sub-agent MUST satisfy them. The review checklist MUST verify them.
+
+If no epic context exists, proceed without it — the skill works standalone too.
 
 All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief-wiggum scripts/templates. Use `$CW_TMP` for temporary files (not `/tmp/`). Use `$DEFAULT_BRANCH` instead of hardcoding `main`.
 
@@ -72,6 +89,7 @@ Present to the user:
 - Acceptance criteria
 - Labels and current status
 - Any comments with additional context
+- Epic context (if loaded): relevant contracts, invariants, state machine transitions
 
 ### Step 3: Clarify requirements (only if needed)
 
@@ -104,6 +122,7 @@ Run three consultations in parallel:
 
 Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` including:
 - Ticket title, description, and acceptance criteria
+- **Epic context** (if loaded): relevant contracts, invariants, state machine transitions — these are constraints, not suggestions
 - **Orientation context** (give them the lay of the land, NOT the answer):
   - Tech stack and key dependencies
   - Repo structure (top-level tree or directory layout)
@@ -119,28 +138,57 @@ Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` in
 Once all three approaches are ready, launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
 
 1. Read all three approach files (`approach-codex.md`, `approach-gemini.md`, `approach-opus.md`)
-2. Identify consensus, conflicts, and unique insights
-3. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
+2. Read the epic context files (contracts, invariants, state machines) if they exist
+3. Identify consensus, conflicts, and unique insights
+4. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
    - **Files to create/modify** with specific paths
    - **Ordered implementation steps** — each step should specify exactly what to do, in which file, with enough detail that no further codebase exploration is needed
    - **Code patterns to follow** — reference specific existing files/functions as templates
    - **Key design decisions** — where AIs agreed vs diverged, with a clear recommendation
+   - **Contract enforcement** — which REQUIRES/ENSURES blocks from the epic contracts must appear as runtime guards in the code
    - **Test plan** — specific test cases to write and how to run them
    - **Open questions** for the user (if any)
-4. Write the full plan to `$CW_TMP/implementation-plan.md`
-5. Return a concise summary for the main thread
+5. Write the full plan to `$CW_TMP/implementation-plan.md`
+6. Return a concise summary for the main thread
 
 Present a concise summary to the user. If there are open questions that genuinely need user input (e.g., conflicting approaches with no clear winner), ask. Otherwise, proceed directly to Step 5.
 
-### Step 5: Implement
+### Step 5: Test-first specification
 
-Launch a **Sonnet sub-agent** in a worktree to do the implementation (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Sonnet is fast and cost-effective for coding tasks. Pass it the **full implementation plan** from `$CW_TMP/implementation-plan.md` (produced in Step 3 Phase B) plus any user feedback. The plan should be detailed enough that Sonnet can execute it step-by-step without needing to explore the codebase.
+**Write failing tests before writing implementation code.** This transforms the objective from "implement this feature" to "make these tests pass" — a more constrained and verifiable target.
+
+Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it:
+- The implementation plan from Step 4
+- The epic contracts and traceability matrix (if they exist)
+- The target repo's test framework and conventions
+
+The sub-agent should:
+
+1. Create a feature branch named after the ticket (e.g., `feat/42-add-dark-mode`)
+2. Write test files FIRST, covering:
+   - **Acceptance criteria tests**: One or more tests per AC from the ticket. If a traceability matrix exists, follow it.
+   - **Contract tests**: For each REQUIRES/ENSURES in the epic contracts that this ticket touches, write a test that verifies the precondition is checked and the postcondition holds.
+   - **State machine tests** (if applicable): Test that valid transitions succeed and invalid transitions are rejected.
+   - **Property-based tests** (where appropriate): For pure functions and data transformations, write at least one property test (roundtrip, idempotency, no-crash-on-valid-input). Use the project's property testing library if one exists (Hypothesis, fast-check, gopter), otherwise skip.
+   - **Error path tests**: For each API endpoint or operation, test at least one error case (invalid input, missing auth, service unavailable).
+3. Run the tests — **all should fail** (red phase). If any pass before implementation, the test is not testing new behaviour. Investigate and fix.
+4. Commit the test files with message: `test: add failing tests for #[number] — [title]`
+5. Report back: which tests were written, which frameworks used, any gaps in the traceability matrix
+
+**Important**: The sub-agent should report the worktree path and branch name. The implementation sub-agent in Step 6 will work in the SAME worktree.
+
+### Step 6: Implement
+
+Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$CW_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
 **Important**: The sub-agent should work in the target repo, not in chief-wiggum.
 
 The sub-agent should:
-1. Create a feature branch named after the ticket (e.g., `feat/42-add-dark-mode`)
-2. Implement the approved approach
+1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**
+2. Enforce epic contracts as runtime guards:
+   - Every REQUIRES block → input validation / guard clause at function entry
+   - Every ENSURES block → verify postcondition before returning (or via integration test)
+   - Every state machine transition → validate current state before allowing transition
 3. Run the project's **full** test suite — not just the new tests, ALL existing tests too:
    - **Preferred**: If the target repo has a `/test` skill or `make ci` target, use it — these replicate CI exactly
    - Otherwise look for `Makefile`, `package.json`, or common test commands
@@ -153,7 +201,7 @@ The sub-agent should:
 7. If stuck after 3 attempts at the same error, report back to the user
 8. **Report honestly.** If you could not run a test or validation step, say so clearly with the reason. Do NOT silently skip steps or mark them as passed when they were not executed. The orchestrator will verify independently — discrepancies will be caught.
 
-### Step 6: Multi-AI code review
+### Step 7: Multi-AI code review with structured checklist
 
 **THIS STEP IS NEVER OPTIONAL.** Every implementation gets a multi-AI code review, regardless of change size. A one-line typo fix, a 10-line config change, a 500-line feature — all get the same review process. You do not get to self-certify your own code. No exceptions, no shortcuts.
 
@@ -166,7 +214,7 @@ The sub-agent should:
    git diff "$DEFAULT_BRANCH"...HEAD > $CW_TMP/impl-diff.txt
    ```
 
-2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values, and write to `$CW_TMP/review-prompt.md`.
+2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values. **Also include the structured checklist** from `$CW_HOME/templates/review-checklist.md` and the epic contracts/invariants if they exist. Write to `$CW_TMP/review-prompt.md`.
 
 3. Run external AI reviews in parallel:
    ```bash
@@ -188,35 +236,46 @@ The sub-agent should:
    - **Low-confidence or architectural feedback**: Speculative concerns or design trade-offs. Flag for user decision.
    - Ignore style-only comments unless they point to a real defect.
 
-### Step 7: Apply review fixes and verify
+   Also return the **checklist scorecard**: pass/fail for each item in the structured checklist, with one-line justification for any failures.
+
+### Step 8: Apply review fixes and verify
 
 Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then **the orchestrator independently verifies the final state** — this is not delegatable.
 
 1. **Apply clear-cut fixes** directly (don't re-launch a sub-agent for trivial changes)
 2. **Flag ambiguous feedback** for user decision — only block on items that genuinely need input
-3. **Run the full test suite** from the repo root:
+3. **Run static analysis** on the changed files:
+   - Go: `golangci-lint run ./...`
+   - TypeScript/JavaScript: `npx eslint --no-warn-ignored` or `npx biome check`
+   - Python: `ruff check` or `flake8`
+   - Feed violations back to the code — fix them before proceeding. Gate on zero high-severity findings.
+4. **Run the full test suite** from the repo root:
    - If a `/test` skill or `make ci` target exists, use it
    - Otherwise: `pytest` (Python), `npm test` (Node), `go test ./...` (Go)
    - ALL tests must pass. Zero tolerance.
-4. **Start services** and verify they work:
+5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
    - Hit key endpoints (health checks, any endpoints the ticket specifies)
    - Verify responses match expectations
-5. **Walk the acceptance criteria** from the ticket:
+6. **Walk the acceptance criteria** from the ticket:
    - For each checkbox in the AC, verify it's actually met — not just "code exists" but "it works"
    - If the ticket says "health endpoint returns 200", curl it and confirm
    - If the ticket says "tests pass", run them yourself and confirm
-6. **Quality check** — Read the key files produced:
+7. **Verify contract enforcement** (if epic context exists):
+   - Check that REQUIRES blocks appear as guard clauses in the implementation
+   - Check that invalid state transitions are rejected (try one via curl or test)
+   - Check that ENSURES postconditions hold after operations complete
+8. **Quality check** — Read the key files produced:
    - Is the code idiomatic for the language?
    - Are there any obvious issues (missing error handling, security gaps, dead code)?
    - Does it follow existing patterns in the codebase?
    - Would you be proud to ship this?
-7. **Clean up** — Stop any services you started (`docker compose down`)
+9. **Clean up** — Stop any services you started (`docker compose down`)
 
 If ANY verification fails: fix it directly, or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
-### Step 8: Browser-use validation
+### Step 9: Browser-use validation
 
 **Do not skip this step** unless `--skip-browser-use` was explicitly passed.
 
@@ -248,9 +307,9 @@ If **browser-use** exists (e.g. `tests/browser-use/run.py`):
 
 If no browser-use or E2E setup exists at all, note it as a gap in the final summary and move on.
 
-### Step 9: Ship PR
+### Step 10: Ship PR
 
-**Do not create a PR until Steps 6-8 are complete.** The PR is the final artifact, not an intermediate checkpoint.
+**Do not create a PR until Steps 7-9 are complete.** The PR is the final artifact, not an intermediate checkpoint.
 
 1. Push the branch
 2. **Generate mermaid diagrams** — this is NOT optional. Every PR must include at least one mermaid diagram. Generate them based on the diff:
@@ -296,7 +355,10 @@ gh pr create \
 [Bullet list of significant changes]
 
 ## Test plan
-[Test evidence]
+[Test evidence — include TDD summary: N tests written first, all passing]
+
+## Contract compliance
+[Which epic contracts/invariants this implementation satisfies — omit if no epic context]
 
 Closes #issue_number
 
@@ -308,34 +370,39 @@ EOF
 
 4. Link to the original issue via `Closes #N` in the body
 
-### Step 10: Verify CI green
+### Step 11: Verify CI green
 
 **Do not declare the PR done until all checks pass.** This is a hard gate — no exceptions.
-
-> **TEMPORARY (until 2026-04-02):** GitHub Actions minutes are exhausted for this billing cycle. Do NOT rely on remote CI. Instead, run the full CI-equivalent checks **locally** before merging:
-> - **Backend**: `golangci-lint run ./...`, `go test ./...`, `go build ./...`
-> - **UI**: `npm run lint`, `npx vitest run`, `npm run build`
-> - **E2E** (if applicable): `npx playwright test`
->
-> If all local checks pass, merge the PR directly with `gh pr merge --squash --delete-branch`. Remove this temporary block when Actions minutes reset.
 
 1. **If CI is available**, poll CI status:
    ```bash
    gh pr checks <pr_number> --repo "$owner_repo" --watch
    ```
-2. **If CI is unavailable (minutes exhausted)**, run checks locally as described above.
+2. **If CI is unavailable**, run checks locally (detect project type and run appropriate commands).
 3. If any check fails:
    - Fix the failures (including pre-existing ones — every PR must leave CI green)
    - Push fixes and re-check
    - Repeat until all checks pass
 4. Only after all checks pass, present the final summary:
    - **Summary**: What was implemented (files changed, approach taken)
-   - **Test results**: CI status (all green)
+   - **Test results**: CI status (all green), TDD stats (N tests written first)
    - **Review feedback**: What was addressed, what was deferred
+   - **Checklist scorecard**: Summary of structured review results
    - **Browser-use results**: Screenshots and pass/fail (if applicable)
    - **Pre-existing fixes**: Any broken tests/lint we fixed that weren't ours
+   - **Traceability update**: Which AC are now covered (if epic context exists)
    - **Lingering questions**: Anything unresolved
-4. Show the PR URL
+5. Show the PR URL
+
+### Step 12: Update traceability matrix
+
+If epic context exists, update the traceability matrix to reflect the tests written:
+
+```bash
+# Update status from "pending" to "covered" for each AC this ticket addressed
+```
+
+This can be a comment on the epic milestone or a commit to the traceability file, depending on whether other tickets are in flight.
 
 Close the loop:
 - Ask if the issue should be updated with a comment linking to the PR

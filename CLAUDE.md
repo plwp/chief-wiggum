@@ -4,7 +4,11 @@ Project-agnostic orchestration layer for AI-powered software development lifecyc
 
 ## What This Repo Is
 
-A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-sprint`, `/create-issue`, `/implement`, `/ship`, `/update`) that orchestrate a full development pipeline: transcribe client conversations, triage requirements, plan sprints, create issues, implement with multi-AI consultation, test, review, validate, and ship PRs.
+A collection of Claude Code skills that orchestrate a full development pipeline at two levels:
+
+- **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
+- **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, and independent verification per ticket.
+- **Supporting**: `/setup`, `/transcribe`, `/triage`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`.
 
 ## Key Principles
 
@@ -13,6 +17,9 @@ A collection of Claude Code skills (`/setup`, `/transcribe`, `/triage`, `/plan-s
 - **Never punt to the user**: If Docker isn't running, start it. If a dependency is missing, install it. "Want to skip?" is never the right question.
 - **Project-agnostic**: Skills reference "the target repo" — never hardcode project names or local paths
 - **Auto-cloning**: Target repos are resolved and cloned via `gh` on demand, cached in `~/.chief-wiggum/repos/`
+- **Two-tier quality**: Epic-level contracts and invariants prevent cross-ticket bugs; ticket-level TDD and structured review prevent per-ticket bugs
+- **Test-first**: Write failing tests before implementation code. The objective is "make these tests pass", not "implement this feature"
+- **Contracts are executable**: Every REQUIRES/ENSURES from `/architect` becomes a runtime guard in the code. The review checklist verifies this
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)
 - **Skills are markdown prompts**: They instruct Claude Code what to do, not executable code
 - **Scripts are Python**: All helpers are Python — no bash scripts
@@ -129,8 +136,22 @@ python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 ```
 .claude/commands/    # Claude Code skills (the core of this repo)
 scripts/             # Python helpers called by skills
-templates/           # Issue, PR, and review prompt templates
+templates/           # Issue, PR, review, and checklist templates
 models.md            # AI model IDs and library versions (refresh with /update)
+```
+
+### Epic artifacts (in target repos)
+
+`/architect` commits artifacts to `docs/epics/[epic-slug]/` in the target repo:
+```
+docs/epics/booking-state-machine/
+├── contracts.md          # REQUIRES/ENSURES for APIs and entities
+├── state-machines.md     # Valid states and transitions
+├── invariants.md         # Cross-cutting rules
+├── adr.md                # Architectural Decision Record
+├── integration-tests.md  # Cross-ticket test specifications
+├── traceability.md       # AC → test mapping
+└── retrospective.md      # Written by /close-epic
 ```
 
 ## Usage
@@ -144,9 +165,16 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /setup                          # Verify dependencies
 /transcribe path/to/audio.mp4   # Transcribe client conversation
 /triage owner/repo              # Prioritise open issues
-/plan-sprint owner/repo         # Interactive sprint planning
 /create-issue owner/repo        # Create a GitHub issue
-/implement owner/repo#42        # Full implementation loop for ticket #42
-/ship                           # Create PR with mermaid diagrams
+/seed owner/repo                # Architecture brainstorm & issue seeding
+
+# Epic flow (the core loop)
+/plan-epic owner/repo           # Group issues into epic with dependency graph
+/architect owner/repo --epic "Epic: Name"  # Define contracts, invariants, tests
+/implement owner/repo#42        # TDD implementation loop for a ticket
+/close-epic owner/repo --epic "Epic: Name" # Epic-level quality gate
+
+/ship                           # Create PR with mermaid diagrams (standalone)
+/stitch-audit owner/repo --trace keyword   # Cross-layer data flow audit
 /update                         # Refresh model IDs and library versions
 ```

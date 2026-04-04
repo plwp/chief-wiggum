@@ -25,30 +25,62 @@ claude /implement owner/repo#42
 
 ## Skills
 
+### Epic Level
+| Skill | Purpose |
+|-------|---------|
+| `/plan-epic` | Group related issues into an epic with dependency graph and integration risks |
+| `/architect` | Define contracts, invariants, state machines, ADRs, and integration tests for an epic |
+| `/close-epic` | Epic-level quality gate: integration tests, mutation testing, stitch-audit, retrospective |
+
+### Ticket Level
+| Skill | Purpose |
+|-------|---------|
+| `/implement` | TDD implementation loop: test-first → multi-AI consultation → structured review → verify |
+
+### Supporting
 | Skill | Purpose |
 |-------|---------|
 | `/setup` | Verify and install all dependencies |
 | `/transcribe` | Whisper transcription → structured requirements |
 | `/triage` | Read and prioritise GitHub issues |
-| `/plan-sprint` | Interactive sprint planning session |
+| `/seed` | Architecture brainstorm and issue seeding for new projects |
 | `/create-issue` | Create well-structured GitHub issues |
-| `/implement` | Full implementation loop with multi-AI consultation |
 | `/ship` | PR creation with mermaid architecture diagrams |
+| `/stitch-audit` | Cross-layer data flow analysis |
 | `/update` | Refresh AI model IDs and library versions |
 
 ## Pipeline
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333'}}}%%
-graph LR
-    A["/transcribe"]:::entry --> B["/triage"]
-    B --> C["/plan-sprint"]
-    C --> D["/create-issue"]
-    D --> E["/implement"]
-    E --> F["/ship"]
+graph TD
+    subgraph "Input"
+        A["/transcribe"]:::entry
+        B["/seed"]:::entry
+        C["/triage"]:::default
+        D["/create-issue"]:::default
+    end
+
+    subgraph "Epic Flow"
+        E["/plan-epic"]:::modified
+        F["/architect"]:::new
+        G["/implement<br/>(per ticket)"]:::modified
+        H["/close-epic"]:::new
+    end
+
+    A --> D
+    B --> C
+    C --> E
+    D --> E
+    E --> F
+    F --> G
+    G --> G
+    G --> H
 
     classDef entry fill:#ff7c43,stroke:#ffa600,color:#fff
     classDef default fill:#003f5c,stroke:#2f4b7c,color:#fff
+    classDef modified fill:#665191,stroke:#a05195,color:#fff
+    classDef new fill:#d45087,stroke:#f95d6a,color:#fff
 ```
 
 ## `/implement` — Orchestration Detail
@@ -62,7 +94,7 @@ sequenceDiagram
     participant S as Sonnet (worktree)
 
     U->>O: /implement owner/repo#42
-    O->>O: Resolve paths & read ticket
+    O->>O: Resolve paths, load epic context
 
     rect rgba(102, 81, 145, 0.25)
         note right of O: Step 4 — Multi-AI consultation
@@ -72,29 +104,37 @@ sequenceDiagram
             O->>AI: Opus exploration
         end
         AI-->>O: Three approaches
-        O->>AI: Opus reconciliation
+        O->>AI: Opus reconciliation (+ epic contracts)
         AI-->>O: Implementation plan
     end
 
     O-->>U: Approach summary (checkpoint)
 
     rect rgba(212, 80, 135, 0.25)
-        note right of O: Step 5 — Implementation
-        O->>S: Plan + feature branch
-        S->>S: Code, test, lint, fix
-        S-->>O: Done
+        note right of O: Step 5 — Test-first specification
+        O->>S: Write failing tests (TDD red phase)
+        S-->>O: Tests written, all failing
+    end
+
+    rect rgba(212, 80, 135, 0.25)
+        note right of O: Step 6 — Implementation
+        O->>S: Make tests pass + enforce contracts
+        S->>S: Code, lint, fix
+        S-->>O: All tests green
     end
 
     rect rgba(102, 81, 145, 0.25)
-        note right of O: Step 6 — Code review
-        par Review
+        note right of O: Step 7 — Structured review
+        par Review (with checklist)
             O->>AI: Codex review
             O->>AI: Gemini review
         end
-        AI-->>O: Review findings
+        AI-->>O: Checklist scorecard + findings
     end
 
+    O->>O: Static analysis gate
     O->>O: Apply fixes & verify independently
+    O->>O: Verify contract enforcement
     O->>O: Browser-use / E2E validation
     O->>O: Create PR with mermaid diagrams
     O-->>U: PR link
