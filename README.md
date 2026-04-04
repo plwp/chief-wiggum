@@ -17,7 +17,7 @@ claude /setup
 
 # 3. Use from your target project directory (not chief-wiggum)
 claude /transcribe ~/recordings/client-call.mp4
-claude /triage owner/repo
+claude /plan-epic owner/repo
 claude /implement owner/repo#42
 ```
 
@@ -42,7 +42,6 @@ claude /implement owner/repo#42
 |-------|---------|
 | `/setup` | Verify and install all dependencies |
 | `/transcribe` | Whisper transcription → structured requirements |
-| `/triage` | Read and prioritise GitHub issues |
 | `/seed` | Architecture brainstorm and issue seeding for new projects |
 | `/create-issue` | Create well-structured GitHub issues |
 | `/ship` | PR creation with mermaid architecture diagrams |
@@ -57,8 +56,7 @@ graph TD
     subgraph "Input"
         A["/transcribe"]:::entry
         B["/seed"]:::entry
-        C["/triage"]:::default
-        D["/create-issue"]:::default
+        C["/create-issue"]:::default
     end
 
     subgraph "Epic Flow"
@@ -70,8 +68,8 @@ graph TD
 
     A --> D
     B --> C
+    B --> E
     C --> E
-    D --> E
     E --> F
     F --> G
     G --> G

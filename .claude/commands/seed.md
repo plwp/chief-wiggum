@@ -148,8 +148,8 @@ Present the user with:
 1. Link to the ARCHITECTURE.md commit
 2. Summary of issues created (count by group, with issue numbers/URLs)
 3. Suggested next steps:
-   - `/triage owner/repo` to prioritise the backlog
-   - `/plan-sprint owner/repo` to plan the first sprint
+   - `/plan-epic owner/repo` to group issues into an epic with dependency ordering
+   - `/architect owner/repo --epic "Epic: [Name]"` to define contracts and invariants
    - `/implement owner/repo#N` to start building
 
 ## Key Principles

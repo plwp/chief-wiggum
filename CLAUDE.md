@@ -8,7 +8,7 @@ A collection of Claude Code skills that orchestrate a full development pipeline 
 
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
 - **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, and independent verification per ticket.
-- **Supporting**: `/setup`, `/transcribe`, `/triage`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`.
+- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`.
 
 ## Key Principles
 
@@ -164,7 +164,6 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 
 /setup                          # Verify dependencies
 /transcribe path/to/audio.mp4   # Transcribe client conversation
-/triage owner/repo              # Prioritise open issues
 /create-issue owner/repo        # Create a GitHub issue
 /seed owner/repo                # Architecture brainstorm & issue seeding
 
