@@ -30,7 +30,7 @@ Same principles as `/implement`: you own the solution, not just the code. The va
 
 **Prevent sleep**: Wave implementation runs for hours. Start `caffeinate` to keep the machine awake:
 ```bash
-caffeinate -dims &
+caffeinate -ims &
 CAFFEINATE_PID=$!
 ```
 Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/null`

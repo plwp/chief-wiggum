@@ -47,7 +47,7 @@ Everything else — just do it.
 
 **Prevent sleep**: Start `caffeinate` to keep the machine awake for the duration of the workflow:
 ```bash
-caffeinate -dims &
+caffeinate -ims &
 CAFFEINATE_PID=$!
 ```
 Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/null`
