@@ -9,7 +9,7 @@ Runs once per epic, before any ticket is implemented. Produces the architectural
 
 ## Parameters
 - `owner/repo`: GitHub repository in `owner/repo` format
-- `--epic`: The milestone name created by `/plan-epic` (e.g., `"Epic: Booking State Machine"`)
+- `--epic`: The milestone name created by `/plan-epic` (e.g., `"Epic: Order Lifecycle"`)
 
 ## Autonomy
 
@@ -66,7 +66,7 @@ Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
 - Specific questions:
   1. What is the canonical data model for the entities this epic touches? Define the single source of truth.
   2. What state machines exist? Define all valid states and transitions.
-  3. What invariants must hold across the full epic? (e.g., "a booking always has a client_id after confirmation")
+  3. What invariants must hold across the full epic? (e.g., "an order always has a customer_id after confirmation")
   4. What are the API contracts — preconditions, postconditions, error cases?
   5. Where are the integration risks and how should we test them?
   6. What could go wrong between tickets? (dual sources of truth, race conditions, inconsistent reads)
@@ -92,25 +92,25 @@ Launch a **second Opus sub-agent** to reconcile all three consultations into the
 For every entity and API endpoint the epic touches, define:
 
 ```markdown
-## Entity: Booking
+## Entity: Order
 
 ### Canonical Fields
 | Field | Type | Required | Source of Truth | Notes |
 |-------|------|----------|-----------------|-------|
 | id | ObjectID | always | MongoDB _id | immutable |
-| client_id | ObjectID | after confirmation | clients collection | MUST be set during confirmation transition |
-| status | enum | always | booking.status | valid: draft, pending, confirmed, checked_in, checked_out, cancelled |
-| pets | []ObjectID | after confirmation | pets collection | NEVER store pet names as strings — always reference |
+| customer_id | ObjectID | after confirmation | customers collection | MUST be set during confirmation transition |
+| status | enum | always | order.status | valid: draft, pending, confirmed, in_progress, completed, cancelled |
+| items | []ObjectID | after confirmation | items collection | NEVER store item names as strings — always reference |
 
-### API: POST /api/v1/bookings
-- **REQUIRES**: authenticated staff OR valid intake token; at least one pet_id; valid date range (checkout > checkin)
-- **ENSURES**: booking created with status "draft"; booking.id returned; booking visible on admin list within 1s
+### API: POST /api/v1/orders
+- **REQUIRES**: authenticated staff OR valid public submission token; at least one item_id; valid date range (end_date > start_date)
+- **ENSURES**: order created with status "draft"; order.id returned; order visible on admin list within 1s
 - **ERROR CASES**: 400 if dates invalid; 401 if no auth; 409 if capacity exceeded
 
-### API: POST /api/v1/bookings/:id/confirm
-- **REQUIRES**: booking exists; status is "pending"; client_id is set; at least one pet_id
+### API: POST /api/v1/orders/:id/confirm
+- **REQUIRES**: order exists; status is "pending"; customer_id is set; at least one item_id
 - **ENSURES**: status transitions to "confirmed"; confirmation notification sent (or error surfaced if notification service unavailable)
-- **INVARIANT**: After this call, booking.client_id is NEVER null
+- **INVARIANT**: After this call, order.customer_id is NEVER null
 ```
 
 #### 4b. State Machines (`state-machines.md`)
@@ -118,34 +118,34 @@ For every entity and API endpoint the epic touches, define:
 For every state machine in the epic, define all states and valid transitions:
 
 ```markdown
-## Booking Status State Machine
+## Order Status State Machine
 
 ### States
 - `draft` — initial, admin-created, incomplete data
 - `pending` — submitted via intake, awaiting confirmation
-- `confirmed` — approved, awaiting check-in
-- `checked_in` — pet is on premises
-- `checked_out` — complete
+- `confirmed` — approved, awaiting start
+- `in_progress` — work in progress
+- `completed` — complete
 - `cancelled` — terminated before completion
 
 ### Transitions
 | From | To | Trigger | Guard Conditions |
 |------|----|---------|-----------------|
-| draft | pending | submit | client_id set, pets non-empty, dates valid |
-| pending | confirmed | confirm | capacity available, pre-check-in complete |
+| draft | pending | submit | customer_id set, items non-empty, dates valid |
+| pending | confirmed | confirm | capacity available, pre-start checks complete |
 | pending | cancelled | cancel | — |
-| confirmed | checked_in | check_in | facility assigned |
+| confirmed | in_progress | start | resource assigned |
 | confirmed | cancelled | cancel | refund policy applied |
-| checked_in | checked_out | check_out | balance settled OR ack_unpaid |
+| in_progress | completed | complete | balance settled OR ack_unpaid |
 
 ### Invalid Transitions (must be rejected)
 - draft → confirmed (skips pending validation)
-- checked_out → checked_in (irreversible)
+- completed → in_progress (irreversible)
 - cancelled → any (terminal state)
 
 ### Invariants
-- A booking in `confirmed` or later MUST have: client_id, pet_ids (non-empty), valid dates
-- A booking in `checked_in` MUST have: facility_id
+- An order in `confirmed` or later MUST have: customer_id, item_ids (non-empty), valid dates
+- An order in `in_progress` MUST have: resource_id
 - `cancelled` is terminal — no transitions out
 ```
 
@@ -157,13 +157,13 @@ Cross-cutting rules that must hold at ALL times, not just within a single transi
 ## Epic Invariants
 
 ### Data Integrity
-1. **Single source of truth**: Pet names are NEVER stored as strings on bookings. Always reference pet_ids and resolve at read time.
-2. **Client linkage**: Every booking with status >= "pending" has a non-null client_id that references a valid client document.
-3. **Date validity**: checkout_date > checkin_date on every booking, enforced at write time.
+1. **Single source of truth**: Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.
+2. **Customer linkage**: Every order with status >= "pending" has a non-null customer_id that references a valid customer document.
+3. **Date validity**: end_date > start_date on every order, enforced at write time.
 
 ### Consistency
-4. **Screen agreement**: Dashboard, Bookings List, Schedule, and Client Profile MUST derive booking counts from the same query/aggregation. No screen-specific counting logic.
-5. **Capacity truth**: Capacity Calendar and Run Sheet MUST use the same occupancy calculation. Define once, use everywhere.
+4. **Screen agreement**: Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query/aggregation. No screen-specific counting logic.
+5. **Capacity truth**: Capacity View and Summary View MUST use the same occupancy calculation. Define once, use everywhere.
 
 ### Operational Safety
 6. **No false success**: If an operation depends on an external service (email, payment), the success toast MUST NOT display unless the service call succeeded. If the service is unavailable, surface the error — never silently swallow.
@@ -206,25 +206,25 @@ Tests that validate cross-ticket behaviour. These are NOT run per-ticket — the
 ```markdown
 ## Integration Tests: [Epic Name]
 
-### Test 1: Booking visible on all surfaces after creation
-- **Setup**: Create a confirmed booking via API
+### Test 1: Order visible on all surfaces after creation
+- **Setup**: Create a confirmed order via API
 - **Assert**:
-  - Booking appears in admin Bookings List
-  - Booking appears on Schedule for the correct date
-  - Booking appears on Client Profile
-  - Booking appears in Customer Portal (if applicable)
-  - All surfaces show the same client name, pet names, dates, and status
-- **Why**: Catches dual-source-of-truth bugs (#311 pattern)
+  - Order appears in admin List View
+  - Order appears on Calendar for the correct date
+  - Order appears on Detail View
+  - Order appears in Customer Portal (if applicable)
+  - All surfaces show the same customer name, item names, dates, and status
+- **Why**: Catches dual-source-of-truth pattern
 
 ### Test 2: Invalid state transitions rejected
-- **Setup**: Create bookings in each state
+- **Setup**: Create orders in each state
 - **Assert**: Every invalid transition from the state machine returns 400/409
-- **Why**: Catches missing guard conditions (#332 pattern)
+- **Why**: Catches missing-guard-condition pattern
 
 ### Test 3: Capability gating prevents false success
 - **Setup**: Disable email service configuration
 - **Assert**: Email-dependent operations return an error, UI disables the action
-- **Why**: Catches false-success bugs (#325, #340 pattern)
+- **Why**: Catches false-success pattern
 ```
 
 #### 4f. Requirements Traceability Matrix (`traceability.md`)
@@ -237,10 +237,10 @@ Maps every acceptance criterion from every ticket to the test(s) that will verif
 | Ticket | Acceptance Criterion | Unit Test | Integration Test | E2E Test | Status |
 |--------|---------------------|-----------|-----------------|----------|--------|
 | #42 | GET /health returns 200 | api_test.go:TestHealth | — | — | pending |
-| #42 | Booking model has all fields | model_test.go:TestBookingFields | — | — | pending |
-| #43 | Create booking returns 201 | api_test.go:TestCreateBooking | IT-1: visible on all surfaces | — | pending |
-| #44 | Admin can see bookings list | — | IT-1 | playwright/bookings.spec | pending |
-| #44 | Check-in requires confirmed status | — | IT-2: invalid transitions | — | pending |
+| #42 | Order model has all fields | model_test.go:TestOrderFields | — | — | pending |
+| #43 | Create order returns 201 | api_test.go:TestCreateOrder | IT-1: visible on all surfaces | — | pending |
+| #44 | Admin can see orders list | — | IT-1 | playwright/orders.spec | pending |
+| #44 | Start requires confirmed status | — | IT-2: invalid transitions | — | pending |
 ```
 
 Each row's "Status" column starts as `pending` and is updated to `covered` when `/implement` writes the test, then `passing` when `/close-epic` verifies it.

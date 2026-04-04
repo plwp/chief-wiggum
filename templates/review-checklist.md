@@ -12,7 +12,7 @@ Score each item: **PASS**, **FAIL** (with one-line justification), or **N/A**.
 - [ ] Every REQUIRES block from the epic contracts appears as a guard clause / input validation
 - [ ] Every ENSURES block is satisfied — postconditions hold after operations complete
 - [ ] State machine transitions are guarded — invalid transitions return an error
-- [ ] No field is stored in two different representations (e.g., both `pet_ids` and `pet_names`)
+- [ ] No field is stored in two different representations (e.g., both `item_ids` and `item_names`)
 
 ## Consistency
 - [ ] If multiple screens or endpoints read the same data, they use the same query / data source

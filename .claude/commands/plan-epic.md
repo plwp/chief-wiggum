@@ -32,12 +32,12 @@ gh api repos/$owner_repo/milestones --jq '.[] | {title, description, open_issues
 
 If the user provided issue numbers, fetch those specific issues and infer the epic theme.
 
-If the user provided a description (e.g., "booking flow" or "auth overhaul"), scan the backlog and group issues that belong to this theme. Use title, labels, description, and cross-references to cluster.
+If the user provided a description (e.g., "order flow" or "auth overhaul"), scan the backlog and group issues that belong to this theme. Use title, labels, description, and cross-references to cluster.
 
 If neither was provided, present the backlog grouped by natural themes and ask the user which cluster to plan as an epic.
 
 Present the candidate epic:
-- **Epic name**: A short, descriptive name (e.g., "Booking State Machine", "Multi-Tenant Auth")
+- **Epic name**: A short, descriptive name (e.g., "Order Lifecycle", "Multi-Tenant Auth")
 - **Goal**: One sentence — what user value does this epic deliver when complete?
 - **Candidate tickets**: List with number, title, type, effort estimate
 
@@ -56,20 +56,20 @@ Present as an ordered implementation sequence:
 ## Epic: [Name]
 
 ### Implementation Order
-1. #42 - Define booking data model (S) — foundation, blocks everything
-2. #43 - Booking API endpoints (M) — depends on #42
-3. #44 - Booking admin UI (M) — depends on #43, shares screen with #46
-   ⚠️ Integration risk: #44 and #46 both modify BookingList component
-4. #45 - Booking notifications (S) — depends on #43
-5. #46 - Booking customer portal (L) — depends on #43
-   ⚠️ Integration risk: #44 and #46 both read booking status differently
+1. #42 - Define order data model (S) — foundation, blocks everything
+2. #43 - Order API endpoints (M) — depends on #42
+3. #44 - Order admin UI (M) — depends on #43, shares screen with #46
+   ⚠️ Integration risk: #44 and #46 both modify OrderList component
+4. #45 - Order notifications (S) — depends on #43
+5. #46 - Order customer portal (L) — depends on #43
+   ⚠️ Integration risk: #44 and #46 both read order status differently
 
 ### Dependency Graph
 [mermaid diagram showing the dependency DAG]
 
 ### Integration Risks
-- BookingList component: touched by #44 and #46 — define shared contract in /architect
-- Booking status field: read by #44, #45, #46 with different assumptions — need single source of truth
+- OrderList component: touched by #44 and #46 — define shared contract in /architect
+- Order status field: read by #44, #45, #46 with different assumptions — need single source of truth
 - Notification trigger: #45 hooks into #43's create endpoint — coordinate API contract
 ```
 
@@ -81,7 +81,7 @@ These are things that span multiple tickets and MUST be resolved before implemen
 - **API contracts**: What endpoints do multiple tickets depend on?
 - **State machines**: What states/transitions span tickets?
 - **Shared UI components**: What screens or components do multiple tickets touch?
-- **Invariants**: What rules must hold across the full epic? (e.g., "a booking always has a client_id after confirmation")
+- **Invariants**: What rules must hold across the full epic? (e.g., "an order always has a customer_id after confirmation")
 
 Present these explicitly — they become the input to `/architect`.
 
@@ -136,7 +136,7 @@ Epic planned. Next steps:
 
 ## Key Principles
 
-- **Epics are goal-shaped, not time-shaped.** "Booking flow works end-to-end" is an epic. "Two weeks of work" is not.
+- **Epics are goal-shaped, not time-shaped.** "Order flow works end-to-end" is an epic. "Two weeks of work" is not.
 - **Order by dependencies, not priority.** A P2 data model ticket that blocks three P1 UI tickets goes first.
 - **Name the integration risks explicitly.** Every pair of tickets that touches the same surface area gets flagged. These become integration tests in `/architect`.
 - **Cross-cutting concerns are the input to /architect.** Don't try to resolve them here — just identify them clearly.

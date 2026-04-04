@@ -11,7 +11,7 @@ Individual ticket quality is handled by `/implement`. This skill validates what 
 
 ## Parameters
 - `owner/repo`: GitHub repository in `owner/repo` format
-- `--epic`: The milestone name (e.g., `"Epic: Booking State Machine"`)
+- `--epic`: The milestone name (e.g., `"Epic: Order Lifecycle"`)
 
 ## Autonomy
 
@@ -58,8 +58,8 @@ Report:
 | Ticket | AC | Test | Status |
 |--------|----|------|--------|
 | #42 | GET /health returns 200 | api_test.go:TestHealth | passing |
-| #43 | Create booking returns 201 | api_test.go:TestCreateBooking | passing |
-| #44 | Invalid check-in rejected | — | MISSING |
+| #43 | Create order returns 201 | api_test.go:TestCreateOrder | passing |
+| #44 | Invalid start date rejected | — | MISSING |
 ```
 
 **Flag any MISSING or FAILING items.** These are gaps that must be addressed before the epic can be declared complete.
@@ -104,7 +104,7 @@ For each entity the epic touches, verify that all surfaces that display it agree
 2. Query it from every surface that should show it:
    - Admin list view
    - Admin detail view
-   - Related entity views (e.g., client profile showing bookings)
+   - Related entity views (e.g., customer profile showing orders)
    - Customer-facing views (if applicable)
    - Dashboard / summary views
 3. Compare: do all surfaces show the same values for the same fields?
@@ -115,13 +115,13 @@ Report:
 ```markdown
 ## Cross-Surface Consistency
 
-### Booking #123
-| Field | Admin List | Admin Detail | Client Profile | Dashboard | Customer Portal |
+### Order #123
+| Field | Admin List | Admin Detail | Customer Profile | Dashboard | Customer Portal |
 |-------|-----------|-------------|----------------|-----------|-----------------|
 | status | confirmed | confirmed | confirmed | confirmed | confirmed |
-| client | Jane Doe | Jane Doe | Jane Doe | — | Jane Doe |
-| pets | Max, Luna | Max, Luna | Max, Luna | — | Max, Luna |
-| dates | Apr 5-8 | Apr 5-8 | Apr 5-8 | Apr 5 (checkin) | Apr 5-8 |
+| customer | Jane Doe | Jane Doe | Jane Doe | — | Jane Doe |
+| items | Widget, Gadget | Widget, Gadget | Widget, Gadget | — | Widget, Gadget |
+| dates | Apr 5-8 | Apr 5-8 | Apr 5-8 | Apr 5 (start date) | Apr 5-8 |
 
 All consistent: YES / NO (detail discrepancies)
 ```
@@ -152,15 +152,15 @@ Report:
 
 | File | Mutants | Killed | Survived | Score |
 |------|---------|--------|----------|-------|
-| booking_handler.go | 24 | 22 | 2 | 91.7% |
-| booking_model.go | 18 | 16 | 2 | 88.9% |
-| BookingList.tsx | 12 | 10 | 2 | 83.3% |
+| order_handler.go | 24 | 22 | 2 | 91.7% |
+| order_model.go | 18 | 16 | 2 | 88.9% |
+| OrderList.tsx | 12 | 10 | 2 | 83.3% |
 
 **Overall mutation score: 88.5%** (threshold: 80%)
 
 ### Surviving mutants (action needed)
-- booking_handler.go:142 — changed `>=` to `>` and tests still pass. Missing boundary test for capacity check.
-- booking_model.go:89 — removed `client_id` nil check and tests still pass. Add test for booking without client.
+- order_handler.go:142 — changed `>=` to `>` and tests still pass. Missing boundary test for capacity check.
+- order_model.go:89 — removed `customer_id` nil check and tests still pass. Add test for order without customer.
 ```
 
 If score is below 80%, list surviving mutants and recommend specific tests to add.
@@ -169,7 +169,7 @@ If score is below 80%, list surviving mutants and recommend specific tests to ad
 
 Walk each invariant from `invariants.md` and verify it holds in the current codebase:
 
-1. **Data integrity invariants**: Query the database or API to verify (e.g., "no booking with status >= pending has null client_id")
+1. **Data integrity invariants**: Query the database or API to verify (e.g., "no order with status >= pending has null customer_id")
 2. **Consistency invariants**: Covered by Step 5 (cross-surface check)
 3. **Operational safety invariants**: Test by disabling services and verifying graceful degradation (e.g., disable email config, attempt email-dependent operation, verify error is surfaced not swallowed)
 

@@ -144,7 +144,7 @@ models.md            # AI model IDs and library versions (refresh with /update)
 
 `/architect` commits artifacts to `docs/epics/[epic-slug]/` in the target repo:
 ```
-docs/epics/booking-state-machine/
+docs/epics/order-lifecycle/
 ├── contracts.md          # REQUIRES/ENSURES for APIs and entities
 ├── state-machines.md     # Valid states and transitions
 ├── invariants.md         # Cross-cutting rules
