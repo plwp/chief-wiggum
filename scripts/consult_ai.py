@@ -24,7 +24,7 @@ from keychain import get_secret
 # lose a good response to a premature timeout.
 TOOL_TIMEOUTS: dict[str, int] = {
     "codex": 600,       # 10 minutes — xhigh reasoning is slow on large prompts
-    "gemini": 600,      # 10 minutes
+    "gemini": 1200,     # 20 minutes — yolo mode explores the repo via tools
     "gemini-vertex": 600,
     "claude": 600,
 }
@@ -59,12 +59,17 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
 
 
 def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
-    """Call gemini CLI. Uses its own auth session."""
-    cmd = ["gemini", "-p", prompt]
+    """Call gemini CLI. Uses its own auth session.
+
+    Passes prompt via stdin to avoid shell argument length issues.
+    Uses --yolo to auto-approve all tool use (required for non-interactive
+    subprocess execution — without it gemini blocks on approval prompts).
+    """
+    cmd = ["gemini", "--yolo", "--output-format", "text", "-p", ""]
     if model:
         cmd.extend(["-m", model])
     result = subprocess.run(
-        cmd, capture_output=True, text=True, check=True,
+        cmd, input=prompt, capture_output=True, text=True, check=True,
         timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
         cwd=cwd,
     )
