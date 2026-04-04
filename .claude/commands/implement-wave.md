@@ -22,7 +22,7 @@ Same principles as `/implement`: you own the solution, not just the code. The va
 - `owner/repo`: GitHub repository in `owner/repo` format
 - `--epic`: The milestone name (e.g., `"Epic: Order Lifecycle"`)
 - `--skip-browser-use`: Skip browser-use validation on all tickets
-- `--max-parallel`: Maximum concurrent implementations (default: 3). Limits API rate pressure. Each ticket spawns 3 AI consultations, so `--max-parallel 3` means up to 9 concurrent API calls.
+- `--max-parallel`: Maximum concurrent implementations (default: 2). Limits API rate pressure. Each ticket spawns 3-4 AI consultations, so `--max-parallel 2` means up to 8 concurrent API calls. Users with high-tier API access can increase to 3 or more.
 
 ## Workflow
 
@@ -52,13 +52,30 @@ Fetch all open tickets in the epic milestone:
 gh issue list --repo "$owner_repo" --milestone "$epic_name" --state open --limit 100 --json number,title,body,labels
 ```
 
-Parse the dependency graph from the epic plan. The `/plan-epic` output in the milestone description contains an **Implementation Order** with explicit `depends on #N` annotations. Parse these to build an adjacency list:
+Parse the dependency graph from the milestone description. `/plan-epic` writes a machine-readable `<!-- DEPENDENCIES -->` block:
 
+```html
+<!-- DEPENDENCIES
+#42: []
+#43: [#42]
+#44: [#43]
+#45: [#43]
+#46: [#42]
+-->
 ```
-For each ticket:
-  - Extract "depends on #X, #Y" from the implementation order
-  - Build: { ticket_number: [dependency_numbers] }
+
+Fetch the milestone description and extract this block:
+
+```bash
+MILESTONE_DESC=$(gh api "repos/$owner_repo/milestones" --jq ".[] | select(.title == \"$epic_name\") | .description")
 ```
+
+Parse each line inside `<!-- DEPENDENCIES ... -->` to build the adjacency list:
+```
+{ 42: [], 43: [42], 44: [43], 45: [43], 46: [42] }
+```
+
+**If the DEPENDENCIES block is missing**, fall back to parsing `depends on #N` annotations from the implementation order in the milestone description or issue bodies. Warn the user that this is less reliable and suggest re-running `/plan-epic` to add structured metadata.
 
 Compute waves using topological sort:
 - **Wave 1**: All tickets with zero unmet dependencies (no `depends on` or all dependencies already closed)
@@ -116,6 +133,14 @@ git status --porcelain  # must be empty
 
 For each wave, in order:
 
+**Before launching a wave**, check for failed dependencies. If any ticket in a previous wave failed, remove all downstream dependents from the current and future waves. Recompute the wave plan with the remaining tickets. Report to the user which tickets were dropped and why:
+
+```markdown
+⚠️ Skipping #44 (depends on #43 which failed in Wave 2)
+⚠️ Skipping #47 (depends on #44, transitively blocked)
+Revised Wave 3: #45, #46
+```
+
 #### 4a: Launch parallel implementations
 
 For each ticket in the current wave (up to `--max-parallel`):
@@ -131,25 +156,29 @@ For each ticket in the current wave (up to `--max-parallel`):
    The sub-agent prompt must include:
    - The full ticket details (title, body, acceptance criteria)
    - The epic context (contracts, invariants, state machines, traceability)
-   - The implementation plan approach: run the **full `/implement` Steps 4-8** internally:
+   - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
      - Step 4: Consult 3 AIs on approach (Codex + Gemini as background processes, self as the third perspective), reconcile into plan
      - Step 5: Write failing tests (TDD)
      - Step 6: Implement to make tests green
      - Step 7: Multi-AI code review (Codex + Gemini in parallel)
-     - Step 8: Apply review fixes, run full test suite, run linting
+     - Step 8: Apply review fixes, run full test suite, run linting, verify acceptance criteria
+     - Step 9: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
      - You are in a git worktree. Verify with `git rev-parse --show-toplevel`. Never operate on the main checkout.
      - Write all temp files to `$TICKET_TMP/` (pass the path explicitly).
      - If you encounter a blocking error after 3 retries, report it and stop — do not silently skip steps.
+     - Do NOT run `gh pr create`, `gh pr merge`, or `git push`. The orchestrator handles all of this.
    - The target repo path and default branch name
    - Instructions to report back: branch name, test results, review findings, any issues
 
 3. If the wave has more tickets than `--max-parallel`, queue the excess. As each sub-agent completes, launch the next queued ticket.
 
+**Sub-agent timeout**: If a sub-agent has not completed after **3 hours**, consider it hung. Implementation sub-agents run the full /implement loop internally (AI consultations, TDD, review, validation) which legitimately takes 60-120 minutes per ticket. Only after the 3-hour mark should you log a warning, note the ticket as failed for this wave, and proceed with collecting results from completed agents. The hung ticket can be retried in a later wave or handled manually with `/implement`.
+
 **While sub-agents run**, the orchestrator should monitor for completion notifications. Do not poll — the Agent tool will notify when each background agent finishes.
 
-#### 4b: Collect results
+#### 4b: Collect and verify results
 
 As each sub-agent in the wave completes, collect:
 - **Branch name** and worktree path
@@ -164,32 +193,46 @@ If a sub-agent reports failure:
 
 Do not proceed to the merge step until ALL sub-agents in the wave have completed (successfully or with documented failures).
 
-#### 4c: Merge wave to main
+**Rogue PR detection**: After all sub-agents complete, check for unauthorized PRs:
+```bash
+gh pr list --repo "$owner_repo" --state open --limit 10 --json number,title,author,headRefName
+```
+If any PRs were created by a sub-agent during this wave (matching ticket branch names), close them with a comment explaining the orchestrator handles PR creation. Warn the user.
 
-For each successfully completed ticket in the wave:
+**Orchestrator independent verification**: For each successfully completed ticket, the orchestrator must independently verify (not just trust the sub-agent's report):
+1. Check out the ticket's branch in its worktree
+2. Run the full test suite
+3. Run linting
+4. Verify the branch has the expected commits
 
-1. **Merge the worktree branch to the default branch**:
+This is the same principle as `/implement` Step 8 — the orchestrator is the quality gate, not the sub-agent.
+
+#### 4c: Merge wave to a staging branch
+
+**Do NOT merge directly to the default branch.** Use a staging branch so the integration check (4d) runs before anything is pushed.
+
+1. **Create a staging branch** from the current default branch:
    ```bash
    cd "$TARGET_REPO"
    git checkout "$DEFAULT_BRANCH"
    git pull --ff-only
+   git checkout -b "wave-$wave_number-staging"
+   ```
+
+2. **Merge each ticket branch** into the staging branch:
+   ```bash
    git merge --no-ff "feat/$ticket_number-..." -m "feat: implement #$ticket_number — [title]"
    ```
 
-2. **If merge conflicts occur** (expected when tickets in the same wave touch shared files):
+3. **If merge conflicts occur** (expected when tickets in the same wave touch shared files):
    - Log which files conflict
    - Attempt automatic resolution for trivial conflicts (e.g., both sides added different imports)
    - For non-trivial conflicts: launch a **Sonnet sub-agent** to resolve the conflict, passing it both branches' changes and the epic contracts as constraints
    - After resolution, run the full test suite to verify the merge is clean
 
-3. **Push to remote** after all tickets in the wave are merged:
-   ```bash
-   git push origin "$DEFAULT_BRANCH"
-   ```
-
 #### 4d: Wave integration check
 
-After merging all tickets in the wave, **before starting the next wave**, run a quick integration check:
+Run the integration check **on the staging branch, before pushing**:
 
 1. **Full test suite**: `go test ./...` / `npm test` / `pytest` — all must pass
 2. **Linting**: `golangci-lint run ./...` / `npx eslint` — zero high-severity findings
@@ -197,13 +240,26 @@ After merging all tickets in the wave, **before starting the next wave**, run a 
 4. **Smoke test**: If services can be started, start them and verify health endpoints respond
 
 If the integration check fails:
-- **Test failure caused by merge**: Fix it before proceeding. Launch a Sonnet sub-agent to diagnose and fix.
-- **Pre-existing failure**: Note it, fix it, commit the fix to main.
-- **Build failure**: This is a hard blocker. Fix before next wave.
+- **Test failure caused by merge**: Fix it on the staging branch. Launch a Sonnet sub-agent to diagnose and fix.
+- **Build failure**: This is a hard blocker. Fix before proceeding.
+- Do NOT push until all checks pass.
 
-Only proceed to the next wave when the integration check passes.
+#### 4e: Promote staging to main
 
-#### 4e: Update traceability
+Only after the integration check passes, fast-forward the default branch to the staging branch:
+
+```bash
+git checkout "$DEFAULT_BRANCH"
+git merge --ff-only "wave-$wave_number-staging"
+git push origin "$DEFAULT_BRANCH"
+git branch -d "wave-$wave_number-staging"
+```
+
+If the fast-forward fails (someone pushed to main in the meantime), rebase the staging branch and re-run the integration check.
+
+Only proceed to the next wave after the push succeeds.
+
+#### 4f: Update traceability
 
 After the wave merges, update the traceability matrix for all tickets in the wave:
 - Mark acceptance criteria as `covered` where tests were written
@@ -271,6 +327,6 @@ After all waves complete:
 - **Each sub-agent runs the full /implement loop.** No shortcuts — TDD, multi-AI review, linting, tests. The parallelism is in running multiple tickets simultaneously, not in cutting steps per ticket.
 - **The orchestrator owns the merge.** Sub-agents produce branches. The orchestrator merges, resolves conflicts, and runs integration checks. Sub-agents never merge or create PRs.
 - **Integration checks between waves catch seam bugs early.** A test that passes in isolation but fails after merge is exactly the kind of bug this workflow is designed to catch.
-- **Max-parallel limits API pressure.** Three concurrent tickets means up to 9 simultaneous AI API calls (3 consultations per ticket). Respect rate limits.
+- **Max-parallel limits API pressure.** Two concurrent tickets means up to 8 simultaneous AI API calls (3-4 consultations per ticket). Respect rate limits. Increase only with high-tier API access.
 - **Failed tickets don't block the wave.** If one ticket in a wave fails, the other tickets in that wave can still merge. The failed ticket is retried or deferred to a later wave.
 - **Pre-flight catches auth failures early.** Discovering expired Codex auth 20 minutes into a 3-ticket wave wastes all 3 tickets' work. Check before launching.

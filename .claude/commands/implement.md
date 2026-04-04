@@ -187,11 +187,9 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - The implementation plan from Step 4
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
-- The **target repo path** (`$TARGET_REPO`) — the sub-agent must `cd` to it immediately
-
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 10).
-- You are working in a **git worktree**. Verify this at the start: run `git rev-parse --show-toplevel` and confirm you are NOT in the main checkout. If you are in the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, run `git rev-parse --show-toplevel` to discover your working directory. Work ONLY in this directory. Do NOT `cd` to `$TARGET_REPO` — that is the main checkout, not your worktree. If `git rev-parse --show-toplevel` returns the same path as the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 
@@ -212,11 +210,9 @@ The sub-agent should:
 
 Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
-**Important**: The sub-agent should work in the target repo, not in chief-wiggum.
-
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 10).
-- You are working in a **git worktree**. Verify this at the start: run `git rev-parse --show-toplevel` and confirm you are NOT in the main checkout. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You are working in a **git worktree** (the same one from Step 5). Run `git rev-parse --show-toplevel` to confirm your working directory. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**

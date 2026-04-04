@@ -317,6 +317,14 @@ git push
 
 **Important**: Ensure you are on `$DEFAULT_BRANCH` before committing. If there are uncommitted changes in the working tree, stash them first, commit the architecture, then pop the stash.
 
+**If `git push` fails** (e.g., branch protection rules forbid direct pushes to the default branch), fall back to creating a PR:
+```bash
+git checkout -b "arch/$epic_slug"
+git push -u origin "arch/$epic_slug"
+gh pr create --repo "$owner_repo" --title "arch: add epic architecture — [Epic Name]" --body "Architecture artifacts for the [Epic Name] epic." --label documentation
+gh pr merge --squash --auto
+```
+
 ### Step 8: Update issue descriptions
 
 For each ticket in the epic, append a reference to the architectural artifacts:

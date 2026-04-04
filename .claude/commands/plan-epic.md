@@ -115,11 +115,24 @@ Ask the user to confirm. Adjust if needed.
 
 ### Step 6: Create the GitHub milestone
 
-Create a milestone to track the epic:
+Create a milestone to track the epic. The milestone description **must** include a machine-readable dependency block so that `/implement-wave` can parse the DAG without brittle markdown parsing:
 
 ```bash
-gh api repos/$owner_repo/milestones -f title="Epic: [Name]" -f description="[Goal]. Tickets: #42, #43, #44, #45, #46"
+gh api repos/$owner_repo/milestones -f title="Epic: [Name]" -f description="$(cat <<'EOF'
+[Goal]
+
+<!-- DEPENDENCIES
+#42: []
+#43: [#42]
+#44: [#43]
+#45: [#43]
+#46: [#42]
+-->
+EOF
+)"
 ```
+
+The `<!-- DEPENDENCIES -->` block is an HTML comment (invisible in rendered markdown) containing one line per ticket in the format `#N: [#dep1, #dep2]`. Empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph — `/implement-wave` parses it to compute waves.
 
 Add all epic tickets to the milestone:
 ```bash
@@ -132,6 +145,7 @@ gh issue edit $issue_number --repo "$owner_repo" --milestone "Epic: [Name]"
 Epic planned. Next steps:
 1. `/architect owner/repo --epic "Epic: [Name]"` — define contracts, invariants, and integration tests before implementation
 2. Then `/implement owner/repo#42` for the first ticket (it will pick up the epic context)
+3. Or `/implement-wave owner/repo --epic "Epic: [Name]"` to implement all tickets in parallel waves
 ```
 
 ## Key Principles
