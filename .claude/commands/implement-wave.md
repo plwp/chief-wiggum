@@ -28,6 +28,13 @@ Same principles as `/implement`: you own the solution, not just the code. The va
 
 ### Step 1: Resolve paths and load epic context
 
+**Prevent sleep**: Wave implementation runs for hours. Start `caffeinate` to keep the machine awake:
+```bash
+caffeinate -dims &
+CAFFEINATE_PID=$!
+```
+Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/null`
+
 ```bash
 CW_HOME=$(python3 "$(dirname "$0")/../../scripts/repo.py" home 2>/dev/null || echo "$HOME/repos/chief-wiggum")
 CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"

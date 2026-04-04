@@ -45,6 +45,13 @@ Everything else — just do it.
 
 ### Step 1: Resolve paths and load epic context
 
+**Prevent sleep**: Start `caffeinate` to keep the machine awake for the duration of the workflow:
+```bash
+caffeinate -dims &
+CAFFEINATE_PID=$!
+```
+Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/null`
+
 Resolve the chief-wiggum install directory and the target repo path. **Never hardcode paths.**
 
 ```bash
