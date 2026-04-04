@@ -57,6 +57,15 @@ DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultB
 
 **Important**: `$CW_TMP` uses a unique session ID so concurrent `/implement` runs don't clobber each other's temp files.
 
+Create a **ticket-scoped subdirectory** for all per-ticket artifacts. When implementing multiple tickets in one session, this prevents file collisions (e.g., `approach-codex.md` for ticket #417 being overwritten by ticket #418):
+
+```bash
+TICKET_TMP="$CW_TMP/$issue_number"
+mkdir -p "$TICKET_TMP"
+```
+
+All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemini.md`, `approach-opus.md`, `implementation-plan.md`, `review-prompt.md`, `review-codex.md`, `review-gemini.md`, `impl-diff.txt`) go in `$TICKET_TMP`, not `$CW_TMP`. Shared session files (e.g., epic context) remain in `$CW_TMP`.
+
 **Load epic context** (if this ticket belongs to an epic):
 
 ```bash
@@ -106,21 +115,28 @@ This step has two phases, each in its own sub-agent. This keeps the heavy codeba
 
 #### Phase A: Gather approaches (parallel)
 
-Run three consultations in parallel:
+Run **four** tasks in parallel — three AI consultations plus a codebase exploration agent:
 
 1. **Codex + Gemini** — Launch as background bash commands:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/approach-prompt.md -o $CW_TMP/approach-codex.md --cwd "$TARGET_REPO" &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/approach-prompt.md -o $CW_TMP/approach-gemini.md --cwd "$TARGET_REPO" &
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" &
    wait
    ```
 
 2. **Opus exploration** — Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel with the above. This sub-agent should:
    - Explore the target repo codebase thoroughly (read key files, understand patterns)
    - Form its own implementation approach
-   - Write its findings to `$CW_TMP/approach-opus.md`
+   - Write its findings to `$TICKET_TMP/approach-opus.md`
 
-Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` including:
+3. **Codebase deep-dive** — Launch a **Sonnet Explore sub-agent** (`subagent_type: "Explore"`, thoroughness: "very thorough") in parallel with all of the above, running in the background (`run_in_background: true`). This sub-agent should:
+   - Read key files in the areas the ticket will touch (based on ticket description and labels)
+   - Document existing patterns, conventions, test infrastructure, and relevant data models
+   - Write findings to `$TICKET_TMP/codebase-context.md`
+   
+   This agent's output is **not blocking** for Phase A completion — it feeds into Phase B reconciliation. If it finishes before Phase B starts, great. If not, Phase B should wait for it (it's fast — typically 2-3 minutes).
+
+Before launching, prepare the approach prompt at `$TICKET_TMP/approach-prompt.md` including:
 - Ticket title, description, and acceptance criteria
 - **Epic context** (if loaded): relevant contracts, invariants, state machine transitions — these are constraints, not suggestions
 - **Orientation context** (give them the lay of the land, NOT the answer):
@@ -133,14 +149,24 @@ Before launching, prepare the approach prompt at `$CW_TMP/approach-prompt.md` in
 
 **HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (Codex, Gemini, Opus) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
 
+**Validate consultation output after `wait`**: After all background processes complete, check each output file:
+```bash
+# For each output file (approach-codex.md, approach-gemini.md):
+# 1. File must exist
+# 2. File must be > 100 bytes (not empty or just an error message)
+# 3. File must NOT start with "Timeout:" or "Error:"
+```
+If any output is empty, missing, or contains only an error message, **retry that specific consultation** (up to 2 retries). Log which consultation failed and why. Only proceed when all three have substantive output.
+
 #### Phase B: Reconcile into implementation plan
 
-Once all three approaches are ready, launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
+Once all three approaches are ready, ensure the codebase deep-dive agent (Phase A, task 3) has also completed. Then launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
 
 1. Read all three approach files (`approach-codex.md`, `approach-gemini.md`, `approach-opus.md`)
-2. Read the epic context files (contracts, invariants, state machines) if they exist
-3. Identify consensus, conflicts, and unique insights
-4. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
+2. Read the codebase context file (`$TICKET_TMP/codebase-context.md`) from the deep-dive agent
+3. Read the epic context files (contracts, invariants, state machines) if they exist
+4. Identify consensus, conflicts, and unique insights
+5. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
    - **Files to create/modify** with specific paths
    - **Ordered implementation steps** — each step should specify exactly what to do, in which file, with enough detail that no further codebase exploration is needed
    - **Code patterns to follow** — reference specific existing files/functions as templates
@@ -148,8 +174,8 @@ Once all three approaches are ready, launch a **second Opus sub-agent** (`subage
    - **Contract enforcement** — which REQUIRES/ENSURES blocks from the epic contracts must appear as runtime guards in the code
    - **Test plan** — specific test cases to write and how to run them
    - **Open questions** for the user (if any)
-5. Write the full plan to `$CW_TMP/implementation-plan.md`
-6. Return a concise summary for the main thread
+6. Write the full plan to `$TICKET_TMP/implementation-plan.md`
+7. Return a concise summary for the main thread
 
 Present a concise summary to the user. If there are open questions that genuinely need user input (e.g., conflicting approaches with no clear winner), ask. Otherwise, proceed directly to Step 5.
 
@@ -161,6 +187,11 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - The implementation plan from Step 4
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
+- The **target repo path** (`$TARGET_REPO`) — the sub-agent must `cd` to it immediately
+
+**HARD RULES for sub-agent**:
+- Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 10).
+- You are working in a **git worktree**. Verify this at the start: run `git rev-parse --show-toplevel` and confirm you are NOT in the main checkout. If you are in the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 
@@ -179,9 +210,13 @@ The sub-agent should:
 
 ### Step 6: Implement
 
-Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$CW_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
+Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
 **Important**: The sub-agent should work in the target repo, not in chief-wiggum.
+
+**HARD RULES for sub-agent**:
+- Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 10).
+- You are working in a **git worktree**. Verify this at the start: run `git rev-parse --show-toplevel` and confirm you are NOT in the main checkout. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**
@@ -211,23 +246,25 @@ The sub-agent should:
 
 1. Get the diff from the implementation:
    ```bash
-   git diff "$DEFAULT_BRANCH"...HEAD > $CW_TMP/impl-diff.txt
+   git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
    ```
 
-2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values. **Also include the structured checklist** from `$CW_HOME/templates/review-checklist.md` and the epic contracts/invariants if they exist. Write to `$CW_TMP/review-prompt.md`.
+2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values. **Also include the structured checklist** from `$CW_HOME/templates/review-checklist.md` and the epic contracts/invariants if they exist. Write to `$TICKET_TMP/review-prompt.md`.
 
 3. Run external AI reviews in parallel:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/review-prompt.md -o $CW_TMP/review-codex.md --cwd "$(git rev-parse --show-toplevel)" &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/review-prompt.md -o $CW_TMP/review-gemini.md --cwd "$(git rev-parse --show-toplevel)" &
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/review-prompt.md -o $TICKET_TMP/review-codex.md --cwd "$(git rev-parse --show-toplevel)" &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/review-prompt.md -o $TICKET_TMP/review-gemini.md --cwd "$(git rev-parse --show-toplevel)" &
    wait
    ```
+
+   **Validate review output**: After `wait`, check that both `review-codex.md` and `review-gemini.md` exist and contain substantive output (>100 bytes, not starting with "Timeout:" or "Error:"). Retry any failed consultation up to 2 times. If a consultation still fails after retries, proceed with available reviews but note the gap in the synthesis.
 
 4. Perform its own review of the diff.
 
 5. Synthesize using:
    ```bash
-   python3 "$CW_HOME/scripts/synthesize_reviews.py" $CW_TMP/review-codex.md $CW_TMP/review-gemini.md
+   python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/review-codex.md $TICKET_TMP/review-gemini.md
    ```
 
 6. Return a concise summary categorising each piece of feedback:
