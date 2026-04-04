@@ -8,6 +8,7 @@ A collection of Claude Code skills that orchestrate a full development pipeline 
 
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
 - **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, and independent verification per ticket.
+- **Wave level**: `/implement-wave` — parallel implementation of an entire epic in dependency-ordered waves. Each wave runs multiple `/implement` loops concurrently in isolated worktrees, merges to main, then starts the next wave.
 - **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`.
 
 ## Key Principles
@@ -97,7 +98,7 @@ CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
 mkdir -p "$CW_TMP"
 ```
 
-All temp file references (`approach-prompt.md`, `approach-codex.md`, etc.) go inside `$CW_TMP`.
+All temp file references (`approach-prompt.md`, `approach-codex.md`, etc.) go inside `$CW_TMP`. Per-ticket files go in `$CW_TMP/<ticket-number>/` to avoid collisions when implementing multiple tickets in one session (see `/implement` Step 1).
 
 ## Path Resolution
 
@@ -170,7 +171,8 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 # Epic flow (the core loop)
 /plan-epic owner/repo           # Group issues into epic with dependency graph
 /architect owner/repo --epic "Epic: Name"  # Define contracts, invariants, tests
-/implement owner/repo#42        # TDD implementation loop for a ticket
+/implement owner/repo#42        # TDD implementation loop for a single ticket
+/implement-wave owner/repo --epic "Epic: Name"  # Parallel implementation in waves
 /close-epic owner/repo --epic "Epic: Name" # Epic-level quality gate
 
 /ship                           # Create PR with mermaid diagrams (standalone)
