@@ -134,7 +134,8 @@ For each issue, define:
 - Acceptance criteria (checkboxes)
 - Labels (create labels first if they don't exist)
 
-**Always include these repo-specific skill issues in the foundation set:**
+**Always include these repo-specific foundation items:**
+- **Copy `pre-merge-check.sh`** — Copy `$CW_HOME/templates/pre-merge-check.sh` to `scripts/pre-merge-check.sh` in the target repo. This language-agnostic script auto-detects project layers (Go, Node, Python, Rust) and runs their test/lint/build commands. It serves as the CI gate for repos without branch protection. Reference it in the target repo's CLAUDE.md.
 - **Create /test skill** — A `.claude/commands/test.md` skill for the target repo that runs the full test suite (backend + frontend + E2E), reports results, and optionally fixes failures. Should detect the project's test framework and run the appropriate commands.
 - **Create /deploy skill** — A `.claude/commands/deploy.md` skill for the target repo that handles deployment to the target environment (build, push, deploy, verify health). Should match the project's infrastructure (e.g. Cloud Run, Vercel, AWS, etc.) and include smoke tests post-deploy.
 
