@@ -1,6 +1,20 @@
 # Chief Wiggum
 
-Agentic SDLC orchestration for Claude Code. A reusable set of skills that power an AI-driven software development lifecycle.
+Agentic SDLC orchestration for Claude Code. It turns vague tickets into a disciplined delivery loop: requirements capture, epic planning, architecture, test-first implementation, structured review, and PR-ready output.
+
+## Why This Exists
+
+- Most AI coding workflows optimise for fast patches, not for system quality, traceability, or safe delivery.
+- Chief Wiggum adds explicit contracts, multi-model consultation, worktree isolation, independent verification, and GitHub-integrated shipping steps.
+- The goal is not "let the model code unsupervised". The goal is a repeatable engineering workflow that still holds up under review.
+
+## Core Capabilities
+
+- **Epic planning**: group issues into execution waves with dependency and integration-risk analysis
+- **Architecture**: define contracts, invariants, state machines, ADRs, and integration tests before implementation
+- **Implementation**: run a TDD loop with Codex, Gemini, and Opus as inputs rather than a single-model guess
+- **Verification**: require static analysis, test execution, browser validation, and structured review before shipping
+- **Shipping**: generate PRs with architecture context and supporting artifacts
 
 ## Quick Start
 
