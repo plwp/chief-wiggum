@@ -86,7 +86,23 @@ If a milestone exists and `docs/epics/[epic-slug]/` exists in the target repo, l
 - `invariants.md` — cross-cutting rules
 - `traceability.md` — which acceptance criteria need which tests
 
-These artifacts are **hard constraints** on the implementation. The coding sub-agent MUST satisfy them. The review checklist MUST verify them.
+Also check for **formal model artifacts** in `docs/epics/[epic-slug]/models/`:
+- `contracts.json` — structured contracts (machine-readable)
+- `state-machines.json` — structured state machines (machine-readable)
+- `test-paths.json` — mechanically generated test paths
+- `test-plan.md` — test plan with positive/negative cases
+- `test_state_machine.py` — Hypothesis RuleBasedStateMachine skeleton
+
+Set a flag for downstream steps:
+```bash
+HAS_FORMAL_MODELS=false
+if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json" ]; then
+  HAS_FORMAL_MODELS=true
+  MODELS_DIR="$TARGET_REPO/docs/epics/[epic-slug]/models"
+fi
+```
+
+These artifacts are **hard constraints** on the implementation. The coding sub-agent MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
 If no epic context exists, proceed without it — the skill works standalone too.
 
@@ -190,10 +206,29 @@ Present a concise summary to the user. If there are open questions that genuinel
 
 **Write failing tests before writing implementation code.** This transforms the objective from "implement this feature" to "make these tests pass" — a more constrained and verifiable target.
 
+**If formal models exist** (`$HAS_FORMAL_MODELS == true`), generate mechanical test artifacts BEFORE launching the sub-agent. The orchestrator does this directly — it's a deterministic script call, not LLM work:
+
+```bash
+# Generate test paths and plan from state machine model
+python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/state-machines.json" --view test --output "$TICKET_TMP/"
+
+# Generate contract assertion templates
+python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/contracts.json" --view test --output "$TICKET_TMP/"
+
+# Generate Hypothesis test skeleton (if not already in models dir)
+python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/state-machines.json" --format hypothesis > "$TICKET_TMP/test_state_machine_skeleton.py"
+
+# Generate guard clause templates for the target language
+python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/contracts.json" --format guards-py > "$TICKET_TMP/guard_templates.py"
+```
+
+These mechanically generated artifacts are passed to the sub-agent as inputs — the sub-agent adapts them to the target repo's test framework and conventions, not invents tests from scratch.
+
 Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it:
 - The implementation plan from Step 4
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
+- **If formal models exist**: the generated test plan (`$TICKET_TMP/test-plan.md`), test paths (`$TICKET_TMP/test-paths.json`), contract assertions (`$TICKET_TMP/contract-assertions.md`), Hypothesis skeleton (`$TICKET_TMP/test_state_machine_skeleton.py`), and guard templates (`$TICKET_TMP/guard_templates.py`)
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 10).
 - You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, run `git rev-parse --show-toplevel` to discover your working directory. Work ONLY in this directory. Do NOT `cd` to `$TARGET_REPO` — that is the main checkout, not your worktree. If `git rev-parse --show-toplevel` returns the same path as the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
@@ -202,14 +237,15 @@ The sub-agent should:
 
 1. Create a feature branch named after the ticket (e.g., `feat/42-add-dark-mode`)
 2. Write test files FIRST, covering:
+   - **Mechanically derived tests** (if formal models exist): Adapt the test plan and paths from the formal model to the target repo's test framework. Each path in `test-paths.json` becomes a test case. Each invalid transition becomes a negative test case. Each contract assertion becomes a precondition/postcondition check. Tag these tests with a `# DERIVED: model` comment for traceability.
    - **Acceptance criteria tests**: One or more tests per AC from the ticket. If a traceability matrix exists, follow it.
    - **Contract tests**: For each REQUIRES/ENSURES in the epic contracts that this ticket touches, write a test that verifies the precondition is checked and the postcondition holds.
-   - **State machine tests** (if applicable): Test that valid transitions succeed and invalid transitions are rejected.
+   - **State machine tests** (if applicable): Test that valid transitions succeed and invalid transitions are rejected. If the Hypothesis skeleton was provided, adapt it to use the actual implementation's API rather than just tracking state in a variable.
    - **Property-based tests** (where appropriate): For pure functions and data transformations, write at least one property test (roundtrip, idempotency, no-crash-on-valid-input). Use the project's property testing library if one exists (Hypothesis, fast-check, gopter), otherwise skip.
    - **Error path tests**: For each API endpoint or operation, test at least one error case (invalid input, missing auth, service unavailable).
 3. Run the tests — **all should fail** (red phase). If any pass before implementation, the test is not testing new behaviour. Investigate and fix.
 4. Commit the test files with message: `test: add failing tests for #[number] — [title]`
-5. Report back: which tests were written, which frameworks used, any gaps in the traceability matrix
+5. Report back: which tests were written (noting which are model-derived vs LLM-written), which frameworks used, any gaps in the traceability matrix
 
 **Important**: The sub-agent should report the worktree path and branch name. The implementation sub-agent in Step 6 will work in the SAME worktree.
 
@@ -306,12 +342,27 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    - Check that REQUIRES blocks appear as guard clauses in the implementation
    - Check that invalid state transitions are rejected (try one via curl or test)
    - Check that ENSURES postconditions hold after operations complete
-8. **Quality check** — Read the key files produced:
+8. **Formal model conformance check** (if `$HAS_FORMAL_MODELS == true`):
+   This is the mechanical verification step that doesn't rely on sub-agent self-reports.
+   - **State machine coverage**: For each test path in `test-paths.json`, verify a corresponding test exists and passes. Count: paths covered / paths total.
+   - **Invalid transition coverage**: For each invalid transition in the model, verify a negative test exists that asserts rejection. Count: invalid transitions tested / invalid transitions total.
+   - **Guard clause presence**: For each REQUIRES precondition in `contracts.json`, grep the implementation for a corresponding guard clause or validation check. Flag missing guards.
+   - **Invariant coverage**: For each invariant in the model, verify at least one test checks it (either directly or via the Hypothesis `RuleBasedStateMachine`).
+   - Produce a conformance summary:
+     ```
+     Model conformance:
+       Test paths:           X/Y covered
+       Invalid transitions:  X/Y tested
+       Guard clauses:        X/Y present
+       Invariants:           X/Y checked
+     ```
+   - If any category is below 80% coverage, flag it as a gap in the PR body. Do NOT block shipping — this is a signal, not a gate, in Phase 1. (Phase 2 may tighten this to a hard gate.)
+9. **Quality check** — Read the key files produced:
    - Is the code idiomatic for the language?
    - Are there any obvious issues (missing error handling, security gaps, dead code)?
    - Does it follow existing patterns in the codebase?
    - Would you be proud to ship this?
-9. **Clean up** — Stop any services you started (`docker compose down`)
+10. **Clean up** — Stop any services you started (`docker compose down`)
 
 If ANY verification fails: fix it directly, or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
@@ -396,9 +447,15 @@ gh pr create \
 
 ## Test plan
 [Test evidence — include TDD summary: N tests written first, all passing]
+[If formal models exist: N model-derived tests, M LLM-written tests]
 
 ## Contract compliance
 [Which epic contracts/invariants this implementation satisfies — omit if no epic context]
+
+## Model conformance
+[If formal models exist — include conformance summary from Step 8:]
+[Test paths: X/Y | Invalid transitions: X/Y | Guard clauses: X/Y | Invariants: X/Y]
+[Omit this section if no formal models]
 
 Closes #issue_number
 

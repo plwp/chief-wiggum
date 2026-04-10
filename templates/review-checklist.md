@@ -14,6 +14,14 @@ Score each item: **PASS**, **FAIL** (with one-line justification), or **N/A**.
 - [ ] State machine transitions are guarded — invalid transitions return an error
 - [ ] No field is stored in two different representations (e.g., both `item_ids` and `item_names`)
 
+## Formal Model Conformance (if formal models exist in models/ directory)
+- [ ] Every state machine transition in the model has a corresponding implementation path
+- [ ] Every invalid transition in the model is explicitly rejected (negative test exists)
+- [ ] Every REQUIRES precondition has a guard clause in the implementation code
+- [ ] Every ENSURES postcondition is verified by at least one test
+- [ ] No new states or transitions exist that aren't in the model — if the implementation introduces new behavior, the model should be updated first
+- [ ] Model-derived tests (tagged `# DERIVED: model`) are adapted to the actual API, not just copied verbatim from the skeleton
+
 ## Consistency
 - [ ] If multiple screens or endpoints read the same data, they use the same query / data source
 - [ ] Enum values, status strings, and field names match across layers (API, DB, UI)
