@@ -148,7 +148,35 @@ For each wave, in order:
 Revised Wave 3: #45, #46
 ```
 
-#### 4a: Launch parallel implementations
+#### 4a: Generate formal test artifacts (if formal models exist)
+
+**Before launching any sub-agents**, the orchestrator generates mechanical test artifacts from the formal models. This is deterministic — no LLM involved — and provides test scaffolding that sub-agents adapt rather than inventing tests from scratch.
+
+```bash
+if [ "$HAS_FORMAL_MODELS" = true ]; then
+  mkdir -p "$CW_TMP/formal-test-artifacts"
+
+  # Test paths and plan from state machine model
+  python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/state-machines.json" --view test \
+    --output "$CW_TMP/formal-test-artifacts/"
+
+  # Contract assertion templates
+  python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/contracts.json" --view test \
+    --output "$CW_TMP/formal-test-artifacts/"
+
+  # Guard clause templates for the target language
+  python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/contracts.json" \
+    --format guards-py > "$CW_TMP/formal-test-artifacts/guard_templates.py" 2>/dev/null || true
+
+  # Hypothesis state machine skeleton
+  python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/state-machines.json" \
+    --format hypothesis > "$CW_TMP/formal-test-artifacts/test_state_machine_skeleton.py" 2>/dev/null || true
+fi
+```
+
+These artifacts are shared across all tickets in the wave — each sub-agent receives the same test plan and adapts the relevant portions for its ticket.
+
+#### 4b: Launch parallel implementations
 
 For each ticket in the current wave (up to `--max-parallel`):
 
@@ -163,9 +191,10 @@ For each ticket in the current wave (up to `--max-parallel`):
    The sub-agent prompt must include:
    - The full ticket details (title, body, acceptance criteria)
    - The epic context (contracts, invariants, state machines, traceability)
+   - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the sub-agent: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
    - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
      - Step 4: Consult 3 AIs on approach (Codex + Gemini as background processes, self as the third perspective), reconcile into plan
-     - Step 5: Write failing tests (TDD)
+     - Step 5: Write failing tests (TDD) — **use model-derived test cases as the starting point**, supplement with LLM-written tests for edge cases
      - Step 6: Implement to make tests green
      - Step 7: Multi-AI code review (Codex + Gemini in parallel)
      - Step 8: Apply review fixes, run full test suite, run linting, verify acceptance criteria
@@ -185,7 +214,7 @@ For each ticket in the current wave (up to `--max-parallel`):
 
 **While sub-agents run**, the orchestrator should monitor for completion notifications. Do not poll — the Agent tool will notify when each background agent finishes.
 
-#### 4b: Collect and verify results
+#### 4c: Collect and verify results
 
 As each sub-agent in the wave completes, collect:
 - **Branch name** and worktree path
@@ -214,7 +243,7 @@ If any PRs were created by a sub-agent during this wave (matching ticket branch 
 
 This is the same principle as `/implement` Step 8 — the orchestrator is the quality gate, not the sub-agent.
 
-#### 4c: Merge wave to a staging branch
+#### 4d: Merge wave to a staging branch
 
 **Do NOT merge directly to the default branch.** Use a staging branch so the integration check (4d) runs before anything is pushed.
 
@@ -237,9 +266,9 @@ This is the same principle as `/implement` Step 8 — the orchestrator is the qu
    - For non-trivial conflicts: launch a **Sonnet sub-agent** to resolve the conflict, passing it both branches' changes and the epic contracts as constraints
    - After resolution, run the full test suite to verify the merge is clean
 
-#### 4d: Wave integration check
+#### 4e: Wave integration check
 
-Run the integration check **on the staging branch, before pushing**:
+Run the integration check **on the staging branch, before promoting to main**:
 
 1. **Full test suite**: `go test ./...` / `npm test` / `pytest` — all must pass
 2. **Linting**: `golangci-lint run ./...` / `npx eslint` — zero high-severity findings
@@ -251,7 +280,48 @@ If the integration check fails:
 - **Build failure**: This is a hard blocker. Fix before proceeding.
 - Do NOT push until all checks pass.
 
-#### 4e: Promote staging to main
+#### 4f: Formal model conformance check (if formal models exist)
+
+After the integration check passes but **before promoting to main**, run a conformance check against the formal models:
+
+```bash
+if [ "$HAS_FORMAL_MODELS" = true ]; then
+  echo "=== Formal Model Conformance Check ==="
+
+  # Check guard clause presence: for each REQUIRES in contracts.json,
+  # grep the implementation for a corresponding guard/validation
+  python3 "$CW_HOME/scripts/formal_models.py" validate "$MODELS_DIR/contracts.json"
+  python3 "$CW_HOME/scripts/formal_models.py" validate "$MODELS_DIR/state-machines.json"
+
+  # Verify invariants are covered by tests
+  # For each invariant ID in the model, grep the test files
+  for inv_id in $(python3 -c "
+import json
+sm = json.load(open('$MODELS_DIR/state-machines.json'))
+for inv in sm.get('invariants', []):
+    print(inv['id'])
+"); do
+    if grep -r "$inv_id" "$TARGET_REPO/lib/__tests__/" >/dev/null 2>&1; then
+      echo "  $inv_id: COVERED"
+    else
+      echo "  $inv_id: NOT COVERED in tests"
+    fi
+  done
+
+  # Check that shared helpers are used (INV-009)
+  inline_count=$(grep -r "getServerSession\|board\.userId ===" "$TARGET_REPO/app/api/" --include="*.ts" -l 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$inline_count" -gt 0 ]; then
+    echo "  INV-009: WARN — $inline_count route files still have inline auth checks"
+    grep -r "getServerSession\|board\.userId ===" "$TARGET_REPO/app/api/" --include="*.ts" -l 2>/dev/null
+  else
+    echo "  INV-009: PASS — no inline auth checks found"
+  fi
+fi
+```
+
+This is a signal, not a gate in the current implementation. Log the conformance results in the wave report. If coverage is below 80% on any category, flag it for the `/close-epic` retrospective.
+
+#### 4g: Promote staging to main
 
 Only after the integration check passes, fast-forward the default branch to the staging branch:
 
@@ -266,7 +336,7 @@ If the fast-forward fails (someone pushed to main in the meantime), rebase the s
 
 Only proceed to the next wave after the push succeeds.
 
-#### 4f: Update traceability
+#### 4h: Update traceability
 
 After the wave merges, update the traceability matrix for all tickets in the wave:
 - Mark acceptance criteria as `covered` where tests were written
