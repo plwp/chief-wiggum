@@ -1,0 +1,122 @@
+{
+  "paths": [
+    {
+      "target": "pending",
+      "steps": [
+        {
+          "state": "draft",
+          "event": "submit",
+          "next_state": "pending"
+        }
+      ],
+      "length": 1
+    },
+    {
+      "target": "confirmed",
+      "steps": [
+        {
+          "state": "draft",
+          "event": "submit",
+          "next_state": "pending"
+        },
+        {
+          "state": "pending",
+          "event": "confirm",
+          "next_state": "confirmed"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "cancelled",
+      "steps": [
+        {
+          "state": "draft",
+          "event": "submit",
+          "next_state": "pending"
+        },
+        {
+          "state": "pending",
+          "event": "confirm",
+          "next_state": "confirmed"
+        },
+        {
+          "state": "confirmed",
+          "event": "cancel",
+          "next_state": "cancelled"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "cancelled",
+      "steps": [
+        {
+          "state": "draft",
+          "event": "submit",
+          "next_state": "pending"
+        },
+        {
+          "state": "pending",
+          "event": "cancel",
+          "next_state": "cancelled"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "in_progress",
+      "steps": [
+        {
+          "state": "draft",
+          "event": "submit",
+          "next_state": "pending"
+        },
+        {
+          "state": "pending",
+          "event": "confirm",
+          "next_state": "confirmed"
+        },
+        {
+          "state": "confirmed",
+          "event": "start",
+          "next_state": "in_progress"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "completed",
+      "steps": [
+        {
+          "state": "draft",
+          "event": "submit",
+          "next_state": "pending"
+        },
+        {
+          "state": "pending",
+          "event": "confirm",
+          "next_state": "confirmed"
+        },
+        {
+          "state": "confirmed",
+          "event": "start",
+          "next_state": "in_progress"
+        },
+        {
+          "state": "in_progress",
+          "event": "complete",
+          "next_state": "completed"
+        }
+      ],
+      "length": 4
+    }
+  ],
+  "summary": {
+    "total_paths": 6,
+    "states_covered": 6,
+    "states_total": 6,
+    "transitions_covered": 6,
+    "shortest_paths_count": 6
+  }
+}

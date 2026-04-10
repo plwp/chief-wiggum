@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/gap-classification.json",
+  "title": "Formal Gap Classification",
+  "description": "Schema for classifying gaps between a formal model and an implementation. Used by the orchestrator to report conformance failures with precise, actionable categories.",
+  "type": "object",
+  "required": ["model_source", "gaps"],
+  "additionalProperties": false,
+  "properties": {
+    "model_source": {
+      "type": "string",
+      "description": "Path to the model file this gap report is based on"
+    },
+    "implementation_ref": {
+      "type": "string",
+      "description": "Git ref, branch, or commit of the implementation being checked"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gap"
+      }
+    }
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_gaps": { "type": "integer" },
+        "by_type": {
+          "type": "object",
+          "additionalProperties": { "type": "integer" }
+        },
+        "by_severity": {
+          "type": "object",
+          "additionalProperties": { "type": "integer" }
+        },
+        "model_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "states_covered": { "type": "integer" },
+            "states_total": { "type": "integer" },
+            "transitions_covered": { "type": "integer" },
+            "transitions_total": { "type": "integer" },
+            "invariants_verified": { "type": "integer" },
+            "invariants_total": { "type": "integer" },
+            "contracts_verified": { "type": "integer" },
+            "contracts_total": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "required": ["id", "type", "severity", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique gap identifier (e.g., 'GAP-001')"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "STATE_GAP",
+            "INVARIANT_VIOLATION",
+            "SCHEMA_VIOLATION",
+            "BEHAVIORAL_DIVERGENCE",
+            "COVERAGE_GAP"
+          ],
+          "description": "STATE_GAP: implementation missing a state or transition from the model. INVARIANT_VIOLATION: implementation breaks a stated invariant. SCHEMA_VIOLATION: data shape doesn't match contract. BEHAVIORAL_DIVERGENCE: implementation produces different output than model predicts. COVERAGE_GAP: model has paths the implementation doesn't exercise."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"],
+          "description": "critical: blocks shipping. high: must fix before merge. medium: should fix. low: cosmetic or edge case."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the gap"
+        },
+        "model_element": {
+          "type": "object",
+          "description": "The specific model element that is violated or missing",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["state", "transition", "invariant", "contract_precondition", "contract_postcondition", "field", "error_case"]
+            },
+            "id": {
+              "type": "string",
+              "description": "ID or name of the model element"
+            },
+            "detail": {
+              "type": "string",
+              "description": "Specifics (e.g., 'transition from pending to confirmed via confirm event')"
+            }
+          }
+        },
+        "implementation_location": {
+          "type": "object",
+          "description": "Where in the implementation the gap manifests",
+          "additionalProperties": false,
+          "properties": {
+            "file": { "type": "string" },
+            "line": { "type": "integer" },
+            "function": { "type": "string" }
+          }
+        },
+        "evidence": {
+          "type": "string",
+          "description": "How the gap was detected (test failure, static analysis, manual inspection)"
+        },
+        "suggested_fix": {
+          "type": "string",
+          "description": "Recommended fix"
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provenance"
+          },
+          "description": "Traces back to the original requirement/fact that this gap relates to"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"]
+        },
+        "ref": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}

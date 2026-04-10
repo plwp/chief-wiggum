@@ -1,0 +1,85 @@
+{
+  "id": "order_status_state_machine",
+  "initial": "draft",
+  "states": {
+    "draft": {
+      "on": {
+        "submit": {
+          "target": "pending",
+          "guard": "has_customer_and_has_items_and_valid_dates"
+        }
+      },
+      "meta": {
+        "description": "Initial state \u2014 admin-created, incomplete data"
+      }
+    },
+    "pending": {
+      "on": {
+        "confirm": {
+          "target": "confirmed",
+          "guard": "capacity_available_and_pre_start_checks",
+          "actions": [
+            {
+              "type": "send_confirmation_notification"
+            }
+          ]
+        },
+        "cancel": {
+          "target": "cancelled"
+        }
+      },
+      "meta": {
+        "description": "Submitted via intake, awaiting confirmation"
+      }
+    },
+    "confirmed": {
+      "on": {
+        "start": {
+          "target": "in_progress",
+          "guard": "resource_assigned"
+        },
+        "cancel": {
+          "target": "cancelled",
+          "actions": [
+            {
+              "type": "apply_refund_policy"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Approved, awaiting start"
+      }
+    },
+    "in_progress": {
+      "on": {
+        "complete": {
+          "target": "completed",
+          "guard": "balance_settled"
+        }
+      },
+      "meta": {
+        "description": "Work in progress"
+      }
+    },
+    "completed": {
+      "type": "final",
+      "meta": {
+        "description": "Order fulfilled"
+      }
+    },
+    "cancelled": {
+      "type": "final",
+      "meta": {
+        "description": "Terminated before completion"
+      }
+    }
+  },
+  "context": {
+    "customer_id": null,
+    "item_ids": null,
+    "resource_id": null,
+    "start_date": null,
+    "end_date": null
+  }
+}

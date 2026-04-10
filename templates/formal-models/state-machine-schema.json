@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/state-machine.json",
+  "title": "State Machine Model",
+  "description": "Single-source state machine definition. Renders to XState JSON, Mermaid diagrams, prose markdown, and test paths.",
+  "type": "object",
+  "required": ["name", "initial", "states", "transitions"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Human-readable name (e.g., 'Order Status State Machine')"
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line summary of what this state machine models"
+    },
+    "initial": {
+      "type": "string",
+      "description": "The initial state. Must reference a key in 'states'."
+    },
+    "context": {
+      "type": "object",
+      "description": "Initial context/extended state (typed fields that accompany the finite state)",
+      "additionalProperties": {
+        "$ref": "#/$defs/contextField"
+      }
+    },
+    "states": {
+      "type": "object",
+      "description": "Map of state ID → state definition",
+      "additionalProperties": {
+        "$ref": "#/$defs/state"
+      },
+      "minProperties": 2
+    },
+    "transitions": {
+      "type": "array",
+      "description": "All valid transitions between states",
+      "items": {
+        "$ref": "#/$defs/transition"
+      },
+      "minItems": 1
+    },
+    "invalid_transitions": {
+      "type": "array",
+      "description": "Transitions that MUST be rejected. Used to generate negative test cases.",
+      "items": {
+        "$ref": "#/$defs/invalidTransition"
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "description": "Properties that must hold across all states or specific state subsets",
+      "items": {
+        "$ref": "#/$defs/invariant"
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "description": "Provenance: what requirements, facts, or tickets this machine was derived from",
+      "items": {
+        "$ref": "#/$defs/provenance"
+      }
+    }
+  },
+  "$defs": {
+    "contextField": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Data type (string, number, boolean, array, object, ObjectID, enum, etc.)"
+        },
+        "required_in_states": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "States where this field MUST be non-null. References state IDs."
+        },
+        "description": {
+          "type": "string"
+        },
+        "enum_values": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Valid values if type is 'enum'"
+        },
+        "source_of_truth": {
+          "type": "string",
+          "description": "Canonical source for this field (e.g., 'customers collection', 'computed at read time')"
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this state means"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["initial", "normal", "terminal"],
+          "default": "normal",
+          "description": "State classification. 'terminal' means no outgoing transitions allowed."
+        },
+        "entry_actions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Actions executed when entering this state"
+        },
+        "exit_actions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Actions executed when leaving this state"
+        },
+        "invariants": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Conditions that must hold while in this state (references invariant IDs or inline expressions)"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "required": ["from", "to", "event"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Source state ID"
+        },
+        "to": {
+          "type": "string",
+          "description": "Target state ID"
+        },
+        "event": {
+          "type": "string",
+          "description": "The event/trigger that causes this transition (e.g., 'submit', 'confirm', 'cancel')"
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/guard"
+          },
+          "description": "All guards must be satisfied for the transition to fire"
+        },
+        "actions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Side effects executed during the transition"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this transition"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "guard": {
+      "type": "object",
+      "required": ["description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this guard (for referencing in tests)"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable guard condition"
+        },
+        "expression": {
+          "type": "string",
+          "description": "Machine-checkable expression (pseudo-code or language-specific)"
+        }
+      }
+    },
+    "invalidTransition": {
+      "type": "object",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Source state ID"
+        },
+        "to": {
+          "type": "string",
+          "description": "Target state ID (the disallowed target)"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why this transition is invalid"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "required": ["id", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier (e.g., 'INV-001')"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable invariant statement"
+        },
+        "expression": {
+          "type": "string",
+          "description": "Machine-checkable expression"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["global", "state-specific"],
+          "default": "global",
+          "description": "Whether this holds in all states or only specific ones"
+        },
+        "applies_to_states": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "State IDs where this invariant applies (only if scope is 'state-specific')"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["data_integrity", "consistency", "operational_safety", "authorization", "temporal"],
+          "description": "Classification for reporting"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"],
+          "description": "What kind of source this traces back to"
+        },
+        "ref": {
+          "type": "string",
+          "description": "Reference identifier (e.g., '#42', 'AC-3', 'INV-002', 'FACT-17')"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable summary of what was derived"
+        }
+      }
+    }
+  }
+}

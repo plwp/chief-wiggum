@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/xstate-machine.json",
+  "title": "XState v5 Machine Definition",
+  "description": "JSON Schema for XState v5 machine config. This is a DERIVED format — generated from state-machine-schema.json by formal_models.py. Used as input to @xstate/graph for path generation.",
+  "type": "object",
+  "required": ["id", "initial", "states"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Machine identifier"
+    },
+    "initial": {
+      "type": "string",
+      "description": "Initial state key"
+    },
+    "context": {
+      "type": "object",
+      "description": "Initial extended state / context values",
+      "additionalProperties": true
+    },
+    "states": {
+      "type": "object",
+      "description": "Map of state key → state node config",
+      "additionalProperties": {
+        "$ref": "#/$defs/stateNode"
+      },
+      "minProperties": 2
+    }
+  },
+  "$defs": {
+    "stateNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["atomic", "final"],
+          "description": "'final' marks terminal states with no outgoing transitions"
+        },
+        "on": {
+          "type": "object",
+          "description": "Map of event name → transition(s)",
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/transitionTarget" },
+              { "$ref": "#/$defs/transitionObject" },
+              {
+                "type": "array",
+                "items": { "$ref": "#/$defs/transitionObject" }
+              }
+            ]
+          }
+        },
+        "entry": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" },
+          "description": "Actions executed on entering this state"
+        },
+        "exit": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" },
+          "description": "Actions executed on leaving this state"
+        },
+        "meta": {
+          "type": "object",
+          "description": "Metadata for testing and rendering",
+          "additionalProperties": true,
+          "properties": {
+            "description": { "type": "string" },
+            "test": { "type": "string", "description": "Test assertion description for this state" }
+          }
+        }
+      }
+    },
+    "transitionTarget": {
+      "type": "string",
+      "description": "Simple transition — just the target state key"
+    },
+    "transitionObject": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Target state key"
+        },
+        "guard": {
+          "type": "string",
+          "description": "Guard name — must be satisfied for this transition to fire"
+        },
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" },
+          "description": "Actions executed during the transition"
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Action type identifier"
+        }
+      }
+    }
+  }
+}

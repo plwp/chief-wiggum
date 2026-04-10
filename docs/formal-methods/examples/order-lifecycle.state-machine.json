@@ -1,0 +1,207 @@
+{
+  "name": "Order Status State Machine",
+  "description": "Tracks order lifecycle from creation through completion or cancellation",
+  "initial": "draft",
+  "context": {
+    "customer_id": {
+      "type": "ObjectID",
+      "required_in_states": ["pending", "confirmed", "in_progress", "completed", "cancelled"],
+      "source_of_truth": "customers collection",
+      "description": "Reference to the customer who owns this order"
+    },
+    "item_ids": {
+      "type": "[]ObjectID",
+      "required_in_states": ["pending", "confirmed", "in_progress", "completed"],
+      "source_of_truth": "items collection",
+      "description": "References to items in this order. NEVER store item names as strings."
+    },
+    "resource_id": {
+      "type": "ObjectID",
+      "required_in_states": ["in_progress"],
+      "source_of_truth": "resources collection",
+      "description": "Assigned resource for fulfillment"
+    },
+    "start_date": {
+      "type": "string",
+      "description": "ISO 8601 date — must be before end_date"
+    },
+    "end_date": {
+      "type": "string",
+      "description": "ISO 8601 date — must be after start_date"
+    }
+  },
+  "states": {
+    "draft": {
+      "description": "Initial state — admin-created, incomplete data",
+      "type": "initial",
+      "derived_from": [
+        { "type": "ticket", "ref": "#42", "description": "Define order data model" }
+      ]
+    },
+    "pending": {
+      "description": "Submitted via intake, awaiting confirmation",
+      "type": "normal",
+      "invariants": ["INV-002", "INV-003"]
+    },
+    "confirmed": {
+      "description": "Approved, awaiting start",
+      "type": "normal",
+      "invariants": ["INV-002", "INV-003"]
+    },
+    "in_progress": {
+      "description": "Work in progress",
+      "type": "normal",
+      "invariants": ["INV-002", "INV-003", "INV-004"]
+    },
+    "completed": {
+      "description": "Order fulfilled",
+      "type": "terminal"
+    },
+    "cancelled": {
+      "description": "Terminated before completion",
+      "type": "terminal"
+    }
+  },
+  "transitions": [
+    {
+      "from": "draft",
+      "to": "pending",
+      "event": "submit",
+      "guards": [
+        { "id": "has_customer", "description": "customer_id is set", "expression": "order.customer_id != null" },
+        { "id": "has_items", "description": "items list is non-empty", "expression": "len(order.item_ids) > 0" },
+        { "id": "valid_dates", "description": "end_date > start_date", "expression": "order.end_date > order.start_date" }
+      ],
+      "description": "Submit draft order for confirmation",
+      "derived_from": [
+        { "type": "ticket", "ref": "#43", "description": "Order API endpoints" }
+      ]
+    },
+    {
+      "from": "pending",
+      "to": "confirmed",
+      "event": "confirm",
+      "guards": [
+        { "id": "capacity_available", "description": "capacity is available for the requested dates", "expression": "check_capacity(order.start_date, order.end_date)" },
+        { "id": "pre_start_checks", "description": "all pre-start validation passes", "expression": "pre_start_checks(order)" }
+      ],
+      "actions": ["send_confirmation_notification"],
+      "description": "Approve pending order"
+    },
+    {
+      "from": "pending",
+      "to": "cancelled",
+      "event": "cancel",
+      "description": "Cancel before confirmation — no refund needed"
+    },
+    {
+      "from": "confirmed",
+      "to": "in_progress",
+      "event": "start",
+      "guards": [
+        { "id": "resource_assigned", "description": "a resource has been assigned", "expression": "order.resource_id != null" }
+      ],
+      "description": "Begin work on confirmed order"
+    },
+    {
+      "from": "confirmed",
+      "to": "cancelled",
+      "event": "cancel",
+      "actions": ["apply_refund_policy"],
+      "description": "Cancel confirmed order — refund policy applied"
+    },
+    {
+      "from": "in_progress",
+      "to": "completed",
+      "event": "complete",
+      "guards": [
+        { "id": "balance_settled", "description": "balance is settled or acknowledged unpaid", "expression": "order.balance == 0 or order.ack_unpaid" }
+      ],
+      "description": "Mark order as complete"
+    }
+  ],
+  "invalid_transitions": [
+    {
+      "from": "draft",
+      "to": "confirmed",
+      "reason": "Cannot skip pending validation"
+    },
+    {
+      "from": "completed",
+      "to": "in_progress",
+      "reason": "Completion is irreversible"
+    },
+    {
+      "from": "cancelled",
+      "to": "draft",
+      "reason": "Cancellation is terminal — no transitions out"
+    },
+    {
+      "from": "cancelled",
+      "to": "pending",
+      "reason": "Cancellation is terminal — no transitions out"
+    },
+    {
+      "from": "cancelled",
+      "to": "confirmed",
+      "reason": "Cancellation is terminal — no transitions out"
+    }
+  ],
+  "invariants": [
+    {
+      "id": "INV-001",
+      "description": "Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.",
+      "expression": "not hasattr(order, 'item_names')",
+      "scope": "global",
+      "category": "data_integrity",
+      "derived_from": [
+        { "type": "epic_invariant", "ref": "INV-001", "description": "Single source of truth for item data" }
+      ]
+    },
+    {
+      "id": "INV-002",
+      "description": "Every order with status >= pending has a non-null customer_id that references a valid customer.",
+      "expression": "order.status in ('draft',) or order.customer_id is not None",
+      "scope": "global",
+      "category": "data_integrity"
+    },
+    {
+      "id": "INV-003",
+      "description": "end_date > start_date on every order, enforced at write time.",
+      "expression": "order.end_date > order.start_date",
+      "scope": "global",
+      "category": "data_integrity"
+    },
+    {
+      "id": "INV-004",
+      "description": "An order in in_progress MUST have a resource_id assigned.",
+      "expression": "order.resource_id is not None",
+      "scope": "state-specific",
+      "applies_to_states": ["in_progress"],
+      "category": "data_integrity"
+    },
+    {
+      "id": "INV-005",
+      "description": "Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query. No screen-specific counting logic.",
+      "scope": "global",
+      "category": "consistency"
+    },
+    {
+      "id": "INV-006",
+      "description": "Capacity View and Summary View MUST use the same occupancy calculation. Define once, use everywhere.",
+      "scope": "global",
+      "category": "consistency"
+    },
+    {
+      "id": "INV-007",
+      "description": "If an operation depends on an external service (email, payment), the success toast MUST NOT display unless the service call succeeded.",
+      "scope": "global",
+      "category": "operational_safety"
+    }
+  ],
+  "derived_from": [
+    { "type": "ticket", "ref": "#42", "description": "Define order data model" },
+    { "type": "ticket", "ref": "#43", "description": "Order API endpoints" },
+    { "type": "ticket", "ref": "#44", "description": "Order admin UI" }
+  ]
+}

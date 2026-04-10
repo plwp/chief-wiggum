@@ -1,0 +1,174 @@
+{
+  "entities": [
+    {
+      "name": "Order",
+      "description": "Core business entity — tracks service orders from creation through completion",
+      "fields": [
+        {
+          "name": "id",
+          "type": "ObjectID",
+          "required": "always",
+          "source_of_truth": "MongoDB _id",
+          "immutable": true
+        },
+        {
+          "name": "customer_id",
+          "type": "ObjectID",
+          "required": "conditional",
+          "required_when": "status >= pending",
+          "source_of_truth": "customers collection",
+          "notes": "MUST be set during the submit transition"
+        },
+        {
+          "name": "status",
+          "type": "enum",
+          "required": "always",
+          "notes": "Valid values: draft, pending, confirmed, in_progress, completed, cancelled"
+        },
+        {
+          "name": "item_ids",
+          "type": "[]ObjectID",
+          "required": "conditional",
+          "required_when": "status >= pending",
+          "source_of_truth": "items collection",
+          "notes": "NEVER store item names as strings — always reference by ID"
+        },
+        {
+          "name": "resource_id",
+          "type": "ObjectID",
+          "required": "conditional",
+          "required_when": "status == in_progress"
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "required": "conditional",
+          "required_when": "status >= pending",
+          "notes": "ISO 8601 date format"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "required": "conditional",
+          "required_when": "status >= pending",
+          "notes": "ISO 8601 date format. Must be after start_date."
+        }
+      ],
+      "operations": [
+        {
+          "name": "Create Order",
+          "method": "POST",
+          "path": "/api/v1/orders",
+          "description": "Create a new order in draft status",
+          "preconditions": [
+            {
+              "id": "PRE-001",
+              "description": "Authenticated staff OR valid public submission token",
+              "expression": "request.user.is_staff or request.token.is_valid_public"
+            },
+            {
+              "id": "PRE-002",
+              "description": "At least one item_id provided",
+              "expression": "len(request.body.item_ids) > 0"
+            },
+            {
+              "id": "PRE-003",
+              "description": "Valid date range (end_date > start_date)",
+              "expression": "request.body.end_date > request.body.start_date"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-001",
+              "description": "Order created with status 'draft'",
+              "expression": "response.status == 201 and order.status == 'draft'"
+            },
+            {
+              "id": "POST-002",
+              "description": "Order ID returned in response",
+              "expression": "response.body.id is not None"
+            },
+            {
+              "id": "POST-003",
+              "description": "Order visible on admin list within 1 second",
+              "expression": "order in admin_list_view()"
+            }
+          ],
+          "error_cases": [
+            { "status": 400, "condition": "dates invalid (end_date <= start_date)" },
+            { "status": 401, "condition": "no authentication" },
+            { "status": 409, "condition": "capacity exceeded for requested dates" }
+          ],
+          "invariants_touched": ["INV-001", "INV-003"],
+          "derived_from": [
+            { "type": "ticket", "ref": "#43", "description": "Order API endpoints" }
+          ]
+        },
+        {
+          "name": "Confirm Order",
+          "method": "POST",
+          "path": "/api/v1/orders/:id/confirm",
+          "description": "Confirm a pending order",
+          "preconditions": [
+            {
+              "id": "PRE-010",
+              "description": "Order exists",
+              "expression": "order is not None"
+            },
+            {
+              "id": "PRE-011",
+              "description": "Order status is 'pending'",
+              "expression": "order.status == 'pending'"
+            },
+            {
+              "id": "PRE-012",
+              "description": "customer_id is set",
+              "expression": "order.customer_id is not None"
+            },
+            {
+              "id": "PRE-013",
+              "description": "At least one item_id exists",
+              "expression": "len(order.item_ids) > 0"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-010",
+              "description": "Status transitions to 'confirmed'",
+              "expression": "order.status == 'confirmed'"
+            },
+            {
+              "id": "POST-011",
+              "description": "Confirmation notification sent (or error surfaced if service unavailable)",
+              "expression": "notification_sent or notification_error_surfaced"
+            }
+          ],
+          "error_cases": [
+            { "status": 404, "condition": "order does not exist" },
+            { "status": 409, "condition": "order is not in 'pending' status" },
+            { "status": 422, "condition": "customer_id or item_ids missing" }
+          ],
+          "state_transition": "pending → confirmed",
+          "invariants_touched": ["INV-002", "INV-007"],
+          "derived_from": [
+            { "type": "ticket", "ref": "#43", "description": "Order API endpoints" }
+          ]
+        }
+      ],
+      "invariants": [
+        {
+          "id": "ENT-INV-001",
+          "description": "After confirmation, order.customer_id is NEVER null",
+          "expression": "order.status in ('draft', 'pending') or order.customer_id is not None"
+        }
+      ],
+      "derived_from": [
+        { "type": "ticket", "ref": "#42", "description": "Define order data model" }
+      ]
+    }
+  ],
+  "derived_from": [
+    { "type": "ticket", "ref": "#42", "description": "Define order data model" },
+    { "type": "ticket", "ref": "#43", "description": "Order API endpoints" }
+  ]
+}

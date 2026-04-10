@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/contracts.json",
+  "title": "Contract Definitions",
+  "description": "Structured REQUIRES/ENSURES contracts for entities and operations. Renders to prose markdown, DbC decorators, and guard clause templates.",
+  "type": "object",
+  "required": ["entities"],
+  "additionalProperties": false,
+  "properties": {
+    "entities": {
+      "type": "array",
+      "description": "All entities and their operations covered by these contracts",
+      "items": {
+        "$ref": "#/$defs/entity"
+      },
+      "minItems": 1
+    },
+    "derived_from": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/provenance" }
+    }
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "required": ["name", "fields"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Entity name (e.g., 'Order', 'Customer')"
+        },
+        "description": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "description": "Canonical field definitions — the single source of truth for this entity's shape",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "operations": {
+          "type": "array",
+          "description": "API endpoints or operations on this entity",
+          "items": {
+            "$ref": "#/$defs/operation"
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "description": "Entity-level invariants (always true for this entity)",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "description": "Data type (string, number, boolean, ObjectID, enum, []ObjectID, etc.)"
+        },
+        "required": {
+          "type": "string",
+          "enum": ["always", "conditional", "optional"],
+          "default": "optional",
+          "description": "'always' = non-null in all states; 'conditional' = required in specific states (see required_when); 'optional' = may be null"
+        },
+        "required_when": {
+          "type": "string",
+          "description": "Condition under which this field is required (e.g., 'status >= pending'). Only meaningful when required='conditional'."
+        },
+        "source_of_truth": {
+          "type": "string",
+          "description": "Where this field's canonical value lives (e.g., 'MongoDB _id', 'customers collection')"
+        },
+        "immutable": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, field cannot be modified after creation"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Additional constraints or guidance (e.g., 'NEVER store as string — always reference by ID')"
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "required": ["name", "method", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Operation name (e.g., 'Create Order', 'Confirm Order')"
+        },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "description": "HTTP method"
+        },
+        "path": {
+          "type": "string",
+          "description": "API path (e.g., '/api/v1/orders', '/api/v1/orders/:id/confirm')"
+        },
+        "description": {
+          "type": "string"
+        },
+        "preconditions": {
+          "type": "array",
+          "description": "REQUIRES — conditions that must hold before the operation executes",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "postconditions": {
+          "type": "array",
+          "description": "ENSURES — conditions guaranteed after successful execution",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "error_cases": {
+          "type": "array",
+          "description": "Expected error responses",
+          "items": {
+            "$ref": "#/$defs/errorCase"
+          }
+        },
+        "state_transition": {
+          "type": "string",
+          "description": "If this operation triggers a state machine transition, reference it (e.g., 'pending → confirmed')"
+        },
+        "invariants_touched": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs of invariants that this operation must preserve"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for referencing in tests and traceability"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable condition"
+        },
+        "expression": {
+          "type": "string",
+          "description": "Machine-checkable expression (Python-flavored pseudo-code)"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "errorCase": {
+      "type": "object",
+      "required": ["status", "condition"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "integer",
+          "description": "HTTP status code (e.g., 400, 401, 409)"
+        },
+        "condition": {
+          "type": "string",
+          "description": "When this error occurs (e.g., 'dates invalid', 'no auth')"
+        },
+        "body": {
+          "type": "string",
+          "description": "Expected error response body pattern"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"]
+        },
+        "ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

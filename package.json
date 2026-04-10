@@ -1,0 +1,9 @@
+{
+  "name": "chief-wiggum",
+  "private": true,
+  "description": "Minimal Node dependencies for XState graph bridge",
+  "dependencies": {
+    "xstate": "^5.19.0",
+    "@xstate/graph": "^3.0.4"
+  }
+}
