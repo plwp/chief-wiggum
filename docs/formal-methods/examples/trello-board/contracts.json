@@ -1,0 +1,562 @@
+{
+  "entities": [
+    {
+      "name": "Board",
+      "description": "Reverse-engineered entity from domain model",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": "always",
+          "immutable": true,
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field id observed"
+            }
+          ]
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": "always",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field name observed"
+            },
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-create",
+              "description": "Field name observed"
+            }
+          ]
+        },
+        {
+          "name": "desc",
+          "type": "string",
+          "required": "optional",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field desc observed"
+            }
+          ]
+        },
+        {
+          "name": "closed",
+          "type": "boolean",
+          "required": "optional",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field closed observed"
+            }
+          ]
+        },
+        {
+          "name": "starred",
+          "type": "boolean",
+          "required": "optional",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-boards",
+              "description": "Field starred observed"
+            }
+          ]
+        },
+        {
+          "name": "idOrganization",
+          "type": "ObjectID",
+          "required": "optional",
+          "source_of_truth": "organizations collection",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field idOrganization observed"
+            }
+          ]
+        },
+        {
+          "name": "prefs",
+          "type": "string",
+          "required": "optional",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field prefs observed"
+            }
+          ]
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "required": "always",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field url observed"
+            }
+          ]
+        },
+        {
+          "name": "shortUrl",
+          "type": "string",
+          "required": "always",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field shortUrl observed"
+            }
+          ]
+        },
+        {
+          "name": "dateLastActivity",
+          "type": "string",
+          "required": "optional",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field dateLastActivity observed"
+            }
+          ]
+        },
+        {
+          "name": "memberships",
+          "type": "string",
+          "required": "optional",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Field memberships observed"
+            }
+          ]
+        }
+      ],
+      "operations": [
+        {
+          "name": "Create Board",
+          "method": "POST",
+          "path": "/1/boards",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-CRE-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-CRE-002",
+              "description": "name is non-empty string",
+              "expression": "# TODO: name is non-empty string"
+            },
+            {
+              "id": "PRE-BOA-CRE-REQ-name",
+              "description": "name is provided",
+              "expression": "request.body.name is not None"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-CRE-001",
+              "description": "board created with status active",
+              "expression": "# TODO: board created with status active"
+            },
+            {
+              "id": "POST-BOA-CRE-002",
+              "description": "board.id returned",
+              "expression": "# TODO: board.id returned"
+            },
+            {
+              "id": "POST-BOA-CRE-003",
+              "description": "user added as admin member",
+              "expression": "# TODO: user added as admin member"
+            },
+            {
+              "id": "POST-BOA-CRE-004",
+              "description": "default lists created if defaultLists=true",
+              "expression": "# TODO: default lists created if defaultLists=true"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated"
+            },
+            {
+              "status": 400,
+              "condition": "name is empty or missing"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Operation create observed"
+            },
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-create",
+              "description": "Operation create observed"
+            }
+          ]
+        },
+        {
+          "name": "Read Board",
+          "method": "GET",
+          "path": "/1/boards/{id}",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-REA-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-REA-002",
+              "description": "user has access to board",
+              "expression": "# TODO: user has access to board"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-REA-001",
+              "description": "board object returned with requested fields",
+              "expression": "# TODO: board object returned with requested fields"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated"
+            },
+            {
+              "status": 404,
+              "condition": "board does not exist"
+            },
+            {
+              "status": 401,
+              "condition": "user does not have access"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Operation read observed"
+            }
+          ]
+        },
+        {
+          "name": "Update Board",
+          "method": "PUT",
+          "path": "/1/boards/{id}",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-UPD-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-UPD-002",
+              "description": "user has write access to board",
+              "expression": "# TODO: user has write access to board"
+            },
+            {
+              "id": "PRE-BOA-UPD-003",
+              "description": "board is not deleted",
+              "expression": "# TODO: board is not deleted"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-UPD-001",
+              "description": "board updated with new values",
+              "expression": "# TODO: board updated with new values"
+            },
+            {
+              "id": "POST-BOA-UPD-002",
+              "description": "dateLastActivity updated",
+              "expression": "# TODO: dateLastActivity updated"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated or no write access"
+            },
+            {
+              "status": 404,
+              "condition": "board does not exist"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Operation update observed"
+            }
+          ]
+        },
+        {
+          "name": "Delete Board",
+          "method": "DELETE",
+          "path": "/1/boards/{id}",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-DEL-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-DEL-002",
+              "description": "user is board admin",
+              "expression": "# TODO: user is board admin"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-DEL-001",
+              "description": "board marked as deleted",
+              "expression": "# TODO: board marked as deleted"
+            },
+            {
+              "id": "POST-BOA-DEL-002",
+              "description": "board no longer appears in member board lists",
+              "expression": "# TODO: board no longer appears in member board lists"
+            },
+            {
+              "id": "POST-BOA-DEL-003",
+              "description": "all lists and cards become inaccessible",
+              "expression": "# TODO: all lists and cards become inaccessible"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated or not admin"
+            },
+            {
+              "status": 404,
+              "condition": "board does not exist"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Operation delete observed"
+            }
+          ]
+        },
+        {
+          "name": "Close Board",
+          "method": "PUT",
+          "path": "/1/boards/{id}",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-CLO-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-CLO-002",
+              "description": "user has write access",
+              "expression": "# TODO: user has write access"
+            },
+            {
+              "id": "PRE-BOA-CLO-003",
+              "description": "board is active",
+              "expression": "# TODO: board is active"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-CLO-001",
+              "description": "board.closed set to true",
+              "expression": "# TODO: board.closed set to true"
+            },
+            {
+              "id": "POST-BOA-CLO-002",
+              "description": "board moves to closed boards view",
+              "expression": "# TODO: board moves to closed boards view"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated or no write access"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-boards",
+              "description": "Operation close observed"
+            },
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Operation close observed"
+            }
+          ]
+        },
+        {
+          "name": "Reopen Board",
+          "method": "PUT",
+          "path": "/1/boards/{id}",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-REO-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-REO-002",
+              "description": "user has write access",
+              "expression": "# TODO: user has write access"
+            },
+            {
+              "id": "PRE-BOA-REO-003",
+              "description": "board is closed",
+              "expression": "# TODO: board is closed"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-REO-001",
+              "description": "board.closed set to false",
+              "expression": "# TODO: board.closed set to false"
+            },
+            {
+              "id": "POST-BOA-REO-002",
+              "description": "board reappears in active boards view",
+              "expression": "# TODO: board reappears in active boards view"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated or no write access"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-boards",
+              "description": "Operation reopen observed"
+            }
+          ]
+        },
+        {
+          "name": "List Board",
+          "method": "GET",
+          "path": "/1/members/me/boards",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-LIS-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-LIS-001",
+              "description": "array of board objects returned",
+              "expression": "# TODO: array of board objects returned"
+            },
+            {
+              "id": "POST-BOA-LIS-002",
+              "description": "only boards user has access to",
+              "expression": "# TODO: only boards user has access to"
+            }
+          ],
+          "error_cases": [
+            {
+              "status": 401,
+              "condition": "not authenticated"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "api-docs-boards",
+              "description": "Operation list observed"
+            },
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-boards",
+              "description": "Operation list observed"
+            }
+          ]
+        },
+        {
+          "name": "Star Board",
+          "method": "PUT",
+          "path": "/1/boards/{id}",
+          "preconditions": [
+            {
+              "id": "PRE-BOA-STA-001",
+              "description": "user is authenticated",
+              "expression": "# TODO: user is authenticated"
+            },
+            {
+              "id": "PRE-BOA-STA-002",
+              "description": "user is board member",
+              "expression": "# TODO: user is board member"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "POST-BOA-STA-001",
+              "description": "board.starred set to true for this user",
+              "expression": "# TODO: board.starred set to true for this user"
+            },
+            {
+              "id": "POST-BOA-STA-002",
+              "description": "board appears in starred section",
+              "expression": "# TODO: board appears in starred section"
+            }
+          ],
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "browser-explore-boards",
+              "description": "Operation star observed"
+            }
+          ]
+        }
+      ],
+      "derived_from": [
+        {
+          "type": "observed_fact",
+          "ref": "api-docs-boards"
+        },
+        {
+          "type": "observed_fact",
+          "ref": "browser-explore-boards"
+        },
+        {
+          "type": "observed_fact",
+          "ref": "help-center-boards"
+        }
+      ]
+    }
+  ],
+  "derived_from": [
+    {
+      "type": "observed_fact",
+      "ref": "domain-model-v1",
+      "description": "Extracted from trello.com domain model"
+    }
+  ]
+}

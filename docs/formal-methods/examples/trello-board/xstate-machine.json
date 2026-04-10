@@ -1,0 +1,93 @@
+{
+  "id": "board_lifecycle",
+  "initial": "active",
+  "states": {
+    "active": {
+      "on": {
+        "close": {
+          "target": "closed",
+          "guard": "guard_close_0_and_guard_close_1_and_guard_close_2",
+          "actions": [
+            {
+              "type": "board.closed set to true"
+            },
+            {
+              "type": "board moves to closed boards view"
+            }
+          ]
+        },
+        "delete": {
+          "target": "deleted",
+          "guard": "guard_delete_0_and_guard_delete_1",
+          "actions": [
+            {
+              "type": "board marked as deleted"
+            },
+            {
+              "type": "board no longer appears in member board lists"
+            },
+            {
+              "type": "all lists and cards become inaccessible"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Board in active state"
+      }
+    },
+    "closed": {
+      "on": {
+        "reopen": {
+          "target": "active",
+          "guard": "guard_reopen_0_and_guard_reopen_1_and_guard_reopen_2",
+          "actions": [
+            {
+              "type": "board.closed set to false"
+            },
+            {
+              "type": "board reappears in active boards view"
+            }
+          ]
+        },
+        "delete": {
+          "target": "deleted",
+          "guard": "guard_delete_0_and_guard_delete_1",
+          "actions": [
+            {
+              "type": "board marked as deleted"
+            },
+            {
+              "type": "board no longer appears in member board lists"
+            },
+            {
+              "type": "all lists and cards become inaccessible"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Board in closed state"
+      }
+    },
+    "deleted": {
+      "type": "final",
+      "meta": {
+        "description": "Board in deleted state"
+      }
+    }
+  },
+  "context": {
+    "id": null,
+    "name": null,
+    "desc": null,
+    "closed": null,
+    "starred": null,
+    "idOrganization": null,
+    "prefs": null,
+    "url": null,
+    "shortUrl": null,
+    "dateLastActivity": null,
+    "memberships": null
+  }
+}

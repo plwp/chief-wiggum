@@ -1,0 +1,277 @@
+{
+  "target": "trello.com",
+  "version": 1,
+  "iteration": 0,
+  "entities": {
+    "Board": {
+      "name": "Board",
+      "plural": "boards",
+      "api_prefix": "/1/boards",
+      "confidence": 0.85,
+      "evidence": ["api-docs-boards", "browser-explore-boards", "help-center-boards"],
+      "fields": {
+        "id": {
+          "name": "id",
+          "field_type": "string",
+          "required": true,
+          "unique": true,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "name": {
+          "name": "name",
+          "field_type": "string",
+          "required": true,
+          "validated": true,
+          "evidence": ["api-docs-boards", "browser-explore-create"]
+        },
+        "desc": {
+          "name": "desc",
+          "field_type": "string",
+          "required": false,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "closed": {
+          "name": "closed",
+          "field_type": "boolean",
+          "required": false,
+          "default": false,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "starred": {
+          "name": "starred",
+          "field_type": "boolean",
+          "required": false,
+          "default": false,
+          "validated": true,
+          "evidence": ["browser-explore-boards"]
+        },
+        "idOrganization": {
+          "name": "idOrganization",
+          "field_type": "relation",
+          "related_entity": "Organization",
+          "required": false,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "prefs": {
+          "name": "prefs",
+          "field_type": "unknown",
+          "required": false,
+          "evidence": ["api-docs-boards"]
+        },
+        "url": {
+          "name": "url",
+          "field_type": "string",
+          "required": true,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "shortUrl": {
+          "name": "shortUrl",
+          "field_type": "string",
+          "required": true,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "dateLastActivity": {
+          "name": "dateLastActivity",
+          "field_type": "datetime",
+          "required": false,
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        "memberships": {
+          "name": "memberships",
+          "field_type": "unknown",
+          "required": false,
+          "evidence": ["api-docs-boards"]
+        }
+      },
+      "states": ["active", "closed", "deleted"],
+      "transitions": [
+        {
+          "from_state": "active",
+          "to_state": "closed",
+          "operation": "close",
+          "reversible": true,
+          "validated": true
+        },
+        {
+          "from_state": "closed",
+          "to_state": "active",
+          "operation": "reopen",
+          "reversible": true,
+          "validated": true
+        },
+        {
+          "from_state": "active",
+          "to_state": "deleted",
+          "operation": "delete",
+          "reversible": false,
+          "validated": false
+        },
+        {
+          "from_state": "closed",
+          "to_state": "deleted",
+          "operation": "delete",
+          "reversible": false,
+          "validated": false
+        }
+      ],
+      "operations": [
+        {
+          "name": "create",
+          "method": "POST",
+          "endpoint_pattern": "/1/boards",
+          "required_fields": ["name"],
+          "optional_fields": ["desc", "idOrganization", "defaultLists", "defaultLabels", "prefs_permissionLevel", "prefs_background"],
+          "preconditions": ["user is authenticated", "name is non-empty string"],
+          "postconditions": ["board created with status active", "board.id returned", "user added as admin member", "default lists created if defaultLists=true"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated"},
+            {"status": 400, "condition": "name is empty or missing"}
+          ],
+          "validated": true,
+          "evidence": ["api-docs-boards", "browser-explore-create"]
+        },
+        {
+          "name": "read",
+          "method": "GET",
+          "endpoint_pattern": "/1/boards/{id}",
+          "required_fields": [],
+          "optional_fields": ["fields", "actions", "cards", "lists", "members"],
+          "preconditions": ["user is authenticated", "user has access to board"],
+          "postconditions": ["board object returned with requested fields"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated"},
+            {"status": 404, "condition": "board does not exist"},
+            {"status": 401, "condition": "user does not have access"}
+          ],
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        {
+          "name": "update",
+          "method": "PUT",
+          "endpoint_pattern": "/1/boards/{id}",
+          "required_fields": [],
+          "optional_fields": ["name", "desc", "closed", "idOrganization", "prefs/permissionLevel", "prefs/background"],
+          "preconditions": ["user is authenticated", "user has write access to board", "board is not deleted"],
+          "postconditions": ["board updated with new values", "dateLastActivity updated"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated or no write access"},
+            {"status": 404, "condition": "board does not exist"}
+          ],
+          "validated": true,
+          "evidence": ["api-docs-boards"]
+        },
+        {
+          "name": "delete",
+          "method": "DELETE",
+          "endpoint_pattern": "/1/boards/{id}",
+          "required_fields": [],
+          "optional_fields": [],
+          "preconditions": ["user is authenticated", "user is board admin"],
+          "postconditions": ["board marked as deleted", "board no longer appears in member board lists", "all lists and cards become inaccessible"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated or not admin"},
+            {"status": 404, "condition": "board does not exist"}
+          ],
+          "validated": false,
+          "evidence": ["api-docs-boards"]
+        },
+        {
+          "name": "close",
+          "method": "PUT",
+          "endpoint_pattern": "/1/boards/{id}",
+          "required_fields": [],
+          "optional_fields": [],
+          "preconditions": ["user is authenticated", "user has write access", "board is active"],
+          "postconditions": ["board.closed set to true", "board moves to closed boards view"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated or no write access"}
+          ],
+          "validated": true,
+          "evidence": ["browser-explore-boards", "api-docs-boards"]
+        },
+        {
+          "name": "reopen",
+          "method": "PUT",
+          "endpoint_pattern": "/1/boards/{id}",
+          "required_fields": [],
+          "optional_fields": [],
+          "preconditions": ["user is authenticated", "user has write access", "board is closed"],
+          "postconditions": ["board.closed set to false", "board reappears in active boards view"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated or no write access"}
+          ],
+          "validated": true,
+          "evidence": ["browser-explore-boards"]
+        },
+        {
+          "name": "list",
+          "method": "GET",
+          "endpoint_pattern": "/1/members/me/boards",
+          "required_fields": [],
+          "optional_fields": ["filter", "fields", "organization"],
+          "preconditions": ["user is authenticated"],
+          "postconditions": ["array of board objects returned", "only boards user has access to"],
+          "response_status": 200,
+          "error_cases": [
+            {"status": 401, "condition": "not authenticated"}
+          ],
+          "validated": true,
+          "evidence": ["api-docs-boards", "browser-explore-boards"]
+        },
+        {
+          "name": "star",
+          "method": "PUT",
+          "endpoint_pattern": "/1/boards/{id}",
+          "required_fields": [],
+          "optional_fields": [],
+          "preconditions": ["user is authenticated", "user is board member"],
+          "postconditions": ["board.starred set to true for this user", "board appears in starred section"],
+          "response_status": 200,
+          "error_cases": [],
+          "validated": true,
+          "evidence": ["browser-explore-boards"]
+        }
+      ],
+      "relationships": [
+        {
+          "from_entity": "List",
+          "to_entity": "Board",
+          "relation_type": "belongs_to",
+          "foreign_key": "idBoard",
+          "cascade_delete": true,
+          "validated": true
+        },
+        {
+          "from_entity": "Card",
+          "to_entity": "Board",
+          "relation_type": "belongs_to",
+          "foreign_key": "idBoard",
+          "cascade_delete": true,
+          "validated": true
+        },
+        {
+          "from_entity": "Member",
+          "to_entity": "Board",
+          "relation_type": "many_to_many",
+          "foreign_key": "idMembers",
+          "cascade_delete": false,
+          "validated": true
+        }
+      ]
+    }
+  }
+}

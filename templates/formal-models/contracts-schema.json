@@ -94,6 +94,10 @@
         "notes": {
           "type": "string",
           "description": "Additional constraints or guidance (e.g., 'NEVER store as string — always reference by ID')"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
         }
       }
     },
