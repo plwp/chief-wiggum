@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/ui-spec.json",
+  "title": "UI Specification",
+  "description": "Structured specification of an application's UI: pages, component trees, interaction patterns, and navigation. Populated by observation (duplicat-rex) or design decisions (chief-wiggum /architect).",
+  "type": "object",
+  "required": ["pages", "navigation"],
+  "additionalProperties": false,
+  "properties": {
+    "app": {
+      "type": "object",
+      "description": "Application-level metadata",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "shell": {
+          "$ref": "#/$defs/shell",
+          "description": "The persistent app shell (navbar, sidebar, footer) that wraps all pages"
+        }
+      }
+    },
+    "patterns": {
+      "type": "object",
+      "description": "Shared UI patterns referenced by components. Define once, reuse everywhere.",
+      "additionalProperties": {
+        "$ref": "#/$defs/pattern"
+      }
+    },
+    "pages": {
+      "type": "object",
+      "description": "Map of route path → page specification",
+      "additionalProperties": {
+        "$ref": "#/$defs/page"
+      }
+    },
+    "navigation": {
+      "$ref": "#/$defs/navigationGraph",
+      "description": "Navigation state machine — pages are states, links are transitions"
+    },
+    "derived_from": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/provenance" }
+    }
+  },
+  "$defs": {
+    "shell": {
+      "type": "object",
+      "description": "Persistent app shell — always visible regardless of current page",
+      "additionalProperties": false,
+      "properties": {
+        "navbar": {
+          "$ref": "#/$defs/component",
+          "description": "Top navigation bar"
+        },
+        "sidebar": {
+          "$ref": "#/$defs/component",
+          "description": "Persistent side navigation (if any)"
+        },
+        "footer": {
+          "$ref": "#/$defs/component",
+          "description": "Footer (if any)"
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "description": "A page/route in the application",
+      "required": ["layout"],
+      "additionalProperties": false,
+      "properties": {
+        "route": {
+          "type": ["string", "null"],
+          "description": "URL pattern (e.g., '/boards', '/b/:boardId'). Null for overlays/modals that don't have their own route."
+        },
+        "title": {
+          "type": "string",
+          "description": "Page title / heading"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this page is for"
+        },
+        "layout": {
+          "type": "string",
+          "enum": ["full-width", "sidebar-main", "centered", "split", "canvas"],
+          "description": "Page layout pattern. 'canvas' = free-form like a board view"
+        },
+        "auth": {
+          "type": "string",
+          "enum": ["required", "optional", "public"],
+          "default": "required",
+          "description": "Authentication requirement"
+        },
+        "components": {
+          "type": "object",
+          "description": "Flat map of component ID → component spec. Use IDs to reference children.",
+          "additionalProperties": {
+            "$ref": "#/$defs/component"
+          }
+        },
+        "root": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ordered list of top-level component IDs (the page's direct children)"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "description": "A UI component. Uses flat ID references for children, not nested trees.",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Component type — use ARIA-inspired vocabulary for structural components, descriptive names for custom ones",
+          "examples": [
+            "navbar", "sidebar", "dialog", "menu", "tabpanel", "list",
+            "card", "form", "button", "input", "grid", "section",
+            "popover", "toast", "avatar", "badge", "breadcrumb",
+            "search-bar", "board-column", "kanban-board", "card-modal"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable label for this component instance"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this component does / shows"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Reference to a shared pattern ID in the top-level 'patterns' map"
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ordered list of child component IDs"
+        },
+        "data": {
+          "type": "object",
+          "description": "What data this component displays or manages",
+          "additionalProperties": true,
+          "properties": {
+            "entity": { "type": "string", "description": "Entity type (e.g., 'Board', 'Card')" },
+            "fields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Which entity fields are displayed"
+            },
+            "source": { "type": "string", "description": "API endpoint or data source" }
+          }
+        },
+        "interactions": {
+          "type": "array",
+          "description": "What happens when the user interacts with this component",
+          "items": {
+            "$ref": "#/$defs/interaction"
+          }
+        },
+        "visibility": {
+          "type": "object",
+          "description": "When is this component visible?",
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "string",
+              "enum": ["visible", "hidden", "collapsed"],
+              "default": "visible"
+            },
+            "condition": {
+              "type": "string",
+              "description": "Condition for visibility (e.g., 'user.role >= ADMIN', 'card.archived === true')"
+            }
+          }
+        },
+        "responsive": {
+          "type": "object",
+          "description": "How this component adapts to screen size",
+          "additionalProperties": false,
+          "properties": {
+            "mobile": {
+              "type": "string",
+              "enum": ["visible", "hidden", "collapsed", "full-screen", "drawer", "bottom-sheet"],
+              "description": "Behavior on mobile (<768px)"
+            },
+            "desktop": {
+              "type": "string",
+              "enum": ["visible", "hidden", "sidebar", "inline"],
+              "description": "Behavior on desktop"
+            }
+          }
+        }
+      }
+    },
+    "interaction": {
+      "type": "object",
+      "description": "An interaction contract — what happens when the user does something",
+      "required": ["trigger", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "trigger": {
+          "type": "string",
+          "description": "What the user does",
+          "examples": ["click", "hover", "focus", "submit", "keypress:Escape", "keypress:n", "drag-drop"]
+        },
+        "action": {
+          "type": "string",
+          "description": "What happens in response",
+          "enum": [
+            "navigate",
+            "open-dialog",
+            "close-dialog",
+            "open-popover",
+            "close-popover",
+            "open-sidebar",
+            "close-sidebar",
+            "toggle",
+            "submit-form",
+            "api-call",
+            "refresh",
+            "show-toast",
+            "expand",
+            "collapse"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "description": "Target component ID, route, or API endpoint"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the interaction"
+        }
+      }
+    },
+    "pattern": {
+      "type": "object",
+      "description": "A reusable UI pattern — define once, reference by ID in components",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Pattern name (e.g., 'entity-menu', 'confirm-dialog', 'inline-edit')"
+        },
+        "type": {
+          "type": "string",
+          "description": "Base component type this pattern extends"
+        },
+        "description": {
+          "type": "string",
+          "description": "How this pattern works — the contract sub-agents must follow"
+        },
+        "structure": {
+          "type": "object",
+          "description": "The pattern's component structure (template)",
+          "additionalProperties": {
+            "$ref": "#/$defs/component"
+          }
+        },
+        "interactions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/interaction" },
+          "description": "Standard interactions this pattern provides"
+        },
+        "examples": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Where this pattern is used in the app"
+        }
+      }
+    },
+    "navigationGraph": {
+      "type": "object",
+      "description": "Navigation state machine — XState-compatible format. Pages are states, links are transitions.",
+      "required": ["initial", "states"],
+      "additionalProperties": false,
+      "properties": {
+        "initial": {
+          "type": "string",
+          "description": "The initial page/route (e.g., '/' or '/login')"
+        },
+        "states": {
+          "type": "object",
+          "description": "Map of page ID → navigation state",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "route": {
+                "type": "string",
+                "description": "URL pattern for this state"
+              },
+              "on": {
+                "type": "object",
+                "description": "Map of event → target page ID (same as XState transitions)",
+                "additionalProperties": {
+                  "oneOf": [
+                    { "type": "string" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "target": { "type": "string" },
+                        "guard": { "type": "string" }
+                      },
+                      "required": ["target"]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "screenshot", "user_input"]
+        },
+        "ref": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}
