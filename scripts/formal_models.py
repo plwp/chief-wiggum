@@ -44,6 +44,7 @@ SCHEMAS = {
     "contracts": SCHEMA_DIR / "contracts-schema.json",
     "xstate": SCHEMA_DIR / "xstate-schema.json",
     "gap": SCHEMA_DIR / "gap-classification.json",
+    "transition-map": SCHEMA_DIR / "transition-map-schema.json",
 }
 
 
@@ -65,6 +66,8 @@ def detect_schema_type(data: dict) -> str:
     """Heuristic detection of which schema a JSON document conforms to."""
     if "states" in data and "transitions" in data:
         return "state-machine"
+    if "entities" in data and "summary" in data:
+        return "transition-map"
     if "entities" in data:
         return "contracts"
     if "gaps" in data:

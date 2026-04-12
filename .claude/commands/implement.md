@@ -89,16 +89,26 @@ If a milestone exists and `docs/epics/[epic-slug]/` exists in the target repo, l
 Also check for **formal model artifacts** in `docs/epics/[epic-slug]/models/`:
 - `contracts.json` — structured contracts (machine-readable)
 - `state-machines.json` — structured state machines (machine-readable)
+- `ui-spec.json` — UI specification (pages, components, interactions, navigation)
 - `test-paths.json` — mechanically generated test paths
 - `test-plan.md` — test plan with positive/negative cases
 - `test_state_machine.py` — Hypothesis RuleBasedStateMachine skeleton
+- `transition-map.json` — transition ↔ ticket mapping (updated by `/implement`)
 
-Set a flag for downstream steps:
+Set flags for downstream steps:
 ```bash
 HAS_FORMAL_MODELS=false
+HAS_UI_SPEC=false
+HAS_TRANSITION_MAP=false
 if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json" ]; then
   HAS_FORMAL_MODELS=true
   MODELS_DIR="$TARGET_REPO/docs/epics/[epic-slug]/models"
+fi
+if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/ui-spec.json" ]; then
+  HAS_UI_SPEC=true
+fi
+if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/transition-map.json" ]; then
+  HAS_TRANSITION_MAP=true
 fi
 ```
 
@@ -357,6 +367,23 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
        Invariants:           X/Y checked
      ```
    - If any category is below 80% coverage, flag it as a gap in the PR body. Do NOT block shipping — this is a signal, not a gate, in Phase 1. (Phase 2 may tighten this to a hard gate.)
+8b. **Transition-map verification** (if `$HAS_TRANSITION_MAP == true`):
+   Run the verification script scoped to this ticket:
+   ```bash
+   python3 "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" --ticket "#$issue_number" --format text
+   ```
+   This reports:
+   - Which transitions this ticket was supposed to introduce (from `derived_from` provenance)
+   - Which are now present in code (COVERED)
+   - Which are still missing (MISSING) — implementation gap, fix before shipping
+   - Any undocumented transitions in the diff (UNDOCUMENTED) — either update the model or remove the code
+
+   After verification, update the transition-map:
+   ```bash
+   python3 "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" --output "$MODELS_DIR/transition-map.json" --format json
+   git add "$MODELS_DIR/transition-map.json"
+   ```
+   Include transition coverage in the PR body under "Model conformance".
 9. **Quality check** — Read the key files produced:
    - Is the code idiomatic for the language?
    - Are there any obvious issues (missing error handling, security gaps, dead code)?

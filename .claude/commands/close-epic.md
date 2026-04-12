@@ -64,6 +64,34 @@ Report:
 
 **Flag any MISSING or FAILING items.** These are gaps that must be addressed before the epic can be declared complete.
 
+### Step 2b: Transition-map audit
+
+If `$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json` exists, run a full transition-map verification:
+
+```bash
+python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json" --output "$CW_TMP/transition-map-final.json" --format text
+```
+
+Report:
+```markdown
+## Transition Map Audit
+
+### [Entity Name]
+| From | To | Event | Ticket | Status | Code Location |
+|------|----|-------|--------|--------|---------------|
+| pending | confirmed | confirm | #43 | COVERED | handlers/booking.go:142 |
+| confirmed | in_progress | start | #45 | MISSING | — |
+
+Summary: X/Y covered (Z%), W undocumented
+```
+
+Gate criteria:
+- **UNDOCUMENTED > 0**: Flag as finding — either code has unauthorized transitions or model is incomplete
+- **MISSING > 0**: Flag as finding — either tickets were not fully implemented or model overspecified
+- Target: 100% COVERED, 0 UNDOCUMENTED
+
+Findings feed into Step 9 (multi-AI analysis) and the final report.
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.
@@ -275,6 +303,7 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
 - Integration test results (Step 3)
 - Stitch-audit findings (Step 4)
 - Cross-surface consistency results (Step 5)
+- Transition-map audit results (Step 2b)
 - UX flow audit findings (Step 6)
 - Mutation testing results with surviving mutants (Step 7)
 - Invariant verification results (Step 8)
@@ -339,6 +368,12 @@ Present the full epic close report:
 ### Cross-Surface Consistency
 - Entities checked: N
 - Discrepancies: [list or "none"]
+
+### Transition Map
+- Entities verified: N
+- Transitions: X/Y covered
+- Undocumented transitions: Z (list)
+- Missing implementations: W (list)
 
 ### UX Flow Audit
 - Journeys walked: N

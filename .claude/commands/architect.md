@@ -143,7 +143,39 @@ python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view all 
 python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view all --output "$CW_TMP/models/"
 ```
 
-#### 4d. Invariants (`invariants.md`)
+#### 4d. UI Specification — structured model (`ui-spec.json`)
+
+Produce a JSON file conforming to `$CW_HOME/templates/formal-models/ui-spec-schema.json`.
+
+This is the **UI contract** that prevents sub-agents from making conflicting design decisions. Without it, one agent builds a sidebar panel, another builds a separate page, and a third uses a dropdown — for the same feature.
+
+The UI spec defines:
+
+1. **Page inventory**: What routes/pages exist, what layout each uses (sidebar-main, centered, canvas, etc.)
+2. **Component tree per page**: Flat map of component ID → spec. Each component has a type, children (by ID), data bindings, and interactions.
+3. **Shared patterns**: Reusable UI patterns defined once and referenced by ID. Examples:
+   - `entity-menu`: "3-dot icon → dropdown with edit/archive/delete"
+   - `inline-edit`: "click text → input with blue ring, Enter saves, Escape cancels"
+   - `sidebar-panel`: "slides in from right, 320px, full-screen on mobile"
+   - `confirm-dialog`: "browser confirm() for destructive actions"
+4. **Interaction contracts**: For each interactive component, what happens when the user does something: `{ trigger: "click", action: "open-sidebar", target: "settings-panel" }`. This is what prevents "is this a dropdown or a tab or a modal?" confusion.
+5. **Navigation graph**: XState-format state machine where pages are states and links are transitions. Reuses the same format as data state machines.
+
+**Critical constraint**: Every component that could be implemented as multiple UI patterns (dropdown vs tab vs modal vs page) MUST have an explicit interaction contract specifying which pattern to use.
+
+Include the worked example from `$CW_HOME/docs/formal-methods/examples/kanban-app-ui-spec.json` in the sub-agent prompt as a template.
+
+**Verifier-in-the-loop**: After the sub-agent produces `ui-spec.json`, validate it:
+```bash
+python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/ui-spec.json"
+```
+
+**Generate human-readable UI spec**: Render the UI spec to a page-by-page markdown doc:
+```bash
+python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/ui-spec.json" --view human --output "$CW_TMP/"
+```
+
+#### 4e. Invariants (`invariants.md`)
 
 Cross-cutting rules that must hold at ALL times, not just within a single transition. These are ALSO captured in the state machine JSON (in the `invariants` array), but `invariants.md` serves as the consolidated human-readable reference across all models.
 
@@ -165,7 +197,7 @@ Write `invariants.md` by extracting and consolidating all invariants from both `
 
 Each invariant MUST have a unique ID (e.g., INV-001) that matches its ID in the JSON models. This enables traceability from prose → model → test → code.
 
-#### 4d. ADR (`adr.md`)
+#### 4f. ADR (`adr.md`)
 
 Architectural Decision Record capturing the key decisions for this epic:
 
@@ -194,7 +226,7 @@ Accepted
 - [Follow-up work needed]
 ```
 
-#### 4e. Integration Test Specification (`integration-tests.md`)
+#### 4g. Integration Test Specification (`integration-tests.md`)
 
 Tests that validate cross-ticket behaviour. These are NOT run per-ticket — they're run by `/close-epic` after all tickets land.
 
@@ -222,7 +254,7 @@ Tests that validate cross-ticket behaviour. These are NOT run per-ticket — the
 - **Why**: Catches false-success pattern
 ```
 
-#### 4f. Requirements Traceability Matrix (`traceability.md`)
+#### 4h. Requirements Traceability Matrix (`traceability.md`)
 
 Maps every acceptance criterion from every ticket to the test(s) that will verify it:
 
@@ -342,6 +374,12 @@ cp $CW_TMP/contracts.json "$TARGET_REPO/docs/epics/[epic-slug]/models/"
 cp $CW_TMP/state-machines.json "$TARGET_REPO/docs/epics/[epic-slug]/models/"
 ```
 
+Generate the initial transition-map (baseline for `/implement` to verify against):
+```bash
+python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$CW_TMP/state-machines.json" --output "$TARGET_REPO/docs/epics/[epic-slug]/models/transition-map.json" --format json
+```
+At `/architect` time, this produces a transition-map where existing code transitions are `covered` and new model transitions without code matches are `planned`. This baseline evolves as tickets are implemented.
+
 Generate and copy machine + test views:
 ```bash
 python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view machine --output "$TARGET_REPO/docs/epics/[epic-slug]/models/"
@@ -412,6 +450,7 @@ Your implementation must satisfy the contracts and invariants. The /implement sk
 ### Formal models
 - `docs/epics/[slug]/models/contracts.json` — structured contracts (machine-readable)
 - `docs/epics/[slug]/models/state-machines.json` — structured state machines (machine-readable)
+- `docs/epics/[slug]/models/transition-map.json` — transition ↔ ticket mapping (baseline)
 - `docs/epics/[slug]/models/xstate-machine.json` — XState v5 machine (for path generation)
 - `docs/epics/[slug]/models/test_state_machine.py` — Hypothesis RuleBasedStateMachine
 - `docs/epics/[slug]/models/test-paths.json` — N mechanically generated test paths
