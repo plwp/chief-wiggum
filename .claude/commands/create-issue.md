@@ -43,6 +43,11 @@ Using the template at `$CW_HOME/templates/issue.md`, fill in:
 
 - **Acceptance Criteria**: Specific, **mechanically verifiable** checkboxes. Write 3-6 criteria that define "done". Each criterion must be something an automated system can independently verify — not vague ("works well") but concrete ("GET /health returns 200 with `{"status":"ok"}`"). Good criteria answer: "How would I prove this is done without reading the code?"
 
+- **Suggested Fix**: A single, concrete implementation approach — not a list of options. The issue author has the most context (full codebase analysis, domain understanding, cross-ticket awareness). The implementing agent has less context and will default to the simplest option, which is often wrong. **Make the design decision here.** If genuinely uncertain, consult Codex/Gemini for a second opinion before writing the ticket — don't defer the decision to the implementor.
+
+  Bad: "Either: 1. Remove it, 2. Use it for X"
+  Good: "Use `rejected` instead of `cancelled` when a booking request is declined. This gives semantic separation for reporting and audit trail."
+
 - **Technical Notes**: Implementation hints, affected files, API changes. Only if relevant.
 
 - **Out of Scope**: What this ticket does NOT cover. Important for preventing scope creep.
