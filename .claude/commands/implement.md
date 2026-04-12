@@ -18,8 +18,8 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 **Every step is mandatory.** You do NOT get to decide that a change is "too small" to warrant code review, or that consultations are "good enough" with only 2 of 3 responses. The process exists for a reason — follow it completely every time, no exceptions. Specifically:
 - **Never skip the multi-AI code review** (Step 7), regardless of change size. A one-line fix gets the same review process as a 500-line feature. No developer gets to self-certify their own code.
 - **Never skip AI consultations** (Step 4). Wait for ALL consultations (Codex, Gemini, Opus) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
-- **Never skip browser-use/E2E validation** (Step 9) unless `--skip-browser-use` was explicitly passed by the user.
-- **Never create a PR before review is complete.** The PR is the final artifact (Step 10), not an intermediate checkpoint.
+- **Never skip browser-use/E2E validation** (Step 10) unless `--skip-browser-use` was explicitly passed by the user.
+- **Never create a PR before review is complete.** The PR is the final artifact (Step 11), not an intermediate checkpoint.
 
 ## Autonomy
 
@@ -28,7 +28,7 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 Checkpoints where you MUST get user input:
 - **Step 3** (Clarify requirements): Only if requirements are genuinely unclear or ambiguous
 - **Step 4 Phase B** (Approach reconciliation): Only if approaches fundamentally conflict with no clear winner — present the trade-off and ask
-- **Step 10** (Final check): Present the summary, then proceed to ship unless the user intervenes
+- **Step 11** (Final check): Present the summary, then proceed to ship unless the user intervenes
 
 Everything else — just do it.
 
@@ -230,7 +230,7 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - The target repo's test framework and conventions
 - **If formal models exist**: the generated test plan (`$TICKET_TMP/test-plan.md`), test paths (`$TICKET_TMP/test-paths.json`), contract assertions (`$TICKET_TMP/contract-assertions.md`), Hypothesis skeleton (`$TICKET_TMP/test_state_machine_skeleton.py`), and guard templates (`$TICKET_TMP/guard_templates.py`)
 **HARD RULES for sub-agent**:
-- Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 10).
+- Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
 - You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, run `git rev-parse --show-toplevel` to discover your working directory. Work ONLY in this directory. Do NOT `cd` to `$TARGET_REPO` — that is the main checkout, not your worktree. If `git rev-parse --show-toplevel` returns the same path as the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
@@ -254,7 +254,7 @@ The sub-agent should:
 Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
 **HARD RULES for sub-agent**:
-- Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 10).
+- Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 11).
 - You are working in a **git worktree** (the same one from Step 5). Run `git rev-parse --show-toplevel` to confirm your working directory. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
@@ -366,7 +366,96 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 
 If ANY verification fails: fix it directly, or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
-### Step 9: Browser-use validation
+### Step 9: UX sanity pass
+
+**Skip this step if**:
+- `--skip-browser-use` was explicitly passed, OR
+- The ticket has no frontend impact. Detect by checking all three signals:
+  1. Labels: if issue has no `frontend`, `ui`, `ux`, or `web` label, skip
+  2. Diff paths: if `git diff "$DEFAULT_BRANCH"...HEAD --name-only` shows no files under `ui/`, `frontend/`, `web/`, `src/components/`, `src/pages/`, `src/views/`, `*.tsx`, `*.vue`, `*.svelte`, `*.html`, `*.css`, `*.scss`, or similar front-end paths, skip
+  3. Frontend files: if the target repo has no `ui/` or `frontend/` directory at all, skip
+
+If any signal is positive, run the step.
+
+**Goal**: Verify that the implemented UI aligns with the *spirit* of the requirements — information architecture, menu coherence, field exposure, and contextual clarity — not just that the acceptance criteria bullets are mechanically satisfied. Functional tests can pass while screens feel wrong. This step catches that.
+
+#### Phase 1: Capture screenshots
+
+Determine what tooling is available, in priority order:
+
+1. **browser-use** (if `tests/browser-use/run.py` or similar exists):
+   ```bash
+   cd "$TARGET_REPO" && python3 tests/browser-use/run.py \
+     --scenario "ux-sanity-#$issue_number" \
+     --screenshot-dir "$TICKET_TMP/ux-screenshots/"
+   ```
+   If the repo's browser-use setup does not support ad-hoc scenario strings, write a minimal scenario file to `$TICKET_TMP/ux-scenario.md` describing each step from the AC (e.g., "navigate to X", "click Y", "fill form Z", "submit"), then pass it as the scenario source.
+
+2. **Playwright** (if Playwright is installed and `playwright.config.*` exists):
+   ```bash
+   cd "$TARGET_REPO" && npx playwright screenshot \
+     --browser chromium \
+     "$START_URL" \
+     "$TICKET_TMP/ux-screenshots/00-initial.png"
+   ```
+   For flows with multiple states (form open → filled → submitted → success), write a **minimal throwaway Playwright script** to `$TICKET_TMP/ux-capture.spec.ts` that navigates each state transition and calls `page.screenshot()` at each step. Run it once, then delete the file — it is not a permanent test artifact.
+
+**Screenshots must cover each state transition** identified in the AC or state machine:
+- Initial page load / entry point
+- Each form or dialog in its empty state
+- Each form in its filled/valid state
+- Post-submit / success state
+- Any error states the ticket introduces
+
+Name screenshots sequentially: `00-entry.png`, `01-form-empty.png`, `02-form-filled.png`, `03-success.png`, etc.
+
+If services need to be running, start them as in Step 8 before capturing. After capture, leave them running for Step 10 (browser-use validation) — do not stop yet.
+
+If screenshot capture fails entirely (services won't start, no browser tooling at all), note it as a gap and move on — do not block.
+
+#### Phase 2: Opus UX review
+
+Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) and give it:
+
+1. **The screenshots** — pass paths to all captured images in `$TICKET_TMP/ux-screenshots/`
+2. **Requirement prose** — the full ticket body (not just AC bullet points): title, description, user story, and any comments
+3. **Domain model artifacts** (if epic context loaded): `contracts.md`, `state-machines.md`, `invariants.md` from `docs/epics/[epic-slug]/`. These represent the "spirit" of the domain — what states are meaningful, what data belongs where, what a user is actually trying to accomplish
+4. **The AC bullets** — for reference, but instruct the reviewer: *"These bullets define the floor, not the ceiling. Your job is to evaluate whether the screens make sense to a user trying to accomplish the goal described in the prose."*
+
+The sub-agent should evaluate:
+
+- **Information architecture**: Is the right information on the right screen? Is anything missing that a user would expect to see? Is anything shown that shouldn't be visible at this stage?
+- **Menu and navigation coherence**: If menus or navigation changed, do the new entries make sense in context? Are they in the right place, with the right label? Do they appear/disappear at the right times?
+- **Field exposure**: Are there fields visible that the user shouldn't see at this point in their flow (e.g., internal IDs, status codes, fields for a later step)? Are required fields clearly indicated?
+- **State legibility**: Can a user tell what state they're in? Is it clear what happened after they submitted a form or completed an action?
+- **Contextual fit**: Does the screen match what the ticket is trying to accomplish? If the domain model says "an order in PENDING state should only show a Confirm button, not a Cancel button", does the screen reflect that?
+- **Missing context**: Is there information the user would need to make a decision that isn't shown?
+
+The sub-agent returns findings in the same confidence categories as the code review:
+
+- **High-confidence**: Clear UX problems — missing confirmation message after submit, a Cancel button that should not appear in PENDING state, a form field exposing an internal DB ID. These have an obvious fix.
+- **Medium-confidence**: Likely issues that need a quick look — a menu label that's technically correct but potentially confusing, an empty state with no guidance copy. These should be applied but are worth a quick sanity check.
+- **Low-confidence**: Subjective observations or minor polish — layout density, label wording choices, optional affordances the ticket doesn't require. Flag for awareness, do not block.
+
+The sub-agent writes findings to `$TICKET_TMP/ux-review.md` and returns a concise summary.
+
+#### Phase 3: Apply findings
+
+Apply findings using the same pattern as Step 8:
+- **High-confidence findings**: Fix directly. These are clear defects — wrong button state, missing feedback, field that shouldn't be visible.
+- **Medium-confidence findings**: Investigate quickly (check the domain model or requirement prose), then apply if confirmed.
+- **Low-confidence findings**: Add to the PR body under a "UX observations" section for reviewer awareness. Do not block on these.
+
+After applying fixes, re-run the relevant Playwright specs (if they exist) to confirm nothing regressed.
+
+**Fold findings into the PR body**: Add a `## UX sanity` section to the PR body (Step 11) listing:
+- What flow was walked
+- High/medium findings found and fixed
+- Low-confidence observations noted
+
+If no screenshots could be captured, note "UX sanity: no frontend tooling available — skipped" in the PR body.
+
+### Step 10: Browser-use validation
 
 **Do not skip this step** unless `--skip-browser-use` was explicitly passed.
 
@@ -398,7 +487,7 @@ If **browser-use** exists (e.g. `tests/browser-use/run.py`):
 
 If no browser-use or E2E setup exists at all, note it as a gap in the final summary and move on.
 
-### Step 10: Ship PR
+### Step 11: Ship PR
 
 **Do not create a PR until Steps 7-9 are complete.** The PR is the final artifact, not an intermediate checkpoint.
 
@@ -467,7 +556,7 @@ EOF
 
 4. Link to the original issue via `Closes #N` in the body
 
-### Step 11: Verify CI green
+### Step 12: Verify CI green
 
 **Do not declare the PR done until all checks pass.** This is a hard gate — no exceptions.
 
@@ -491,7 +580,7 @@ EOF
    - **Lingering questions**: Anything unresolved
 5. Show the PR URL
 
-### Step 12: Update traceability matrix
+### Step 13: Update traceability matrix
 
 If epic context exists, update the traceability matrix to reflect the tests written:
 

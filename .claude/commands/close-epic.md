@@ -126,7 +126,97 @@ Report:
 All consistent: YES / NO (detail discrepancies)
 ```
 
-### Step 6: Mutation testing
+### Step 6: UX flow audit
+
+Walk the cross-ticket user journeys to catch UX seams that no individual ticket owns: menus that behave inconsistently across features, orphaned pages, dead-end flows, and surprise states that only emerge when multiple tickets are combined.
+
+#### Derive journeys from `integration-tests.md`
+
+Read `integration-tests.md` and filter for UI-facing journeys — those that reference a browser, page, route, modal, menu, or UI component. Skip API-only and database-only integration tests. For each qualifying journey, record:
+- Journey name and the tickets that contributed to it
+- Entry point (URL or navigation path)
+- Key states and transitions described in the test spec
+
+If `integration-tests.md` has no UI-facing journeys, skip this step and note the gap in the final report.
+
+#### Walk each journey with Playwright/browser-use
+
+Run inside a sub-agent (`subagent_type: "general-purpose"`, `model: "sonnet"`) that has access to the target repo's Playwright or browser-use setup. For each journey:
+
+1. Start from a clean authenticated session (or unauthenticated if the journey requires it)
+2. Follow every step in the journey spec
+3. Capture a screenshot at every:
+   - Page navigation
+   - Modal or drawer open/close
+   - Menu or dropdown interaction
+   - State transition (e.g., form submitted, status changed)
+   - Error or empty state encountered
+4. Save screenshots to `$CW_TMP/ux-audit/<journey-slug>/<step-N>.png`
+5. Record the sequence: step label, URL, screenshot path, any console errors
+
+The sub-agent returns a manifest at `$CW_TMP/ux-audit/manifest.json`:
+```json
+[
+  {
+    "journey": "Create order and view on customer profile",
+    "tickets": [42, 43, 47],
+    "steps": [
+      { "label": "Admin creates order", "url": "/admin/orders/new", "screenshot": "step-1.png" },
+      { "label": "Order appears in list", "url": "/admin/orders", "screenshot": "step-2.png" },
+      { "label": "Customer profile shows order", "url": "/customers/99", "screenshot": "step-3.png" }
+    ],
+    "console_errors": []
+  }
+]
+```
+
+If the target repo has no Playwright or browser-use setup, flag the gap and skip to the findings report.
+
+#### Opus UX review
+
+Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) with:
+- Epic goal and the original ticket requirements for each ticket referenced in the journeys
+- `contracts.md`, `state-machines.md`, and `invariants.md` from the epic
+- The full journey manifest with screenshot paths (Opus can view images)
+
+The sub-agent should evaluate each journey for epic-level UX concerns:
+
+1. **Menu and navigation consistency**: Do menus, breadcrumbs, and navigation patterns behave the same way across features introduced by different tickets? Does a menu item added by ticket A disappear or change label on pages owned by ticket B?
+2. **Information architecture**: Is data grouped and labelled logically across the full flow? Does the same entity surface under different headings or in unexpected sections depending on how the user arrived there?
+3. **Dead-end states and orphan pages**: Are there pages reachable by this journey that have no clear next action or back path? Are there states where the user has completed an action but has nowhere obvious to go?
+4. **Surprise states**: What happens when features from different tickets interact? Does combining the outputs of two tickets produce a state that neither ticket's requirements anticipated (e.g., an order that is both "confirmed" and "pending review" simultaneously)?
+5. **Field exposure**: Are any internal, technical, or admin-only fields leaking into user-facing views? (e.g., database IDs, internal status codes, system user names)
+6. **Labelling and terminology consistency**: Does the same concept use the same label across all screens in the journey, or does it drift (e.g., "booking" on one screen, "reservation" on another, "appointment" on a third)?
+
+For each finding, record:
+- Severity: `high` (blocks the journey or exposes data incorrectly), `medium` (confusing but workable), `low` (polish)
+- Which ticket(s) introduced the issue
+- What the finding is
+- A suggested fix
+
+The sub-agent writes findings to `$CW_TMP/ux-audit-findings.md`.
+
+#### Report format
+
+```markdown
+## UX Flow Audit
+
+### Journey: Create order and view on customer profile
+**Tickets**: #42, #43, #47
+
+| Severity | Finding | Ticket(s) | Suggested fix |
+|----------|---------|-----------|---------------|
+| high | "Orders" tab disappears from customer profile nav when order has status "draft" — no nav path back to the list | #47 | Show tab regardless of order status |
+| medium | Order status label is "CONFIRMED" (all-caps) on admin detail but "Confirmed" on customer profile — same state, inconsistent display | #42, #43 | Normalise to title case from a shared constant |
+| low | After creating an order the user lands on the order detail with no breadcrumb — no path back to the order list without using the browser back button | #42 | Add breadcrumb: Orders > #123 |
+
+### No findings
+[Journey name] — no UX concerns identified.
+```
+
+UX audit findings feed into Step 9 (multi-AI analysis) — include `$CW_TMP/ux-audit-findings.md` in the findings prompt alongside the other automated gate results. High-severity UX findings must be listed in the final report under a `### UX Flow Audit` section and included in the `FIX` list if any are present.
+
+### Step 7: Mutation testing
 
 Run mutation testing on all files changed across the epic. This validates that the test suite actually catches bugs, not just executes code.
 
@@ -165,7 +255,7 @@ Report:
 
 If score is below 80%, list surviving mutants and recommend specific tests to add.
 
-### Step 7: Invariant verification
+### Step 8: Invariant verification
 
 Walk each invariant from `invariants.md` and verify it holds in the current codebase:
 
@@ -175,9 +265,9 @@ Walk each invariant from `invariants.md` and verify it holds in the current code
 
 Report pass/fail for each invariant.
 
-### Step 8: Multi-AI analysis of findings
+### Step 9: Multi-AI analysis of findings
 
-The automated gates (Steps 2-7) produce raw data. Use multi-AI consultation to interpret the findings holistically — automated checks catch individual issues, but an AI review can identify patterns across them.
+The automated gates (Steps 2-8) produce raw data. Use multi-AI consultation to interpret the findings holistically — automated checks catch individual issues, but an AI review can identify patterns across them.
 
 Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
 - Epic goal, ticket list, contracts, and invariants
@@ -185,14 +275,16 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
 - Integration test results (Step 3)
 - Stitch-audit findings (Step 4)
 - Cross-surface consistency results (Step 5)
-- Mutation testing results with surviving mutants (Step 6)
-- Invariant verification results (Step 7)
+- UX flow audit findings (Step 6)
+- Mutation testing results with surviving mutants (Step 7)
+- Invariant verification results (Step 8)
 - Specific questions:
   1. Do the surviving mutants and integration test failures point to the same underlying weakness?
   2. Are there patterns in the stitch-audit findings that suggest a systemic issue rather than isolated gaps?
   3. Based on the cross-surface consistency results, are there data model assumptions that need revisiting?
-  4. What is the highest-risk area of this epic that needs the most attention before shipping?
-  5. Are there any gaps the automated checks could not cover?
+  4. Do the UX flow audit findings indicate systemic navigation or information architecture issues, or isolated per-ticket gaps?
+  5. What is the highest-risk area of this epic that needs the most attention before shipping?
+  6. Are there any gaps the automated checks could not cover?
 
 Run Codex and Gemini in parallel:
 
@@ -207,9 +299,9 @@ Synthesise both reviews. Categorise findings:
 - **Unique insights**: Only one AI flagged — investigate, may be a genuine blind spot or a false positive
 - **Recommendations**: Suggestions for the retrospective and future epics
 
-### Step 9: Retrospective capture
+### Step 10: Retrospective capture
 
-Compile a retrospective from the epic's implementation, incorporating the multi-AI analysis from Step 8:
+Compile a retrospective from the epic's implementation, incorporating the multi-AI analysis from Step 9:
 
 1. **What went well**: Tickets that landed cleanly, patterns that worked
 2. **What went wrong**: Bugs found during integration testing, gaps in contracts, surprising failures
@@ -223,7 +315,7 @@ Compile a retrospective from the epic's implementation, incorporating the multi-
 
 Write the retrospective to `$TARGET_REPO/docs/epics/[epic-slug]/retrospective.md` and commit.
 
-### Step 10: Final report
+### Step 11: Final report
 
 Present the full epic close report:
 
@@ -247,6 +339,12 @@ Present the full epic close report:
 ### Cross-Surface Consistency
 - Entities checked: N
 - Discrepancies: [list or "none"]
+
+### UX Flow Audit
+- Journeys walked: N
+- High-severity findings: N (list)
+- Medium-severity findings: N (list)
+- Low-severity findings: N
 
 ### Mutation Testing
 - Overall score: X%
