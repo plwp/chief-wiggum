@@ -366,12 +366,14 @@ cp $CW_TMP/invariants.md "$TARGET_REPO/docs/epics/[epic-slug]/"
 cp $CW_TMP/adr.md "$TARGET_REPO/docs/epics/[epic-slug]/"
 cp $CW_TMP/integration-tests.md "$TARGET_REPO/docs/epics/[epic-slug]/"
 cp $CW_TMP/traceability.md "$TARGET_REPO/docs/epics/[epic-slug]/"
+cp $CW_TMP/ui-spec.md "$TARGET_REPO/docs/epics/[epic-slug]/" 2>/dev/null || true
 ```
 
 Copy formal model artifacts (machine-readable, consumed by `/implement`):
 ```bash
 cp $CW_TMP/contracts.json "$TARGET_REPO/docs/epics/[epic-slug]/models/"
 cp $CW_TMP/state-machines.json "$TARGET_REPO/docs/epics/[epic-slug]/models/"
+cp $CW_TMP/ui-spec.json "$TARGET_REPO/docs/epics/[epic-slug]/models/" 2>/dev/null || true
 ```
 
 Generate the initial transition-map (baseline for `/implement` to verify against):

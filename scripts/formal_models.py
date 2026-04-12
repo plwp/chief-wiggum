@@ -45,6 +45,7 @@ SCHEMAS = {
     "xstate": SCHEMA_DIR / "xstate-schema.json",
     "gap": SCHEMA_DIR / "gap-classification.json",
     "transition-map": SCHEMA_DIR / "transition-map-schema.json",
+    "ui-spec": SCHEMA_DIR / "ui-spec-schema.json",
 }
 
 
@@ -72,6 +73,9 @@ def detect_schema_type(data: dict) -> str:
         return "contracts"
     if "gaps" in data:
         return "gap"
+    # UI spec has 'pages' and 'navigation' (required by schema)
+    if "pages" in data and "navigation" in data:
+        return "ui-spec"
     # XState format has 'id' and 'states' but no 'transitions' array
     if "id" in data and "states" in data:
         return "xstate"
