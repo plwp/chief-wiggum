@@ -94,28 +94,23 @@ Chief-wiggum stores all user-space data under `~/.chief-wiggum/`:
 Temp files go in `~/.chief-wiggum/tmp/`, **not** `/tmp/`. Each session must create a **unique subdirectory** to avoid collisions when multiple sessions run concurrently:
 
 ```bash
-CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
-mkdir -p "$CW_TMP"
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 ```
 
 All temp file references (`approach-prompt.md`, `approach-codex.md`, etc.) go inside `$CW_TMP`. Per-ticket files go in `$CW_TMP/<ticket-number>/` to avoid collisions when implementing multiple tickets in one session (see `/implement` Step 1).
 
 ## Path Resolution
 
-**Chief-wiggum install path**: Never hardcode `~/repos/chief-wiggum`. Skills should resolve the install directory dynamically at the start of each session:
+**Chief-wiggum install path**: Skills should resolve the install directory at the start of each session. `CHIEF_WIGGUM_HOME` can override the common checkout path:
 
 ```bash
-CW_HOME=$(python3 -c "from pathlib import Path; print(Path(__file__).resolve().parent.parent)" --fake 2>/dev/null || python3 scripts/repo.py home)
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 ```
 
-Or from any location, since `repo.py` computes it from its own `__file__`:
-
-```bash
-# From a skill that knows its own path:
-CW_HOME=$(cd "$(dirname "$0")/../.." && pwd)
-```
-
-In practice, skills reference scripts as `python3 "$CW_HOME/scripts/..."` after resolving `CW_HOME` once.
+In practice, skills reference scripts as `python3 "$CW_HOME/scripts/..."` after resolving `CW_HOME` once. Use `python3 "$CW_HOME/scripts/env.py" tmp` for session temp directories and `python3 "$CW_HOME/scripts/env.py" slug "$epic_name"` for `docs/epics/<slug>` paths.
 
 ## Target Repo Resolution
 
@@ -143,7 +138,7 @@ models.md            # AI model IDs and library versions (refresh with /update)
 
 ### Epic artifacts (in target repos)
 
-`/architect` commits artifacts to `docs/epics/[epic-slug]/` in the target repo:
+`/architect` commits artifacts to `docs/epics/[slug]/` in the target repo:
 ```
 docs/epics/order-lifecycle/
 ├── contracts.md          # REQUIRES/ENSURES for APIs and entities

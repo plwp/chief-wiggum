@@ -24,11 +24,13 @@ Everything else runs autonomously.
 ### Step 1: Resolve paths and load epic context
 
 ```bash
-CW_HOME=$(python3 "$(dirname "$0")/../../scripts/repo.py" home 2>/dev/null || echo "$HOME/repos/chief-wiggum")
-CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
-mkdir -p "$CW_TMP"
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "$epic_name")
+EPIC_DIR="$TARGET_REPO/docs/epics/$EPIC_SLUG"
 ```
 
 Fetch all issues in the epic milestone:
@@ -355,39 +357,39 @@ This is the most important review in the entire pipeline — getting the contrac
 Create an `epic/` directory structure in the target repo with a `models/` subdirectory for formal model artifacts:
 
 ```bash
-mkdir -p "$TARGET_REPO/docs/epics/[epic-slug]/models"
+mkdir -p "$EPIC_DIR/models"
 ```
 
 Copy prose artifacts (human-readable, backward-compatible):
 ```bash
-cp $CW_TMP/contracts.md "$TARGET_REPO/docs/epics/[epic-slug]/"
-cp $CW_TMP/state-machines.md "$TARGET_REPO/docs/epics/[epic-slug]/"
-cp $CW_TMP/invariants.md "$TARGET_REPO/docs/epics/[epic-slug]/"
-cp $CW_TMP/adr.md "$TARGET_REPO/docs/epics/[epic-slug]/"
-cp $CW_TMP/integration-tests.md "$TARGET_REPO/docs/epics/[epic-slug]/"
-cp $CW_TMP/traceability.md "$TARGET_REPO/docs/epics/[epic-slug]/"
-cp $CW_TMP/ui-spec.md "$TARGET_REPO/docs/epics/[epic-slug]/" 2>/dev/null || true
+cp "$CW_TMP/contracts.md" "$EPIC_DIR/"
+cp "$CW_TMP/state-machines.md" "$EPIC_DIR/"
+cp "$CW_TMP/invariants.md" "$EPIC_DIR/"
+cp "$CW_TMP/adr.md" "$EPIC_DIR/"
+cp "$CW_TMP/integration-tests.md" "$EPIC_DIR/"
+cp "$CW_TMP/traceability.md" "$EPIC_DIR/"
+cp "$CW_TMP/ui-spec.md" "$EPIC_DIR/" 2>/dev/null || true
 ```
 
 Copy formal model artifacts (machine-readable, consumed by `/implement`):
 ```bash
-cp $CW_TMP/contracts.json "$TARGET_REPO/docs/epics/[epic-slug]/models/"
-cp $CW_TMP/state-machines.json "$TARGET_REPO/docs/epics/[epic-slug]/models/"
-cp $CW_TMP/ui-spec.json "$TARGET_REPO/docs/epics/[epic-slug]/models/" 2>/dev/null || true
+cp "$CW_TMP/contracts.json" "$EPIC_DIR/models/"
+cp "$CW_TMP/state-machines.json" "$EPIC_DIR/models/"
+cp "$CW_TMP/ui-spec.json" "$EPIC_DIR/models/" 2>/dev/null || true
 ```
 
 Generate the initial transition-map (baseline for `/implement` to verify against):
 ```bash
-python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$CW_TMP/state-machines.json" --output "$TARGET_REPO/docs/epics/[epic-slug]/models/transition-map.json" --format json
+python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$CW_TMP/state-machines.json" --output "$EPIC_DIR/models/transition-map.json" --format json
 ```
 At `/architect` time, this produces a transition-map where existing code transitions are `covered` and new model transitions without code matches are `planned`. This baseline evolves as tickets are implemented.
 
 Generate and copy machine + test views:
 ```bash
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view machine --output "$TARGET_REPO/docs/epics/[epic-slug]/models/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view machine --output "$TARGET_REPO/docs/epics/[epic-slug]/models/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view test --output "$TARGET_REPO/docs/epics/[epic-slug]/models/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view test --output "$TARGET_REPO/docs/epics/[epic-slug]/models/"
+python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view machine --output "$EPIC_DIR/models/"
+python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view machine --output "$EPIC_DIR/models/"
+python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view test --output "$EPIC_DIR/models/"
+python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view test --output "$EPIC_DIR/models/"
 ```
 
 Commit and push **directly to the default branch**. Architecture artifacts are docs, not code — they don't need a feature branch or PR. Avoid creating a branch, as it leads to unnecessary stash/cherry-pick detours when returning to the default branch.
@@ -428,10 +430,10 @@ For each ticket in the epic, append a reference to the architectural artifacts:
 gh issue comment $issue_number --repo "$owner_repo" --body "## Epic Architecture
 
 This ticket is part of **[Epic Name]**. Before implementing, read:
-- [Contracts](../docs/epics/[epic-slug]/contracts.md) — REQUIRES/ENSURES for APIs and entities
-- [State Machines](../docs/epics/[epic-slug]/state-machines.md) — valid transitions
-- [Invariants](../docs/epics/[epic-slug]/invariants.md) — rules that must hold across all tickets
-- [Traceability](../docs/epics/[epic-slug]/traceability.md) — which tests cover which AC
+- [Contracts](../docs/epics/$EPIC_SLUG/contracts.md) — REQUIRES/ENSURES for APIs and entities
+- [State Machines](../docs/epics/$EPIC_SLUG/state-machines.md) — valid transitions
+- [Invariants](../docs/epics/$EPIC_SLUG/invariants.md) — rules that must hold across all tickets
+- [Traceability](../docs/epics/$EPIC_SLUG/traceability.md) — which tests cover which AC
 
 Your implementation must satisfy the contracts and invariants. The /implement skill will enforce this."
 ```

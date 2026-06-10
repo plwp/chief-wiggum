@@ -1,2 +1,8 @@
 __pycache__/
 node_modules/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.egg-info/
+.claude/worktrees/
+.claude/scheduled_tasks.lock

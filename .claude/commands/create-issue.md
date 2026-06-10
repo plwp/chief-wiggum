@@ -16,7 +16,8 @@ Create a well-structured GitHub issue with clear title, description, acceptance 
 ### Step 0: Resolve CW_HOME
 
 ```bash
-CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 ```
 
 ### Step 1: Gather requirements

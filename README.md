@@ -29,6 +29,9 @@ claude /setup
   "commandDirs": ["~/repos/chief-wiggum/.claude/commands"]
 }
 
+# If chief-wiggum is not checked out at ~/repos/chief-wiggum:
+export CHIEF_WIGGUM_HOME=/path/to/chief-wiggum
+
 # 3. Use from your target project directory (not chief-wiggum)
 claude /transcribe ~/recordings/client-call.mp4
 claude /plan-epic owner/repo
@@ -44,6 +47,7 @@ claude /implement owner/repo#42
 |-------|---------|
 | `/plan-epic` | Group related issues into an epic with dependency graph and integration risks |
 | `/architect` | Define contracts, invariants, state machines, ADRs, and integration tests for an epic |
+| `/implement-wave` | Implement an epic in dependency-ordered parallel waves |
 | `/close-epic` | Epic-level quality gate: integration tests, mutation testing, stitch-audit, retrospective |
 
 ### Ticket Level
@@ -71,12 +75,14 @@ graph TD
         A["/transcribe"]:::entry
         B["/seed"]:::entry
         C["/create-issue"]:::default
+        D["Requirements / Issues"]:::default
     end
 
     subgraph "Epic Flow"
         E["/plan-epic"]:::modified
         F["/architect"]:::new
         G["/implement<br/>(per ticket)"]:::modified
+        W["/implement-wave<br/>(parallel)"]:::modified
         H["/close-epic"]:::new
     end
 
@@ -86,8 +92,10 @@ graph TD
     C --> E
     E --> F
     F --> G
+    F --> W
     G --> G
     G --> H
+    W --> H
 
     classDef entry fill:#ff7c43,stroke:#ffa600,color:#fff
     classDef default fill:#003f5c,stroke:#2f4b7c,color:#fff
