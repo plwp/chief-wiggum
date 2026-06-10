@@ -218,7 +218,8 @@ For each ticket in the current wave (up to `--max-parallel`):
      - Step 6: Implement to make tests green
      - Step 7: Multi-AI code review (Codex + Gemini in parallel)
      - Step 8: Apply review fixes, run full test suite, run linting, verify acceptance criteria
-     - Step 9: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
+     - Step 9: UX sanity + design-fidelity gate for frontend tickets — render the app, capture screenshots to `$TICKET_TMP/ux-screenshots/`, review against the ui-spec design contract. Save the screenshots; the orchestrator attaches them to the wave report.
+     - Step 10: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
      - You are in a git worktree. Verify with `git rev-parse --show-toplevel`. Never operate on the main checkout.
@@ -260,6 +261,7 @@ If any PRs were created by a sub-agent during this wave (matching ticket branch 
 2. Run the full test suite
 3. Run linting
 4. Verify the branch has the expected commits
+5. **For frontend tickets**: verify screenshots exist in `$TICKET_TMP/ux-screenshots/` and LOOK at them. A sub-agent reporting "design review passed" without screenshots is a sub-agent that skipped the gate. If the epic has a design contract and the screenshots show default-theme output, the ticket is not done.
 
 This is the same principle as `/implement` Step 8 — the orchestrator is the quality gate, not the sub-agent.
 
@@ -391,11 +393,13 @@ Ask the user which approach they prefer, or if direct-to-main is fine.
 | 3 | #44 | merged | ~20 min |
 
 ### Per-ticket summary
-| Ticket | Branch | Tests | Review | Merge | Issues |
-|--------|--------|-------|--------|-------|--------|
-| #42 | feat/42-... | 12 pass | 2 fixes applied | clean | — |
-| #43 | feat/43-... | 8 pass | 1 fix applied | clean | — |
-| #44 | feat/44-... | 15 pass | 3 fixes applied | conflict resolved | OrderList merge |
+| Ticket | Branch | Tests | Review | Design fidelity | Merge | Issues |
+|--------|--------|-------|--------|-----------------|-------|--------|
+| #42 | feat/42-... | 12 pass | 2 fixes applied | n/a (backend) | clean | — |
+| #43 | feat/43-... | 8 pass | 1 fix applied | n/a (backend) | clean | — |
+| #44 | feat/44-... | 15 pass | 3 fixes applied | ✓ screenshots reviewed, tokens bound | conflict resolved | OrderList merge |
+
+For frontend tickets, link the screenshot directories so the human can see what shipped.
 
 ### Merge conflicts resolved: N
 - [Details of each conflict and how it was resolved]

@@ -249,7 +249,7 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
 - **If formal models exist**: the generated test plan (`$TICKET_TMP/test-plan.md`), test paths (`$TICKET_TMP/test-paths.json`), contract assertions (`$TICKET_TMP/contract-assertions.md`), Hypothesis skeleton (`$TICKET_TMP/test_state_machine_skeleton.py`), and guard templates (`$TICKET_TMP/guard_templates.py`)
-- **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The sub-agent MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions.
+- **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The sub-agent MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
 - You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, run `git rev-parse --show-toplevel` to discover your working directory. Work ONLY in this directory. Do NOT `cd` to `$TARGET_REPO` — that is the main checkout, not your worktree. If `git rev-parse --show-toplevel` returns the same path as the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
@@ -404,7 +404,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 
 If ANY verification fails: fix it directly, or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
-### Step 9: UX sanity pass
+### Step 9: UX sanity + design-fidelity gate
 
 **Skip this step if**:
 - `--skip-browser-use` was explicitly passed, OR
@@ -415,7 +415,9 @@ If ANY verification fails: fix it directly, or re-launch the coding sub-agent wi
 
 If any signal is positive, run the step.
 
-**Goal**: Verify that the implemented UI aligns with the *spirit* of the requirements — information architecture, menu coherence, field exposure, and contextual clarity — not just that the acceptance criteria bullets are mechanically satisfied. Functional tests can pass while screens feel wrong. This step catches that.
+**Goal**: Verify that the implemented UI aligns with the *spirit* of the requirements — information architecture, menu coherence, field exposure, contextual clarity — AND with the **visual design contract** (`ui-spec.json` → `design` section): tokens applied, brand assets present, reference screenshots matched. Functional tests can pass while screens feel wrong or ship off-brand; this is the only step in the loop that actually *looks* at the result. "Build + tests green" is NOT sufficient to call a frontend ticket done.
+
+(Real example: dogeared-coach shipped 131 passing tests and 40 green E2E specs with a client-facing playlist numbered "0., 1., ..." and a completely unthemed stock component library. One screenshot caught both.)
 
 #### Phase 1: Capture screenshots
 
@@ -451,14 +453,31 @@ If services need to be running, start them as in Step 8 before capturing. After 
 
 If screenshot capture fails entirely (services won't start, no browser tooling at all), note it as a gap and move on — do not block.
 
-#### Phase 2: Opus UX review
+#### Phase 1b: Mechanical token check (if a design contract exists)
+
+If `$MODELS_DIR/ui-spec.json` has a `design` section, run a cheap mechanical check before the AI review: for each color token value in `design.tokens.colors`, grep the frontend's theme/CSS files for it. If the primary brand color appears nowhere in the codebase, the frontend ignored the design contract — that's a hard finding, no screenshot review needed to call it.
+
+```bash
+python3 -c "
+import json, sys
+spec = json.load(open('$MODELS_DIR/ui-spec.json'))
+for name, value in spec.get('design', {}).get('tokens', {}).get('colors', {}).items():
+    print(f'{name}\t{value}')
+" | while IFS=$'\t' read -r name value; do
+  grep -ri --include='*.css' --include='*.scss' --include='*.ts' --include='*.tsx' -F "$value" "$WORKTREE/ui/src" >/dev/null 2>&1 \
+    && echo "token $name: BOUND" || echo "token $name: MISSING ($value not found in styles)"
+done
+```
+
+#### Phase 2: Opus UX + design-fidelity review
 
 Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) and give it:
 
 1. **The screenshots** — pass paths to all captured images in `$TICKET_TMP/ux-screenshots/`
 2. **Requirement prose** — the full ticket body (not just AC bullet points): title, description, user story, and any comments
 3. **Domain model artifacts** (if epic context loaded): `contracts.md`, `state-machines.md`, `invariants.md` from `$EPIC_DIR/`. These represent the "spirit" of the domain — what states are meaningful, what data belongs where, what a user is actually trying to accomplish
-4. **The AC bullets** — for reference, but instruct the reviewer: *"These bullets define the floor, not the ceiling. Your job is to evaluate whether the screens make sense to a user trying to accomplish the goal described in the prose."*
+4. **The visual design contract** (if `ui-spec.json` has a `design` section): the design tokens, component-library binding, brand assets, voice guidelines, and — critically — any `reference-screenshot` assets whose `applies_to` covers the pages this ticket touches. Pass the reference image paths so the reviewer can compare side by side. Include the Phase 1b token-check output.
+5. **The AC bullets** — for reference, but instruct the reviewer: *"These bullets define the floor, not the ceiling. Your job is to evaluate whether the screens make sense to a user trying to accomplish the goal described in the prose, and whether they honor the visual design contract."*
 
 The sub-agent should evaluate:
 
@@ -468,10 +487,16 @@ The sub-agent should evaluate:
 - **State legibility**: Can a user tell what state they're in? Is it clear what happened after they submitted a form or completed an action?
 - **Contextual fit**: Does the screen match what the ticket is trying to accomplish? If the domain model says "an order in PENDING state should only show a Confirm button, not a Cancel button", does the screen reflect that?
 - **Missing context**: Is there information the user would need to make a decision that isn't shown?
+- **Design fidelity** (when a design contract exists):
+  - Are the design tokens actually applied — brand colors, typography, spacing — or is this the component library's default theme?
+  - Do the screens match the reference screenshots for these pages (layout density, treatment, hierarchy)?
+  - Are the brand assets present where `applies_to` says they should be (logo in nav, illustration in empty states)?
+  - Does visible copy match the voice guidelines (empty states with personality, not "No data")?
+  - **Surface-level correctness a human would catch in 2 seconds**: 0-indexed lists shown to users, raw enum values in labels, placeholder copy, truncated text, misaligned elements, debug output visible in the UI.
 
 The sub-agent returns findings in the same confidence categories as the code review:
 
-- **High-confidence**: Clear UX problems — missing confirmation message after submit, a Cancel button that should not appear in PENDING state, a form field exposing an internal DB ID. These have an obvious fix.
+- **High-confidence**: Clear UX problems — missing confirmation message after submit, a Cancel button that should not appear in PENDING state, a form field exposing an internal DB ID — and clear design-contract violations: design tokens not applied (Phase 1b MISSING), a page that plainly doesn't match its reference screenshot, a missing brand asset, user-visible 0-indexing or debug output. These have an obvious fix and **fail the ticket until fixed**.
 - **Medium-confidence**: Likely issues that need a quick look — a menu label that's technically correct but potentially confusing, an empty state with no guidance copy. These should be applied but are worth a quick sanity check.
 - **Low-confidence**: Subjective observations or minor polish — layout density, label wording choices, optional affordances the ticket doesn't require. Flag for awareness, do not block.
 
@@ -486,12 +511,14 @@ Apply findings using the same pattern as Step 8:
 
 After applying fixes, re-run the relevant Playwright specs (if they exist) to confirm nothing regressed.
 
-**Fold findings into the PR body**: Add a `## UX sanity` section to the PR body (Step 11) listing:
+**Fold findings into the PR body**: Add a `## UX & design fidelity` section to the PR body (Step 11) listing:
 - What flow was walked
 - High/medium findings found and fixed
 - Low-confidence observations noted
+- Token-check results (Phase 1b) when a design contract exists
+- **Attach the screenshots**: commit them under the PR or upload via `gh` so the human reviewer sees what shipped, not just that tests passed. At minimum, embed the key before/after screenshot paths in the PR body.
 
-If no screenshots could be captured, note "UX sanity: no frontend tooling available — skipped" in the PR body.
+If no screenshots could be captured, that is a **blocker for frontend tickets with a design contract** — fix the tooling (start the services, install Playwright) rather than skipping. Only note "UX sanity: no frontend tooling available — skipped" for repos with no design contract and no browser tooling at all.
 
 ### Step 10: Browser-use validation
 

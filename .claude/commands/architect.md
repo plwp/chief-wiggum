@@ -167,6 +167,14 @@ The UI spec defines:
    - `confirm-dialog`: "browser confirm() for destructive actions"
 4. **Interaction contracts**: For each interactive component, what happens when the user does something: `{ trigger: "click", action: "open-sidebar", target: "settings-panel" }`. This is what prevents "is this a dropdown or a tab or a modal?" confusion.
 5. **Navigation graph**: XState-format state machine where pages are states and links are transitions. Reuses the same format as data state machines.
+6. **Visual design contract** (`design` section): the part that makes "on-brand" checkable. A frontend can satisfy every interaction contract and still ship generic and ugly — 121 passing tests prove nothing about how it looks. Define:
+   - `source`: where the design comes from — the design system / reference product / brand kit discovered by `/seed` Step 3, with references (URLs, repo paths, reference screenshots). Only `net-new` if `/seed` confirmed nothing exists to match.
+   - `tokens`: concrete values — colors (primary required; include brand gradients), typography (fonts + scale), spacing, radii, shadows. Derived from the seed design source when present; deliberate choices (with rationale in the ADR) when net-new. **Never leave a component library's default theme as the implicit answer.**
+   - `component_library`: which library and whether to `adopt`, `extend`, or go `custom` — sub-agents must not hand-roll components when the contract says adopt.
+   - `assets`: logo/wordmark/illustrations/reference screenshots, each with `applies_to` pages. Per-page `design_refs` link pages to the reference screenshots they must visually match.
+   - `voice`: tone and empty-state guidelines, so empty states get personality instead of "No data".
+
+   The design contract is consumed by the design-fidelity gate in `/implement` Step 9 — screenshots of the rendered app are reviewed against these tokens and references, and a frontend that ignores them fails the ticket.
 
 **Critical constraint**: Every component that could be implemented as multiple UI patterns (dropdown vs tab vs modal vs page) MUST have an explicit interaction contract specifying which pattern to use.
 
