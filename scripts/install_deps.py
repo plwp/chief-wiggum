@@ -22,26 +22,38 @@ CLI_TOOLS = {
 }
 
 PYTHON_PKGS = {
-    "keyring": ("keyring", [["pip3", "install", "keyring"]]),
-    "whisper": ("whisper", [["pip3", "install", "openai-whisper"]]),
-    "browser-use": ("browser_use", [["pip3", "install", "browser-use"]]),
+    "keyring": ("keyring", [[sys.executable, "-m", "pip", "install", "keyring"]]),
+    "whisper": ("whisper", [[sys.executable, "-m", "pip", "install", "openai-whisper"]]),
+    "browser-use": ("browser_use", [[sys.executable, "-m", "pip", "install", "browser-use"]]),
     "playwright": ("playwright", [
-        ["pip3", "install", "playwright"],
-        ["python3", "-m", "playwright", "install", "chromium"],
+        [sys.executable, "-m", "pip", "install", "playwright"],
+        [sys.executable, "-m", "playwright", "install", "chromium"],
     ]),
-    "langchain-anthropic": ("langchain_anthropic", [["pip3", "install", "langchain-anthropic"]]),
+    "langchain-anthropic": (
+        "langchain_anthropic",
+        [[sys.executable, "-m", "pip", "install", "langchain-anthropic"]],
+    ),
 }
 
 VERTEX_PKGS = {
-    "langchain-google-vertexai": ("langchain_google_vertexai", [["pip3", "install", "langchain-google-vertexai"]]),
-    "google-cloud-aiplatform": ("google.cloud.aiplatform", [["pip3", "install", "google-cloud-aiplatform"]]),
+    "langchain-google-vertexai": (
+        "langchain_google_vertexai",
+        [[sys.executable, "-m", "pip", "install", "langchain-google-vertexai"]],
+    ),
+    "google-cloud-aiplatform": (
+        "google.cloud.aiplatform",
+        [[sys.executable, "-m", "pip", "install", "google-cloud-aiplatform"]],
+    ),
 }
 
 
 def run(cmd: list[str]) -> bool:
     print(f"  Running: {shlex.join(cmd)}")
     result = subprocess.run(cmd)
-    return result.returncode == 0
+    if result.returncode != 0:
+        print(f"Error: command failed with exit code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
+    return True
 
 
 def install_cli_tools():

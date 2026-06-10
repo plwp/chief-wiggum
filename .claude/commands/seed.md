@@ -15,9 +15,9 @@ Interactive brainstorming session that explores a project's requirements, establ
 ### Step 0: Resolve paths and session temp
 
 ```bash
-CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
-CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
-mkdir -p "$CW_TMP"
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 ```
 
 Resolve the target repo:

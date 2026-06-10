@@ -55,9 +55,9 @@ Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/nul
 Resolve the chief-wiggum install directory and the target repo path. **Never hardcode paths.**
 
 ```bash
-CW_HOME=$(python3 "$(dirname "$0")/../../scripts/repo.py" home 2>/dev/null || echo "$HOME/repos/chief-wiggum")
-CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
-mkdir -p "$CW_TMP"
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
 ```
@@ -78,15 +78,19 @@ All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemin
 ```bash
 # Find the ticket's milestone
 MILESTONE=$(gh issue view "$issue_number" --repo "$owner_repo" --json milestone -q '.milestone.title // empty')
+if [ -n "$MILESTONE" ]; then
+  EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "$MILESTONE")
+  EPIC_DIR="$TARGET_REPO/docs/epics/$EPIC_SLUG"
+fi
 ```
 
-If a milestone exists and `docs/epics/[epic-slug]/` exists in the target repo, load:
+If a milestone exists and `$EPIC_DIR/` exists in the target repo, load:
 - `contracts.md` — REQUIRES/ENSURES for APIs and entities
 - `state-machines.md` — valid state transitions
 - `invariants.md` — cross-cutting rules
 - `traceability.md` — which acceptance criteria need which tests
 
-Also check for **formal model artifacts** in `docs/epics/[epic-slug]/models/`:
+Also check for **formal model artifacts** in `$EPIC_DIR/models/`:
 - `contracts.json` — structured contracts (machine-readable)
 - `state-machines.json` — structured state machines (machine-readable)
 - `ui-spec.json` — UI specification (pages, components, interactions, navigation)
@@ -100,14 +104,14 @@ Set flags for downstream steps:
 HAS_FORMAL_MODELS=false
 HAS_UI_SPEC=false
 HAS_TRANSITION_MAP=false
-if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json" ]; then
+if [ -n "${EPIC_DIR:-}" ] && [ -f "$EPIC_DIR/models/state-machines.json" ]; then
   HAS_FORMAL_MODELS=true
-  MODELS_DIR="$TARGET_REPO/docs/epics/[epic-slug]/models"
+  MODELS_DIR="$EPIC_DIR/models"
 fi
-if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/ui-spec.json" ]; then
+if [ -n "${EPIC_DIR:-}" ] && [ -f "$EPIC_DIR/models/ui-spec.json" ]; then
   HAS_UI_SPEC=true
 fi
-if [ -f "$TARGET_REPO/docs/epics/[epic-slug]/models/transition-map.json" ]; then
+if [ -n "${EPIC_DIR:-}" ] && [ -f "$EPIC_DIR/models/transition-map.json" ]; then
   HAS_TRANSITION_MAP=true
 fi
 ```
@@ -447,7 +451,7 @@ Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"
 
 1. **The screenshots** — pass paths to all captured images in `$TICKET_TMP/ux-screenshots/`
 2. **Requirement prose** — the full ticket body (not just AC bullet points): title, description, user story, and any comments
-3. **Domain model artifacts** (if epic context loaded): `contracts.md`, `state-machines.md`, `invariants.md` from `docs/epics/[epic-slug]/`. These represent the "spirit" of the domain — what states are meaningful, what data belongs where, what a user is actually trying to accomplish
+3. **Domain model artifacts** (if epic context loaded): `contracts.md`, `state-machines.md`, `invariants.md` from `$EPIC_DIR/`. These represent the "spirit" of the domain — what states are meaningful, what data belongs where, what a user is actually trying to accomplish
 4. **The AC bullets** — for reference, but instruct the reviewer: *"These bullets define the floor, not the ceiling. Your job is to evaluate whether the screens make sense to a user trying to accomplish the goal described in the prose."*
 
 The sub-agent should evaluate:

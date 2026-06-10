@@ -12,7 +12,8 @@ Check that all tools required by chief-wiggum are installed and working.
 ### Step 0: Resolve CW_HOME
 
 ```bash
-CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 ```
 
 ### Step 1: Run dependency check
@@ -86,4 +87,11 @@ Re-run the check script to confirm everything is green:
 
 ```bash
 python3 $CW_HOME/scripts/check_deps.py
+```
+
+For workflow-specific preflight checks:
+```bash
+python3 $CW_HOME/scripts/check_deps.py --for implement
+python3 $CW_HOME/scripts/check_deps.py --for transcribe
+python3 $CW_HOME/scripts/check_deps.py --for vertex
 ```

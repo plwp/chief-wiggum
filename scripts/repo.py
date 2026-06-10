@@ -120,7 +120,10 @@ def _parse_owner_repo(owner_repo: str) -> tuple[str, str]:
     """Parse 'owner/repo' or 'owner/repo#123' into (owner, repo)."""
     # Strip issue number if present
     repo_part = owner_repo.split("#")[0]
-    parts = repo_part.strip("/").split("/")
+    if repo_part != repo_part.strip("/"):
+        print(f"Error: expected owner/repo format, got: {owner_repo}", file=sys.stderr)
+        sys.exit(1)
+    parts = repo_part.split("/")
     if len(parts) != 2:
         print(f"Error: expected owner/repo format, got: {owner_repo}", file=sys.stderr)
         sys.exit(1)

@@ -12,7 +12,8 @@ Fetch the latest AI model IDs and library versions, update `models.md`, and push
 ### Step 0: Resolve CW_HOME
 
 ```bash
-CW_HOME=$(python3 -c "from pathlib import Path; print(Path('__file__').resolve().parent.parent.parent)" 2>/dev/null || echo "$HOME/repos/chief-wiggum")
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 ```
 
 ### Step 1: Fetch latest model information

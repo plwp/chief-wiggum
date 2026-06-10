@@ -35,9 +35,9 @@ No existing tool does this. Contract testing covers one boundary. OpenAPI codege
 ### Step 1: Resolve paths
 
 ```bash
-CW_HOME=$(python3 "$(dirname "$0")/../../scripts/repo.py" home 2>/dev/null || echo "$HOME/repos/chief-wiggum")
-CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
-mkdir -p "$CW_TMP"
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 

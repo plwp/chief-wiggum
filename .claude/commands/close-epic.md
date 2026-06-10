@@ -22,14 +22,16 @@ Individual ticket quality is handled by `/implement`. This skill validates what 
 ### Step 1: Resolve paths and load epic context
 
 ```bash
-CW_HOME=$(python3 "$(dirname "$0")/../../scripts/repo.py" home 2>/dev/null || echo "$HOME/repos/chief-wiggum")
-CW_TMP="$HOME/.chief-wiggum/tmp/$(uuidgen | tr '[:upper:]' '[:lower:]')"
-mkdir -p "$CW_TMP"
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "$epic_name")
+EPIC_DIR="$TARGET_REPO/docs/epics/$EPIC_SLUG"
 ```
 
-Load epic artifacts from `$TARGET_REPO/docs/epics/[epic-slug]/`:
+Load epic artifacts from `$EPIC_DIR/`:
 - `contracts.md`
 - `state-machines.md`
 - `invariants.md`
@@ -66,10 +68,10 @@ Report:
 
 ### Step 2b: Transition-map audit
 
-If `$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json` exists, run a full transition-map verification:
+If `$EPIC_DIR/models/state-machines.json` exists, run a full transition-map verification:
 
 ```bash
-python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$TARGET_REPO/docs/epics/[epic-slug]/models/state-machines.json" --output "$CW_TMP/transition-map-final.json" --format text
+python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$EPIC_DIR/models/state-machines.json" --output "$CW_TMP/transition-map-final.json" --format text
 ```
 
 Report:
@@ -342,7 +344,7 @@ Compile a retrospective from the epic's implementation, incorporating the multi-
    - Integration tests: pass/fail counts
    - Stitch-audit findings: BREAK/WARN counts
 
-Write the retrospective to `$TARGET_REPO/docs/epics/[epic-slug]/retrospective.md` and commit.
+Write the retrospective to `$EPIC_DIR/retrospective.md` and commit.
 
 ### Step 11: Final report
 
