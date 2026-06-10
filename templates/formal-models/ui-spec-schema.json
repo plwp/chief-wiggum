@@ -20,6 +20,10 @@
         }
       }
     },
+    "design": {
+      "$ref": "#/$defs/design",
+      "description": "Visual design contract — tokens, theme, typography, component-library binding, and brand assets. A frontend can satisfy every interaction contract and still ship off-brand; this section makes visual identity checkable."
+    },
     "patterns": {
       "type": "object",
       "description": "Shared UI patterns referenced by components. Define once, reuse everywhere.",
@@ -44,6 +48,140 @@
     }
   },
   "$defs": {
+    "design": {
+      "type": "object",
+      "description": "The visual design contract. Implementations MUST bind these tokens (e.g. as CSS variables) and the design-fidelity gate reviews rendered screenshots against them.",
+      "required": ["source", "tokens"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "object",
+          "description": "Where this design comes from — discovered by /seed (existing system, reference product) or authored net-new",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["existing-design-system", "reference-product", "brand-kit", "net-new"]
+            },
+            "references": {
+              "type": "array",
+              "description": "URLs, repo paths, or screenshot paths for the design source (e.g. the product being replicated, the Figma export, the tokens file)",
+              "items": { "type": "string" }
+            },
+            "notes": { "type": "string" }
+          }
+        },
+        "tokens": {
+          "type": "object",
+          "description": "Design tokens. Keys are semantic names, values are concrete CSS values. These are binding — a frontend that ignores them fails the conformance check.",
+          "additionalProperties": false,
+          "properties": {
+            "colors": {
+              "type": "object",
+              "description": "Semantic color name → CSS value (hex/hsl/gradient). MUST include at least 'primary'. Include brand gradients here.",
+              "required": ["primary"],
+              "additionalProperties": { "type": "string" }
+            },
+            "typography": {
+              "type": "object",
+              "description": "Font families and scale",
+              "additionalProperties": false,
+              "properties": {
+                "fonts": {
+                  "type": "object",
+                  "description": "Role (heading/body/mono) → font stack",
+                  "additionalProperties": { "type": "string" }
+                },
+                "scale": {
+                  "type": "object",
+                  "description": "Size name (xs/sm/base/lg/xl/...) → CSS size",
+                  "additionalProperties": { "type": "string" }
+                }
+              }
+            },
+            "spacing": {
+              "type": "object",
+              "description": "Spacing scale name → CSS value",
+              "additionalProperties": { "type": "string" }
+            },
+            "radii": {
+              "type": "object",
+              "description": "Border-radius name → CSS value",
+              "additionalProperties": { "type": "string" }
+            },
+            "shadows": {
+              "type": "object",
+              "description": "Shadow name → CSS value",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
+        "theme": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "modes": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["light", "dark", "high-contrast"] }
+            },
+            "default": { "type": "string" }
+          }
+        },
+        "component_library": {
+          "type": "object",
+          "description": "The component library binding — prefer adopting an existing library over hand-rolling",
+          "required": ["name", "usage"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "usage": {
+              "type": "string",
+              "enum": ["adopt", "extend", "custom"],
+              "description": "adopt = use as-is with tokens; extend = themed wrapper components; custom = hand-rolled (justify in notes)"
+            },
+            "notes": { "type": "string" }
+          }
+        },
+        "assets": {
+          "type": "array",
+          "description": "Brand assets and reference screenshots, with the pages/regions they apply to",
+          "items": {
+            "type": "object",
+            "required": ["id", "type"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["logo", "wordmark", "illustration", "icon-set", "reference-screenshot"]
+              },
+              "path": { "type": "string", "description": "Repo path or URL" },
+              "applies_to": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Page routes or component IDs this asset applies to"
+              },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "voice": {
+          "type": "object",
+          "description": "Copy/personality guidelines — empty states, greetings, error tone",
+          "additionalProperties": false,
+          "properties": {
+            "tone": { "type": "string" },
+            "empty_states": { "type": "string", "description": "How empty states should feel (e.g. 'warm, dog-themed illustration + one actionable sentence')" }
+          }
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provenance" }
+        }
+      }
+    },
     "shell": {
       "type": "object",
       "description": "Persistent app shell — always visible regardless of current page",
@@ -103,6 +241,11 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Ordered list of top-level component IDs (the page's direct children)"
+        },
+        "design_refs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs of design assets (from design.assets) that apply to this page — brand treatments, reference screenshots to match"
         },
         "derived_from": {
           "type": "array",

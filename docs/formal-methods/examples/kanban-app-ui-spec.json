@@ -6,8 +6,16 @@
       "navbar": {
         "type": "navbar",
         "label": "Global Navigation Bar",
-        "description": "Persistent top bar — brand blue (#0079bf), 44px height. Always visible.",
-        "children": ["nav-logo", "nav-boards-dropdown", "nav-templates-link", "nav-spacer", "nav-search", "nav-notifications", "nav-user-menu"],
+        "description": "Persistent top bar \u2014 brand blue (#0079bf), 44px height. Always visible.",
+        "children": [
+          "nav-logo",
+          "nav-boards-dropdown",
+          "nav-templates-link",
+          "nav-spacer",
+          "nav-search",
+          "nav-notifications",
+          "nav-user-menu"
+        ],
         "responsive": {
           "mobile": "visible",
           "desktop": "visible"
@@ -15,56 +23,203 @@
       }
     }
   },
+  "design": {
+    "source": {
+      "kind": "reference-product",
+      "references": [
+        "https://trello.com",
+        "docs/design/reference-screenshots/"
+      ],
+      "notes": "Replicating the Trello aesthetic: brand blue chrome, card-on-column surfaces, dense but friendly."
+    },
+    "tokens": {
+      "colors": {
+        "primary": "#0079bf",
+        "primary-hover": "#026aa7",
+        "surface": "#ffffff",
+        "board-background": "#0079bf",
+        "column-background": "#ebecf0",
+        "text": "#172b4d",
+        "text-muted": "#5e6c84",
+        "danger": "#eb5a46",
+        "success": "#61bd4f"
+      },
+      "typography": {
+        "fonts": {
+          "body": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+          "heading": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+        },
+        "scale": {
+          "sm": "12px",
+          "base": "14px",
+          "lg": "16px",
+          "xl": "20px"
+        }
+      },
+      "spacing": {
+        "xs": "4px",
+        "sm": "8px",
+        "md": "16px",
+        "lg": "24px"
+      },
+      "radii": {
+        "card": "3px",
+        "button": "3px"
+      },
+      "shadows": {
+        "card": "0 1px 0 rgba(9,30,66,.25)"
+      }
+    },
+    "theme": {
+      "modes": [
+        "light"
+      ],
+      "default": "light"
+    },
+    "component_library": {
+      "name": "custom",
+      "usage": "custom",
+      "notes": "Reference product predates modern component libraries; custom components bound to the tokens above."
+    },
+    "assets": [
+      {
+        "id": "logo-mark",
+        "type": "logo",
+        "path": "ui/public/logo.svg",
+        "applies_to": [
+          "nav-logo"
+        ],
+        "description": "White logo mark, 24px, sits in the navbar"
+      },
+      {
+        "id": "ref-board-view",
+        "type": "reference-screenshot",
+        "path": "docs/design/reference-screenshots/board-view.png",
+        "applies_to": [
+          "/b/:boardId"
+        ],
+        "description": "Target look for the board canvas \u2014 column spacing, card density, label pills"
+      }
+    ],
+    "voice": {
+      "tone": "Friendly and efficient \u2014 short imperative labels, no jargon",
+      "empty_states": "One actionable sentence plus a primary button; never a bare 'No data'"
+    }
+  },
   "patterns": {
     "entity-menu": {
       "name": "Entity Menu",
       "type": "menu",
-      "description": "3-dot icon button → dropdown with actions. Used on every entity (list, card, board). Dropdown appears below-right of the trigger. Always includes: edit, archive/delete. Destructive actions are red text with confirm dialog.",
+      "description": "3-dot icon button \u2192 dropdown with actions. Used on every entity (list, card, board). Dropdown appears below-right of the trigger. Always includes: edit, archive/delete. Destructive actions are red text with confirm dialog.",
       "interactions": [
-        { "trigger": "click", "action": "open-popover", "target": "dropdown", "description": "Click 3-dot icon opens dropdown menu" },
-        { "trigger": "keypress:Escape", "action": "close-popover", "target": "dropdown" }
+        {
+          "trigger": "click",
+          "action": "open-popover",
+          "target": "dropdown",
+          "description": "Click 3-dot icon opens dropdown menu"
+        },
+        {
+          "trigger": "keypress:Escape",
+          "action": "close-popover",
+          "target": "dropdown"
+        }
       ],
-      "examples": ["list-header-menu", "card-context-menu", "board-settings-trigger"]
+      "examples": [
+        "list-header-menu",
+        "card-context-menu",
+        "board-settings-trigger"
+      ]
     },
     "confirm-dialog": {
       "name": "Confirm Dialog",
       "type": "dialog",
       "description": "Browser native confirm() for destructive actions. Message describes what will be destroyed. OK = proceed, Cancel = abort. Used for: delete board, delete list, delete card, remove member.",
       "interactions": [
-        { "trigger": "click", "action": "api-call", "target": "DELETE endpoint", "description": "Confirm executes the destructive action" }
+        {
+          "trigger": "click",
+          "action": "api-call",
+          "target": "DELETE endpoint",
+          "description": "Confirm executes the destructive action"
+        }
       ],
-      "examples": ["delete-board", "delete-card", "remove-member"]
+      "examples": [
+        "delete-board",
+        "delete-card",
+        "remove-member"
+      ]
     },
     "inline-edit": {
       "name": "Inline Edit",
       "type": "input",
       "description": "Click text to edit in-place. Text becomes an input/textarea with blue ring. Enter or blur saves, Escape cancels. Used for: list title, card title, board title.",
       "interactions": [
-        { "trigger": "click", "action": "toggle", "target": "edit-mode", "description": "Click text to enter edit mode" },
-        { "trigger": "keypress:Escape", "action": "toggle", "target": "view-mode", "description": "Escape cancels edit" },
-        { "trigger": "submit", "action": "api-call", "target": "PATCH endpoint", "description": "Enter/blur saves" }
+        {
+          "trigger": "click",
+          "action": "toggle",
+          "target": "edit-mode",
+          "description": "Click text to enter edit mode"
+        },
+        {
+          "trigger": "keypress:Escape",
+          "action": "toggle",
+          "target": "view-mode",
+          "description": "Escape cancels edit"
+        },
+        {
+          "trigger": "submit",
+          "action": "api-call",
+          "target": "PATCH endpoint",
+          "description": "Enter/blur saves"
+        }
       ],
-      "examples": ["list-title", "card-title", "board-title"]
+      "examples": [
+        "list-title",
+        "card-title",
+        "board-title"
+      ]
     },
     "sidebar-panel": {
       "name": "Sidebar Panel",
       "type": "sidebar",
-      "description": "Slides in from the right, 320px wide on desktop, full-screen on mobile. Has a header with title + close button. Used for: board settings, activity feed. NOT a separate page — overlays the current content.",
+      "description": "Slides in from the right, 320px wide on desktop, full-screen on mobile. Has a header with title + close button. Used for: board settings, activity feed. NOT a separate page \u2014 overlays the current content.",
       "interactions": [
-        { "trigger": "click", "action": "close-sidebar", "target": "self", "description": "Close button or click outside dismisses" },
-        { "trigger": "keypress:Escape", "action": "close-sidebar", "target": "self" }
+        {
+          "trigger": "click",
+          "action": "close-sidebar",
+          "target": "self",
+          "description": "Close button or click outside dismisses"
+        },
+        {
+          "trigger": "keypress:Escape",
+          "action": "close-sidebar",
+          "target": "self"
+        }
       ],
-      "examples": ["board-settings", "board-activity"]
+      "examples": [
+        "board-settings",
+        "board-activity"
+      ]
     },
     "card-modal": {
       "name": "Card Detail Modal",
       "type": "dialog",
-      "description": "Centered modal overlay (max-width 768px desktop, full-screen mobile). Dark backdrop. Shows card title, description, labels, checklists, comments, attachments, activity. Sidebar on the right with action buttons. NOT a page navigation — URL does not change.",
+      "description": "Centered modal overlay (max-width 768px desktop, full-screen mobile). Dark backdrop. Shows card title, description, labels, checklists, comments, attachments, activity. Sidebar on the right with action buttons. NOT a page navigation \u2014 URL does not change.",
       "interactions": [
-        { "trigger": "click", "action": "close-dialog", "target": "self", "description": "Click backdrop or X button closes" },
-        { "trigger": "keypress:Escape", "action": "close-dialog", "target": "self" }
+        {
+          "trigger": "click",
+          "action": "close-dialog",
+          "target": "self",
+          "description": "Click backdrop or X button closes"
+        },
+        {
+          "trigger": "keypress:Escape",
+          "action": "close-dialog",
+          "target": "self"
+        }
       ],
-      "examples": ["card-detail"]
+      "examples": [
+        "card-detail"
+      ]
     }
   },
   "pages": {
@@ -73,21 +228,45 @@
       "title": "Log In",
       "layout": "centered",
       "auth": "public",
-      "root": ["login-form"],
+      "root": [
+        "login-form"
+      ],
       "components": {
         "login-form": {
           "type": "form",
           "label": "Login Form",
           "description": "Email + password fields, submit button, link to signup",
-          "children": ["login-email", "login-password", "login-submit"],
+          "children": [
+            "login-email",
+            "login-password",
+            "login-submit"
+          ],
           "interactions": [
-            { "trigger": "submit", "action": "api-call", "target": "POST /api/auth/callback/credentials" },
-            { "trigger": "submit", "action": "navigate", "target": "boards", "description": "On success, redirect to /boards" }
+            {
+              "trigger": "submit",
+              "action": "api-call",
+              "target": "POST /api/auth/callback/credentials"
+            },
+            {
+              "trigger": "submit",
+              "action": "navigate",
+              "target": "boards",
+              "description": "On success, redirect to /boards"
+            }
           ]
         },
-        "login-email": { "type": "input", "label": "Email" },
-        "login-password": { "type": "input", "label": "Password" },
-        "login-submit": { "type": "button", "label": "Log In" }
+        "login-email": {
+          "type": "input",
+          "label": "Email"
+        },
+        "login-password": {
+          "type": "input",
+          "label": "Password"
+        },
+        "login-submit": {
+          "type": "button",
+          "label": "Log In"
+        }
       }
     },
     "boards": {
@@ -95,14 +274,24 @@
       "title": "Boards",
       "layout": "sidebar-main",
       "auth": "required",
-      "root": ["boards-sidebar", "boards-main"],
+      "root": [
+        "boards-sidebar",
+        "boards-main"
+      ],
       "components": {
         "boards-sidebar": {
           "type": "sidebar",
           "label": "Boards Sidebar",
           "description": "Left sidebar with: Boards link (active), Templates link, Recently Viewed boards, Workspaces list. Persistent on desktop, slide-out drawer on mobile.",
-          "children": ["sidebar-nav", "sidebar-recent", "sidebar-workspaces"],
-          "responsive": { "mobile": "drawer", "desktop": "sidebar" }
+          "children": [
+            "sidebar-nav",
+            "sidebar-recent",
+            "sidebar-workspaces"
+          ],
+          "responsive": {
+            "mobile": "drawer",
+            "desktop": "sidebar"
+          }
         },
         "sidebar-nav": {
           "type": "list",
@@ -123,13 +312,22 @@
           "type": "section",
           "label": "Boards Content",
           "description": "Main content area showing board grids organized by section",
-          "children": ["starred-section", "workspace-sections", "personal-section", "shared-section", "closed-section"]
+          "children": [
+            "starred-section",
+            "workspace-sections",
+            "personal-section",
+            "shared-section",
+            "closed-section"
+          ]
         },
         "starred-section": {
           "type": "section",
           "label": "Starred Boards",
           "description": "Grid of starred boards. Star icon + heading. Only shown if user has starred boards.",
-          "visibility": { "default": "visible", "condition": "starredBoards.length > 0" }
+          "visibility": {
+            "default": "visible",
+            "condition": "starredBoards.length > 0"
+          }
         },
         "workspace-sections": {
           "type": "section",
@@ -145,15 +343,25 @@
           "type": "section",
           "label": "Shared with you",
           "description": "Boards where user is a member but not the owner. Only shown if any exist.",
-          "visibility": { "default": "visible", "condition": "sharedBoards.length > 0" }
+          "visibility": {
+            "default": "visible",
+            "condition": "sharedBoards.length > 0"
+          }
         },
         "closed-section": {
           "type": "section",
           "label": "Closed Boards",
           "description": "Collapsible section at the bottom. Collapsed by default. Click to expand and lazy-load closed boards. Each has Reopen and Delete buttons.",
-          "visibility": { "default": "collapsed" },
+          "visibility": {
+            "default": "collapsed"
+          },
           "interactions": [
-            { "trigger": "click", "action": "expand", "target": "self", "description": "Click heading to expand/collapse" }
+            {
+              "trigger": "click",
+              "action": "expand",
+              "target": "self",
+              "description": "Click heading to expand/collapse"
+            }
           ]
         }
       }
@@ -163,14 +371,27 @@
       "title": "Board View",
       "layout": "canvas",
       "auth": "required",
-      "description": "The main board view — kanban columns with cards. Board background fills the entire viewport below the navbar.",
-      "root": ["board-header", "board-filter-bar", "board-columns", "board-add-list"],
+      "description": "The main board view \u2014 kanban columns with cards. Board background fills the entire viewport below the navbar.",
+      "root": [
+        "board-header",
+        "board-filter-bar",
+        "board-columns",
+        "board-add-list"
+      ],
       "components": {
         "board-header": {
           "type": "section",
           "label": "Board Header",
           "description": "Semi-transparent bar over the board background. Contains: board title (inline-editable), star toggle, visibility badge, view tabs (Board/Table/Calendar/Timeline), member avatars, invite button, settings trigger (3-dot).",
-          "children": ["board-title", "board-star", "board-visibility", "board-view-tabs", "board-members", "board-invite", "board-settings-trigger"]
+          "children": [
+            "board-title",
+            "board-star",
+            "board-visibility",
+            "board-view-tabs",
+            "board-members",
+            "board-invite",
+            "board-settings-trigger"
+          ]
         },
         "board-title": {
           "type": "input",
@@ -180,7 +401,13 @@
         "board-star": {
           "type": "button",
           "label": "Star Toggle",
-          "interactions": [{ "trigger": "click", "action": "api-call", "target": "PATCH /api/boards/:id { starred }" }]
+          "interactions": [
+            {
+              "trigger": "click",
+              "action": "api-call",
+              "target": "PATCH /api/boards/:id { starred }"
+            }
+          ]
         },
         "board-visibility": {
           "type": "badge",
@@ -192,10 +419,26 @@
           "label": "View Switcher",
           "description": "Tabs: Board (default), Table, Calendar, Timeline. Each navigates to a sub-route.",
           "interactions": [
-            { "trigger": "click", "action": "navigate", "target": "/b/:boardId (Board)" },
-            { "trigger": "click", "action": "navigate", "target": "/b/:boardId/table" },
-            { "trigger": "click", "action": "navigate", "target": "/b/:boardId/calendar" },
-            { "trigger": "click", "action": "navigate", "target": "/b/:boardId/timeline" }
+            {
+              "trigger": "click",
+              "action": "navigate",
+              "target": "/b/:boardId (Board)"
+            },
+            {
+              "trigger": "click",
+              "action": "navigate",
+              "target": "/b/:boardId/table"
+            },
+            {
+              "trigger": "click",
+              "action": "navigate",
+              "target": "/b/:boardId/calendar"
+            },
+            {
+              "trigger": "click",
+              "action": "navigate",
+              "target": "/b/:boardId/timeline"
+            }
           ]
         },
         "board-members": {
@@ -206,48 +449,81 @@
         "board-invite": {
           "type": "button",
           "label": "Invite",
-          "interactions": [{ "trigger": "click", "action": "open-popover", "target": "invite-form" }]
+          "interactions": [
+            {
+              "trigger": "click",
+              "action": "open-popover",
+              "target": "invite-form"
+            }
+          ]
         },
         "board-settings-trigger": {
           "type": "button",
           "label": "Board Menu",
           "pattern": "entity-menu",
-          "interactions": [{ "trigger": "click", "action": "open-sidebar", "target": "board-settings-panel" }]
+          "interactions": [
+            {
+              "trigger": "click",
+              "action": "open-sidebar",
+              "target": "board-settings-panel"
+            }
+          ]
         },
         "board-settings-panel": {
           "type": "sidebar",
           "label": "Board Settings",
           "pattern": "sidebar-panel",
           "description": "Slides in from right. Tabs: Settings, Activity. Settings tab has: visibility dropdown, background picker, members section, danger zone (close board, delete board). Activity tab shows the board activity feed.",
-          "responsive": { "mobile": "full-screen", "desktop": "sidebar" }
+          "responsive": {
+            "mobile": "full-screen",
+            "desktop": "sidebar"
+          }
         },
         "board-filter-bar": {
           "type": "section",
           "label": "Filter Bar",
           "description": "Below the board header. Three filter dropdowns: Labels (multi-select), Members (multi-select), Due Date (overdue/soon/none). Clear button. Cards not matching are dimmed.",
-          "visibility": { "default": "visible" }
+          "visibility": {
+            "default": "visible"
+          }
         },
         "board-columns": {
           "type": "kanban-board",
           "label": "Board Columns",
           "description": "Horizontal scrolling container of list columns. Each column is 272px wide. Columns are drag-droppable to reorder. Cards within columns are drag-droppable between columns.",
-          "children": ["board-list"],
-          "data": { "entity": "List", "source": "GET /api/boards/:boardId/lists" }
+          "children": [
+            "board-list"
+          ],
+          "data": {
+            "entity": "List",
+            "source": "GET /api/boards/:boardId/lists"
+          }
         },
         "board-list": {
           "type": "board-column",
           "label": "List Column",
           "description": "272px wide, rounded corners, gray background (#ebecf0). Header: list title (inline-editable) + 3-dot menu (archive, copy, delete). Body: vertical stack of card items. Footer: Add Card button.",
           "pattern": "entity-menu",
-          "children": ["list-header", "list-cards", "list-add-card"]
+          "children": [
+            "list-header",
+            "list-cards",
+            "list-add-card"
+          ]
         },
         "list-header": {
           "type": "section",
           "label": "List Header",
           "description": "Title (inline-editable) + menu trigger",
-          "children": ["list-title", "list-menu"]
+          "children": [
+            "list-title",
+            "list-menu"
+          ]
         },
-        "list-title": { "type": "input", "label": "List Title", "pattern": "inline-edit" },
+        "list-title": {
+          "type": "input",
+          "label": "List Title",
+          "pattern": "inline-edit"
+        },
         "list-menu": {
           "type": "menu",
           "label": "List Menu",
@@ -262,9 +538,13 @@
         "list-add-card": {
           "type": "button",
           "label": "Add a card",
-          "description": "Click opens inline form: textarea + Add Card button + Cancel. Not a modal — replaces the button in-place.",
+          "description": "Click opens inline form: textarea + Add Card button + Cancel. Not a modal \u2014 replaces the button in-place.",
           "interactions": [
-            { "trigger": "click", "action": "toggle", "target": "add-card-form" }
+            {
+              "trigger": "click",
+              "action": "toggle",
+              "target": "add-card-form"
+            }
           ]
         },
         "board-add-list": {
@@ -272,39 +552,71 @@
           "label": "Add another list",
           "description": "At the end of the columns. Semi-transparent white button. Click opens inline form: input + Add List button + Cancel. Same width as list columns (272px).",
           "interactions": [
-            { "trigger": "click", "action": "toggle", "target": "add-list-form" }
+            {
+              "trigger": "click",
+              "action": "toggle",
+              "target": "add-list-form"
+            }
           ]
         }
-      }
+      },
+      "design_refs": [
+        "ref-board-view"
+      ]
     },
     "card-detail": {
       "route": null,
       "title": "Card Detail",
       "layout": "centered",
-      "description": "NOT a page — this is a modal overlay triggered by clicking a card. URL does not change. Described as a page entry for completeness.",
-      "root": ["card-modal-overlay"],
+      "description": "NOT a page \u2014 this is a modal overlay triggered by clicking a card. URL does not change. Described as a page entry for completeness.",
+      "root": [
+        "card-modal-overlay"
+      ],
       "components": {
         "card-modal-overlay": {
           "type": "dialog",
           "label": "Card Modal",
           "pattern": "card-modal",
           "description": "Two-column layout inside the modal. Left (main): cover, title, labels, description, checklists, comments. Right (sidebar): action buttons (Members, Labels, Due Date, Cover, Move, Copy, Archive, Delete).",
-          "children": ["card-cover", "card-header", "card-labels", "card-members", "card-description", "card-checklists", "card-attachments", "card-comments", "card-actions-sidebar"]
+          "children": [
+            "card-cover",
+            "card-header",
+            "card-labels",
+            "card-members",
+            "card-description",
+            "card-checklists",
+            "card-attachments",
+            "card-comments",
+            "card-actions-sidebar"
+          ]
         },
         "card-cover": {
           "type": "section",
           "label": "Card Cover",
           "description": "Color strip or image at the top of the modal. 80px height.",
-          "visibility": { "default": "visible", "condition": "card.coverColor || card.coverUrl" }
+          "visibility": {
+            "default": "visible",
+            "condition": "card.coverColor || card.coverUrl"
+          }
         },
         "card-header": {
           "type": "section",
           "label": "Card Header",
           "description": "Card icon + title (inline-editable) + breadcrumb showing 'in list: ListName'",
-          "children": ["card-title", "card-breadcrumb"]
+          "children": [
+            "card-title",
+            "card-breadcrumb"
+          ]
         },
-        "card-title": { "type": "input", "label": "Card Title", "pattern": "inline-edit" },
-        "card-breadcrumb": { "type": "breadcrumb", "label": "List Breadcrumb" },
+        "card-title": {
+          "type": "input",
+          "label": "Card Title",
+          "pattern": "inline-edit"
+        },
+        "card-breadcrumb": {
+          "type": "breadcrumb",
+          "label": "List Breadcrumb"
+        },
         "card-labels": {
           "type": "section",
           "label": "Labels",
@@ -340,7 +652,10 @@
           "type": "section",
           "label": "Card Actions",
           "description": "Right sidebar (desktop) or footer (mobile) with action buttons: Members, Labels, Due Date, Cover, Move, Copy, Archive, Delete (red).",
-          "responsive": { "mobile": "visible", "desktop": "sidebar" }
+          "responsive": {
+            "mobile": "visible",
+            "desktop": "sidebar"
+          }
         }
       }
     }
@@ -385,21 +700,30 @@
           "click-table-tab": "board-table",
           "click-calendar-tab": "board-calendar",
           "click-timeline-tab": "board-timeline",
-          "click-card": { "target": "board", "guard": "opens card-detail modal overlay" },
+          "click-card": {
+            "target": "board",
+            "guard": "opens card-detail modal overlay"
+          },
           "delete-board": "boards"
         }
       },
       "board-table": {
         "route": "/b/:boardId/table",
-        "on": { "click-board-tab": "board" }
+        "on": {
+          "click-board-tab": "board"
+        }
       },
       "board-calendar": {
         "route": "/b/:boardId/calendar",
-        "on": { "click-board-tab": "board" }
+        "on": {
+          "click-board-tab": "board"
+        }
       },
       "board-timeline": {
         "route": "/b/:boardId/timeline",
-        "on": { "click-board-tab": "board" }
+        "on": {
+          "click-board-tab": "board"
+        }
       },
       "workspace": {
         "route": "/w/:slug",
@@ -410,11 +734,15 @@
       },
       "workspace-settings": {
         "route": "/w/:slug/settings",
-        "on": { "click-back": "workspace" }
+        "on": {
+          "click-back": "workspace"
+        }
       },
       "templates": {
         "route": "/templates",
-        "on": { "create-from-template": "board" }
+        "on": {
+          "create-from-template": "board"
+        }
       }
     }
   }
