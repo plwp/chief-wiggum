@@ -53,6 +53,14 @@ Load epic artifacts from `$EPIC_DIR/`:
 
 **If epic artifacts don't exist, STOP.** Run `/architect` first. Wave implementation without contracts is unsafe — parallel tickets will diverge on design decisions.
 
+**Scan for unresolved external unknowns** in the epic artifacts:
+
+```bash
+python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json > "$CW_TMP/unresolved.json"
+```
+
+Each finding carries the tickets it blocks (from `derived_from` provenance). Tickets listed in `blocked_tickets` must NOT be implemented on a guess — see Step 2 and Step 4.
+
 ### Step 2: Build the wave plan
 
 Fetch all open tickets in the epic milestone:
@@ -93,6 +101,11 @@ Compute waves using topological sort:
 
 Also identify **integration risks** from the epic plan — tickets within the same wave that touch the same files/components. Flag these for the merge step.
 
+**Apply the unresolved-unknowns gate.** For each ticket in `blocked_tickets` (from Step 1's scan):
+1. First try to **resolve the unknown now** — introspect the real schema, read the source repo, check the external service. Many "unknowns" are 10 minutes of research. If resolved: update the artifact (remove the marker, cite the source), commit, and un-gate the ticket.
+2. If the unknown needs the user (credentials, a client answer, a business decision): mark the ticket **GATED** in the wave plan with a one-line "resolve X first" reason, and move it (plus its transitive dependents) to a later wave or out of the plan.
+3. Never launch a GATED ticket on a guessed value. A placeholder that ships is a production incident with a delay timer.
+
 Present the wave plan to the user:
 
 ```markdown
@@ -109,6 +122,9 @@ Present the wave plan to the user:
 ### Wave 3 (parallel, after Wave 2 merges)
 - #44 - Order admin UI (M) — depends on #43
   ⚠️ Integration risk: shares OrderList component with #46 (Wave 2)
+
+### Gated (unresolved unknowns — not scheduled)
+- #47 - Revenue rollup query — ⛔ GATED: contracts.json carries "TBD: confirm orders_daily column names against dbt model" — resolve before implementing
 
 ### Estimated timeline
 - Waves: 3
@@ -142,7 +158,9 @@ git status --porcelain  # must be empty
 
 For each wave, in order:
 
-**Before launching a wave**, check for failed dependencies. If any ticket in a previous wave failed, remove all downstream dependents from the current and future waves. Recompute the wave plan with the remaining tickets. Report to the user which tickets were dropped and why:
+**Before launching a wave**, re-run the unresolved scan (`check_unresolved.py "$EPIC_DIR" --format json`) — artifacts may have changed since the plan was made. Any ticket in the wave that is still blocked by an unresolved marker is held back (resolve it or defer it; never implement on a guess).
+
+Also check for failed dependencies. If any ticket in a previous wave failed, remove all downstream dependents from the current and future waves. Recompute the wave plan with the remaining tickets. Report to the user which tickets were dropped and why:
 
 ```markdown
 ⚠️ Skipping #44 (depends on #43 which failed in Wave 2)
@@ -409,3 +427,4 @@ After all waves complete:
 - **Max-parallel limits API pressure.** Two concurrent tickets means up to 8 simultaneous AI API calls (3-4 consultations per ticket). Respect rate limits. Increase only with high-tier API access.
 - **Failed tickets don't block the wave.** If one ticket in a wave fails, the other tickets in that wave can still merge. The failed ticket is retried or deferred to a later wave.
 - **Pre-flight catches auth failures early.** Discovering expired Codex auth 20 minutes into a 3-ticket wave wastes all 3 tickets' work. Check before launching.
+- **Unknowns gate work; they don't ride along.** A `TBD:` in an artifact means "we don't actually know this yet". Implementing a dependent ticket anyway converts the unknown into silent wrong code. Resolve it or defer the ticket — those are the only two options.
