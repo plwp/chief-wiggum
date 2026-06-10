@@ -23,6 +23,7 @@ A collection of Claude Code skills that orchestrate a full development pipeline 
 - **Contracts are executable**: Every REQUIRES/ENSURES from `/architect` becomes a runtime guard in the code. The review checklist verifies this
 - **Unknowns gate work**: Facts that can't be confirmed against a real source are marked `TBD:`/`UNRESOLVED:` in artifacts. `scripts/check_unresolved.py` detects them; `/implement-wave` refuses to build dependent tickets on a guess
 - **Ground truth before contracts**: For products on existing data sources, `/seed` ingests the semantic layer, physical schema, and transformation-repo history into `docs/domain-context.md` before `/architect` writes data contracts
+- **The loop must look at the UI**: "Build + tests green" never closes a frontend ticket. `/architect` writes a visual design contract (ui-spec `design` section: tokens, component-library binding, reference screenshots); `/implement` Step 9 renders the app, screenshots it, and reviews against that contract
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)
 - **Skills are markdown prompts**: They instruct Claude Code what to do, not executable code
 - **Scripts are Python**: All helpers are Python — no bash scripts

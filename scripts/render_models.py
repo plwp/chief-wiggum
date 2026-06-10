@@ -120,6 +120,138 @@ def render_state_machine_human(sm: dict) -> str:
     return "\n".join(lines)
 
 
+def render_ui_spec_human(spec: dict) -> str:
+    """Render a UI spec model to prose markdown: design contract, pages, patterns, navigation."""
+    lines = []
+
+    app = spec.get("app", {})
+    title = app.get("name", "UI Specification")
+    lines.append(f"# UI Specification: {title}")
+    lines.append("")
+    if app.get("description"):
+        lines.append(app["description"])
+        lines.append("")
+
+    # Design contract
+    design = spec.get("design")
+    if design:
+        lines.append("## Visual Design Contract")
+        lines.append("")
+        source = design.get("source", {})
+        lines.append(f"**Source**: {source.get('kind', 'unspecified')}")
+        for ref in source.get("references", []):
+            lines.append(f"- {ref}")
+        if source.get("notes"):
+            lines.append(f"\n{source['notes']}")
+        lines.append("")
+
+        tokens = design.get("tokens", {})
+        colors = tokens.get("colors", {})
+        if colors:
+            lines.append("### Color tokens")
+            lines.append("| Token | Value |")
+            lines.append("|-------|-------|")
+            for name, value in colors.items():
+                lines.append(f"| `{name}` | `{value}` |")
+            lines.append("")
+
+        typography = tokens.get("typography", {})
+        if typography:
+            lines.append("### Typography")
+            for role, stack in typography.get("fonts", {}).items():
+                lines.append(f"- **{role}**: `{stack}`")
+            scale = typography.get("scale", {})
+            if scale:
+                scale_str = ", ".join(f"{k}={v}" for k, v in scale.items())
+                lines.append(f"- **Scale**: {scale_str}")
+            lines.append("")
+
+        for group in ("spacing", "radii", "shadows"):
+            values = tokens.get(group, {})
+            if values:
+                group_str = ", ".join(f"{k}={v}" for k, v in values.items())
+                lines.append(f"- **{group.capitalize()}**: {group_str}")
+        if any(tokens.get(g) for g in ("spacing", "radii", "shadows")):
+            lines.append("")
+
+        lib = design.get("component_library")
+        if lib:
+            version = f" {lib['version']}" if lib.get("version") else ""
+            lines.append(f"**Component library**: {lib['name']}{version} ({lib['usage']})")
+            if lib.get("notes"):
+                lines.append(f"  — {lib['notes']}")
+            lines.append("")
+
+        assets = design.get("assets", [])
+        if assets:
+            lines.append("### Brand assets & references")
+            for asset in assets:
+                applies = f" → {', '.join(asset['applies_to'])}" if asset.get("applies_to") else ""
+                path = f" (`{asset['path']}`)" if asset.get("path") else ""
+                lines.append(f"- **{asset['id']}** [{asset['type']}]{path}{applies}: {asset.get('description', '')}")
+            lines.append("")
+
+        voice = design.get("voice")
+        if voice:
+            lines.append("### Voice")
+            if voice.get("tone"):
+                lines.append(f"- **Tone**: {voice['tone']}")
+            if voice.get("empty_states"):
+                lines.append(f"- **Empty states**: {voice['empty_states']}")
+            lines.append("")
+
+    # Shared patterns
+    patterns = spec.get("patterns", {})
+    if patterns:
+        lines.append("## Shared Patterns")
+        lines.append("")
+        for pattern_id, pattern in patterns.items():
+            lines.append(f"- **{pattern_id}** ({pattern.get('type', '')}): {pattern.get('description', '')}")
+        lines.append("")
+
+    # Pages
+    lines.append("## Pages")
+    lines.append("")
+    for route, page in spec.get("pages", {}).items():
+        lines.append(f"### {page.get('title', route)} (`{page.get('route', route)}`)")
+        if page.get("description"):
+            lines.append(page["description"])
+        lines.append(f"- **Layout**: {page.get('layout', '—')} | **Auth**: {page.get('auth', 'required')}")
+        if page.get("design_refs"):
+            lines.append(f"- **Design references**: {', '.join(page['design_refs'])}")
+        components = page.get("components", {})
+        interactions = [
+            (cid, ix)
+            for cid, comp in components.items()
+            for ix in comp.get("interactions", [])
+        ]
+        if interactions:
+            lines.append("- **Interaction contracts**:")
+            for cid, ix in interactions:
+                target = f" → {ix['target']}" if ix.get("target") else ""
+                desc = f" ({ix['description']})" if ix.get("description") else ""
+                lines.append(f"  - `{cid}`: {ix['trigger']} → {ix['action']}{target}{desc}")
+        lines.append("")
+
+    # Navigation graph as Mermaid
+    nav = spec.get("navigation", {})
+    states = nav.get("states", {})
+    if states:
+        lines.append("## Navigation")
+        lines.append("")
+        lines.append("```mermaid")
+        lines.append("stateDiagram-v2")
+        lines.append(f"    [*] --> {nav['initial']}")
+        for state_id, state in states.items():
+            for event, target in state.get("on", {}).items():
+                target_id = target if isinstance(target, str) else target["target"]
+                lines.append(f"    {state_id} --> {target_id}: {event}")
+        lines.append("```")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def render_contracts_human(contracts: dict) -> str:
     """Render contract definitions to prose markdown matching /architect format."""
     lines = []
@@ -426,6 +558,11 @@ def render_model(model_path: Path, view: str, output_dir: Path) -> list[str]:
             files_created.append(str(out))
         elif schema_type == "contracts":
             md = render_contracts_human(model)
+            out = output_dir / f"{model_path.stem}.md"
+            out.write_text(md)
+            files_created.append(str(out))
+        elif schema_type == "ui-spec":
+            md = render_ui_spec_human(model)
             out = output_dir / f"{model_path.stem}.md"
             out.write_text(md)
             files_created.append(str(out))

@@ -73,14 +73,23 @@ Work through the key architecture decisions with the user. Don't assume — ask.
 
 1. **Backend language/framework** — Consider: what will the AI writing the code produce best? What ecosystem fits the problem domain?
 2. **Frontend stack** — If the user has a preference, use it. If not, recommend modern defaults.
-3. **Database** — Schema flexibility vs relational integrity. Audit trail requirements. Multi-tenancy model.
-4. **AI/LLM integration** — Which model provider? RAG vs context stuffing? Structured output? Streaming?
-5. **Infrastructure & deployment** — Cloud provider, cost optimisation, IaC.
-6. **Authentication & authorisation** — Who are the users? What roles? Any anonymous flows?
-7. **Streaming & real-time** — SSE, WebSockets, or polling? What needs to be real-time?
-8. **Document/file generation** — Any server-side rendering? What formats?
-9. **Mobile vs desktop** — What's the primary device?
-10. **Multi-tenancy** — Needed from day one? What model?
+3. **Design source & brand** — the most important UI question, asked FIRST, not as an afterthought:
+   - "Is there an existing design system, component library, or brand we must match?"
+   - "Is this replicating or extending an existing product? If so, where does its UI live?"
+   - If yes to either, **ingest the design source as a first-class input**:
+     - Extract design tokens (palette including brand gradients, typography scale, spacing, radii) from the existing CSS/theme files or brand kit
+     - Prefer **adopting** the existing component library over hand-rolling
+     - Capture reference screenshots/URLs of the product to match; for replication projects, clone or link the existing UI source as a styling reference
+   - If genuinely net-new, still make deliberate design decisions now: a primary color with a reason, a typography choice, a voice for empty states. "Default component-library theme" is not a decision — it's how brandless admin-tool UIs ship (see dogeared-coach retro).
+   - Record the design source and tokens in the architecture decisions — `/architect` turns them into the `design` section of `ui-spec.json`, and the design-fidelity gate in `/implement` reviews rendered screenshots against them.
+4. **Database** — Schema flexibility vs relational integrity. Audit trail requirements. Multi-tenancy model.
+5. **AI/LLM integration** — Which model provider? RAG vs context stuffing? Structured output? Streaming?
+6. **Infrastructure & deployment** — Cloud provider, cost optimisation, IaC.
+7. **Authentication & authorisation** — Who are the users? What roles? Any anonymous flows?
+8. **Streaming & real-time** — SSE, WebSockets, or polling? What needs to be real-time?
+9. **Document/file generation** — Any server-side rendering? What formats?
+10. **Mobile vs desktop** — What's the primary device?
+11. **Multi-tenancy** — Needed from day one? What model?
 
 Incorporate findings from the sister project exploration (Step 2) as they arrive.
 
