@@ -49,6 +49,24 @@ If yes, send an **Explore sub-agent** (`subagent_type: "Explore"`, thoroughness:
 
 Continue the conversation while the agent works.
 
+### Step 2.5: Ingest domain ground truth
+
+Most seed failures are not bad architecture — they're architecture built on **guessed facts**. Before brainstorming, find out what real sources of truth exist and ingest them. Ask the user:
+
+1. **Existing data model** — "Does this product read from or write to an existing data source? Where does its truth live?" If yes, ingest it **before any data contracts are written**:
+   - The semantic/modeling layer (dbt, Dataform, LookML, a metrics store) — canonical metric definitions, dimensions, measures
+   - The physical schema — introspect it (run `\d`/`SHOW CREATE TABLE`/`db.collection.findOne()` against a real instance, or read migration files). Never trust table/column names from memory or docs alone.
+   - The transformation repo's **history and PRs** — deprecations, frozen sources, unit/locale normalisation rules, test-record exclusions, dedup patterns, known-bad data. Send an **Explore sub-agent** over the repo history; caveats live in PR descriptions, not schemas.
+2. **Real use cases** — "Where do real user requests live?" (issue tracker, support queue, team chat channels, existing dashboards). If accessible, mine them with a sub-agent to derive:
+   - The question patterns the product must answer (these become golden eval cases for `/architect` traceability)
+   - The dimensions/measures/entities users actually slice by
+   - Domain caveats stated by the team ("ignore test accounts", "EU revenue is net of VAT")
+   - Demo scenarios and UI suggestion prompts/empty-state copy grounded in real requests
+
+Write the findings to `$CW_TMP/domain-context.md` with **citations** (file paths, PR links, ticket links) for every claim. Facts that cannot be confirmed against a real source are written with an explicit `TBD:` marker — these gate dependent work later (`/architect` and `/implement-wave` run `check_unresolved.py` against artifacts).
+
+If the product has no existing data source and no usage history (true greenfield), note that in `domain-context.md` and move on — don't invent ceremony.
+
 ### Step 3: Interactive architecture brainstorm
 
 Work through the key architecture decisions with the user. Don't assume — ask. Cover:
@@ -75,7 +93,7 @@ Once the key decisions are made, write them to `$CW_TMP/architecture-decisions.m
 - Each decision with rationale
 - Patterns carried forward from sister projects
 - Lessons learned to apply
-- Open questions (deferred)
+- Open questions (deferred) — anything that must be confirmed against an external source gets a `TBD:` marker so downstream gates catch it
 
 Show the user a summary and confirm the decisions look right before proceeding.
 
@@ -109,19 +127,21 @@ When both reviews are back:
 
 ### Step 7: Commit architecture decisions
 
-Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
+Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. If Step 2.5 produced domain context, copy it to `docs/domain-context.md` — `/architect` loads it before writing data contracts. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
 
 Commit and push:
 ```bash
 cd "$TARGET_DIR"
-git add ARCHITECTURE.md CLAUDE.md
+mkdir -p docs
+cp "$CW_TMP/domain-context.md" docs/domain-context.md 2>/dev/null || true
+git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md
 git commit -m "Add architecture decisions from seed session"
 git push
 ```
 
 ### Step 8: Seed the backlog
 
-Based on the architecture decisions and requirements docs, plan out the initial issues. Organise by:
+Based on the architecture decisions, domain context, and requirements docs, plan out the initial issues. Where Step 2.5 mined real use cases, fold them in: derived question patterns become acceptance criteria and golden eval cases, and team-stated caveats become explicit constraints on the relevant issues. Organise by:
 - **Foundation** — Repo scaffold, infrastructure, database, auth, audit trail
 - **Core engine** — AI pipeline, knowledge base, streaming
 - **Milestone 1** — First user-facing value (often a free tier or demo)

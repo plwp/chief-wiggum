@@ -44,8 +44,11 @@ Also load any existing architecture docs from the target repo:
 ```bash
 cat "$TARGET_REPO/ARCHITECTURE.md" 2>/dev/null
 cat "$TARGET_REPO/CLAUDE.md" 2>/dev/null
+cat "$TARGET_REPO/docs/domain-context.md" 2>/dev/null
 ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 ```
+
+`docs/domain-context.md` (written by `/seed` Step 2.5) is the **ground truth for data contracts**: canonical metric definitions, real schema names, source caveats, and mined use cases — each with citations. If the epic touches an existing data source and this file doesn't exist, run the `/seed` Step 2.5 ingestion now (semantic layer, schema introspection, transformation-repo history) before writing any data contract. Contracts authored from guessed table/column names are how query layers get built against names that don't exist.
 
 ### Step 2: Explore the codebase
 
@@ -102,6 +105,8 @@ For every entity and API endpoint the epic touches, define:
 - Operations with REQUIRES (preconditions), ENSURES (postconditions), ERROR CASES, state transitions touched, invariants touched
 - Each condition carries a `description` (human-readable) and an `expression` (machine-checkable pseudo-code)
 - Provenance: every element carries `derived_from` linking back to tickets, acceptance criteria, or epic invariants
+
+**Ground every data fact in a real source.** Field names, metric definitions, and external identifiers must come from `docs/domain-context.md` (or direct introspection) — cite the source in `notes`. Where a fact genuinely cannot be confirmed yet (external system unavailable, awaiting client answer), write an explicit `TBD:` marker in the field — e.g. `"notes": "TBD: confirm column name against dbt model orders_daily"`. Markers are machine-detected and **gate dependent tickets** in `/implement-wave`; a silent guess does not.
 
 **Verifier-in-the-loop**: After the sub-agent produces `contracts.json`, validate it:
 ```bash
@@ -289,6 +294,9 @@ python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/state-machines.jso
 
 # Graph analysis — check for structural defects
 python3 "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
+
+# Unresolved-unknowns scan — TBD/UNRESOLVED/PLACEHOLDER markers across all artifacts
+python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 ```
 
 Check the graph analysis output for:
@@ -298,6 +306,8 @@ Check the graph analysis output for:
 - **Invariant count**: Ensure invariants exist — zero invariants means the model is likely too shallow
 
 If any of these checks fail, fix the JSON models and regenerate prose before proceeding.
+
+For the unresolved scan: each finding is either **resolvable now** (go confirm it — introspect the schema, read the transformation repo, ask the user) or **genuinely external** (keep the marker). Resolve everything resolvable before proceeding. Surviving markers are not errors, but they MUST be surfaced in Step 6 and Step 9, and they will gate dependent tickets in `/implement-wave` — never silently delete a marker without actually resolving the fact behind it.
 
 #### 5b. Multi-AI validation
 
@@ -337,6 +347,7 @@ Flag genuine disagreements for the user in Step 6.
 - **Contracts**: key entities and their REQUIRES/ENSURES
 - **Invariants**: the cross-cutting rules with IDs
 - **Model health**: graph analysis — any unreachable states, dead states, missing paths
+- **Open unknowns**: every surviving `TBD:`/`UNRESOLVED:` marker, which tickets each one blocks, and the plan to resolve it (who/what/when)
 - **Test coverage preview**: number of test paths that will be mechanically generated (from the test view)
 - ADR: key decisions with trade-offs
 - Integration tests: what will be validated at epic close
@@ -468,6 +479,10 @@ Your implementation must satisfy the contracts and invariants. The /implement sk
 
 ### Coverage gaps
 - [Any AC without a planned test — these need attention during implementation]
+
+### Open unknowns (blockers)
+- [Each surviving TBD/UNRESOLVED marker: what it is, which tickets it blocks, how to resolve it]
+- [Omit this section only if `check_unresolved.py` reports zero findings]
 
 ### Next steps
 1. `/implement owner/repo#[first-ticket]` — start implementing (will inherit epic context + formal models)

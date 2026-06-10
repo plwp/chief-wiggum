@@ -94,6 +94,16 @@ Gate criteria:
 
 Findings feed into Step 9 (multi-AI analysis) and the final report.
 
+### Step 2c: Unresolved-unknowns audit
+
+No epic closes with open unknowns in its artifacts:
+
+```bash
+python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
+```
+
+Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the fact was resolved during implementation (update the artifact with the real value and a citation) or it wasn't (which means some ticket was built on a guess — trace it and verify what actually shipped). Target: zero markers.
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.

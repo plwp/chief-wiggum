@@ -118,6 +118,12 @@ fi
 
 These artifacts are **hard constraints** on the implementation. The coding sub-agent MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
+**Unresolved-unknowns gate**: scan the epic artifacts for markers this ticket would inherit:
+```bash
+python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json
+```
+If any finding's `tickets` list includes this ticket (or the finding sits on an entity/operation this ticket implements), do NOT implement on the guessed value. Resolve the unknown first — introspect the real source, read the upstream repo, or ask the user — update the artifact with a citation, then proceed. Building a query layer against `TBD:` schema names produces code that compiles, passes mocked tests, and fails on first contact with reality.
+
 If no epic context exists, proceed without it — the skill works standalone too.
 
 All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief-wiggum scripts/templates. Use `$CW_TMP` for temporary files (not `/tmp/`). Use `$DEFAULT_BRANCH` instead of hardcoding `main`.
