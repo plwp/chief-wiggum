@@ -42,6 +42,11 @@ claude /implement owner/repo#42
 
 ## Skills
 
+### Product Level
+| Skill | Purpose |
+|-------|---------|
+| `/design` | Product design stage: divergent rendered mockups → human choice → extracted tokens in `docs/design/` |
+
 ### Epic Level
 | Skill | Purpose |
 |-------|---------|
@@ -78,6 +83,10 @@ graph TD
         D["Requirements / Issues"]:::default
     end
 
+    subgraph "Product Design"
+        N["/design"]:::new
+    end
+
     subgraph "Epic Flow"
         E["/plan-epic"]:::modified
         F["/architect"]:::new
@@ -89,8 +98,11 @@ graph TD
     A --> D
     B --> C
     B --> E
+    B --> N
+    N --> E
     C --> E
     E --> F
+    N -.->|"docs/design/"| F
     F --> G
     F --> W
     G --> G

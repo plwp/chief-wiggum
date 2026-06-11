@@ -6,6 +6,7 @@ Project-agnostic orchestration layer for AI-powered software development lifecyc
 
 A collection of Claude Code skills that orchestrate a full development pipeline at two levels:
 
+- **Product level**: `/design` — runs once per product between `/seed` and epic planning. Divergent rendered HTML mockups → human picks a direction → tokens mechanically extracted into `docs/design/` (design.json, approved mockups, reference screenshots), which `/architect` folds into epic ui-specs and the design-fidelity gate compares built screens against.
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
 - **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, and independent verification per ticket.
 - **Wave level**: `/implement-wave` — parallel implementation of an entire epic in dependency-ordered waves. Each wave runs multiple `/implement` loops concurrently in isolated worktrees, merges to main, then starts the next wave.
@@ -24,6 +25,7 @@ A collection of Claude Code skills that orchestrate a full development pipeline 
 - **Unknowns gate work**: Facts that can't be confirmed against a real source are marked `TBD:`/`UNRESOLVED:` in artifacts. `scripts/check_unresolved.py` detects them; `/implement-wave` refuses to build dependent tickets on a guess
 - **Ground truth before contracts**: For products on existing data sources, `/seed` ingests the semantic layer, physical schema, and transformation-repo history into `docs/domain-context.md` before `/architect` writes data contracts
 - **The loop must look at the UI**: "Build + tests green" never closes a frontend ticket. `/architect` writes a visual design contract (ui-spec `design` section: tokens, component-library binding, reference screenshots); `/implement` Step 9 renders the app, screenshots it, and reviews against that contract
+- **Designs are chosen, not converged**: `/design` generates 3–4 deliberately distinct rendered directions and a human picks — one generated design converges to the model's default taste. Tokens are extracted mechanically from the approved mock's CSS (`scripts/extract_design.py`), so the contract can't drift from what was approved
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)
 - **Skills are markdown prompts**: They instruct Claude Code what to do, not executable code
 - **Scripts are Python**: All helpers are Python — no bash scripts
@@ -153,6 +155,17 @@ docs/epics/order-lifecycle/
 └── retrospective.md      # Written by /close-epic
 ```
 
+### Product design artifacts (in target repos)
+
+`/design` commits artifacts to `docs/design/` in the target repo:
+```
+docs/design/
+├── design.json        # Binding tokens + component-library + assets + voice (ui-spec design format)
+├── mockups/           # Approved HTML mockups — living reference implementations
+├── reference/         # Screenshots of approved mockups — the design-fidelity gate's baseline
+└── styleguide.html    # Rendered token sheet
+```
+
 ## Usage
 
 Skills are invoked from any target repo that has chief-wiggum configured as a skill source:
@@ -165,6 +178,7 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /transcribe path/to/audio.mp4   # Transcribe client conversation
 /create-issue owner/repo        # Create a GitHub issue
 /seed owner/repo                # Architecture brainstorm & issue seeding
+/design owner/repo              # Product design: mockups → human choice → docs/design/
 
 # Epic flow (the core loop)
 /plan-epic owner/repo           # Group issues into epic with dependency graph

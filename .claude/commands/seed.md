@@ -80,8 +80,8 @@ Work through the key architecture decisions with the user. Don't assume — ask.
      - Extract design tokens (palette including brand gradients, typography scale, spacing, radii) from the existing CSS/theme files or brand kit
      - Prefer **adopting** the existing component library over hand-rolling
      - Capture reference screenshots/URLs of the product to match; for replication projects, clone or link the existing UI source as a styling reference
-   - If genuinely net-new, still make deliberate design decisions now: a primary color with a reason, a typography choice, a voice for empty states. "Default component-library theme" is not a decision — it's how brandless admin-tool UIs ship (see dogeared-coach retro).
-   - Record the design source and tokens in the architecture decisions — `/architect` turns them into the `design` section of `ui-spec.json`, and the design-fidelity gate in `/implement` reviews rendered screenshots against them.
+   - If genuinely net-new, don't design it in this conversation — record audience, tone preferences, and any constraints, and route the actual design work to `/design` (divergent rendered mockups → human choice → extracted tokens). "Default component-library theme" is not a decision — it's how brandless admin-tool UIs ship (see dogeared-coach retro).
+   - Record the design source in the architecture decisions — `/design` turns it into `docs/design/` (binding tokens, approved mockups, reference screenshots), `/architect` folds that into the `design` section of `ui-spec.json`, and the design-fidelity gate in `/implement` reviews rendered screenshots against it.
 4. **Database** — Schema flexibility vs relational integrity. Audit trail requirements. Multi-tenancy model.
 5. **AI/LLM integration** — Which model provider? RAG vs context stuffing? Structured output? Streaming?
 6. **Infrastructure & deployment** — Cloud provider, cost optimisation, IaC.
@@ -178,6 +178,7 @@ Present the user with:
 1. Link to the ARCHITECTURE.md commit
 2. Summary of issues created (count by group, with issue numbers/URLs)
 3. Suggested next steps:
+   - `/design owner/repo` to produce the product design (mockups → human choice → `docs/design/`) — for any product with a UI, run this before architecting epics
    - `/plan-epic owner/repo` to group issues into an epic with dependency ordering
    - `/architect owner/repo --epic "Epic: [Name]"` to define contracts and invariants
    - `/implement owner/repo#N` to start building
