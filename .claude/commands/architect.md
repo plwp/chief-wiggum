@@ -167,7 +167,11 @@ The UI spec defines:
    - `confirm-dialog`: "browser confirm() for destructive actions"
 4. **Interaction contracts**: For each interactive component, what happens when the user does something: `{ trigger: "click", action: "open-sidebar", target: "settings-panel" }`. This is what prevents "is this a dropdown or a tab or a modal?" confusion.
 5. **Navigation graph**: XState-format state machine where pages are states and links are transitions. Reuses the same format as data state machines.
-6. **Visual design contract** (`design` section): the part that makes "on-brand" checkable. A frontend can satisfy every interaction contract and still ship generic and ugly — 121 passing tests prove nothing about how it looks. Define:
+6. **Visual design contract** (`design` section): the part that makes "on-brand" checkable. A frontend can satisfy every interaction contract and still ship generic and ugly — 121 passing tests prove nothing about how it looks.
+
+   **If `docs/design/design.json` exists in the target repo** (produced by `/design`), fold it in verbatim — it is already in this section's exact format, mechanically extracted from the mockups the human approved. Do NOT re-author or "improve" its tokens from prose; the contract must not drift from the approved design. Register the screenshots in `docs/design/reference/` as `reference-screenshot` assets and bind each epic page to its screenshot via `design_refs`. Add only what's epic-specific (e.g. an asset for a new page, validated against the existing tokens).
+
+   **If no `docs/design/` exists** and the epic has frontend tickets, recommend running `/design` first — a brainstormed token list is a weaker contract than an approved rendered design. If the user declines, author the section from the seed decisions:
    - `source`: where the design comes from — the design system / reference product / brand kit discovered by `/seed` Step 3, with references (URLs, repo paths, reference screenshots). Only `net-new` if `/seed` confirmed nothing exists to match.
    - `tokens`: concrete values — colors (primary required; include brand gradients), typography (fonts + scale), spacing, radii, shadows. Derived from the seed design source when present; deliberate choices (with rationale in the ADR) when net-new. **Never leave a component library's default theme as the implicit answer.**
    - `component_library`: which library and whether to `adopt`, `extend`, or go `custom` — sub-agents must not hand-roll components when the contract says adopt.
