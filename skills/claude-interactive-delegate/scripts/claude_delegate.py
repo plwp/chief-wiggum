@@ -8,9 +8,25 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if (REPO_ROOT / "scripts" / "delegates" / "task_protocol.py").is_file():
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+try:
+    from delegates.task_protocol import (  # noqa: E402
+        TaskPaths,
+        create_task,
+        task_paths,
+        wait_for_completion,
+    )
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Could not import Chief Wiggum's shared delegate protocol. "
+        "Install this skill as a symlink to the chief-wiggum checkout, or run it from the repository copy."
+    ) from exc
 
 DEFAULT_SESSION = "cw-claude"
 DEFAULT_TASK_ROOT = Path.home() / ".chief-wiggum" / "delegates" / "claude"
@@ -63,34 +79,23 @@ def send_text(session: str, text: str) -> None:
     run(["tmux", "send-keys", "-t", session, "Enter"])
 
 
-def make_task_dir(task_root: Path, task_id: str | None) -> tuple[str, Path]:
-    task_id = task_id or time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
-    task_dir = (task_root / task_id).expanduser().resolve()
-    task_dir.mkdir(parents=True, exist_ok=False)
-    return task_id, task_dir
-
-
-def build_delegate_message(task_dir: Path, cwd: str | None) -> str:
-    prompt_path = task_dir / "prompt.md"
-    result_path = task_dir / "result.md"
-    done_path = task_dir / "DONE"
-    error_path = task_dir / "ERROR"
+def build_delegate_message(paths: TaskPaths, cwd: str | None) -> str:
     cwd_line = f"\nWork from this repository/directory when relevant:\n{Path(cwd).expanduser().resolve()}\n" if cwd else ""
     return f"""Delegated Chief Wiggum task.
 
-The operator has authorized this interactive Claude Code session to handle bounded delegated engineering tasks from Codex.
+The operator has authorized this interactive Claude Code session to handle bounded delegated engineering tasks from an agent orchestrator.
 
 Read the task prompt:
-{prompt_path}
+{paths.prompt}
 {cwd_line}
 Write your final answer as Markdown to:
-{result_path}
+{paths.result}
 
 When complete, run:
-touch {done_path}
+touch {paths.done}
 
 If you are blocked, write a concise reason to:
-{error_path}
+{paths.error}
 
 Then stop working on this delegated task.
 
@@ -104,7 +109,6 @@ Important boundaries:
 def submit(args: argparse.Namespace) -> int:
     start_session(args.session, args.claude_cmd)
     task_root = Path(args.task_root).expanduser()
-    task_id, task_dir = make_task_dir(task_root, args.task_id)
 
     if args.prompt_file:
         prompt = Path(args.prompt_file).expanduser().read_text()
@@ -113,39 +117,35 @@ def submit(args: argparse.Namespace) -> int:
     else:
         raise SystemExit("submit requires --prompt-file or --prompt")
 
-    (task_dir / "prompt.md").write_text(prompt)
-    send_text(args.session, build_delegate_message(task_dir, args.cwd))
+    paths = create_task(task_root, args.task_id, prompt)
+    send_text(args.session, build_delegate_message(paths, args.cwd))
 
-    print(f"TASK_ID={task_id}")
-    print(f"TASK_DIR={task_dir}")
-    print(f"PROMPT={task_dir / 'prompt.md'}")
-    print(f"RESULT={task_dir / 'result.md'}")
-    print(f"DONE={task_dir / 'DONE'}")
-    print(f"ERROR={task_dir / 'ERROR'}")
+    print(f"TASK_ID={paths.task_id}")
+    print(f"TASK_DIR={paths.task_dir}")
+    print(f"PROMPT={paths.prompt}")
+    print(f"RESULT={paths.result}")
+    print(f"DONE={paths.done}")
+    print(f"ERROR={paths.error}")
 
     if args.wait:
-        return wait_for_task(task_dir, args.timeout_seconds)
+        return wait_for_task(paths, args.timeout_seconds)
     return 0
 
 
-def wait_for_task(task_dir: Path, timeout_seconds: int) -> int:
-    deadline = time.time() + timeout_seconds
-    done = task_dir / "DONE"
-    error = task_dir / "ERROR"
-    while time.time() < deadline:
-        if done.exists():
-            print(f"OK: task complete: {task_dir}")
-            result = task_dir / "result.md"
-            if result.exists():
-                print(f"RESULT={result}")
-            return 0
-        if error.exists():
-            print(f"ERROR: task blocked: {task_dir}", file=sys.stderr)
-            print(error.read_text(), file=sys.stderr)
-            return 2
-        time.sleep(2)
-    print(f"TIMEOUT: no DONE or ERROR after {timeout_seconds}s: {task_dir}", file=sys.stderr)
-    return 3
+def wait_for_task(paths: TaskPaths, timeout_seconds: int) -> int:
+    try:
+        status = wait_for_completion(paths, timeout_seconds)
+    except TimeoutError as exc:
+        print(f"TIMEOUT: {exc}", file=sys.stderr)
+        return 3
+    if status == "done":
+        print(f"OK: task complete: {paths.task_dir}")
+        if paths.result.exists():
+            print(f"RESULT={paths.result}")
+        return 0
+    print(f"ERROR: task blocked: {paths.task_dir}", file=sys.stderr)
+    print(paths.error.read_text(), file=sys.stderr)
+    return 2
 
 
 def status(args: argparse.Namespace) -> int:
@@ -224,7 +224,7 @@ def main() -> int:
     if args.command == "submit":
         return submit(args)
     if args.command == "wait":
-        return wait_for_task(Path(args.task_root).expanduser() / args.task_id, args.timeout_seconds)
+        return wait_for_task(task_paths(Path(args.task_root).expanduser(), args.task_id), args.timeout_seconds)
     if args.command == "capture":
         return capture(args)
     if args.command == "attach":

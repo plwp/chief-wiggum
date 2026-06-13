@@ -21,7 +21,19 @@ CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 Run the check script to see what's installed and what's missing:
 
 ```bash
-python3 $CW_HOME/scripts/check_deps.py
+python3 $CW_HOME/scripts/check_deps.py --for core
+```
+
+Dependency checks are profile-based. Use only the profiles the current harness and workflow need:
+
+```bash
+python3 $CW_HOME/scripts/check_deps.py --for core
+python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-code
+python3 $CW_HOME/scripts/check_deps.py --for core --provider codex --provider gemini
+python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
+python3 $CW_HOME/scripts/check_deps.py --for transcription
+python3 $CW_HOME/scripts/check_deps.py --for browser-validation
+python3 $CW_HOME/scripts/check_deps.py --for vertex
 ```
 
 ### Step 2: Report results
@@ -36,6 +48,8 @@ If anything is missing, ask the user if they want to install it. For each missin
 
 - **codex**: OpenAI Codex CLI for multi-AI code consultation
 - **gemini**: Google Gemini CLI for multi-AI code consultation
+- **claude**: Claude Code CLI for Claude Code harness usage or interactive delegation
+- **tmux**: Persistent terminal session manager for the Claude interactive delegate
 - **whisper**: Local speech-to-text for `/transcribe`
 - **browser-use**: AI-driven browser automation for E2E validation
 - **playwright**: Browser automation framework (used by browser-use)
@@ -86,12 +100,13 @@ python3 $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
 Re-run the check script to confirm everything is green:
 
 ```bash
-python3 $CW_HOME/scripts/check_deps.py
+python3 $CW_HOME/scripts/check_deps.py --for core
 ```
 
 For workflow-specific preflight checks:
 ```bash
 python3 $CW_HOME/scripts/check_deps.py --for implement
-python3 $CW_HOME/scripts/check_deps.py --for transcribe
+python3 $CW_HOME/scripts/check_deps.py --for transcription
+python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
 python3 $CW_HOME/scripts/check_deps.py --for vertex
 ```
