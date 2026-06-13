@@ -38,7 +38,7 @@ claude /plan-epic owner/repo
 claude /implement owner/repo#42
 ```
 
-Codex-native skills are stored under `skills/`. To install the Claude interactive delegate skill for Codex:
+Harness-portable skills are stored under `skills/`. To install the Claude interactive delegate skill in Codex:
 
 ```bash
 ln -sfn ~/repos/chief-wiggum/skills/claude-interactive-delegate ~/.codex/skills/claude-interactive-delegate
@@ -78,10 +78,10 @@ python3 ~/.codex/skills/claude-interactive-delegate/scripts/claude_delegate.py s
 | `/stitch-audit` | Cross-layer data flow analysis |
 | `/update` | Refresh AI model IDs and library versions |
 
-### Codex Skills
+### Portable Skills
 | Skill | Purpose |
 |-------|---------|
-| `$claude-interactive-delegate` | Delegate bounded Codex tasks to a persistent interactive Claude Code tmux session |
+| `$claude-interactive-delegate` | Delegate bounded agent tasks to a persistent interactive Claude Code tmux session |
 
 ## Pipeline
 
@@ -234,10 +234,18 @@ graph TD
 ## Requirements
 
 - **Python >= 3.11**
-- Claude Code CLI (`claude`)
-- OpenAI Codex CLI (`codex`)
-- Google Gemini CLI (`gemini`)
-- GitHub CLI (`gh`)
-- tmux (for `$claude-interactive-delegate`)
-- ffmpeg, openai-whisper (for transcription)
+- GitHub CLI (`gh`) and `git` for the core workflow
+- Optional provider CLIs: Claude Code (`claude`), OpenAI Codex (`codex`), Google Gemini (`gemini`)
+- Optional delegate support: `tmux` for `$claude-interactive-delegate`
+- Optional transcription support: ffmpeg, openai-whisper
 - Secrets stored in system keyring (managed via `python3 scripts/keychain.py`)
+
+Check only the profiles you intend to use:
+
+```bash
+python3 scripts/check_deps.py --for core
+python3 scripts/check_deps.py --for core --provider claude-interactive
+python3 scripts/check_deps.py --for core --provider codex --provider gemini
+python3 scripts/check_deps.py --for transcription
+python3 scripts/check_deps.py --for browser-validation
+```

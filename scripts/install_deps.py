@@ -18,6 +18,7 @@ CLI_TOOLS = {
     "codex": ["npm", "install", "-g", "@openai/codex"],
     "gemini": ["npm", "install", "-g", "@google/gemini-cli"],
     "gh": ["brew", "install", "gh"],
+    "tmux": ["brew", "install", "tmux"],
     "ffmpeg": ["brew", "install", "ffmpeg"],
 }
 

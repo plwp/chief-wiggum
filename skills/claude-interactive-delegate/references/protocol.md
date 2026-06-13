@@ -14,17 +14,19 @@ Set `CLAUDE_DELEGATE_CMD` or pass `--claude-cmd` to use another interactive mode
 
 ## Task Handoff
 
-Each delegated task has a unique directory:
+Each delegated task follows the shared Chief Wiggum delegated-worker protocol in `scripts/delegates/README.md`. Each task has a unique directory:
 
 ```text
 ~/.chief-wiggum/delegates/claude/<task-id>/
 ├── prompt.md
 ├── result.md
 ├── DONE
-└── ERROR
+├── ERROR
+├── worker.log
+└── metadata.json
 ```
 
-Codex writes `prompt.md`. Claude must write either:
+The orchestrator writes `prompt.md`. Claude must write either:
 
 - `result.md` and `DONE`, or
 - `ERROR` with a short reason.
@@ -52,11 +54,11 @@ The delegate should be treated as blocked if the session requires:
 - Tool permission decisions that were not preconfigured for the session.
 - Interactive clarification that cannot be answered from the task prompt.
 
-In these cases, Codex should inspect `capture` output, report the issue to the user, and avoid faking an answer.
+In these cases, the orchestrator should inspect `capture` output, report the issue to the user, and avoid faking an answer.
 
 ## Verification
 
-Claude delegate output is advisory. Codex must independently verify:
+Claude delegate output is advisory. The orchestrator must independently verify:
 
 - Tests and lint results.
 - File paths and line references.

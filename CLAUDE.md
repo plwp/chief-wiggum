@@ -41,14 +41,22 @@ A collection of Claude Code skills that orchestrate a full development pipeline 
 
 ## Required Tools
 
-- `claude` - Claude Code CLI
-- `codex` - OpenAI Codex CLI
-- `gemini` - Google Gemini CLI
-- `gh` - GitHub CLI
-- `ffmpeg` - Media processing
-- `whisper` - OpenAI Whisper (local transcription)
-- `playwright` - Browser automation (via target repo)
-- `browser-use` - AI browser agent (via target repo)
+Chief Wiggum dependency checks are profile-based:
+
+- `core` - `gh`, `git`, and Python keyring support
+- `claude-code` - Claude Code CLI for Claude Code harness usage
+- `codex` - OpenAI Codex CLI provider
+- `gemini` - Google Gemini CLI provider
+- `claude-interactive` - Claude Code CLI plus `tmux` for interactive delegation
+- `transcription` - ffmpeg and OpenAI Whisper
+- `browser-validation` - browser-use, Playwright, and Anthropic browser-use integration
+- `vertex` - Vertex AI packages and project configuration
+
+Example:
+
+```bash
+python3 scripts/check_deps.py --for core --provider claude-interactive
+```
 
 ## Secret Management
 
@@ -136,7 +144,7 @@ python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 
 ```
 .claude/commands/    # Claude Code skills (the core of this repo)
-skills/              # Codex-native skills and bundled resources
+skills/              # Harness-portable skills and bundled resources
 scripts/             # Python helpers called by skills
 templates/           # Issue, PR, review, and checklist templates
 models.md            # AI model IDs and library versions (refresh with /update)
@@ -193,7 +201,7 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /update                         # Refresh model IDs and library versions
 ```
 
-Codex-native skills live under `skills/`. Install them into Codex with a symlink, for example:
+Harness-portable skills live under `skills/`. Install them into Codex with a symlink, for example:
 
 ```bash
 ln -sfn ~/repos/chief-wiggum/skills/claude-interactive-delegate ~/.codex/skills/claude-interactive-delegate

@@ -26,20 +26,64 @@ fail_count = 0
 warn_count = 0
 
 WORKFLOW_REQUIREMENTS = {
+    "core": {
+        "cmds": {"gh", "git"},
+        "pkgs": {"keyring"},
+        "secrets": set(),
+    },
     "base": {
-        "cmds": {"claude", "codex", "gemini", "gh", "ffmpeg", "git"},
-        "pkgs": {"keyring", "whisper"},
+        "extends": {"core"},
+        "cmds": set(),
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "claude-code": {
+        "cmds": {"claude"},
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "codex": {
+        "cmds": {"codex"},
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "gemini": {
+        "cmds": {"gemini"},
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "claude-interactive": {
+        "cmds": {"claude", "tmux"},
+        "pkgs": set(),
         "secrets": set(),
     },
     "implement": {
-        "cmds": {"claude", "codex", "gemini", "gh", "git"},
-        "pkgs": {"keyring", "browser-use", "playwright", "langchain-anthropic"},
-        "secrets": {"ANTHROPIC_API_KEY"},
+        "extends": {"core", "browser-validation"},
+        "cmds": set(),
+        "pkgs": set(),
+        "secrets": set(),
     },
     "transcribe": {
+        "extends": {"transcription"},
+        "cmds": set(),
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "transcription": {
         "cmds": {"ffmpeg"},
         "pkgs": {"whisper"},
         "secrets": set(),
+    },
+    "browser": {
+        "extends": {"browser-validation"},
+        "cmds": set(),
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "browser-validation": {
+        "cmds": set(),
+        "pkgs": {"browser-use", "playwright", "langchain-anthropic"},
+        "secrets": {"ANTHROPIC_API_KEY"},
     },
     "vertex": {
         "cmds": set(),
@@ -101,31 +145,71 @@ def check_secret(name: str, required: bool = False):
             warn_count += 1
 
 
+def expand_profiles(profiles: list[str]) -> set[str]:
+    expanded: set[str] = set()
+
+    def visit(profile: str) -> None:
+        if profile in expanded:
+            return
+        requirements = WORKFLOW_REQUIREMENTS[profile]
+        expanded.add(profile)
+        for parent in requirements.get("extends", set()):
+            visit(parent)
+
+    for profile in profiles:
+        visit(profile)
+    return expanded
+
+
+def required_items(kind: str, profiles: list[str]) -> set[str]:
+    required: set[str] = set()
+    for profile in expand_profiles(profiles):
+        required.update(WORKFLOW_REQUIREMENTS[profile][kind])
+    return required
+
+
 def is_required(kind: str, name: str, workflows: list[str]) -> bool:
-    return any(name in WORKFLOW_REQUIREMENTS[workflow][kind] for workflow in workflows)
+    return name in required_items(kind, workflows)
+
+
+def selected_profiles(workflows: list[str], providers: list[str]) -> list[str]:
+    return (workflows or ["core"]) + providers
 
 
 def main():
     parser = argparse.ArgumentParser(description="Check chief-wiggum dependencies.")
+    profile_choices = sorted(WORKFLOW_REQUIREMENTS)
     parser.add_argument(
         "--for",
         dest="workflows",
         action="append",
-        choices=sorted(WORKFLOW_REQUIREMENTS),
+        choices=profile_choices,
         default=[],
-        help="Workflow to enforce. May be passed multiple times.",
+        help="Profile to enforce. May be passed multiple times.",
+    )
+    parser.add_argument(
+        "--provider",
+        dest="providers",
+        action="append",
+        choices=["claude-code", "codex", "gemini", "claude-interactive", "vertex"],
+        default=[],
+        help="Provider profile to enforce. May be passed multiple times.",
     )
     args = parser.parse_args()
-    workflows = args.workflows or ["base"]
+    workflows = selected_profiles(args.workflows, args.providers)
 
     print("=== Chief Wiggum Dependency Check ===")
     print(f"Profile: {', '.join(workflows)}")
+    print(f"Expanded: {', '.join(sorted(expand_profiles(workflows)))}")
+    if "base" in workflows:
+        print("Note: 'base' is a compatibility alias for 'core'. Use provider profiles for AI CLIs.")
 
     print("\n--- CLI Tools ---")
     check_cmd("claude", "claude", "--version", is_required("cmds", "claude", workflows))
     check_cmd("codex", "codex", "--version", is_required("cmds", "codex", workflows))
     check_cmd("gemini", "gemini", "--version", is_required("cmds", "gemini", workflows))
     check_cmd("gh", "gh", "--version", is_required("cmds", "gh", workflows))
+    check_cmd("tmux", "tmux", "-V", is_required("cmds", "tmux", workflows))
     check_cmd("ffmpeg", "ffmpeg", "-version", is_required("cmds", "ffmpeg", workflows))
     check_cmd("git", "git", "--version", is_required("cmds", "git", workflows))
 
@@ -166,7 +250,7 @@ def main():
     print(f"\n=== Results: {pass_count} ok, {fail_count} missing, {warn_count} warnings ===")
 
     if fail_count > 0:
-        print("\nRun /setup to install missing dependencies.")
+        print("\nRun /setup or choose narrower --for/--provider profiles to install missing dependencies.")
         sys.exit(1)
 
 

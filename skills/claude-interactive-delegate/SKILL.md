@@ -1,15 +1,15 @@
 ---
 name: claude-interactive-delegate
-description: Delegate bounded tasks from Codex to a persistent interactive Claude Code terminal session using tmux/PTY instead of claude -p. Use when Codex should ask Claude Code to act as an optional reviewer, architecture critic, design critic, implementation advisor, or Chief Wiggum provider through an interactive session with file-based task handoff and completion sentinels.
+description: Delegate bounded tasks from an agent orchestrator to a persistent interactive Claude Code terminal session using tmux/PTY instead of claude -p. Use when an orchestrator should ask Claude Code to act as an optional reviewer, architecture critic, design critic, implementation advisor, or Chief Wiggum provider through an interactive session with file-based task handoff and completion sentinels.
 ---
 
 # Claude Interactive Delegate
 
 ## Overview
 
-Use this skill to drive an existing or newly started interactive Claude Code session as a delegated worker. Codex sends the task through a real terminal session, Claude writes the durable result to files, and Codex reads those files back into the main workflow.
+Use this skill to drive an existing or newly started interactive Claude Code session as a delegated worker. The orchestrator sends the task through a real terminal session, Claude writes the durable result to files, and the orchestrator reads those files back into the main workflow.
 
-This skill is for bounded delegation, not for replacing Codex's local verification. Codex remains responsible for deciding whether the delegated output is useful and for independently checking any code, tests, or claims before shipping.
+This skill is for bounded delegation, not for replacing local verification. The orchestrator remains responsible for deciding whether the delegated output is useful and for independently checking any code, tests, or claims before shipping.
 
 ## Requirements
 
@@ -67,21 +67,21 @@ The driver creates task directories under `~/.chief-wiggum/delegates/claude/` by
 
 ```text
 task-id/
-├── prompt.md       # task prompt written by Codex
+├── prompt.md       # task prompt written by the orchestrator
 ├── result.md       # final answer written by Claude
 ├── DONE            # completion sentinel written by Claude
 └── ERROR           # blocked/error sentinel written by Claude
 ```
 
-Codex should never parse terminal output as the result contract. Terminal capture is for debugging only.
+The orchestrator should never parse terminal output as the result contract. Terminal capture is for debugging only.
 
 For full protocol details, read `references/protocol.md`.
 
 ## Boundaries
 
 - Do not automate account login, billing changes, subscription changes, API-credit consent, or payment prompts. If the interactive session reaches one of these states, stop and surface it to the user.
-- Do not let the delegate create or merge PRs unless the current workflow explicitly requires it and Codex will verify the outcome.
-- Do not trust self-reported test results. Codex must run or inspect verification independently.
+- Do not let the delegate create or merge PRs unless the current workflow explicitly requires it and the orchestrator will verify the outcome.
+- Do not trust self-reported test results. The orchestrator must run or inspect verification independently.
 - Do not leave completed delegate sessions open indefinitely if they are no longer needed.
 - Use `scripts/claude_delegate.py stop` before changing the delegate permission mode, then start a fresh session.
 
