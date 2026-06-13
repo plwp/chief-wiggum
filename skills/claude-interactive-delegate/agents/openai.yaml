@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Interactive Delegate"
+  short_description: "Delegate tasks to interactive Claude"
+  default_prompt: "Use $claude-interactive-delegate to delegate a bounded review task to a persistent Claude Code session."
