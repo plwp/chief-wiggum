@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "type": "tool",
+      "tool": "codex",
+      "enabled": true
+    },
+    "gemini": {
+      "type": "tool",
+      "tool": "gemini",
+      "enabled": true
+    },
+    "gemini-vertex": {
+      "type": "tool",
+      "tool": "gemini-vertex",
+      "enabled": false
+    },
+    "claude": {
+      "type": "tool",
+      "tool": "claude",
+      "enabled": false
+    },
+    "claude-interactive": {
+      "type": "delegate",
+      "delegate": "claude-interactive",
+      "enabled": true
+    }
+  },
+  "roles": {
+    "explorer": {
+      "required": ["codex"],
+      "optional": ["gemini", "claude-interactive"]
+    },
+    "implementer": {
+      "required": ["codex"],
+      "optional": ["claude-interactive"]
+    },
+    "reviewer": {
+      "required": ["codex", "gemini"],
+      "optional": ["claude-interactive"]
+    },
+    "architecture_critic": {
+      "required": ["codex"],
+      "optional": ["gemini", "claude-interactive"]
+    },
+    "design_critic": {
+      "required": ["gemini"],
+      "optional": ["codex", "claude-interactive"]
+    },
+    "risky_diff_review": {
+      "required": ["codex", "gemini"],
+      "optional": ["claude-interactive"]
+    }
+  }
+}

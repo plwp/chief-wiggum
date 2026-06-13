@@ -93,6 +93,17 @@ Use `gemini-vertex` as the tool name in `consult_ai.py` to route through Vertex 
 
 See `models.md` for current model IDs, library versions, and default choices. Refresh with `/update`.
 
+## Provider Roles
+
+Provider roles live in `config/providers.json`. Use `scripts/consult_ai.py` directly for one provider, or `--role <role> --output-dir <dir>` for a configured quorum:
+
+```bash
+python3 scripts/consult_ai.py codex prompt.md -o response.md
+python3 scripts/consult_ai.py --role reviewer prompt.md --output-dir "$CW_TMP/reviews"
+```
+
+Roles define required and optional providers. Required providers must succeed; optional providers may be disabled or fail without blocking the role quorum. This keeps Claude, Codex, Gemini, and interactive delegates configurable rather than hard-coded into workflow logic.
+
 ## User Data Directory
 
 Chief-wiggum stores all user-space data under `~/.chief-wiggum/`:

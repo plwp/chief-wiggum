@@ -249,3 +249,19 @@ python3 scripts/check_deps.py --for core --provider codex --provider gemini
 python3 scripts/check_deps.py --for transcription
 python3 scripts/check_deps.py --for browser-validation
 ```
+
+## Provider Roles
+
+AI backends are configured by role in `config/providers.json`. Workflows can still call a provider directly:
+
+```bash
+python3 scripts/consult_ai.py codex prompt.md -o response.md
+```
+
+They can also consult a role quorum:
+
+```bash
+python3 scripts/consult_ai.py --role reviewer prompt.md --output-dir ~/.chief-wiggum/tmp/reviews
+```
+
+Role config controls which providers are required or optional. Optional providers can fail or be disabled without blocking the quorum; required providers must be enabled and return successfully.

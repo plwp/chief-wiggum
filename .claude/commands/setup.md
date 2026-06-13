@@ -110,3 +110,5 @@ python3 $CW_HOME/scripts/check_deps.py --for transcription
 python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
 python3 $CW_HOME/scripts/check_deps.py --for vertex
 ```
+
+Provider roles are configured in `$CW_HOME/config/providers.json`. Validate role dependencies by running the matching provider profiles before a workflow starts.
