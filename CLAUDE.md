@@ -136,6 +136,7 @@ python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 
 ```
 .claude/commands/    # Claude Code skills (the core of this repo)
+skills/              # Codex-native skills and bundled resources
 scripts/             # Python helpers called by skills
 templates/           # Issue, PR, review, and checklist templates
 models.md            # AI model IDs and library versions (refresh with /update)
@@ -190,4 +191,10 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /ship                           # Create PR with mermaid diagrams (standalone)
 /stitch-audit owner/repo --trace keyword   # Cross-layer data flow audit
 /update                         # Refresh model IDs and library versions
+```
+
+Codex-native skills live under `skills/`. Install them into Codex with a symlink, for example:
+
+```bash
+ln -sfn ~/repos/chief-wiggum/skills/claude-interactive-delegate ~/.codex/skills/claude-interactive-delegate
 ```

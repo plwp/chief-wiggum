@@ -38,6 +38,13 @@ claude /plan-epic owner/repo
 claude /implement owner/repo#42
 ```
 
+Codex-native skills are stored under `skills/`. To install the Claude interactive delegate skill for Codex:
+
+```bash
+ln -sfn ~/repos/chief-wiggum/skills/claude-interactive-delegate ~/.codex/skills/claude-interactive-delegate
+python3 ~/.codex/skills/claude-interactive-delegate/scripts/claude_delegate.py start
+```
+
 **Important**: Run skills from your target project directory, not from chief-wiggum itself.
 
 ## Skills
@@ -70,6 +77,11 @@ claude /implement owner/repo#42
 | `/ship` | PR creation with mermaid architecture diagrams |
 | `/stitch-audit` | Cross-layer data flow analysis |
 | `/update` | Refresh AI model IDs and library versions |
+
+### Codex Skills
+| Skill | Purpose |
+|-------|---------|
+| `$claude-interactive-delegate` | Delegate bounded Codex tasks to a persistent interactive Claude Code tmux session |
 
 ## Pipeline
 
@@ -226,5 +238,6 @@ graph TD
 - OpenAI Codex CLI (`codex`)
 - Google Gemini CLI (`gemini`)
 - GitHub CLI (`gh`)
+- tmux (for `$claude-interactive-delegate`)
 - ffmpeg, openai-whisper (for transcription)
 - Secrets stored in system keyring (managed via `python3 scripts/keychain.py`)
