@@ -300,24 +300,25 @@ The sub-agent should:
    git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
    ```
 
-2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values. **Also include the structured checklist** from `$CW_HOME/templates/review-checklist.md` and the epic contracts/invariants if they exist. Write to `$TICKET_TMP/review-prompt.md`.
-
-3. Run external AI reviews as a quorum (parallel, with retries + output validation):
+2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Pass a `ticket.json` with the title/body/acceptance criteria, and optionally epic artifacts:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $TICKET_TMP/review-prompt.md \
-     --output-dir "$TICKET_TMP/reviews" --cwd "$(git rev-parse --show-toplevel)"
+   python3 "$CW_HOME/scripts/run_review.py" \
+     --ticket-context "$TICKET_TMP/ticket.json" \
+     --worktree "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH" \
+     --output-dir "$TICKET_TMP/reviews" \
+     --epic-artifact "Contracts=$EPIC_DIR/contracts.md" \
+     --epic-artifact "Invariants=$EPIC_DIR/invariants.md"
    ```
+   Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `synthesis-prompt.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
-   The `reviewer` role runs codex + gemini in parallel, **retries failed required providers**, **validates** each response (non-empty, not starting with `Timeout:`/`Error:`), and writes `$TICKET_TMP/reviews/reviewer-manifest.json` plus `reviewer-<provider>.md`. If the quorum fails (a required provider never produced valid output) the command exits non-zero — note the gap and proceed with the available reviews.
+3. Perform its own review of the diff.
 
-4. Perform its own review of the diff.
-
-5. Synthesize using:
+4. Synthesize using:
    ```bash
    python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/reviews/reviewer-codex.md $TICKET_TMP/reviews/reviewer-gemini.md
    ```
 
-6. Return a concise summary categorising each piece of feedback:
+5. Return a concise summary categorising each piece of feedback:
    - **High-confidence fixes**: Concrete bugs/regressions with clear failure scenarios. Apply automatically.
    - **Medium-confidence findings**: Plausible issues that need a quick local verification before applying.
    - **Low-confidence or architectural feedback**: Speculative concerns or design trade-offs. Flag for user decision.
