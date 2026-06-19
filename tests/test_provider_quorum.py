@@ -126,6 +126,42 @@ def test_results_are_deterministically_ordered(tmp_path):
     assert [r.name for r in manifest.results] == ["codex", "gemini", "claude-interactive"]
 
 
+def test_failure_clears_stale_success_file(tmp_path):
+    # An earlier run left reviewer-codex.md; this run fails -> stale must be gone.
+    (tmp_path / "reviewer-codex.md").write_text("stale success from a previous run")
+
+    def execute(provider):
+        raise RuntimeError("down")
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=1)
+    assert not (tmp_path / "reviewer-codex.md").exists()
+    assert (tmp_path / "reviewer-codex.error.md").exists()
+    assert manifest.results[0].error_path == str(tmp_path / "reviewer-codex.error.md")
+
+
+def test_success_clears_stale_error_file(tmp_path):
+    (tmp_path / "reviewer-codex.error.md").write_text("stale error")
+    manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path)
+    assert not (tmp_path / "reviewer-codex.error.md").exists()
+    assert manifest.results[0].error_path is None
+
+
+def test_duplicate_provider_across_required_and_optional_runs_once(tmp_path):
+    plan = _plan(["codex"], ["codex"])  # overlap
+    runs: list[str] = []
+    run_role_quorum(plan, lambda p: runs.append(p.name) or SUBSTANTIVE, tmp_path)
+    assert runs.count("codex") == 1
+
+
+def test_validate_config_rejects_duplicate_role_references():
+    config = {
+        "providers": {"codex": {"type": "tool", "tool": "codex"}},
+        "roles": {"reviewer": {"required": ["codex"], "optional": ["codex"]}},
+    }
+    errors = providers.validate_config(config)
+    assert any("more than once" in e for e in errors)
+
+
 def test_disabled_provider_absent_from_plan_is_not_run(tmp_path):
     # A disabled optional never enters the plan, so it is never executed.
     config = {

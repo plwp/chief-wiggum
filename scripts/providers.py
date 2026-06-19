@@ -139,6 +139,14 @@ def validate_config(
         for provider_name in role.required + role.optional:
             if provider_name not in providers:
                 errors.append(f"role {role_name} references unknown provider {provider_name}")
+        # A provider referenced twice (within a list or across required+optional)
+        # would run twice and clobber its own output file.
+        all_refs = list(role.required) + list(role.optional)
+        seen: set[str] = set()
+        for name in all_refs:
+            if name in seen:
+                errors.append(f"role {role_name} references provider {name} more than once")
+            seen.add(name)
     for provider in providers.values():
         if provider.type == "tool" and not provider.tool:
             errors.append(f"provider {provider.name} has type=tool but no tool")
@@ -178,6 +186,7 @@ class ProviderResult:
     path: str | None = None
     attempts: int = 0
     error: str | None = None
+    error_path: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -187,6 +196,7 @@ class ProviderResult:
             "path": self.path,
             "attempts": self.attempts,
             "error": self.error,
+            "error_path": self.error_path,
         }
 
 
@@ -235,6 +245,13 @@ def _run_one_provider(
     max_attempts: int,
     min_bytes: int,
 ) -> ProviderResult:
+    # Clear any stale artifacts from a previous run so a failure can't leave an
+    # old success file (or vice versa) for a later reader to pick up.
+    ok_path = output_dir / f"{role_name}-{provider.name}.md"
+    err_path = output_dir / f"{role_name}-{provider.name}.error.md"
+    ok_path.unlink(missing_ok=True)
+    err_path.unlink(missing_ok=True)
+
     # Only required providers are retried; an optional provider gets one shot.
     attempts_allowed = max(1, max_attempts) if required else 1
     last_error: str | None = None
@@ -249,13 +266,13 @@ def _run_one_provider(
         if problem:
             last_error = problem
             continue
-        path = output_dir / f"{role_name}-{provider.name}.md"
-        path.write_text(text)
-        return ProviderResult(provider.name, required, "ok", str(path), attempt, None)
+        ok_path.write_text(text)
+        return ProviderResult(provider.name, required, "ok", str(ok_path), attempt, None)
 
-    err_path = output_dir / f"{role_name}-{provider.name}.error.md"
     err_path.write_text(last_error or "unknown error")
-    return ProviderResult(provider.name, required, "failed", None, attempt, last_error)
+    return ProviderResult(
+        provider.name, required, "failed", None, attempt, last_error, str(err_path)
+    )
 
 
 def run_role_quorum(
@@ -277,8 +294,15 @@ def run_role_quorum(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    tasks: list[tuple[Provider, bool]] = [(p, True) for p in plan.required]
-    tasks += [(p, False) for p in plan.optional]
+    # Required first; dedupe by name (a provider listed twice, or in both
+    # required and optional, must not run twice and clobber its own file).
+    tasks: list[tuple[Provider, bool]] = []
+    seen: set[str] = set()
+    for provider, required in [(p, True) for p in plan.required] + [(p, False) for p in plan.optional]:
+        if provider.name in seen:
+            continue
+        seen.add(provider.name)
+        tasks.append((provider, required))
     order = {p.name: i for i, (p, _) in enumerate(tasks)}
 
     results: list[ProviderResult] = []

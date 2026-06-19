@@ -197,7 +197,7 @@ def main():
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Provider config path")
     parser.add_argument("--enable-provider", action="append", default=[], help="Force-enable provider by name")
     parser.add_argument("--disable-provider", action="append", default=[], help="Disable provider by name")
-    parser.add_argument("--max-attempts", type=int, default=2, help="Retries for required providers in --role mode")
+    parser.add_argument("--max-attempts", type=int, default=2, help="Total attempts for required providers in --role mode (incl. first try)")
     parser.add_argument("--min-bytes", type=int, default=20, help="Minimum substantive output size in --role mode")
     args = parser.parse_args()
 
