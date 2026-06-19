@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,9 @@ OPTIONAL_MODELS = ("ui-spec.json",)
 RenderFn = Callable[[Path, str, Path], list]
 TransitionMapFn = Callable[[Path, Path, Path], None]
 Runner = Callable[..., subprocess.CompletedProcess]
+
+
+_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class InstallError(RuntimeError):
@@ -118,8 +122,17 @@ def install_epic_artifacts(
 ) -> InstallResult:
     """Validate, install, and optionally commit epic artifacts. Idempotent copy."""
     src = Path(source)
-    epic = Path(epic_dir)
-    target_repo = Path(target_repo)
+    target_repo = Path(target_repo).resolve()
+    epic = Path(epic_dir).resolve()
+
+    # Enforce the contract: artifacts install at <target_repo>/docs/epics/<slug>.
+    # This prevents a bad/hostile --epic-dir writing outside the repo while
+    # `git add docs/epics/...` stages a different path.
+    if not _SLUG_RE.match(epic_slug):
+        raise InstallError(f"invalid epic slug: {epic_slug!r}")
+    expected = (target_repo / "docs" / "epics" / epic_slug).resolve()
+    if epic != expected:
+        raise InstallError(f"epic_dir must be {expected}, got {epic}")
 
     missing = validate_source(src)
     if missing:
@@ -132,12 +145,23 @@ def install_epic_artifacts(
     result = InstallResult(epic_dir=str(epic), dry_run=dry_run)
     models_dir = epic / "models"
 
+    # The optional UI spec is a pair: install/link it only when BOTH the prose
+    # and the model are present, so the comment can't link a spec with no model
+    # (or a model be rendered but omitted from the comment).
     has_ui_spec_md = (src / "ui-spec.md").is_file()
     has_ui_spec_json = (src / "ui-spec.json").is_file()
-    result.issue_comment = render_issue_comment(epic_slug, epic_name, has_ui_spec=has_ui_spec_md)
+    has_ui_spec = has_ui_spec_md and has_ui_spec_json
+    if has_ui_spec_md != has_ui_spec_json:
+        only = "ui-spec.md" if has_ui_spec_md else "ui-spec.json"
+        result.warnings.append(f"incomplete UI spec ({only} present without its pair); skipping UI spec")
+    result.issue_comment = render_issue_comment(epic_slug, epic_name, has_ui_spec=has_ui_spec)
+
+    # Which optional artifacts to install (UI spec only when the pair is complete).
+    prose_names = (*REQUIRED_PROSE, *(("ui-spec.md",) if has_ui_spec else ()))
+    model_names = (*REQUIRED_MODELS, *(("ui-spec.json",) if has_ui_spec else ()))
 
     if dry_run:
-        for name in (*REQUIRED_PROSE, *OPTIONAL_PROSE, *REQUIRED_MODELS, *OPTIONAL_MODELS):
+        for name in (*prose_names, *model_names):
             if (src / name).is_file():
                 result.copied.append(name)
         return result
@@ -146,14 +170,14 @@ def install_epic_artifacts(
     models_dir.mkdir(parents=True, exist_ok=True)
 
     # Prose artifacts.
-    for name in (*REQUIRED_PROSE, *OPTIONAL_PROSE):
+    for name in prose_names:
         f = src / name
         if f.is_file():
             shutil.copy(f, epic / name)
             result.copied.append(name)
 
     # Model JSON.
-    for name in (*REQUIRED_MODELS, *OPTIONAL_MODELS):
+    for name in model_names:
         f = src / name
         if f.is_file():
             shutil.copy(f, models_dir / name)
@@ -170,7 +194,7 @@ def install_epic_artifacts(
             result.warnings.append(f"transition map generation failed: {exc}")
 
     # Machine + test views for each model.
-    for name in REQUIRED_MODELS + (("ui-spec.json",) if has_ui_spec_json else ()):
+    for name in model_names:
         model_path = models_dir / name
         for view in ("machine", "test"):
             try:
@@ -179,17 +203,24 @@ def install_epic_artifacts(
                 result.warnings.append(f"render {name} ({view}) failed: {exc}")
 
     if commit:
-        rc_add = git_runner(["git", "add", "docs/epics/"], cwd=str(target_repo), capture_output=True, text=True)
+        # Stage only this epic's directory, not every epic under docs/epics/.
+        rel = str(epic.relative_to(target_repo))
+        rc_add = git_runner(["git", "add", rel], cwd=str(target_repo), capture_output=True, text=True)
         if rc_add.returncode != 0:
-            result.warnings.append(f"git add failed: {(rc_add.stderr or '').strip()}")
+            raise InstallError(f"git add failed: {(rc_add.stderr or '').strip()}")
+        rc_commit = git_runner(
+            ["git", "commit", "-m", f"arch: add epic architecture — {epic_name}"],
+            cwd=str(target_repo), capture_output=True, text=True,
+        )
+        if rc_commit.returncode == 0:
+            result.committed = True
         else:
-            rc_commit = git_runner(
-                ["git", "commit", "-m", f"arch: add epic architecture — {epic_name}"],
-                cwd=str(target_repo), capture_output=True, text=True,
-            )
-            result.committed = rc_commit.returncode == 0
-            if not result.committed:
-                result.warnings.append(f"git commit failed: {(rc_commit.stderr or '').strip()}")
+            combined = ((rc_commit.stdout or "") + (rc_commit.stderr or "")).strip()
+            # An idempotent rerun (artifacts already committed) is not a failure.
+            if "nothing to commit" in combined:
+                result.warnings.append("nothing to commit (artifacts already up to date)")
+            else:
+                raise InstallError(f"git commit failed: {combined}")
 
     return result
 
