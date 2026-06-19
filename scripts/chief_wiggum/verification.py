@@ -40,7 +40,22 @@ LANG_COMMANDS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-_MAKE_TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+):", re.MULTILINE)
+# Match a make rule line (target[s] before ':'), excluding ':=' assignments.
+# The captured group may hold several space-separated targets (grouped rule).
+_MAKE_TARGET_LINE = re.compile(r"^([A-Za-z0-9_.\-/ ]+?):(?!=)")
+_MAKEFILE_NAMES = ("Makefile", "makefile", "GNUmakefile")
+
+
+def _parse_make_targets(text: str) -> set[str]:
+    targets: set[str] = set()
+    for line in text.splitlines():
+        match = _MAKE_TARGET_LINE.match(line)
+        if not match:
+            continue
+        for name in match.group(1).split():
+            if not name.startswith("."):  # skip .PHONY etc.
+                targets.add(name)
+    return targets
 
 Runner = Callable[[list[str], str], tuple[int, str]]
 Clock = Callable[[], float]
@@ -98,7 +113,10 @@ class VerificationReport:
 
     @property
     def ok(self) -> bool:
-        return all(s.ok or s.planned_only for s in self.steps)
+        # Zero steps is NOT success: "nothing verified" must not green-light a
+        # ship. A run is ok only if it executed (or planned) at least one step
+        # and none failed.
+        return bool(self.steps) and all(s.ok or s.planned_only for s in self.steps)
 
     def to_dict(self) -> dict:
         return {
@@ -136,11 +154,11 @@ def detect_project(repo: str | Path) -> Detection:
     root = Path(repo)
     det = Detection()
 
-    makefile = root / "Makefile"
-    if makefile.is_file():
+    makefile = next((root / n for n in _MAKEFILE_NAMES if (root / n).is_file()), None)
+    if makefile is not None:
         det.has_makefile = True
         try:
-            det.make_targets = tuple(sorted(set(_MAKE_TARGET_RE.findall(makefile.read_text()))))
+            det.make_targets = tuple(sorted(_parse_make_targets(makefile.read_text())))
         except OSError:
             det.make_targets = ()
 
@@ -175,9 +193,17 @@ def plan_steps(repo: str | Path, profiles: Iterable[str], detection: Detection) 
     for profile in profiles:
         if profile == "smoke":
             if detection.has_docker_compose:
-                steps.append(PlannedStep("smoke", "docker-compose", ["docker", "compose", "up", "-d"], root))
+                # --wait blocks until services are healthy/running and fails if
+                # they don't come up, so this is a bounded readiness check.
+                steps.append(
+                    PlannedStep("smoke", "docker-compose", ["docker", "compose", "up", "-d", "--wait"], root)
+                )
             if detection.has_playwright:
-                steps.append(PlannedStep("smoke", "playwright", ["npx", "playwright", "test"], root))
+                # --no-install runs only a locally-installed Playwright (never
+                # fetches an unpinned package over the network).
+                steps.append(
+                    PlannedStep("smoke", "playwright", ["npx", "--no-install", "playwright", "test"], root)
+                )
             continue
 
         # Prefer a Makefile target named exactly for the profile.
@@ -201,6 +227,8 @@ def _default_runner(command: list[str], cwd: str) -> tuple[int, str]:
 
 
 def _log_tail(output: str, lines: int = 50) -> str:
+    if lines <= 0:
+        return ""
     return "\n".join(output.splitlines()[-lines:])
 
 
@@ -214,7 +242,8 @@ def verify(
     log_tail_lines: int = 50,
 ) -> VerificationReport:
     """Detect, plan, and (unless ``dry_run``) execute verification steps."""
-    profiles = list(profiles)
+    # Dedupe while preserving order so --profile test,test runs each step once.
+    profiles = list(dict.fromkeys(profiles))
     detection = detect_project(repo)
     report = VerificationReport(repo=str(repo), profiles=profiles, detection=detection)
 

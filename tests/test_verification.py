@@ -89,12 +89,46 @@ def test_plan_smoke_profile(tmp_path):
     (tmp_path / "playwright.config.ts").write_text("export default {}\n")
     det = v.detect_project(tmp_path)
     steps = v.plan_steps(tmp_path, ["smoke"], det)
-    assert _cmds(steps) == ["docker compose up -d", "npx playwright test"]
+    assert _cmds(steps) == ["docker compose up -d --wait", "npx --no-install playwright test"]
 
 
 def test_plan_empty_when_nothing_detected(tmp_path):
     det = v.detect_project(tmp_path)
     assert v.plan_steps(tmp_path, list(v.PROFILES), det) == []
+
+
+def test_empty_plan_is_not_ok(tmp_path):
+    # Nothing detected -> nothing verified -> must NOT green-light a ship.
+    report = v.verify(tmp_path, ["test"])
+    assert report.steps == []
+    assert report.ok is False
+    assert report.warnings
+
+
+def test_grouped_and_assignment_makefile_lines(tmp_path):
+    (tmp_path / "Makefile").write_text("FLAGS := -x\n\ntest lint:\n\techo hi\n")
+    det = v.detect_project(tmp_path)
+    assert "test" in det.make_targets and "lint" in det.make_targets
+    assert "FLAGS" not in det.make_targets
+
+
+def test_lowercase_makefile_name_detected(tmp_path):
+    (tmp_path / "makefile").write_text("build:\n\tgo build\n")
+    det = v.detect_project(tmp_path)
+    assert det.has_makefile and "build" in det.make_targets
+
+
+def test_duplicate_profiles_run_once(tmp_path):
+    (tmp_path / "go.mod").write_text("module x\n")
+    runs = []
+    report = v.verify(tmp_path, ["test", "test"], runner=lambda c, w: runs.append(c) or (0, "ok"))
+    assert len(report.steps) == 1
+
+
+def test_log_tail_zero_returns_empty(tmp_path):
+    (tmp_path / "go.mod").write_text("module x\n")
+    report = v.verify(tmp_path, ["test"], runner=lambda c, w: (1, "noisy output"), log_tail_lines=0)
+    assert report.steps[0].log_tail == ""
 
 
 # --- execution with injected runner -----------------------------------------
