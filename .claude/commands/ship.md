@@ -109,18 +109,13 @@ Guidelines for diagrams:
 
 **Always re-run tests before shipping.** Do not rely on stale results from earlier in the session — code may have changed since tests last ran.
 
+The verification runner detects the project type (Go/Node/Python/Make/Docker/Playwright), runs the requested profiles, and emits structured evidence (command, exit code, duration, log tail) for the PR body:
+
 ```bash
-# Find and run tests (detect project type)
-if [ -f "go.mod" ]; then
-  go test ./... 2>&1 | tail -20
-elif [ -f "package.json" ]; then
-  npm test 2>&1 | tail -20
-elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-  pytest 2>&1 | tail -20
-fi
+python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint --markdown
 ```
 
-If tests fail, **stop and fix them**. Do not create a PR with failing tests.
+It exits non-zero if any step fails. **If tests fail, stop and fix them** — do not create a PR with failing tests. Use `--dry-run` first to see the planned commands, and add `build`/`smoke` to `--profile` when relevant.
 
 If browser-use screenshots exist, reference them.
 

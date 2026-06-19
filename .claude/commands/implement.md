@@ -336,10 +336,11 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    - TypeScript/JavaScript: `npx eslint --no-warn-ignored` or `npx biome check`
    - Python: `ruff check` or `flake8`
    - Feed violations back to the code — fix them before proceeding. Gate on zero high-severity findings.
-4. **Run the full test suite** from the repo root:
-   - If a `/test` skill or `make ci` target exists, use it
-   - Otherwise: `pytest` (Python), `npm test` (Node), `go test ./...` (Go)
-   - ALL tests must pass. Zero tolerance.
+4. **Run the full test suite** from the repo root. The verification runner detects the project type and emits structured evidence (command, exit code, duration, log tail) for the PR body — it prefers a `make` target named for the profile when present:
+   ```bash
+   python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --markdown
+   ```
+   It exits non-zero if any step fails. ALL tests must pass. Zero tolerance.
 5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
