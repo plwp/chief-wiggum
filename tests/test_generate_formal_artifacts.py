@@ -73,6 +73,41 @@ def test_missing_models_dir_yields_all_missing(tmp_path):
 # --- invalid / malformed ----------------------------------------------------
 
 
+def test_schema_mismatch_is_invalid(tmp_path):
+    # A contracts.json that actually holds a state machine must be rejected.
+    models = tmp_path / "models"
+    models.mkdir()
+    shutil.copy(SM_EXAMPLE, models / "contracts.json")
+    manifest = gen.generate_artifacts(models, tmp_path / "out")
+    result = _result(manifest, "contracts.json")
+    assert result.status == "invalid"
+    assert any("expected contracts schema" in e for e in result.errors)
+    assert manifest.ok is False
+
+
+def test_valid_ui_spec_with_no_test_artifacts_is_empty_not_failure(tmp_path):
+    models = tmp_path / "models"
+    models.mkdir()
+    shutil.copy(EXAMPLES / "kanban-app-ui-spec.json", models / "ui-spec.json")
+    manifest = gen.generate_artifacts(models, tmp_path / "out")
+    result = _result(manifest, "ui-spec.json")
+    assert result.status == "empty"
+    assert result.files == []
+    assert manifest.ok is True  # empty is not a failure
+
+
+def test_rerun_clears_stale_artifacts_when_model_removed(tmp_path):
+    models = _models_dir(tmp_path, state_machine=True)
+    out = tmp_path / "out"
+    first = gen.generate_artifacts(models, out)
+    assert first.generated_files
+    # Remove the model and rerun; previously-generated files must be cleared.
+    (models / "state-machines.json").unlink()
+    gen.generate_artifacts(models, out)
+    for stale in first.generated_files:
+        assert not Path(stale).exists()
+
+
 def test_invalid_model_reports_errors_and_not_ok(tmp_path):
     models = tmp_path / "models"
     models.mkdir()

@@ -26,8 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import formal_models as fm  # noqa: E402
 import render_models as rm  # noqa: E402
 
-# Source models we know how to derive test artifacts from.
-MODEL_FILES = ("state-machines.json", "contracts.json", "ui-spec.json")
+# Source models we know how to derive test artifacts from, with the schema each
+# filename is required to hold (so a mislabeled file is flagged, not rendered).
+EXPECTED_SCHEMA = {
+    "state-machines.json": "state-machine",
+    "contracts.json": "contracts",
+    "ui-spec.json": "ui-spec",
+}
+MODEL_FILES = tuple(EXPECTED_SCHEMA)
 # Views that produce *test* artifacts (skip the human/markdown view).
 TEST_VIEWS = ("machine", "test")
 
@@ -35,7 +41,9 @@ TEST_VIEWS = ("machine", "test")
 @dataclass
 class ModelResult:
     name: str
-    status: str  # "ok" | "missing" | "invalid" | "malformed"
+    # "ok" (valid + files) | "empty" (valid, no test artifacts, e.g. ui-spec) |
+    # "missing" | "invalid" | "malformed"
+    status: str
     files: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -55,8 +63,9 @@ class GenerationManifest:
 
     @property
     def ok(self) -> bool:
-        # A run is OK if no present model failed validation/parsing.
-        return all(r.status in ("ok", "missing") for r in self.results)
+        # A run is OK unless a present model is invalid or malformed. A valid
+        # model that yields no test artifacts ("empty", e.g. ui-spec) is fine.
+        return all(r.status in ("ok", "empty", "missing") for r in self.results)
 
     def to_dict(self) -> dict:
         return {
@@ -81,16 +90,24 @@ class GenerationManifest:
 
 def _generate_one(model_path: Path, output_dir: Path, views=TEST_VIEWS) -> ModelResult:
     name = model_path.name
+    expected = EXPECTED_SCHEMA.get(name)
     try:
         model = fm._load_json(model_path)
     except (json.JSONDecodeError, OSError) as exc:
         return ModelResult(name, "malformed", errors=[str(exc)])
 
+    # The file must hold the schema its name implies; a contracts.json that is
+    # actually a state machine must be rejected, not rendered as a state machine.
     try:
-        schema_type = fm.detect_schema_type(model)
-        errors = fm.validate(model, schema_type)
-    except Exception as exc:  # noqa: BLE001 - unknown schema etc.
+        detected = fm.detect_schema_type(model)
+    except Exception as exc:  # noqa: BLE001 - unknown schema
         return ModelResult(name, "invalid", errors=[str(exc)])
+    if expected and detected != expected:
+        return ModelResult(
+            name, "invalid", errors=[f"expected {expected} schema, found {detected}"]
+        )
+
+    errors = fm.validate(model, expected or detected)
     if errors:
         return ModelResult(name, "invalid", errors=list(errors))
 
@@ -100,7 +117,10 @@ def _generate_one(model_path: Path, output_dir: Path, views=TEST_VIEWS) -> Model
     # Deduplicate while preserving order (machine + test views can overlap).
     seen: set[str] = set()
     deduped = [f for f in files if not (f in seen or seen.add(f))]
-    return ModelResult(name, "ok", files=deduped)
+    # A valid model that produces no test artifacts (e.g. ui-spec, which has no
+    # machine/test view) is "empty", not a failure.
+    status = "ok" if deduped else "empty"
+    return ModelResult(name, status, files=deduped)
 
 
 def generate_artifacts(
@@ -117,6 +137,16 @@ def generate_artifacts(
     models = Path(models_dir)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    # Clear artifacts a prior run generated so the output dir stays a faithful
+    # set even when a model later goes missing/invalid.
+    prior_manifest = out / "formal-artifacts-manifest.json"
+    if prior_manifest.exists():
+        try:
+            for stale in json.loads(prior_manifest.read_text()).get("generated_files", []):
+                Path(stale).unlink(missing_ok=True)
+        except (json.JSONDecodeError, OSError):
+            pass
 
     manifest = GenerationManifest(models_dir=str(models), output_dir=str(out))
     for name in MODEL_FILES:
@@ -147,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         print(manifest.render_markdown())
     else:
         print(json.dumps(manifest.to_dict(), indent=2))
-    # Non-zero if any present model failed to produce artifacts.
+    # Non-zero if any present model is invalid or malformed.
     return 0 if manifest.ok else 1
 
 
