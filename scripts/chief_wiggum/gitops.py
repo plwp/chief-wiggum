@@ -4,9 +4,11 @@ The command prompts repeatedly warn sub-agents not to operate on the main
 checkout, create rogue PRs, or merge from the wrong branch — but enforcement is
 prose. This module makes those checks executable.
 
-Every helper is **read-only**: it inspects git state but never runs destructive
-commands (no ``reset --hard``, ``clean -f``, ``push --force``). A ``runner`` is
-injectable so the logic is unit-testable with mocked subprocess calls.
+Every helper is **non-destructive**: the read helpers only inspect git state,
+and the one mutating helper (``create_staging_branch``) only ever *creates* a
+branch — none run destructive commands (no ``reset --hard``, ``clean -f``,
+``push --force``, ``branch -D``). A ``runner`` is injectable so the logic is
+unit-testable with mocked subprocess calls.
 """
 
 from __future__ import annotations
@@ -76,16 +78,21 @@ def is_valid_branch_name(name: str) -> bool:
         return False
     if name.startswith("/") or name.endswith("/") or "//" in name:
         return False
-    if name.startswith("-") or name.startswith("."):
+    if name.startswith("-"):
         return False
     if name.endswith(".") or name.endswith(".lock"):
         return False
     if ".." in name or "@{" in name or name == "@":
         return False
-    if name.endswith("/") or "/." in name:
-        return False
     if _INVALID_BRANCH_CHARS.search(name):
         return False
+    # Git applies these rules to every "/"-separated path component, not just the
+    # whole ref: no component may be empty, start with ".", or end with ".lock"/".".
+    for component in name.split("/"):
+        if not component or component.startswith("."):
+            return False
+        if component.endswith(".lock") or component.endswith("."):
+            return False
     return True
 
 
@@ -151,7 +158,11 @@ def create_staging_branch(
     an existing branch causes a failure rather than a clobber.
     """
     assert_branch_name(name)
-    result = _git(["branch", name, start_point], repo, runner)
+    # Reject an option-like start point and pass ``--`` so neither operand can be
+    # parsed as an option (e.g. a start_point of ``-D`` turning this destructive).
+    if start_point.startswith("-"):
+        raise GitSafetyError(f"invalid start point: {start_point!r}")
+    result = _git(["branch", "--", name, start_point], repo, runner)
     if result.returncode != 0:
         raise GitSafetyError(
             f"could not create staging branch {name!r}: {(result.stderr or '').strip()}"

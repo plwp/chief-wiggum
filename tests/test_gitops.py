@@ -42,7 +42,11 @@ def test_valid_branch_names(name):
 
 @pytest.mark.parametrize(
     "name",
-    ["", "has space", "ends.lock", "..", "/leading", "trailing/", "a..b", "x~y", "feat^", "q?", "-dash", "double//slash"],
+    [
+        "", "has space", "ends.lock", "..", "/leading", "trailing/", "a..b",
+        "x~y", "feat^", "q?", "-dash", "double//slash",
+        "foo.lock/bar", "foo/bar.lock/baz", "foo/.hidden", ".lead/x", "a/b./c",
+    ],
 )
 def test_invalid_branch_names(name):
     assert gitops.is_valid_branch_name(name) is False
@@ -112,6 +116,22 @@ def test_create_staging_branch_maps_git_failure():
         gitops.create_staging_branch(
             ".", "staging/x", "main", runner=_runner(returncode=128, stderr="exists")
         )
+
+
+def test_create_staging_branch_rejects_option_like_start_point():
+    with pytest.raises(gitops.GitSafetyError, match="start point"):
+        gitops.create_staging_branch(".", "staging/x", "-D", runner=_runner())
+
+
+def test_create_staging_branch_passes_double_dash():
+    captured = {}
+
+    def run(args, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    gitops.create_staging_branch(".", "staging/x", "main", runner=run)
+    assert captured["args"] == ["git", "branch", "--", "staging/x", "main"]
 
 
 # --- CLI --------------------------------------------------------------------
