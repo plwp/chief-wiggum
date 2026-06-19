@@ -563,9 +563,8 @@ If no browser-use or E2E setup exists at all, note it as a gap in the final summ
    #ffa600 (amber)        — highlights
    ```
 
-   Every diagram MUST include the theme init block and classDef styles:
+   Write the diagram body (without the `%%{init}%%` line — `draft_pr.py` injects the themed init block in step 3) to `$TICKET_TMP/architecture.mmd`, using these classDef styles:
    ```mermaid
-   %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333'}}}%%
    graph TD
        classDef existing fill:#003f5c,stroke:#2f4b7c,color:#fff
        classDef modified fill:#665191,stroke:#a05195,color:#fff
@@ -573,45 +572,28 @@ If no browser-use or E2E setup exists at all, note it as a gap in the final summ
        classDef entry fill:#ff7c43,stroke:#ffa600,color:#fff
    ```
 
-   Include at minimum a **Component Relationship Diagram** showing what was added/modified. Add a **Sequence Diagram** if data flow changed. Keep diagrams focused (max 15 nodes).
+   Include at minimum a **Component Relationship Diagram** showing what was added/modified. Add a **Sequence Diagram** if data flow changed (pass `--mermaid-sequence` to `draft_pr.py`). Keep diagrams focused (max 15 nodes).
 
-3. Create the PR with full documentation using a HEREDOC:
+3. Draft the PR body with the tested helper. It folds in the verification evidence and (when present) the review/UX/model-conformance manifests, themes the Mermaid diagram with the shared palette automatically, validates the required sections, and links the issue:
 
 ```bash
-gh pr create \
-  --repo "$owner_repo" \
-  --title "$pr_title" \
-  --body "$(cat <<'EOF'
-## Summary
-[2-3 sentences]
-
-## Architecture
-[Mermaid diagrams here — REQUIRED]
-
-## Changes
-[Bullet list of significant changes]
-
-## Test plan
-[Test evidence — include TDD summary: N tests written first, all passing]
-[If formal models exist: N model-derived tests, M LLM-written tests]
-
-## Contract compliance
-[Which epic contracts/invariants this implementation satisfies — omit if no epic context]
-
-## Model conformance
-[If formal models exist — include conformance summary from Step 8:]
-[Test paths: X/Y | Invalid transitions: X/Y | Guard clauses: X/Y | Invariants: X/Y]
-[Omit this section if no formal models]
-
-Closes #issue_number
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)" \
-  --base "$DEFAULT_BRANCH"
+python3 "$CW_HOME/scripts/draft_pr.py" \
+  --issue "$issue_number" --title "$pr_title" --summary "$summary" \
+  --change "Change 1" --change "Change 2" \
+  --mermaid-file "$TICKET_TMP/architecture.mmd" \
+  --verification "$TICKET_TMP/verification.json" \
+  --review "$TICKET_TMP/reviews/review-manifest.json" \
+  --model-conformance "$TICKET_TMP/model-conformance.md" \
+  --base "$DEFAULT_BRANCH" --out "$TICKET_TMP/pr-body.md"
 ```
 
-4. Link to the original issue via `Closes #N` in the body
+(Omit `--model-conformance` / `--review` when they don't apply — those sections are then omitted.) Then create the PR from the body file:
+
+```bash
+gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/pr-body.md" --base "$DEFAULT_BRANCH"
+```
+
+4. The helper links the original issue via `Closes #N` from `--issue`.
 
 ### Step 12: Verify CI green
 
