@@ -115,16 +115,13 @@ Write a consultation prompt to `$CW_TMP/consultation-prompt.md` asking for a cri
 4. Specific technical feedback on the key decisions
 5. Cost optimisation traps
 
-Fire off **Gemini and Codex in parallel** using `consult_ai.py`:
+Fire the `explorer` quorum (providers run in parallel, with retries + output validation) using `consult_ai.py`:
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" gemini "$CW_TMP/consultation-prompt.md" \
-  --context "$CW_TMP/architecture-decisions.md" -o "$CW_TMP/review-gemini.md"
-
-python3 "$CW_HOME/scripts/consult_ai.py" codex "$CW_TMP/consultation-prompt.md" \
-  --context "$CW_TMP/architecture-decisions.md" -o "$CW_TMP/review-codex.md"
+python3 "$CW_HOME/scripts/consult_ai.py" --role explorer "$CW_TMP/consultation-prompt.md" \
+  --context "$CW_TMP/architecture-decisions.md" --output-dir "$CW_TMP/consult"
 ```
 
-Run both in the background. Continue the conversation or work on other steps while waiting.
+Responses land at `$CW_TMP/consult/explorer-<provider>.md` with status in `explorer-manifest.json`. Continue the conversation or work on other steps while waiting.
 
 ### Step 6: Synthesise AI feedback
 

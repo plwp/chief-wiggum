@@ -45,6 +45,8 @@ def test_role_consult_writes_required_and_optional_outputs(tmp_path, monkeypatch
             str(config),
             "--output-dir",
             str(output_dir),
+            "--min-bytes",
+            "1",
         ],
     )
 
@@ -79,6 +81,8 @@ def test_role_consult_does_not_fail_when_optional_provider_is_disabled(tmp_path,
             str(config),
             "--output-dir",
             str(output_dir),
+            "--min-bytes",
+            "1",
         ],
     )
 

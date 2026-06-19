@@ -22,7 +22,14 @@ from pathlib import Path
 # Allow importing keychain from the same directory
 sys.path.insert(0, str(Path(__file__).parent))
 from keychain import get_secret
-from providers import DEFAULT_CONFIG, Provider, load_config, plan_role, validate_config
+from providers import (
+    DEFAULT_CONFIG,
+    Provider,
+    load_config,
+    plan_role,
+    run_role_quorum,
+    validate_config,
+)
 
 # Per-tool timeouts (seconds). These are generous — better to wait than to
 # lose a good response to a premature timeout.
@@ -190,6 +197,8 @@ def main():
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Provider config path")
     parser.add_argument("--enable-provider", action="append", default=[], help="Force-enable provider by name")
     parser.add_argument("--disable-provider", action="append", default=[], help="Disable provider by name")
+    parser.add_argument("--max-attempts", type=int, default=2, help="Retries for required providers in --role mode")
+    parser.add_argument("--min-bytes", type=int, default=20, help="Minimum substantive output size in --role mode")
     args = parser.parse_args()
 
     if args.role:
@@ -246,25 +255,27 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        failures: list[str] = []
-        for provider in plan.runnable:
-            try:
-                output = consult_provider(provider, prompt, args.model, args.cwd)
-                output_path = output_dir / f"{args.role}-{provider.name}.md"
-                output_path.write_text(output)
-                print(f"OK: {provider.name} response written to {output_path}")
-            except Exception as exc:
-                if provider in plan.required:
-                    failures.append(f"{provider.name}: {exc}")
-                else:
-                    skipped = output_dir / f"{args.role}-{provider.name}.error.md"
-                    skipped.write_text(str(exc))
-                    print(f"Warning: optional provider {provider.name} failed: {exc}", file=sys.stderr)
-        if failures:
-            for failure in failures:
-                print(f"Error: {failure}", file=sys.stderr)
+        # Run the quorum in parallel with retries + output validation, and write
+        # a manifest. Required providers must produce substantive output.
+        manifest = run_role_quorum(
+            plan,
+            lambda provider: consult_provider(provider, prompt, args.model, args.cwd),
+            args.output_dir,
+            max_attempts=args.max_attempts,
+            min_bytes=args.min_bytes,
+        )
+        for result in manifest.results:
+            if result.status == "ok":
+                print(f"OK: {result.name} response written to {result.path}")
+            elif result.required:
+                print(f"Error: required provider {result.name} failed: {result.error}", file=sys.stderr)
+            else:
+                print(f"Warning: optional provider {result.name} failed: {result.error}", file=sys.stderr)
+        if not manifest.ok:
+            print(
+                f"Role {args.role} quorum failed: {', '.join(manifest.failed_required)}",
+                file=sys.stderr,
+            )
             sys.exit(1)
         return
 

@@ -102,13 +102,14 @@ This is the **only** step that blocks on the user. Do not add approval gates els
 
 ### Step 4: Multi-AI design critique
 
-Unless `--skip-critique`: send the approved direction's screenshots to all three AIs with the **same prompt** (value is in natural divergence):
+Unless `--skip-critique`: send the approved direction's screenshots to the `design_critic` quorum with the **same prompt** (value is in natural divergence). The role runs its providers in parallel with retries + output validation:
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" gemini "$DESIGN_TMP/critique-prompt.md" --cwd "$DESIGN_TMP" -o "$DESIGN_TMP/critique-gemini.md"
-python3 "$CW_HOME/scripts/consult_ai.py" codex  "$DESIGN_TMP/critique-prompt.md" --cwd "$DESIGN_TMP" -o "$DESIGN_TMP/critique-codex.md"
-python3 "$CW_HOME/scripts/consult_ai.py" claude "$DESIGN_TMP/critique-prompt.md" --cwd "$DESIGN_TMP" -o "$DESIGN_TMP/critique-claude.md"
+python3 "$CW_HOME/scripts/consult_ai.py" --role design_critic "$DESIGN_TMP/critique-prompt.md" \
+  --cwd "$DESIGN_TMP" --output-dir "$DESIGN_TMP/critique"
 ```
+
+Responses land at `$DESIGN_TMP/critique/design_critic-<provider>.md` with status in `design_critic-manifest.json`.
 
 The prompt names the screenshot files (cwd is `$DESIGN_TMP` so the CLIs can open them) and asks for critique against:
 - **Audience fit**: does this read right for the audience in `docs/domain-context.md`?

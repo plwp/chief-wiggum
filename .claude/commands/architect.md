@@ -76,15 +76,14 @@ Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
   5. Where are the integration risks and how should we test them?
   6. What could go wrong between tickets? (dual sources of truth, race conditions, inconsistent reads)
 
-Fire all three consultations in parallel:
+Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation):
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/architect-prompt.md -o $CW_TMP/architect-codex.md --cwd "$TARGET_REPO" &
-python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/architect-prompt.md -o $CW_TMP/architect-gemini.md --cwd "$TARGET_REPO" &
-wait
+python3 "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/architect-prompt.md \
+  --output-dir "$CW_TMP/architect-consult" --cwd "$TARGET_REPO"
 ```
 
-Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel to explore the codebase and produce its own architectural analysis at `$CW_TMP/architect-opus.md`.
+Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` with status in `architecture_critic-manifest.json`. Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel to explore the codebase and produce its own architectural analysis at `$CW_TMP/architect-opus.md`.
 
 **HARD RULE**: Wait for ALL THREE before proceeding.
 
@@ -336,13 +335,14 @@ Prepare a validation prompt at `$CW_TMP/validate-artifacts-prompt.md` containing
   6. Does every precondition have a corresponding error case? (REQUIRES without an ERROR CASE means a silent failure)
   7. Are the `expression` fields in preconditions/postconditions/invariants reasonable and implementable?
 
-Run Codex and Gemini in parallel:
+Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/validate-artifacts-prompt.md -o $CW_TMP/validate-codex.md --cwd "$TARGET_REPO" &
-python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/validate-artifacts-prompt.md -o $CW_TMP/validate-gemini.md --cwd "$TARGET_REPO" &
-wait
+python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifacts-prompt.md \
+  --output-dir "$CW_TMP/validate-artifacts" --cwd "$TARGET_REPO"
 ```
+
+Responses land at `$CW_TMP/validate-artifacts/reviewer-<provider>.md` (status in `reviewer-manifest.json`).
 
 Review both responses. Apply clear improvements to the JSON models. Regenerate prose if models changed:
 ```bash
