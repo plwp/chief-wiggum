@@ -63,10 +63,14 @@ Each finding carries the tickets it blocks (from `derived_from` provenance). Tic
 
 ### Step 2: Build the wave plan
 
-Fetch all open tickets in the epic milestone:
+Fetch **all** tickets in the epic milestone (both open and closed — closed tickets satisfy dependents and must be passed to the planner so it can mark them done rather than schedule them):
 
 ```bash
-gh issue list --repo "$owner_repo" --milestone "$epic_name" --state open --limit 100 --json number,title,body,labels
+# Full epic issue list, and the closed subset.
+EPIC_ISSUES=$(gh issue list --repo "$owner_repo" --milestone "$epic_name" --state all --limit 200 --json number -q 'map(.number) | join(",")')
+CLOSED_ISSUES=$(gh issue list --repo "$owner_repo" --milestone "$epic_name" --state closed --limit 200 --json number -q 'map(.number) | join(",")')
+# Tickets gated by Step 1's unresolved-marker scan (comma-separated issue numbers).
+BLOCKED_TICKETS="${BLOCKED_TICKETS:-}"
 ```
 
 Parse the dependency graph from the milestone description. `/plan-epic` writes a machine-readable `<!-- DEPENDENCIES -->` block:

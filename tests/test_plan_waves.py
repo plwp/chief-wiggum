@@ -147,3 +147,46 @@ def test_cli_reads_deps_json_shape(tmp_path, capsys):
     rc = plan_waves.main(["--deps-json", str(path), "--issues", "1,2"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["waves"] == [[1], [2]]
+
+
+def test_cli_refuses_corrupt_graph_from_malformed_deps(tmp_path, capsys):
+    # epic_metadata.py dropped a malformed line; planning on the partial graph
+    # could schedule a ticket before its real dependency. Refuse instead.
+    deps = {
+        "edges": {"2": []},
+        "warnings": ["malformed dependency line: '#2: [#1 typo]'"],
+        "has_block": True,
+    }
+    path = tmp_path / "deps.json"
+    path.write_text(json.dumps(deps))
+    rc = plan_waves.main(["--deps-json", str(path), "--issues", "1,2"])
+    assert rc == 1
+    assert "corrupt dependency graph" in capsys.readouterr().err
+
+
+def test_cli_surfaces_nonfatal_deps_warnings(tmp_path, capsys):
+    deps = {
+        "edges": {"1": []},
+        "warnings": ["missing DEPENDENCIES block: not found in description"],
+        "has_block": False,
+    }
+    path = tmp_path / "deps.json"
+    path.write_text(json.dumps(deps))
+    rc = plan_waves.main(["--deps-json", str(path), "--issues", "1"])
+    assert rc == 0
+    assert any("missing DEPENDENCIES block" in w for w in json.loads(capsys.readouterr().out)["warnings"])
+
+
+def test_cli_missing_inputs_exits_1_not_cycle_code(capsys):
+    rc = plan_waves.main(["--issues", "1"])
+    assert rc == 1  # distinct from cycle's exit 2
+
+
+def test_cli_missing_deps_file_exits_1(capsys):
+    rc = plan_waves.main(["--deps-json", "/nonexistent/deps.json", "--issues", "1"])
+    assert rc == 1
+
+
+def test_cli_non_object_edges_exits_1(capsys):
+    rc = plan_waves.main(["--edges", "[1, 2, 3]"])
+    assert rc == 1

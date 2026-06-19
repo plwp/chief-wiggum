@@ -51,14 +51,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--markdown", action="store_true", help="Emit markdown report")
     args = parser.parse_args(argv)
 
+    if not args.deps_json and not args.edges:
+        print("Error: one of --edges or --deps-json is required", file=sys.stderr)
+        return 1
+
+    deps_warnings: list[str] = []
     try:
         if args.deps_json:
             raw = sys.stdin.read() if args.deps_json == "-" else Path(args.deps_json).read_text()
-            edges = {int(k): v for k, v in json.loads(raw).get("edges", {}).items()}
-        elif args.edges:
-            edges = {int(k): v for k, v in json.loads(args.edges).items()}
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("--deps-json must be a JSON object with an 'edges' map")
+            deps_warnings = list(parsed.get("warnings", []))
+            edges = {int(k): v for k, v in parsed.get("edges", {}).items()}
         else:
-            parser.error("one of --edges or --deps-json is required")
+            parsed = json.loads(args.edges)
+            if not isinstance(parsed, dict):
+                raise ValueError("--edges must be a JSON object mapping number -> [deps]")
+            edges = {int(k): v for k, v in parsed.items()}
+
+        # A malformed dependency line is dropped upstream by epic_metadata.py,
+        # which would leave the affected ticket looking dependency-free. Refuse
+        # to plan on a graph we know is corrupt rather than risk scheduling a
+        # ticket before its real dependency lands.
+        malformed = [w for w in deps_warnings if "malformed dependency line" in w]
+        if malformed:
+            print(
+                "Error: refusing to plan on a corrupt dependency graph:\n  "
+                + "\n  ".join(malformed),
+                file=sys.stderr,
+            )
+            return 1
 
         issues = _parse_int_list(args.issues) or list(edges)
         plan = planning.plan_waves(
@@ -67,10 +90,12 @@ def main(argv: list[str] | None = None) -> int:
             closed=_parse_int_list(args.closed),
             gated=_parse_int_list(args.gated),
         )
+        # Surface remaining (non-fatal) deps metadata warnings in the plan.
+        plan.warnings = deps_warnings + plan.warnings
     except planning.DependencyCycleError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-    except (ValueError, KeyError, json.JSONDecodeError) as exc:
+    except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
