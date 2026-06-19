@@ -24,7 +24,16 @@ Run the check script to see what's installed and what's missing:
 python3 $CW_HOME/scripts/check_deps.py --for core
 ```
 
-Dependency checks are profile-based. Use only the profiles the current harness and workflow need:
+Dependency checks are profile-based. Use only the profiles the current harness and workflow need. Rather than guessing the profiles, ask the checker to recommend them for the workflows and provider roles in play (`check_deps.py` is the source of truth for the mapping):
+
+```bash
+# Recommend the flags for a workflow + the provider roles it uses, then run the check:
+RECO=$(python3 $CW_HOME/scripts/check_deps.py --recommend --workflow implement --role reviewer)
+python3 $CW_HOME/scripts/check_deps.py $RECO
+python3 $CW_HOME/scripts/check_deps.py --list-profiles   # see every available profile
+```
+
+The profiles map to flags like:
 
 ```bash
 python3 $CW_HOME/scripts/check_deps.py --for core

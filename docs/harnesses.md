@@ -58,9 +58,11 @@ Configure roles in `config/providers.json`. Required providers must succeed. Opt
 
 ## Dependency Profiles
 
-Check the narrowest profile required by the active harness and workflow:
+Check the narrowest profile required by the active harness and workflow. Let the checker recommend the profiles for a workflow and its provider roles (it is the source of truth for the mapping), or check a profile directly:
 
 ```bash
+python3 scripts/check_deps.py --recommend --workflow implement --role reviewer
+python3 scripts/check_deps.py --list-profiles
 python3 scripts/check_deps.py --for core
 python3 scripts/check_deps.py --for core --provider claude-code
 python3 scripts/check_deps.py --for core --provider codex --provider gemini
