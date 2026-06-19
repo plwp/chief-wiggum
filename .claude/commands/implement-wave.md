@@ -96,12 +96,21 @@ milestone surface in `warnings` rather than crashing.
 
 **If `has_block` is false** (the DEPENDENCIES block is missing), fall back to parsing `depends on #N` annotations from the implementation order in the milestone description or issue bodies. Warn the user that this is less reliable and suggest re-running `/plan-epic` to add structured metadata.
 
-Compute waves using topological sort:
-- **Wave 1**: All tickets with zero unmet dependencies (no `depends on` or all dependencies already closed)
-- **Wave 2**: Tickets whose dependencies are all in Wave 1
-- **Wave N**: Tickets whose dependencies are all in Waves 1..N-1
+Compute the wave plan with the tested planner instead of sorting by hand. Feed it the dependency edges, the full epic issue list, the already-closed issues, and the tickets gated by the Step 1 unresolved scan (`blocked_tickets`):
 
-Also identify **integration risks** from the epic plan — tickets within the same wave that touch the same files/components. Flag these for the merge step.
+```bash
+python3 "$CW_HOME/scripts/epic_metadata.py" deps "$owner_repo" --milestone "$epic_name" > "$CW_TMP/deps.json"
+python3 "$CW_HOME/scripts/plan_waves.py" \
+  --deps-json "$CW_TMP/deps.json" \
+  --issues "$EPIC_ISSUES" \
+  --closed "$CLOSED_ISSUES" \
+  --gated "$BLOCKED_TICKETS" \
+  --markdown
+```
+
+The planner emits dependency-ordered `waves` (each a batch of tickets with no unmet dependencies, safe to run in parallel), plus `gated` (held back), `skipped` (already closed), `integration_risks`, and per-ticket `gate_reasons`. It **exits non-zero on a dependency cycle** — stop and fix the graph before building anything. Transitive gating is built in: gating a ticket holds back everything that (transitively) depends on it.
+
+The planner also surfaces **integration risks** — shared dependencies (diamonds / fan-out). Flag these for the merge step.
 
 **Apply the unresolved-unknowns gate.** For each ticket in `blocked_tickets` (from Step 1's scan):
 1. First try to **resolve the unknown now** — introspect the real schema, read the source repo, check the external service. Many "unknowns" are 10 minutes of research. If resolved: update the artifact (remove the marker, cite the source), commit, and un-gate the ticket.
