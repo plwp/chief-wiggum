@@ -398,14 +398,20 @@ If ANY verification fails: fix it directly, or re-launch the coding sub-agent wi
 
 ### Step 9: UX sanity + design-fidelity gate
 
-**Skip this step if**:
-- `--skip-browser-use` was explicitly passed, OR
-- The ticket has no frontend impact. Detect by checking all three signals:
-  1. Labels: if issue has no `frontend`, `ui`, `ux`, or `web` label, skip
-  2. Diff paths: if `git diff "$DEFAULT_BRANCH"...HEAD --name-only` shows no files under `ui/`, `frontend/`, `web/`, `src/components/`, `src/pages/`, `src/views/`, `*.tsx`, `*.vue`, `*.svelte`, `*.html`, `*.css`, `*.scss`, or similar front-end paths, skip
-  3. Frontend files: if the target repo has no `ui/` or `frontend/` directory at all, skip
+Run the tested gate to do all the mechanical setup — frontend-impact detection (diff paths + labels), ui-spec design-binding check, reference-screenshot discovery, and screenshot-capture planning — and emit a manifest:
 
-If any signal is positive, run the step.
+```bash
+git diff "$DEFAULT_BRANCH"...HEAD --name-only > "$TICKET_TMP/changed.txt"
+python3 "$CW_HOME/scripts/ux_gate.py" \
+  --changed-files "$TICKET_TMP/changed.txt" \
+  $(gh issue view "$issue_number" --repo "$owner_repo" --json labels -q '.labels[].name' | sed 's/^/--label /') \
+  --ui-spec "$MODELS_DIR/ui-spec.json" --design-dir "$TARGET_REPO/docs/design" \
+  --screenshot-dir "$TICKET_TMP/ux-screenshots" --markdown > "$TICKET_TMP/ux-manifest.md"
+```
+
+(Add `--have-browser-use` / `--have-playwright` based on the target repo's tooling.)
+
+**Skip this step if** `--skip-browser-use` was passed, or the manifest's `should_run_gate` is false (no frontend impact). If the manifest is **blocked** (frontend ticket with a design contract but no screenshot tooling), resolve the tooling — do not silently skip the design-fidelity gate. Otherwise run the judgment-heavy review below against the discovered reference screenshots.
 
 **Goal**: Verify that the implemented UI aligns with the *spirit* of the requirements — information architecture, menu coherence, field exposure, contextual clarity — AND with the **visual design contract** (`ui-spec.json` → `design` section): tokens applied, brand assets present, reference screenshots matched. Functional tests can pass while screens feel wrong or ship off-brand; this is the only step in the loop that actually *looks* at the result. "Build + tests green" is NOT sufficient to call a frontend ticket done.
 
