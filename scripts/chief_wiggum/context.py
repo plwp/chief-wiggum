@@ -43,17 +43,25 @@ def parse_target(ref: str) -> TargetRef:
     Reuses ``repo._parse_owner_repo`` for owner/repo validation (path-traversal
     safety) and additionally parses an optional ``#<issue>`` suffix.
     """
-    owner, name = repo._parse_owner_repo(ref)
+    # repo._parse_owner_repo validates owner/repo (path-traversal safety) but
+    # exits the process on bad input. A reusable library helper should raise,
+    # so translate the CLI-style SystemExit into ValueError for callers.
+    try:
+        owner, name = repo._parse_owner_repo(ref)
+    except SystemExit as exc:
+        raise ValueError(f"invalid owner/repo reference: {ref!r}") from exc
+
     issue: int | None = None
     if "#" in ref:
         suffix = ref.split("#", 1)[1].strip()
-        if suffix:
-            try:
-                issue = int(suffix)
-            except ValueError as exc:
-                raise ValueError(f"invalid issue number in {ref!r}: {suffix!r}") from exc
-            if issue <= 0:
-                raise ValueError(f"issue number must be positive in {ref!r}")
+        if not suffix:
+            raise ValueError(f"empty issue number after '#' in {ref!r}")
+        try:
+            issue = int(suffix)
+        except ValueError as exc:
+            raise ValueError(f"invalid issue number in {ref!r}: {suffix!r}") from exc
+        if issue <= 0:
+            raise ValueError(f"issue number must be positive in {ref!r}")
     return TargetRef(owner=owner, repo=name, issue=issue)
 
 

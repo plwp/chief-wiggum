@@ -25,14 +25,15 @@ def test_parse_target_with_issue_suffix():
     assert ref.issue == 42
 
 
-@pytest.mark.parametrize("ref", ["acme/repo#0", "acme/repo#-3", "acme/repo#abc"])
+@pytest.mark.parametrize("ref", ["acme/repo#0", "acme/repo#-3", "acme/repo#abc", "acme/repo#"])
 def test_parse_target_rejects_bad_issue(ref):
     with pytest.raises(ValueError):
         context.parse_target(ref)
 
 
-def test_parse_target_rejects_path_traversal():
-    with pytest.raises(SystemExit):
+def test_parse_target_raises_valueerror_on_path_traversal():
+    # The reusable helper must raise ValueError, not leak repo.py's SystemExit.
+    with pytest.raises(ValueError):
         context.parse_target("acme/../repo")
 
 
@@ -56,12 +57,25 @@ def test_resolve_discovers_home_from_cwd(monkeypatch, tmp_path):
 # --- temp dir creation ------------------------------------------------------
 
 
-def test_create_tmp_makes_unique_session_dir(monkeypatch, tmp_path):
-    home = REPO_ROOT
-    monkeypatch.setattr(context.env, "create_tmp", lambda: tmp_path / "session")
-    (tmp_path / "session").mkdir()
-    ctx = context.resolve(home=home)
-    assert ctx.tmp == tmp_path / "session"
+def test_resolve_creates_real_unique_temp_dir(monkeypatch):
+    # Exercise the real side effect: each resolve() with no tmp override must
+    # create a fresh, unique, existing session directory.
+    ctx_a = context.resolve(home=REPO_ROOT)
+    ctx_b = context.resolve(home=REPO_ROOT)
+    try:
+        assert ctx_a.tmp.is_dir()
+        assert ctx_b.tmp.is_dir()
+        assert ctx_a.tmp != ctx_b.tmp
+    finally:
+        for ctx in (ctx_a, ctx_b):
+            ctx.tmp.rmdir()
+
+
+def test_resolve_reuses_supplied_temp_dir(tmp_path):
+    session = tmp_path / "session"
+    session.mkdir()
+    ctx = context.resolve(home=REPO_ROOT, tmp=session)
+    assert ctx.tmp == session
 
 
 def test_ticket_tmp_is_per_issue(tmp_path):
@@ -158,3 +172,21 @@ def test_to_dict_and_shell_exports(monkeypatch, tmp_path):
     assert "export ISSUE_NUMBER=7" in exports
     assert "export EPIC_SLUG='epic-name'" in exports
     assert 'export EPIC_DIR="$TARGET_REPO/docs/epics/epic-name"' in exports
+
+
+def test_shell_exports_quote_hostile_values(monkeypatch, tmp_path):
+    # A repo path / branch with spaces, single quotes, or shell metacharacters
+    # must be safely quoted so `eval` cannot execute injected commands.
+    nasty = tmp_path / "re po';touch pwned;'"
+    monkeypatch.setattr(context.repo, "resolve_repo", lambda slug: nasty)
+    ctx = context.resolve(
+        "acme/app",
+        tmp=tmp_path,
+        home=REPO_ROOT,
+        branch_detector=lambda p: "feat/x'; rm -rf /; '",
+    )
+    exports = ctx.shell_exports()
+    # The injected command text survives only inside a single-quoted literal.
+    assert "touch pwned" not in exports.replace(context.env.shell_quote(str(nasty)), "")
+    assert context.env.shell_quote(str(nasty)) in exports
+    assert context.env.shell_quote("feat/x'; rm -rf /; '") in exports

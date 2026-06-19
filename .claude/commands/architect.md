@@ -27,7 +27,10 @@ Everything else runs autonomously.
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
-eval "$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell)"
+# Capture first and check status so a resolver failure aborts cleanly.
+CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
+  echo "workflow_context failed for $owner_repo" >&2; exit 1; }
+eval "$CW_CTX"
 ```
 
 Fetch all issues in the epic milestone:
