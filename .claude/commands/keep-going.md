@@ -1,5 +1,7 @@
 # Keep Going — Session Keep-Alive
 
+> **Claude Code only.** This skill depends on Claude Code's `CronCreate`/`CronDelete` tools and has no portable equivalent (see `docs/harness-adapters.md`). Other harnesses run long workflows their own way, or omit this entirely — they must not assume it exists.
+
 Prevents Claude Code sessions from going idle during long-running workflows by scheduling a periodic nudge.
 
 ## Usage

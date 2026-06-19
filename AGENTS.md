@@ -11,6 +11,8 @@ Chief Wiggum is a harness-portable SDLC orchestration layer. Treat the workflow 
 
 ## Harness Adapters
 
+The Claude Code adapter invokes the portable workflows through Claude-only mechanisms (sub-agent `subagent_type`/`model`/`isolation` parameters, `Cron*` tools, slash-command syntax). `docs/harness-adapters.md` inventories these surfaces with file/line references and names the portable concept each stands for — read it before assuming a behavior is portable. Claude model names map to provider roles in `config/providers.json` where portability matters; `/keep-going` and the `Cron*` tools are Claude-only.
+
 - Claude Code: use `.claude/commands/` and `CLAUDE.md`.
 - Codex or other skill-aware harnesses: install portable skills from `skills/` and use any harness-specific metadata as optional UI/config data.
 - Claude interactive delegation: use `$claude-interactive-delegate` only as an optional provider configured through `config/providers.json`.
