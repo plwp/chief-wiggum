@@ -36,7 +36,10 @@ def _setup(tmp_path, *, design=None, mockups=("home.html",), screenshots=("home.
     return dj, mock_dir, shot_dir
 
 
-def _noop_git(*args, **kwargs):
+def _git_with_staged_changes(args, **kwargs):
+    # `git diff --cached --quiet` returns 1 when there ARE staged changes.
+    if "diff" in args and "--cached" in args:
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
     return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
 
@@ -131,6 +134,8 @@ def test_commit_failure_raises(tmp_path):
     dj, mock, shots = _setup(tmp_path)
 
     def git(args, **kwargs):
+        if "diff" in args and "--cached" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")  # changes staged
         if "commit" in args:
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="no identity")
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
@@ -144,9 +149,31 @@ def test_commit_failure_raises(tmp_path):
 def test_commit_success(tmp_path):
     dj, mock, shots = _setup(tmp_path)
     result = idesign.install_design_artifacts(
-        dj, mock, shots, tmp_path, commit=True, allow_dirty=True, git_runner=_noop_git
+        dj, mock, shots, tmp_path, commit=True, allow_dirty=True, git_runner=_git_with_staged_changes
     )
     assert result.committed is True
+
+
+def test_nothing_staged_is_not_a_commit(tmp_path):
+    dj, mock, shots = _setup(tmp_path)
+
+    def git(args, **kwargs):  # diff --cached --quiet -> 0 (nothing staged)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    result = idesign.install_design_artifacts(
+        dj, mock, shots, tmp_path, commit=True, allow_dirty=True, git_runner=git
+    )
+    assert result.committed is False
+    assert any("nothing to commit" in w for w in result.warnings)
+
+
+def test_asset_with_wrong_directory_is_broken(tmp_path):
+    # Basename matches an installed screenshot, but the directory is wrong.
+    dj, mock, shots = _setup(
+        tmp_path, design=_design(assets=[_ref_asset("docs/design/other/home.png")])
+    )
+    result = idesign.install_design_artifacts(dj, mock, shots, tmp_path, commit=False)
+    assert result.broken_assets == ["docs/design/other/home.png"]
 
 
 # --- CLI --------------------------------------------------------------------

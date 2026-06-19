@@ -75,6 +75,20 @@ def _find_markers(node, path: str = "") -> list[str]:
     return out
 
 
+def _assert_within(base: Path, child: Path) -> None:
+    """Ensure ``child`` (possibly not yet created) resolves under ``base``.
+
+    Walks to the deepest existing ancestor and checks it — catches a symlinked
+    ``docs`` / ``docs/design`` that would let writes escape the target repo.
+    """
+    base = base.resolve()
+    existing = child
+    while not existing.exists():
+        existing = existing.parent
+    if not existing.resolve().is_relative_to(base):
+        raise DesignInstallError(f"refusing to write outside the target repo: {child} -> {existing.resolve()}")
+
+
 def _reference_assets(design: dict) -> list[str]:
     assets = design.get("assets") or []
     refs = []
@@ -110,7 +124,11 @@ def install_design_artifacts(
         raise DesignInstallError("invalid design.json: " + "; ".join(errors[:5]))
 
     if commit and not dry_run and not allow_dirty:
-        if not gitops.is_clean(target_repo, runner=git_runner):
+        try:
+            clean = gitops.is_clean(target_repo, runner=git_runner)
+        except gitops.GitSafetyError as exc:
+            raise DesignInstallError(f"cannot check target repo state: {exc}") from exc
+        if not clean:
             raise DesignInstallError("target repo has uncommitted changes; pass allow_dirty to override")
 
     result = DesignInstallResult(design_dir=str(design_dir), dry_run=dry_run)
@@ -131,11 +149,12 @@ def install_design_artifacts(
     if not mockups:
         result.warnings.append("no HTML mockups found in the chosen direction")
 
-    # Verify every reference-screenshot asset path resolves to a screenshot we
-    # will install under docs/design/reference/.
-    installed_ref_names = {p.name for p in screenshots}
+    # Verify every reference-screenshot asset is the exact repo-relative path of
+    # a screenshot being installed — not just a basename match (which would let
+    # an absolute path, URL, traversal, or wrong directory slip through).
+    valid_paths = {f"docs/design/reference/{p.name}" for p in screenshots}
     for ref in _reference_assets(design):
-        if Path(ref).name not in installed_ref_names:
+        if ref not in valid_paths:
             result.broken_assets.append(ref)
     if result.broken_assets:
         result.warnings.append(
@@ -150,6 +169,7 @@ def install_design_artifacts(
         )
         return result
 
+    _assert_within(target_repo, design_dir)
     (design_dir / "mockups").mkdir(parents=True, exist_ok=True)
     (design_dir / "reference").mkdir(parents=True, exist_ok=True)
 
@@ -172,17 +192,23 @@ def install_design_artifacts(
         rc_add = git_runner(["git", "add", "docs/design"], cwd=str(target_repo), capture_output=True, text=True)
         if rc_add.returncode != 0:
             raise DesignInstallError(f"git add failed: {(rc_add.stderr or '').strip()}")
-        rc_commit = git_runner(
-            ["git", "commit", "-m", "design: add product design contract"],
+        # Reliable idempotency: if nothing under docs/design is staged, there's
+        # nothing to commit (regardless of unrelated dirty files under --allow-dirty).
+        staged = git_runner(
+            ["git", "diff", "--cached", "--quiet", "--", "docs/design"],
             cwd=str(target_repo), capture_output=True, text=True,
         )
-        if rc_commit.returncode == 0:
-            result.committed = True
+        if staged.returncode == 0:
+            result.warnings.append("nothing to commit (design already up to date)")
         else:
-            combined = ((rc_commit.stdout or "") + (rc_commit.stderr or "")).strip()
-            if "nothing to commit" in combined:
-                result.warnings.append("nothing to commit (design already up to date)")
+            rc_commit = git_runner(
+                ["git", "commit", "-m", "design: add product design contract"],
+                cwd=str(target_repo), capture_output=True, text=True,
+            )
+            if rc_commit.returncode == 0:
+                result.committed = True
             else:
+                combined = ((rc_commit.stdout or "") + (rc_commit.stderr or "")).strip()
                 raise DesignInstallError(f"git commit failed: {combined}")
 
     return result
