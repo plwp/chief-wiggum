@@ -9,6 +9,7 @@ should be tested code. This module produces a UX manifest the agent consumes.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -16,8 +17,11 @@ from pathlib import Path
 FRONTEND_EXTS = frozenset(
     {".tsx", ".jsx", ".ts", ".js", ".vue", ".svelte", ".css", ".scss", ".sass", ".less", ".html"}
 )
+# Strong, unambiguous frontend directory names only — generic segments like
+# "app"/"web"/"client"/"page"/"view" are excluded because they also appear in
+# backend paths (app/models.py, internal/web/server.go, pkg/client/http.go).
 FRONTEND_DIR_HINTS = frozenset(
-    {"components", "component", "pages", "page", "views", "view", "app", "ui", "styles", "style", "frontend", "client", "web"}
+    {"components", "pages", "views", "ui", "styles", "stylesheets", "frontend", "webapp"}
 )
 FRONTEND_LABELS = frozenset({"frontend", "ui", "ux", "design", "css", "styling"})
 
@@ -34,9 +38,15 @@ class FrontendImpact:
         return asdict(self)
 
 
+def _label_is_frontend(label: str) -> bool:
+    # Normalize separators (area/frontend, type: ui, frontend-impact) into tokens.
+    tokens = {t for t in re.split(r"[^a-z0-9]+", label.lower()) if t}
+    return bool(tokens & FRONTEND_LABELS)
+
+
 def detect_frontend_impact(changed_files: list[str], labels: list[str] | None = None) -> FrontendImpact:
     """Decide whether a ticket touches the frontend from its diff paths + labels."""
-    labels = [str(label).lower() for label in (labels or [])]
+    raw_labels = [str(label) for label in (labels or [])]
     frontend_files: list[str] = []
     for path in changed_files:
         p = Path(path)
@@ -47,7 +57,7 @@ def detect_frontend_impact(changed_files: list[str], labels: list[str] | None = 
     reasons: list[str] = []
     if frontend_files:
         reasons.append(f"{len(frontend_files)} frontend file(s) changed")
-    matched_labels = sorted(set(labels) & FRONTEND_LABELS)
+    matched_labels = sorted(label for label in raw_labels if _label_is_frontend(label))
     if matched_labels:
         reasons.append(f"frontend label(s): {', '.join(matched_labels)}")
 
@@ -70,11 +80,31 @@ class DesignBinding:
         return asdict(self)
 
 
+def _has_concrete_tokens(tokens: dict) -> bool:
+    """True if tokens hold real values (not just empty containers)."""
+    if not isinstance(tokens, dict) or not tokens:
+        return False
+    # A concrete primary colour is the strongest signal per the ui-spec schema.
+    primary = (tokens.get("colors") or {}).get("primary") if isinstance(tokens.get("colors"), dict) else None
+    if primary:
+        return True
+
+    def _any_leaf(node) -> bool:
+        if isinstance(node, dict):
+            return any(_any_leaf(v) for v in node.values())
+        if isinstance(node, list):
+            return any(_any_leaf(v) for v in node)
+        return bool(node) or node == 0
+
+    return _any_leaf(tokens)
+
+
 def check_design_tokens(ui_spec: dict | None) -> DesignBinding:
     """Check the ui-spec ``design`` section binds tokens + a component library."""
     design = (ui_spec or {}).get("design") or {}
     has_design = bool(design)
     tokens = design.get("tokens") or {}
+    has_tokens = _has_concrete_tokens(tokens)
     lib = design.get("component_library")
     lib_name = lib.get("name") if isinstance(lib, dict) else lib
 
@@ -82,14 +112,14 @@ def check_design_tokens(ui_spec: dict | None) -> DesignBinding:
     if not has_design:
         missing.append("design section")
     else:
-        if not tokens:
+        if not has_tokens:
             missing.append("tokens")
         if not lib_name:
             missing.append("component_library")
 
     return DesignBinding(
         has_design_section=has_design,
-        has_tokens=bool(tokens),
+        has_tokens=has_tokens,
         has_component_library=bool(lib_name),
         component_library=lib_name,
         missing=missing,
@@ -107,12 +137,15 @@ def discover_reference_screenshots(design_dir: str | Path | None, ui_spec: dict 
                 found.extend(
                     str(p) for p in sorted(d.iterdir()) if p.suffix.lower() in IMAGE_EXTS
                 )
-    # Asset references declared in the ui-spec design section.
+    # Reference-screenshot assets declared in the ui-spec design section. Only
+    # assets explicitly typed as reference-screenshot count — not logos/icons.
     design = (ui_spec or {}).get("design") or {}
     assets = design.get("assets") or []
     if isinstance(assets, list):
         for asset in assets:
-            ref = asset.get("path") if isinstance(asset, dict) else asset
+            if not isinstance(asset, dict) or asset.get("type") != "reference-screenshot":
+                continue
+            ref = asset.get("path")
             if isinstance(ref, str) and Path(ref).suffix.lower() in IMAGE_EXTS:
                 found.append(ref)
     # Deduplicate, preserve order.

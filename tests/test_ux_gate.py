@@ -33,6 +33,20 @@ def test_no_frontend_impact():
     assert impact.frontend_files == []
 
 
+def test_generic_dirs_are_not_frontend():
+    # app/web/client are ambiguous and must not trigger frontend on their own.
+    impact = ux.detect_frontend_impact(
+        ["app/models.py", "internal/web/server.go", "pkg/client/http.go"]
+    )
+    assert impact.is_frontend is False
+
+
+def test_normalized_label_formats_match():
+    for label in ["area/frontend", "type: ui", "frontend-impact"]:
+        impact = ux.detect_frontend_impact(["server/api.go"], labels=[label])
+        assert impact.is_frontend is True, label
+
+
 # --- design token binding ---------------------------------------------------
 
 
@@ -45,9 +59,16 @@ def test_design_tokens_present():
 
 
 def test_design_tokens_missing_library():
-    spec = {"design": {"tokens": {"colors": {}}}}
+    spec = {"design": {"tokens": {"colors": {"primary": "#000"}}}}
     db = ux.check_design_tokens(spec)
     assert "component_library" in db.missing
+
+
+def test_hollow_tokens_are_not_concrete():
+    # Empty token containers must not count as having tokens.
+    db = ux.check_design_tokens({"design": {"tokens": {"colors": {}}, "component_library": "x"}})
+    assert db.has_tokens is False
+    assert "tokens" in db.missing
 
 
 def test_no_design_section():
@@ -73,10 +94,18 @@ def test_discover_reference_screenshots_from_dir(tmp_path):
     assert len(found) == 1 and found[0].endswith("home.png")
 
 
-def test_discover_reference_screenshots_from_ui_spec_assets():
-    spec = {"design": {"assets": [{"path": "docs/design/mock.png"}, {"path": "notes.md"}]}}
+def test_discover_reference_screenshots_filters_by_asset_type():
+    spec = {
+        "design": {
+            "assets": [
+                {"type": "reference-screenshot", "path": "docs/design/home.png"},
+                {"type": "logo", "path": "docs/design/logo.png"},  # not a screenshot
+                {"path": "docs/design/untyped.png"},  # no type -> excluded
+            ]
+        }
+    }
     found = ux.discover_reference_screenshots(None, spec)
-    assert found == ["docs/design/mock.png"]
+    assert found == ["docs/design/home.png"]
 
 
 # --- capture planning -------------------------------------------------------
