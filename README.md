@@ -273,3 +273,14 @@ python3 scripts/consult_ai.py --role reviewer prompt.md --output-dir ~/.chief-wi
 ```
 
 Role config controls which providers are required or optional. Optional providers can fail or be disabled without blocking the quorum; required providers must be enabled and return successfully.
+
+## Helper CLI (`cw`)
+
+The portable workflow mechanics are tested Python helpers under `scripts/`. The `cw` facade lists and dispatches to them for discoverability — each command forwards its args to the matching `scripts/<helper>.py`, whose standalone entrypoint remains valid:
+
+```bash
+python3 scripts/cw.py                       # list helpers
+python3 scripts/cw.py context acme/app#42   # shared workflow context
+python3 scripts/cw.py plan-waves --edges '{"1": [], "2": [1]}'
+python3 scripts/cw.py run-verification --repo . --profile test,lint --dry-run
+```
