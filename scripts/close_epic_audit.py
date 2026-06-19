@@ -105,11 +105,14 @@ def run_close_epic_audit(
     target = Path(target_repo)
     manifest = CloseEpicManifest(epic_dir=str(epic), target_repo=str(target))
 
-    # Traceability coverage.
+    # Traceability coverage (isolated so a malformed file can't abort the audit).
     trace_file = epic / "traceability.md"
     if trace_file.is_file():
-        matrix = tr.parse_matrix(trace_file.read_text())
-        manifest.traceability = tr.audit(matrix)
+        try:
+            matrix = tr.parse_matrix(trace_file.read_text())
+            manifest.traceability = tr.audit(matrix)
+        except Exception as exc:  # noqa: BLE001
+            manifest.warnings.append(f"traceability audit failed: {exc}")
     else:
         manifest.warnings.append("no traceability.md found")
 
@@ -148,8 +151,11 @@ def run_close_epic_audit(
         except Exception as exc:  # noqa: BLE001
             manifest.warnings.append(f"stitch audit failed: {exc}")
 
-    # Mutation tooling availability.
-    manifest.mutation_tools_available = [t for t in mutation_tools if which(t)]
+    # Mutation tooling availability (isolated — an injected probe may raise).
+    try:
+        manifest.mutation_tools_available = [t for t in mutation_tools if which(t)]
+    except Exception as exc:  # noqa: BLE001
+        manifest.warnings.append(f"mutation-tool probe failed: {exc}")
     if not manifest.mutation_tools_available:
         manifest.warnings.append("no mutation-testing tool available (mutmut/cosmic-ray/stryker)")
 

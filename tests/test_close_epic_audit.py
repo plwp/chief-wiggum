@@ -137,6 +137,28 @@ def test_traceability_audit_included(tmp_path):
     assert m.traceability["total"] == 2
 
 
+def test_malformed_traceability_does_not_abort_audit(tmp_path, monkeypatch):
+    m_in = _epic(tmp_path)
+
+    def boom(_text):
+        raise ValueError("bad table")
+
+    monkeypatch.setattr(cea.tr, "parse_matrix", boom)
+    m = _audit(tmp_path, epic=m_in)
+    assert any("traceability audit failed" in w for w in m.warnings)
+    # The rest of the audit still ran.
+    assert m.verification is not None
+
+
+def test_mutation_probe_error_is_isolated(tmp_path):
+    def boom_which(_tool):
+        raise OSError("which exploded")
+
+    m = _audit(tmp_path, which=boom_which)
+    assert any("mutation-tool probe failed" in w for w in m.warnings)
+    assert m.verification is not None
+
+
 def test_render_markdown(tmp_path):
     m = _audit(tmp_path)
     md = m.render_markdown()
