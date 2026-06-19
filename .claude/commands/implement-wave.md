@@ -53,13 +53,16 @@ Load epic artifacts from `$EPIC_DIR/`:
 
 **If epic artifacts don't exist, STOP.** Run `/architect` first. Wave implementation without contracts is unsafe — parallel tickets will diverge on design decisions.
 
-**Scan for unresolved external unknowns** in the epic artifacts:
+**Build the artifact inventory** — one tested pass that discovers prose/model/design artifacts, sets `HAS_FORMAL_MODELS`/`HAS_UI_SPEC`/`HAS_TRANSITION_MAP`, validates model JSON, and runs the unresolved-marker scan:
 
 ```bash
-python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json > "$CW_TMP/unresolved.json"
+python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "$EPIC_SLUG" > "$CW_TMP/inventory.json"
+# Tickets gated by unresolved markers, as a comma-separated list for the planner.
+BLOCKED_TICKETS=$(jq -r '.blocked_tickets | join(",")' "$CW_TMP/inventory.json")
+HAS_FORMAL_MODELS=$(jq -r '.flags.HAS_FORMAL_MODELS' "$CW_TMP/inventory.json")
 ```
 
-Each finding carries the tickets it blocks (from `derived_from` provenance). Tickets listed in `blocked_tickets` must NOT be implemented on a guess — see Step 2 and Step 4.
+If `.flags.HAS_EPIC` is false, **STOP** (no contracts). Each unresolved finding carries the tickets it blocks (from `derived_from` provenance); tickets in `blocked_tickets` must NOT be implemented on a guess — they are passed to the planner in Step 2 and re-checked in Step 4.
 
 ### Step 2: Build the wave plan
 
