@@ -121,20 +121,18 @@ If browser-use screenshots exist, reference them.
 
 ### Step 4: Draft the PR
 
-Using the template at `$CW_HOME/templates/pr.md`, fill in:
+Assemble the PR body with the tested helper. It folds in the verification evidence, optional model-conformance/UX manifests, and a Mermaid diagram (themed with the shared palette automatically), validates the required sections, and can print the `gh pr create` command:
 
-- **Title**: From the ticket title or derived from changes. Keep under 70 characters.
-  - Format: `feat: Add dark mode toggle` or `fix: Resolve login crash on empty form`
+```bash
+python3 "$CW_HOME/scripts/draft_pr.py" \
+  --issue "$issue_number" --title "$title" --summary "$summary" \
+  --change "Change 1" --change "Change 2" \
+  --mermaid-file "$CW_TMP/architecture.mmd" \
+  --verification "$CW_TMP/verification.json" \
+  --base "$base_branch" --out "$CW_TMP/pr-body.md" --print-command
+```
 
-- **Summary**: 2-3 sentences on what was done and why.
-
-- **Architecture**: The mermaid diagrams from Step 2.
-
-- **Changes**: Bullet list of significant changes (not every line, but the meaningful ones).
-
-- **Test Evidence**: Test output and browser-use results.
-
-- **Review Checklist**: Pre-filled based on what was actually done.
+The Mermaid palette no longer needs to be hand-copied — `draft_pr.py` injects the `%%{init}%%` theme (use `--mermaid-sequence` for sequence diagrams). The diagram *content* is still yours to author. It exits non-zero if a required section (Summary, Changes, Test Evidence) is missing.
 
 ### Step 5: Preview and confirm
 
@@ -154,7 +152,7 @@ git push -u origin HEAD
 gh pr create \
   --repo "$owner_repo" \
   --title "$title" \
-  --body "$body" \
+  --body-file "$CW_TMP/pr-body.md" \
   --base "$base_branch"
 ```
 
