@@ -134,6 +134,13 @@ EOF
 
 The `<!-- DEPENDENCIES -->` block is an HTML comment (invisible in rendered markdown) containing one line per ticket in the format `#N: [#dep1, #dep2]`. Empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph — `/implement-wave` parses it to compute waves.
 
+Generate the block from a JSON adjacency map with the tested helper so the
+format stays consistent with the parser (deps are de-duped and sorted):
+
+```bash
+python3 "$CW_HOME/scripts/epic_metadata.py" format-deps '{"42": [], "43": [42], "44": [43]}'
+```
+
 Add all epic tickets to the milestone:
 ```bash
 gh issue edit $issue_number --repo "$owner_repo" --milestone "Epic: [Name]"
