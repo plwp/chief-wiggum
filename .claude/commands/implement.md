@@ -627,13 +627,16 @@ gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/p
 
 ### Step 13: Update traceability matrix
 
-If epic context exists, update the traceability matrix to reflect the tests written:
+If epic context exists, flip this ticket's rows from `pending` to `covered` with the tested updater (it parses, updates by ticket/AC, and re-renders the table in place — no brittle manual markdown edits):
 
 ```bash
-# Update status from "pending" to "covered" for each AC this ticket addressed
+python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" \
+  --ticket "$issue_number" --status covered
+# Narrow to specific rows with --ac "<criterion text>" when a ticket only
+# partially addresses its ACs.
 ```
 
-This can be a comment on the epic milestone or a commit to the traceability file, depending on whether other tickets are in flight.
+Commit the updated `traceability.md` (or comment on the epic milestone if other tickets are in flight).
 
 Close the loop:
 - Ask if the issue should be updated with a comment linking to the PR
