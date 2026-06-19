@@ -164,9 +164,19 @@ docs/design/
 
 The `reference-screenshot` asset paths in `design.json` must point at the committed `docs/design/reference/*.png` files, and `source.references` at `docs/design/mockups/`.
 
+Assemble and commit with the tested helper. It re-validates `design.json`, renders the styleguide, copies the chosen direction's mockups and the approved screenshots to the stable paths, **verifies every `reference-screenshot` asset points at an installed file**, reports surviving `TBD:` markers (and that they will gate frontend tickets), and commits — refusing on a dirty repo unless `--allow-dirty`:
+
 ```bash
-cd "$TARGET_DIR" && git add docs/design && git commit -m "design: add product design contract — <direction name>" && git push
+cd "$TARGET_DIR" && git checkout "$DEFAULT_BRANCH" && git pull --ff-only
+python3 "$CW_HOME/scripts/install_design_artifacts.py" \
+  --design-json "$DESIGN_TMP/design.json" \
+  --mockups "$DESIGN_TMP/directions/<chosen>" \
+  --screenshots "$DESIGN_TMP/reference" \
+  --target-repo "$TARGET_DIR"
+git push
 ```
+
+Use `--dry-run` to preview the manifest (copied files, `broken_assets`, `tbd_markers`) without writing, and `--no-commit` to assemble without committing. Any `broken_assets` in the output means an asset path doesn't match an installed screenshot — fix `design.json` before pushing.
 
 Report to the user:
 - The chosen direction and a one-line rationale
