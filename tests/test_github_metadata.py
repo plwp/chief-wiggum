@@ -61,6 +61,15 @@ def test_parse_tolerates_missing_hash_and_whitespace():
     assert meta.edges == {42: [41, 40]}
 
 
+@pytest.mark.parametrize("bad", ["[abc]", "[2x]", "[#42 typo]", "[42, ]", "[, 42]"])
+def test_parse_rejects_malformed_dep_tokens_without_inventing_edges(bad):
+    block = f"<!-- DEPENDENCIES\n#43: {bad}\n-->"
+    meta = github.parse_dependency_block(block)
+    # The whole line is skipped, not partially parsed.
+    assert 43 not in meta.edges
+    assert any("malformed dependency line" in w for w in meta.warnings)
+
+
 def test_parse_warns_on_duplicate_and_self_dependency():
     block = "<!-- DEPENDENCIES\n#42: [#42]\n#42: [#41]\n-->"
     meta = github.parse_dependency_block(block)
@@ -188,6 +197,19 @@ def test_dependency_graph_parses_found_milestone():
     )
     meta = github.dependency_graph("acme/app", "Epic: Name", runner=_runner(payload))
     assert meta.edges == {42: [], 43: [42], 44: [43, 42]}
+
+
+def test_list_milestones_flattens_slurped_pages():
+    # gh api --paginate --slurp returns a list of per-page arrays.
+    payload = json.dumps([[{"title": "A"}], [{"title": "B"}]])
+    milestones = github.list_milestones("acme/app", runner=_runner(payload))
+    assert [m.title for m in milestones] == ["A", "B"]
+
+
+def test_list_milestones_accepts_flat_array():
+    payload = json.dumps([{"title": "A"}, {"title": "B"}])
+    milestones = github.list_milestones("acme/app", runner=_runner(payload))
+    assert [m.title for m in milestones] == ["A", "B"]
 
 
 def test_run_gh_propagates_called_process_error():

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -74,9 +75,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(meta.to_dict(), indent=2))
         elif args.command == "format-deps":
             raw = json.loads(args.edges)
-            edges = {int(k): [int(d) for d in v] for k, v in raw.items()}
+            if not isinstance(raw, dict):
+                raise ValueError("format-deps expects a JSON object mapping number -> [deps]")
+            edges: dict[int, list[int]] = {}
+            for k, v in raw.items():
+                if not isinstance(v, list):
+                    raise ValueError(
+                        f"dependencies for #{k} must be a JSON array of issue numbers, got {v!r}"
+                    )
+                edges[int(k)] = [int(d) for d in v]
             print(github.format_dependency_block(edges))
-    except Exception as exc:  # noqa: BLE001 - surface gh/transport errors cleanly
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or str(exc)
+        print(f"Error: gh command failed: {detail}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - surface transport/parse errors cleanly
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0

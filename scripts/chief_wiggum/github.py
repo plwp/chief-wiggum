@@ -111,7 +111,26 @@ class DependencyGraphMetadata:
 
 _BLOCK_RE = re.compile(r"<!--\s*DEPENDENCIES\b(.*?)-->", re.DOTALL | re.IGNORECASE)
 _LINE_RE = re.compile(r"^#?(\d+)\s*:\s*\[(.*)\]$")
-_DEP_RE = re.compile(r"#?(\d+)")
+_DEP_TOKEN_RE = re.compile(r"^#?(\d+)$")
+
+
+def _parse_dep_tokens(deps_text: str) -> list[int] | None:
+    """Parse the comma-separated contents of ``[...]``.
+
+    Returns the list of issue numbers, or ``None`` if any token is malformed
+    (so the caller can warn and skip the whole line rather than silently
+    dropping or inventing edges).
+    """
+    deps_text = deps_text.strip()
+    if not deps_text:
+        return []
+    deps: list[int] = []
+    for token in deps_text.split(","):
+        match = _DEP_TOKEN_RE.match(token.strip())
+        if not match:
+            return None
+        deps.append(int(match.group(1)))
+    return deps
 
 
 def parse_dependency_block(description: str | None) -> DependencyGraphMetadata:
@@ -147,8 +166,10 @@ def parse_dependency_block(description: str | None) -> DependencyGraphMetadata:
             meta.warnings.append(f"malformed dependency line: {raw.strip()!r}")
             continue
         node = int(line_match.group(1))
-        deps_text = line_match.group(2).strip()
-        deps = [int(m.group(1)) for m in _DEP_RE.finditer(deps_text)] if deps_text else []
+        deps = _parse_dep_tokens(line_match.group(2))
+        if deps is None:
+            meta.warnings.append(f"malformed dependency line: {raw.strip()!r}")
+            continue
         if node in meta.edges:
             meta.warnings.append(f"duplicate dependency entry for #{node}")
         # Self-dependency is meaningless; drop it but warn.
@@ -254,12 +275,32 @@ def view_issue(repo: str, number: int, *, runner: Runner = subprocess.run) -> Is
     return issue_from_json(json.loads(out))
 
 
+def _flatten_pages(parsed: Any) -> list[dict]:
+    """Flatten ``gh api --paginate --slurp`` output into a single list.
+
+    With ``--slurp`` gh returns an array of per-page responses; for array
+    endpoints that is a list-of-lists. Accept either a flat list of objects or
+    a list of page-arrays and flatten one level so a single ``json.loads`` can
+    never hit "extra data" on multi-page results.
+    """
+    if not isinstance(parsed, list):
+        return []
+    flat: list[dict] = []
+    for item in parsed:
+        if isinstance(item, list):
+            flat.extend(item)
+        else:
+            flat.append(item)
+    return flat
+
+
 def list_milestones(repo: str, *, runner: Runner = subprocess.run) -> list[Milestone]:
     out = _run_gh(
-        ["api", f"repos/{repo}/milestones", "--paginate"],
+        ["api", f"repos/{repo}/milestones?per_page=100", "--paginate", "--slurp"],
         runner,
     )
-    return [milestone_from_json(d) for d in json.loads(out or "[]")]
+    pages = _flatten_pages(json.loads(out or "[]"))
+    return [milestone_from_json(d) for d in pages]
 
 
 def find_milestone(

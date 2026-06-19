@@ -115,31 +115,21 @@ Ask the user to confirm. Adjust if needed.
 
 ### Step 6: Create the GitHub milestone
 
-Create a milestone to track the epic. The milestone description **must** include a machine-readable dependency block so that `/implement-wave` can parse the DAG without brittle markdown parsing:
+Create a milestone to track the epic. The milestone description **must** include a machine-readable dependency block so that `/implement-wave` can parse the DAG without brittle markdown parsing.
+
+Generate the `<!-- DEPENDENCIES -->` block from a JSON adjacency map with the tested formatter (it de-dupes and sorts deps so the output always matches the parser), then embed it in the milestone description:
 
 ```bash
-gh api repos/$owner_repo/milestones -f title="Epic: [Name]" -f description="$(cat <<'EOF'
+DEPS=$(python3 "$CW_HOME/scripts/epic_metadata.py" format-deps '{"42": [], "43": [42], "44": [43], "45": [43], "46": [42]}')
+gh api repos/$owner_repo/milestones -f title="Epic: [Name]" -f description="$(cat <<EOF
 [Goal]
 
-<!-- DEPENDENCIES
-#42: []
-#43: [#42]
-#44: [#43]
-#45: [#43]
-#46: [#42]
--->
+$DEPS
 EOF
 )"
 ```
 
-The `<!-- DEPENDENCIES -->` block is an HTML comment (invisible in rendered markdown) containing one line per ticket in the format `#N: [#dep1, #dep2]`. Empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph — `/implement-wave` parses it to compute waves.
-
-Generate the block from a JSON adjacency map with the tested helper so the
-format stays consistent with the parser (deps are de-duped and sorted):
-
-```bash
-python3 "$CW_HOME/scripts/epic_metadata.py" format-deps '{"42": [], "43": [42], "44": [43]}'
-```
+The block is an HTML comment (invisible in rendered markdown) with one line per ticket in the format `#N: [#dep1, #dep2]`; empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph — `/implement-wave` parses it to compute waves. Do not hand-write it; always generate it with `format-deps` so it round-trips through the parser.
 
 Add all epic tickets to the milestone:
 ```bash
