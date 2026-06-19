@@ -57,9 +57,12 @@ Resolve the chief-wiggum install directory and the target repo path. **Never har
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
-DEFAULT_BRANCH=$(gh repo view "$owner_repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+# One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, ISSUE_NUMBER.
+# Capture first and check status so a resolver failure aborts instead of
+# continuing with unset/stale variables.
+CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo#$issue_number" --shell) || {
+  echo "workflow_context failed for $owner_repo#$issue_number" >&2; exit 1; }
+eval "$CW_CTX"
 ```
 
 **Important**: `$CW_TMP` uses a unique session ID so concurrent `/implement` runs don't clobber each other's temp files.
