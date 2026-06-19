@@ -1,6 +1,6 @@
 # Chief Wiggum
 
-Agentic SDLC orchestration for Claude Code. It turns vague tickets into a disciplined delivery loop: requirements capture, epic planning, architecture, test-first implementation, structured review, and PR-ready output.
+Harness-portable agentic SDLC orchestration. It turns vague tickets into a disciplined delivery loop: requirements capture, epic planning, architecture, test-first implementation, structured review, and PR-ready output.
 
 ## Why This Exists
 
@@ -17,6 +17,8 @@ Agentic SDLC orchestration for Claude Code. It turns vague tickets into a discip
 - **Shipping**: generate PRs with architecture context and supporting artifacts
 
 ## Quick Start
+
+### Claude Code
 
 ```bash
 # 1. Clone and verify
@@ -38,12 +40,16 @@ claude /plan-epic owner/repo
 claude /implement owner/repo#42
 ```
 
+### Portable Skills
+
 Harness-portable skills are stored under `skills/`. To install the Claude interactive delegate skill in Codex:
 
 ```bash
 ln -sfn ~/repos/chief-wiggum/skills/claude-interactive-delegate ~/.codex/skills/claude-interactive-delegate
 python3 ~/.codex/skills/claude-interactive-delegate/scripts/claude_delegate.py start
 ```
+
+For other harnesses, install or symlink `skills/<name>` into the harness's skill discovery path. See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 
 **Important**: Run skills from your target project directory, not from chief-wiggum itself.
 
@@ -190,7 +196,8 @@ sequenceDiagram
 %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#003f5c', 'primaryTextColor': '#fff', 'primaryBorderColor': '#2f4b7c', 'secondaryColor': '#665191', 'tertiaryColor': '#a05195', 'lineColor': '#2f4b7c', 'textColor': '#333'}}}%%
 graph TD
     subgraph "Chief Wiggum"
-        Skills[".claude/commands/"]:::entry
+        Core["Portable workflow core<br/>skills/ + templates/ + config/"]:::entry
+        ClaudeAdapter["Claude Code adapter<br/>.claude/commands/"]:::entry
         Scripts["scripts/"]:::modified
         Templates["templates/"]:::modified
     end
@@ -213,8 +220,9 @@ graph TD
         Whisper["Whisper"]:::existing
     end
 
-    Skills --> Scripts
-    Skills --> Templates
+    ClaudeAdapter --> Core
+    Core --> Scripts
+    Core --> Templates
     Scripts -->|consult_ai.py| Codex
     Scripts -->|consult_ai.py| Gemini
     Scripts -->|sub-agent| Opus

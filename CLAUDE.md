@@ -2,9 +2,11 @@
 
 Project-agnostic orchestration layer for AI-powered software development lifecycle.
 
+This file is the Claude Code adapter guide. Harness-neutral instructions live in `AGENTS.md`, and cross-harness install guidance lives in `docs/harnesses.md`.
+
 ## What This Repo Is
 
-A collection of Claude Code skills that orchestrate a full development pipeline at two levels:
+A collection of portable workflow contracts, scripts, and Claude Code slash-command adapters that orchestrate a full development pipeline at two levels:
 
 - **Product level**: `/design` — runs once per product between `/seed` and epic planning. Divergent rendered HTML mockups → human picks a direction → tokens mechanically extracted into `docs/design/` (design.json, approved mockups, reference screenshots), which `/architect` folds into epic ui-specs and the design-fidelity gate compares built screens against.
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
@@ -27,7 +29,7 @@ A collection of Claude Code skills that orchestrate a full development pipeline 
 - **The loop must look at the UI**: "Build + tests green" never closes a frontend ticket. `/architect` writes a visual design contract (ui-spec `design` section: tokens, component-library binding, reference screenshots); `/implement` Step 9 renders the app, screenshots it, and reviews against that contract
 - **Designs are chosen, not converged**: `/design` generates 3–4 deliberately distinct rendered directions and a human picks — one generated design converges to the model's default taste. Tokens are extracted mechanically from the approved mock's CSS (`scripts/extract_design.py`), so the contract can't drift from what was approved
 - **Human-in-the-loop**: User confirms at every checkpoint (requirements, approach, final review)
-- **Skills are markdown prompts**: They instruct Claude Code what to do, not executable code
+- **Workflow instructions are markdown prompts**: In Claude Code they are slash commands; in other harnesses they should be packaged as portable skills or native adapter metadata
 - **Scripts are Python**: All helpers are Python — no bash scripts
 - **Secrets never touch env vars**: API keys are fetched from macOS Keychain at call time by Python wrappers and passed directly to SDK constructors. They are never set as environment variables, never printed, never logged. This prevents secrets from leaking into conversation history.
 - **Same prompt for all AIs**: codex, gemini, and opus get identical context. Value is in natural divergence, not roleplay
@@ -154,7 +156,7 @@ python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 ## Repo Layout
 
 ```
-.claude/commands/    # Claude Code skills (the core of this repo)
+.claude/commands/    # Claude Code slash-command adapter
 skills/              # Harness-portable skills and bundled resources
 scripts/             # Python helpers called by skills
 templates/           # Issue, PR, review, and checklist templates
