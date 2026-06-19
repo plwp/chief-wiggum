@@ -145,6 +145,62 @@ def check_secret(name: str, required: bool = False):
             warn_count += 1
 
 
+# Map a provider (config/providers.json) to the dependency profile that installs it.
+PROVIDER_PROFILE = {
+    "codex": "codex",
+    "gemini": "gemini",
+    "gemini-vertex": "vertex",
+    "claude": "claude-code",
+    "claude-interactive": "claude-interactive",
+}
+
+# Map a workflow (slash command) to the dependency profiles it needs, including
+# the provider CLIs the workflow invokes directly (codex/gemini) and any
+# browser tooling. Additional provider roles passed to --role are merged on top.
+WORKFLOW_PROFILES = {
+    "setup": ["core"],
+    "seed": ["core", "codex", "gemini"],
+    "design": ["core", "browser-validation", "codex", "gemini"],
+    "architect": ["core", "codex", "gemini"],
+    "plan-epic": ["core"],
+    "implement": ["core", "browser-validation", "codex", "gemini"],
+    "implement-wave": ["core", "browser-validation", "codex", "gemini"],
+    "close-epic": ["core", "codex", "gemini"],
+    "create-issue": ["core"],
+    "ship": ["core"],
+    "transcribe": ["transcription"],
+    "stitch-audit": ["core", "gemini"],
+    "update": ["core"],
+    "keep-going": ["core"],
+}
+
+
+def role_profiles(role_name: str, config: dict) -> set[str]:
+    """Map a provider role to the dependency profiles for its providers."""
+    role = (config.get("roles") or {}).get(role_name)
+    if not role:
+        return set()
+    providers = list(role.get("required", [])) + list(role.get("optional", []))
+    return {PROVIDER_PROFILE[p] for p in providers if p in PROVIDER_PROFILE}
+
+
+def recommend_profiles(
+    workflows: list[str] | None = None,
+    roles: list[str] | None = None,
+    config: dict | None = None,
+) -> list[str]:
+    """Recommend the dependency profiles for the given workflows + provider roles."""
+    config = config or {}
+    profiles: set[str] = set()
+    for wf in workflows or []:
+        profiles.update(WORKFLOW_PROFILES.get(wf.lstrip("/"), ["core"]))
+    for role in roles or []:
+        profiles.update(role_profiles(role, config))
+    if not profiles:
+        profiles.add("core")
+    return sorted(profiles)
+
+
 def expand_profiles(profiles: list[str]) -> set[str]:
     expanded: set[str] = set()
 
@@ -195,7 +251,50 @@ def main():
         default=[],
         help="Provider profile to enforce. May be passed multiple times.",
     )
+    parser.add_argument(
+        "--recommend",
+        action="store_true",
+        help="Recommend profiles for the given --workflow/--role instead of checking.",
+    )
+    parser.add_argument(
+        "--workflow",
+        dest="rec_workflows",
+        action="append",
+        default=[],
+        help="Workflow (slash command) to recommend profiles for. Repeatable.",
+    )
+    parser.add_argument(
+        "--role",
+        dest="rec_roles",
+        action="append",
+        default=[],
+        help="Provider role to recommend profiles for. Repeatable.",
+    )
+    parser.add_argument("--list-profiles", action="store_true", help="List all dependency profiles.")
     args = parser.parse_args()
+
+    if args.list_profiles:
+        for profile in sorted(WORKFLOW_REQUIREMENTS):
+            print(profile)
+        return
+
+    if args.recommend:
+        try:
+            from providers import load_config
+
+            config = load_config()
+        except Exception:  # noqa: BLE001 - recommendation must work without config
+            config = {}
+        profiles = recommend_profiles(args.rec_workflows, args.rec_roles, config)
+        provider_profiles = set(PROVIDER_PROFILE.values())
+        print(
+            " ".join(
+                f"--provider {p}" if p in provider_profiles else f"--for {p}"
+                for p in profiles
+            )
+        )
+        return
+
     workflows = selected_profiles(args.workflows, args.providers)
 
     print("=== Chief Wiggum Dependency Check ===")

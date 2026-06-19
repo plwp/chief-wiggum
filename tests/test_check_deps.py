@@ -47,3 +47,66 @@ def test_vertex_profile_requires_vertex_packages_and_project():
     assert check_deps.is_required("pkgs", "langchain-google-vertexai", workflows)
     assert check_deps.is_required("pkgs", "google-cloud-aiplatform", workflows)
     assert check_deps.is_required("secrets", "GOOGLE_CLOUD_PROJECT", workflows)
+
+
+# --- profile recommendation (P2-16) -----------------------------------------
+
+REVIEWER_CONFIG = {
+    "roles": {
+        "reviewer": {"required": ["codex", "gemini"], "optional": ["claude-interactive"]},
+        "design_critic": {"required": ["gemini"], "optional": ["codex", "claude"]},
+    }
+}
+
+
+def test_role_profiles_maps_providers_to_profiles():
+    assert check_deps.role_profiles("reviewer", REVIEWER_CONFIG) == {
+        "codex", "gemini", "claude-interactive"
+    }
+
+
+def test_role_profiles_maps_claude_and_vertex():
+    config = {"roles": {"r": {"required": ["claude", "gemini-vertex"], "optional": []}}}
+    assert check_deps.role_profiles("r", config) == {"claude-code", "vertex"}
+
+
+def test_role_profiles_unknown_role_is_empty():
+    assert check_deps.role_profiles("nope", REVIEWER_CONFIG) == set()
+
+
+def test_recommend_for_implement_includes_browser_validation():
+    assert "browser-validation" in check_deps.recommend_profiles(workflows=["implement"])
+    assert "core" in check_deps.recommend_profiles(workflows=["implement"])
+
+
+def test_recommend_strips_leading_slash():
+    assert check_deps.recommend_profiles(workflows=["/transcribe"]) == ["transcription"]
+
+
+def test_recommend_combines_workflow_and_role():
+    profiles = check_deps.recommend_profiles(
+        workflows=["architect"], roles=["reviewer"], config=REVIEWER_CONFIG
+    )
+    assert set(profiles) == {"core", "codex", "gemini", "claude-interactive"}
+
+
+def test_recommend_defaults_to_core():
+    assert check_deps.recommend_profiles() == ["core"]
+
+
+def test_unknown_workflow_defaults_to_core():
+    assert check_deps.recommend_profiles(workflows=["mystery"]) == ["core"]
+
+
+def test_recommend_workflows_include_direct_provider_usage():
+    # Workflows that call codex/gemini directly must surface those profiles.
+    assert set(check_deps.recommend_profiles(workflows=["implement"])) >= {
+        "core", "browser-validation", "codex", "gemini"
+    }
+    assert "gemini" in check_deps.recommend_profiles(workflows=["stitch-audit"])
+    # /design runs Playwright for screenshots.
+    assert "browser-validation" in check_deps.recommend_profiles(workflows=["design"])
+
+
+def test_keep_going_workflow_is_mapped():
+    assert check_deps.recommend_profiles(workflows=["keep-going"]) == ["core"]
