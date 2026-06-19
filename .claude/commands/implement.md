@@ -243,7 +243,7 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The sub-agent MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
-- You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, run `git rev-parse --show-toplevel` to discover your working directory. Work ONLY in this directory. Do NOT `cd` to `$TARGET_REPO` — that is the main checkout, not your worktree. If `git rev-parse --show-toplevel` returns the same path as the main checkout, STOP and report the error. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the worktree root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 
@@ -267,7 +267,7 @@ Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_ty
 
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 11).
-- You are working in a **git worktree** (the same one from Step 5). Run `git rev-parse --show-toplevel` to confirm your working directory. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You are working in a **git worktree** (the same one from Step 5). Confirm isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**
