@@ -47,11 +47,19 @@ Verify all tickets are closed. If any are still open, report which ones and ask 
 
 ### Step 2: Traceability audit
 
-Read the traceability matrix. For each acceptance criterion:
+Parse and audit the traceability matrix with the tested helper. It returns per-status counts, coverage %, and the gap list (rows with no test, or `missing`/`failing` status):
 
-1. Check if a test exists that covers it (grep for test names or patterns referenced in the matrix)
-2. Run the specific test and verify it passes
-3. Mark status: `passing`, `failing`, `missing`
+```bash
+python3 "$CW_HOME/scripts/traceability.py" audit "$EPIC_DIR/traceability.md"
+```
+
+Then, for each acceptance criterion the audit flags as a gap (or still `covered` rather than `passing`):
+
+1. Run the specific test referenced in the row and verify it passes.
+2. Record the verified status with the updater (`passing` / `failing` / `missing`):
+   ```bash
+   python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" --ticket 43 --status passing --ac "Create order"
+   ```
 
 Report:
 ```markdown
