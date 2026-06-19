@@ -44,6 +44,8 @@ DESIGN_ARTIFACTS = (
     "mockups",
     "reference",
 )
+# Design artifacts that are directories rather than files.
+DESIGN_DIRS = frozenset({"mockups", "reference"})
 
 # scanner(targets) -> list of unresolved findings; blocked_fn(findings) -> {ticket: count}
 Scanner = Callable[[list[Path]], list]
@@ -69,7 +71,9 @@ class ArtifactInventory:
         return asdict(self)
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict(), indent=2)
+        # default=str keeps serialization robust to injected findings that may
+        # carry Path or other non-JSON-native values.
+        return json.dumps(self.to_dict(), indent=2, default=str)
 
     def render_markdown(self) -> str:
         lines = ["# Epic Artifact Inventory", ""]
@@ -97,8 +101,13 @@ class ArtifactInventory:
         return "\n".join(lines) + "\n"
 
 
-def _presence(base: Path, names: Iterable[str]) -> dict[str, bool]:
-    return {name: (base / name).exists() for name in names}
+def _presence(base: Path, names: Iterable[str], dir_names: Iterable[str] = ()) -> dict[str, bool]:
+    """Map each name to whether it exists *as the right kind* (file vs dir)."""
+    dir_set = set(dir_names)
+    return {
+        name: ((base / name).is_dir() if name in dir_set else (base / name).is_file())
+        for name in names
+    }
 
 
 def build_inventory(
@@ -119,18 +128,21 @@ def build_inventory(
         inv.epic_dir = str(epic_dir)
         inv.epic_dir_exists = epic_dir.exists()
 
+    # Models that are present AND parse — only these drive the HAS_* flags, so a
+    # malformed model can't make a downstream step read/generate from broken JSON.
+    valid_models: set[str] = set()
     if epic_dir and epic_dir.exists():
         inv.markdown_artifacts = _presence(epic_dir, EPIC_MARKDOWN)
         models_dir = epic_dir / "models"
         inv.model_artifacts = _presence(models_dir, EPIC_MODELS)
-        # Validate model JSON; a malformed model is present-but-broken.
         for name, present in inv.model_artifacts.items():
-            if present and name.endswith(".json"):
-                path = models_dir / name
-                try:
-                    json.loads(path.read_text())
-                except (json.JSONDecodeError, OSError) as exc:
-                    inv.warnings.append(f"malformed model artifact {name}: {exc}")
+            if not present:
+                continue
+            try:
+                json.loads((models_dir / name).read_text())
+                valid_models.add(name)
+            except (json.JSONDecodeError, OSError) as exc:
+                inv.warnings.append(f"malformed model artifact {name}: {exc}")
     else:
         inv.markdown_artifacts = dict.fromkeys(EPIC_MARKDOWN, False)
         inv.model_artifacts = dict.fromkeys(EPIC_MODELS, False)
@@ -139,7 +151,7 @@ def build_inventory(
 
     design_dir = repo / "docs" / "design"
     if design_dir.exists():
-        inv.design_artifacts = _presence(design_dir, DESIGN_ARTIFACTS)
+        inv.design_artifacts = _presence(design_dir, DESIGN_ARTIFACTS, DESIGN_DIRS)
     else:
         inv.design_artifacts = dict.fromkeys(DESIGN_ARTIFACTS, False)
 
@@ -147,18 +159,31 @@ def build_inventory(
     if epic_dir and epic_dir.exists():
         try:
             findings = scanner([epic_dir])
-            inv.unresolved = [_finding_to_dict(f) for f in findings]
-            blocked = blocked_fn(findings)
-            inv.blocked_tickets = sorted(_ticket_int(t) for t in blocked)
         except Exception as exc:  # noqa: BLE001 - never let a scan error abort discovery
             inv.warnings.append(f"unresolved scan failed: {exc}")
+            findings = []
+        inv.unresolved = [_finding_to_dict(f) for f in findings]
+        try:
+            blocked = blocked_fn(findings)
+        except Exception as exc:  # noqa: BLE001
+            inv.warnings.append(f"blocked-ticket computation failed: {exc}")
+            blocked = {}
+        # Parse each ref independently — one non-numeric ref (e.g. "AC-1") must
+        # not drop the rest of the blocked tickets.
+        parsed: list[int] = []
+        for ref in blocked:
+            try:
+                parsed.append(_ticket_int(ref))
+            except (ValueError, TypeError):
+                inv.warnings.append(f"unparseable blocked ticket ref: {ref!r}")
+        inv.blocked_tickets = sorted(set(parsed))
 
     inv.flags = {
         "HAS_EPIC": bool(epic_dir and epic_dir.exists()),
-        "HAS_FORMAL_MODELS": inv.model_artifacts.get("state-machines.json", False)
-        or inv.model_artifacts.get("contracts.json", False),
-        "HAS_UI_SPEC": inv.model_artifacts.get("ui-spec.json", False),
-        "HAS_TRANSITION_MAP": inv.model_artifacts.get("transition-map.json", False),
+        "HAS_FORMAL_MODELS": "state-machines.json" in valid_models
+        or "contracts.json" in valid_models,
+        "HAS_UI_SPEC": "ui-spec.json" in valid_models,
+        "HAS_TRANSITION_MAP": "transition-map.json" in valid_models,
         "HAS_DESIGN": inv.design_artifacts.get("design.json", False),
         "HAS_UNRESOLVED": bool(inv.unresolved),
     }

@@ -73,6 +73,40 @@ def test_malformed_model_json_warns_but_does_not_crash(tmp_path):
     assert any("malformed model artifact state-machines.json" in w for w in inv.warnings)
 
 
+def test_malformed_model_does_not_set_flag_true(tmp_path):
+    # A broken model must not advertise HAS_FORMAL_MODELS — downstream steps
+    # would try to read/generate from it and crash.
+    epic = _epic_dir(tmp_path)
+    (epic / "models" / "ui-spec.json").write_text("{not valid json")
+    inv = artifacts.build_inventory(tmp_path, epic_slug="order-lifecycle")
+    assert inv.flags["HAS_UI_SPEC"] is False
+
+
+def test_mixed_blocked_refs_keep_numeric_and_warn_on_rest(tmp_path):
+    epic = _epic_dir(tmp_path)
+
+    def scanner(_targets):
+        return []
+
+    def blocked(_findings):
+        return {"#43": 1, "AC-1": 1, "#7": 2}
+
+    inv = artifacts.build_inventory(
+        tmp_path, epic_slug="order-lifecycle", scanner=scanner, blocked_fn=blocked
+    )
+    assert inv.blocked_tickets == [7, 43]
+    assert any("unparseable blocked ticket ref" in w for w in inv.warnings)
+
+
+def test_directory_named_like_artifact_is_not_counted(tmp_path):
+    # A directory named ui-spec.json must not register as the model file.
+    epic = _epic_dir(tmp_path)
+    (epic / "models" / "ui-spec.json").mkdir()
+    inv = artifacts.build_inventory(tmp_path, epic_slug="order-lifecycle")
+    assert inv.model_artifacts["ui-spec.json"] is False
+    assert inv.flags["HAS_UI_SPEC"] is False
+
+
 # --- unresolved marker propagation ------------------------------------------
 
 
