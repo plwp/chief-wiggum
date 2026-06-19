@@ -45,6 +45,18 @@ gh issue list --repo "$owner_repo" --milestone "$epic_name" --state all --limit 
 
 Verify all tickets are closed. If any are still open, report which ones and ask the user whether to proceed with a partial close or wait.
 
+### Step 1b: Run the deterministic audit
+
+Run the audit orchestrator once up front. It coordinates the deterministic audits — traceability coverage, unresolved markers + blocked tickets, transition-map verification (when a state machine model exists), optional stitch findings, mutation-tooling availability, and the integration test run — and writes `close-epic-manifest.json` + `close-epic-report.md`. **It exits non-zero if the epic cannot be closed** (integration tests failed, or unresolved markers still block tickets):
+
+```bash
+python3 "$CW_HOME/scripts/close_epic_audit.py" \
+  --epic-dir "$EPIC_DIR" --target-repo "$TARGET_REPO" \
+  --output-dir "$CW_TMP/close-epic"
+```
+
+Steps 2 (traceability), 2b (transition map), 2c (unresolved), 4 (mutation tooling), 7, and 11 **consume `$CW_TMP/close-epic/close-epic-manifest.json`** rather than recomputing — the exploratory parts (cross-surface consistency, UX flow, retrospective) still launch agents, but the audit state is structured. A `blocked: true` manifest is a workflow-level stop: resolve the failure before closing.
+
 ### Step 2: Traceability audit
 
 Parse and audit the traceability matrix with the tested helper. It returns per-status counts, coverage %, and the gap list (rows with no test, or `missing`/`failing` status):
