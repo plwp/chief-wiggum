@@ -225,18 +225,13 @@ Present a concise summary to the user. If there are open questions that genuinel
 **If formal models exist** (`$HAS_FORMAL_MODELS == true`), generate mechanical test artifacts BEFORE launching the sub-agent. The orchestrator does this directly — it's a deterministic script call, not LLM work:
 
 ```bash
-# Generate test paths and plan from state machine model
-python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/state-machines.json" --view test --output "$TICKET_TMP/"
-
-# Generate contract assertion templates
-python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/contracts.json" --view test --output "$TICKET_TMP/"
-
-# Generate Hypothesis test skeleton (if not already in models dir)
-python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/state-machines.json" --format hypothesis > "$TICKET_TMP/test_state_machine_skeleton.py"
-
-# Generate guard clause templates for the target language
-python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/contracts.json" --format guards-py > "$TICKET_TMP/guard_templates.py"
+# One idempotent call generates every model-derived test artifact (test paths,
+# test plan, contract assertions, Hypothesis skeleton, guard templates) and a
+# manifest, for whichever models exist in $MODELS_DIR.
+python3 "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" --output "$TICKET_TMP/"
 ```
+
+The manifest (`$TICKET_TMP/formal-artifacts-manifest.json`) lists the generated files and per-model status; a non-zero exit means a present model failed validation — fix the model before building on it.
 
 These mechanically generated artifacts are passed to the sub-agent as inputs — the sub-agent adapts them to the target repo's test framework and conventions, not invents tests from scratch.
 
@@ -244,7 +239,7 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - The implementation plan from Step 4
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
-- **If formal models exist**: the generated test plan (`$TICKET_TMP/test-plan.md`), test paths (`$TICKET_TMP/test-paths.json`), contract assertions (`$TICKET_TMP/contract-assertions.md`), Hypothesis skeleton (`$TICKET_TMP/test_state_machine_skeleton.py`), and guard templates (`$TICKET_TMP/guard_templates.py`)
+- **If formal models exist**: the generated test plan (`$TICKET_TMP/test-plan.md`), test paths (`$TICKET_TMP/test-paths.json`), contract assertions (`$TICKET_TMP/contract-assertions.md`), Hypothesis skeleton (`$TICKET_TMP/test_state_machine.py`), and guard templates (`$TICKET_TMP/guards.py`) — all listed in `$TICKET_TMP/formal-artifacts-manifest.json`
 - **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The sub-agent MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).

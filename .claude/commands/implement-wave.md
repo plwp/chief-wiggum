@@ -192,25 +192,15 @@ Revised Wave 3: #45, #46
 
 ```bash
 if [ "$HAS_FORMAL_MODELS" = true ]; then
-  mkdir -p "$CW_TMP/formal-test-artifacts"
-
-  # Test paths and plan from state machine model
-  python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/state-machines.json" --view test \
+  # One idempotent call generates every model-derived test artifact (test paths,
+  # test plan, contract assertions, Hypothesis skeleton, guard templates) plus a
+  # manifest, for whichever models exist in $MODELS_DIR.
+  python3 "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" \
     --output "$CW_TMP/formal-test-artifacts/"
-
-  # Contract assertion templates
-  python3 "$CW_HOME/scripts/render_models.py" "$MODELS_DIR/contracts.json" --view test \
-    --output "$CW_TMP/formal-test-artifacts/"
-
-  # Guard clause templates for the target language
-  python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/contracts.json" \
-    --format guards-py > "$CW_TMP/formal-test-artifacts/guard_templates.py" 2>/dev/null || true
-
-  # Hypothesis state machine skeleton
-  python3 "$CW_HOME/scripts/formal_models.py" generate "$MODELS_DIR/state-machines.json" \
-    --format hypothesis > "$CW_TMP/formal-test-artifacts/test_state_machine_skeleton.py" 2>/dev/null || true
 fi
 ```
+
+The shared `$CW_TMP/formal-test-artifacts/formal-artifacts-manifest.json` lists the generated files; every sub-agent in the wave adapts the same artifacts to its ticket.
 
 These artifacts are shared across all tickets in the wave — each sub-agent receives the same test plan and adapts the relevant portions for its ticket.
 
