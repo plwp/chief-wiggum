@@ -49,6 +49,15 @@ def test_diff_with_braces_is_not_format_interpreted():
     assert "{ return {a: 1}; }" in out
 
 
+def test_single_pass_does_not_rescan_injected_values():
+    # A ticket title containing a later token must NOT get the diff injected.
+    ticket = _ticket(title="see {{DIFF}} below")
+    out = review.assemble_review_prompt(TEMPLATE, ticket, "REAL_DIFF_BODY")
+    # The literal token survives in the title line; the diff appears once.
+    assert "Ticket: see {{DIFF}} below" in out
+    assert out.count("REAL_DIFF_BODY") == 1
+
+
 def test_checklist_and_epic_sections_appended():
     out = review.assemble_review_prompt(
         TEMPLATE, _ticket(), "d",

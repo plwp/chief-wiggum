@@ -12,6 +12,7 @@ unit-testable; git and provider execution are injected.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -68,18 +69,22 @@ def assemble_review_prompt(
 ) -> str:
     """Substitute the review template and append the checklist + epic context.
 
-    Uses plain ``str.replace`` (not ``str.format``) so braces in the diff are
-    never interpreted as format fields.
+    Substitution is **single-pass** (one regex sweep over the template), so a
+    value that itself contains a token name (e.g. a ticket body mentioning
+    ``{{DIFF}}``) is never re-scanned and replaced. Braces in the diff are not
+    interpreted as format fields.
     """
-    prompt = template
     replacements = {
-        "{{TICKET_TITLE}}": ticket.title or "(untitled)",
-        "{{TICKET_DESCRIPTION}}": ticket.body or "(no description)",
-        "{{ACCEPTANCE_CRITERIA}}": _format_acceptance(ticket.acceptance_criteria),
-        "{{DIFF}}": diff,
+        "TICKET_TITLE": ticket.title or "(untitled)",
+        "TICKET_DESCRIPTION": ticket.body or "(no description)",
+        "ACCEPTANCE_CRITERIA": _format_acceptance(ticket.acceptance_criteria),
+        "DIFF": diff,
     }
-    for token, value in replacements.items():
-        prompt = prompt.replace(token, value)
+    prompt = re.sub(
+        r"\{\{(TICKET_TITLE|TICKET_DESCRIPTION|ACCEPTANCE_CRITERIA|DIFF)\}\}",
+        lambda m: replacements[m.group(1)],
+        template,
+    )
 
     extra: list[str] = []
     for title, content in epic_sections:
