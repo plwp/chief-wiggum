@@ -11,6 +11,7 @@ helpers.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,8 +45,10 @@ def mermaid_theme_directive(*, sequence: bool = False) -> str:
     palette = {"theme": PALETTE["theme"], "themeVariables": dict(PALETTE["themeVariables"])}
     if sequence:
         palette["themeVariables"].update(_SEQUENCE_EXTRA)
-    # Mermaid expects single-quoted JSON-ish; json.dumps then swap quotes.
-    body = json.dumps(palette).replace('"', "'")
+    # Mermaid expects single-quoted JSON-ish. Escape any pre-existing single
+    # quotes in values before swapping double->single so a value containing an
+    # apostrophe can't break out of the init object.
+    body = json.dumps(palette).replace("'", "\\'").replace('"', "'")
     return f"%%{{init: {body}}}%%"
 
 
@@ -140,8 +143,17 @@ def build_pr_body(
 
 
 def validate_sections(body: str, required: tuple[str, ...] = REQUIRED_SECTIONS) -> list[str]:
-    """Return the names of any required ``## `` sections missing from ``body``."""
-    return [name for name in required if f"## {name}" not in body]
+    """Return the names of any required ``## `` sections missing from ``body``.
+
+    Matches exact ``## <Name>`` heading lines (not substrings), so ``### Summary``
+    or ``## Summary Details`` don't satisfy a required ``Summary`` section.
+    """
+    missing = []
+    for name in required:
+        pattern = re.compile(rf"^##\s+{re.escape(name)}\s*$", re.MULTILINE)
+        if not pattern.search(body):
+            missing.append(name)
+    return missing
 
 
 def suggest_title(issue_title: str | None, *, issue: int | None = None, prefix: str = "feat") -> str:

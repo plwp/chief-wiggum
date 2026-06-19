@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -84,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         title = shipping.suggest_title(args.title, issue=args.issue)
         body_file = args.out or "<pr-body-file>"
         print("\n# Suggested command:")
-        print(" ".join(shipping.gh_pr_create_command(title, body_file, base=args.base)))
+        print(shlex.join(shipping.gh_pr_create_command(title, body_file, base=args.base)))
     return 0
 
 

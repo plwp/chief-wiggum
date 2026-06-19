@@ -37,6 +37,12 @@ def test_validate_sections_flags_missing():
     assert shipping.validate_sections("## Summary\n## Changes") == ["Test Evidence"]
 
 
+def test_validate_sections_rejects_substring_false_positives():
+    # ### Summary and ## Summary Details must NOT satisfy a required Summary.
+    body = "### Summary\n## Summary Details\n## Changes\n## Test Evidence"
+    assert "Summary" in shipping.validate_sections(body)
+
+
 def test_build_pr_body_has_all_required_sections():
     body = shipping.build_pr_body(issue=1, summary="x", changes=["a"])
     assert shipping.validate_sections(body) == []
@@ -116,6 +122,21 @@ def test_suggest_title_adds_issue_suffix():
 def test_gh_pr_create_command():
     cmd = shipping.gh_pr_create_command("t", "/tmp/body.md", base="main", draft=True)
     assert cmd == ["gh", "pr", "create", "--title", "t", "--body-file", "/tmp/body.md", "--base", "main", "--draft"]
+
+
+def test_mermaid_directive_escapes_apostrophe_values():
+    # A theme value with an apostrophe must not break out of the single-quoted object.
+    import chief_wiggum.shipping as s
+
+    monkey = dict(s.PALETTE["themeVariables"])
+    monkey["primaryColor"] = "it's-navy"
+    saved = s.PALETTE["themeVariables"]
+    s.PALETTE["themeVariables"] = monkey
+    try:
+        d = s.mermaid_theme_directive()
+        assert "it\\'s-navy" in d
+    finally:
+        s.PALETTE["themeVariables"] = saved
 
 
 # --- CLI --------------------------------------------------------------------
