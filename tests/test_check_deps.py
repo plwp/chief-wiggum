@@ -96,3 +96,17 @@ def test_recommend_defaults_to_core():
 
 def test_unknown_workflow_defaults_to_core():
     assert check_deps.recommend_profiles(workflows=["mystery"]) == ["core"]
+
+
+def test_recommend_workflows_include_direct_provider_usage():
+    # Workflows that call codex/gemini directly must surface those profiles.
+    assert set(check_deps.recommend_profiles(workflows=["implement"])) >= {
+        "core", "browser-validation", "codex", "gemini"
+    }
+    assert "gemini" in check_deps.recommend_profiles(workflows=["stitch-audit"])
+    # /design runs Playwright for screenshots.
+    assert "browser-validation" in check_deps.recommend_profiles(workflows=["design"])
+
+
+def test_keep_going_workflow_is_mapped():
+    assert check_deps.recommend_profiles(workflows=["keep-going"]) == ["core"]

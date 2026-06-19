@@ -154,22 +154,24 @@ PROVIDER_PROFILE = {
     "claude-interactive": "claude-interactive",
 }
 
-# Map a workflow (slash command) to the dependency profiles it needs (beyond the
-# provider roles it invokes, which are resolved separately).
+# Map a workflow (slash command) to the dependency profiles it needs, including
+# the provider CLIs the workflow invokes directly (codex/gemini) and any
+# browser tooling. Additional provider roles passed to --role are merged on top.
 WORKFLOW_PROFILES = {
     "setup": ["core"],
-    "seed": ["core"],
-    "design": ["core"],
-    "architect": ["core"],
+    "seed": ["core", "codex", "gemini"],
+    "design": ["core", "browser-validation", "codex", "gemini"],
+    "architect": ["core", "codex", "gemini"],
     "plan-epic": ["core"],
-    "implement": ["core", "browser-validation"],
-    "implement-wave": ["core", "browser-validation"],
-    "close-epic": ["core"],
+    "implement": ["core", "browser-validation", "codex", "gemini"],
+    "implement-wave": ["core", "browser-validation", "codex", "gemini"],
+    "close-epic": ["core", "codex", "gemini"],
     "create-issue": ["core"],
     "ship": ["core"],
     "transcribe": ["transcription"],
-    "stitch-audit": ["core"],
+    "stitch-audit": ["core", "gemini"],
     "update": ["core"],
+    "keep-going": ["core"],
 }
 
 
