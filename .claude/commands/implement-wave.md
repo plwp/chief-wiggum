@@ -81,18 +81,20 @@ Parse the dependency graph from the milestone description. `/plan-epic` writes a
 -->
 ```
 
-Fetch the milestone description and extract this block:
+Parse the block into an adjacency list with the tested helper (no brittle inline parsing):
 
 ```bash
-MILESTONE_DESC=$(gh api "repos/$owner_repo/milestones" --jq ".[] | select(.title == \"$epic_name\") | .description")
+python3 "$CW_HOME/scripts/epic_metadata.py" deps "$owner_repo" --milestone "$epic_name"
 ```
 
-Parse each line inside `<!-- DEPENDENCIES ... -->` to build the adjacency list:
+This emits JSON like:
+```json
+{ "edges": { "42": [], "43": [42], "44": [43] }, "warnings": [], "has_block": true }
 ```
-{ 42: [], 43: [42], 44: [43], 45: [43], 46: [42] }
-```
+where `edges[N]` lists the issues `#N` depends on. Malformed lines and a missing
+milestone surface in `warnings` rather than crashing.
 
-**If the DEPENDENCIES block is missing**, fall back to parsing `depends on #N` annotations from the implementation order in the milestone description or issue bodies. Warn the user that this is less reliable and suggest re-running `/plan-epic` to add structured metadata.
+**If `has_block` is false** (the DEPENDENCIES block is missing), fall back to parsing `depends on #N` annotations from the implementation order in the milestone description or issue bodies. Warn the user that this is less reliable and suggest re-running `/plan-epic` to add structured metadata.
 
 Compute waves using topological sort:
 - **Wave 1**: All tickets with zero unmet dependencies (no `depends on` or all dependencies already closed)
