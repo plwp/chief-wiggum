@@ -74,7 +74,7 @@ TICKET_TMP="$CW_TMP/$issue_number"
 mkdir -p "$TICKET_TMP"
 ```
 
-All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemini.md`, `approach-opus.md`, `implementation-plan.md`, `review-prompt.md`, `review-codex.md`, `review-gemini.md`, `impl-diff.txt`) go in `$TICKET_TMP`, not `$CW_TMP`. Shared session files (e.g., epic context) remain in `$CW_TMP`.
+All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemini.md`, `approach-opus.md`, `implementation-plan.md`, `review-prompt.md`, `reviews/reviewer-*.md`, `impl-diff.txt`) go in `$TICKET_TMP`, not `$CW_TMP`. Shared session files (e.g., epic context) remain in `$CW_TMP`.
 
 **Load epic context** (if this ticket belongs to an epic):
 
@@ -314,20 +314,19 @@ The sub-agent should:
 
 2. Prepare a review prompt using `$CW_HOME/templates/review-prompt.md` as a base. Read the template, replace the `{{TICKET_TITLE}}`, `{{TICKET_DESCRIPTION}}`, `{{ACCEPTANCE_CRITERIA}}`, and `{{DIFF}}` placeholders with actual values. **Also include the structured checklist** from `$CW_HOME/templates/review-checklist.md` and the epic contracts/invariants if they exist. Write to `$TICKET_TMP/review-prompt.md`.
 
-3. Run external AI reviews in parallel:
+3. Run external AI reviews as a quorum (parallel, with retries + output validation):
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/review-prompt.md -o $TICKET_TMP/review-codex.md --cwd "$(git rev-parse --show-toplevel)" &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/review-prompt.md -o $TICKET_TMP/review-gemini.md --cwd "$(git rev-parse --show-toplevel)" &
-   wait
+   python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $TICKET_TMP/review-prompt.md \
+     --output-dir "$TICKET_TMP/reviews" --cwd "$(git rev-parse --show-toplevel)"
    ```
 
-   **Validate review output**: After `wait`, check that both `review-codex.md` and `review-gemini.md` exist and contain substantive output (>100 bytes, not starting with "Timeout:" or "Error:"). Retry any failed consultation up to 2 times. If a consultation still fails after retries, proceed with available reviews but note the gap in the synthesis.
+   The `reviewer` role runs codex + gemini in parallel, **retries failed required providers**, **validates** each response (non-empty, not starting with `Timeout:`/`Error:`), and writes `$TICKET_TMP/reviews/reviewer-manifest.json` plus `reviewer-<provider>.md`. If the quorum fails (a required provider never produced valid output) the command exits non-zero — note the gap and proceed with the available reviews.
 
 4. Perform its own review of the diff.
 
 5. Synthesize using:
    ```bash
-   python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/review-codex.md $TICKET_TMP/review-gemini.md
+   python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/reviews/reviewer-codex.md $TICKET_TMP/reviews/reviewer-gemini.md
    ```
 
 6. Return a concise summary categorising each piece of feedback:

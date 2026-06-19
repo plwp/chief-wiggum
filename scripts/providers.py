@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +139,14 @@ def validate_config(
         for provider_name in role.required + role.optional:
             if provider_name not in providers:
                 errors.append(f"role {role_name} references unknown provider {provider_name}")
+        # A provider referenced twice (within a list or across required+optional)
+        # would run twice and clobber its own output file.
+        all_refs = list(role.required) + list(role.optional)
+        seen: set[str] = set()
+        for name in all_refs:
+            if name in seen:
+                errors.append(f"role {role_name} references provider {name} more than once")
+            seen.add(name)
     for provider in providers.values():
         if provider.type == "tool" and not provider.tool:
             errors.append(f"provider {provider.name} has type=tool but no tool")
@@ -155,3 +165,166 @@ def validate_config(
         if provider.type not in {"tool", "delegate"}:
             errors.append(f"provider {provider.name} has unsupported type {provider.type}")
     return errors
+
+
+# --- parallel quorum execution ----------------------------------------------
+
+# Output beginning with one of these markers is a failure sentinel written by a
+# failed provider call, not a substantive response.
+INVALID_MARKERS = ("Timeout:", "Error:")
+
+# An ``execute`` callable runs a single provider and returns its response text.
+# It is injected so the quorum runner is testable without real provider calls.
+ExecuteFn = Callable[[Provider], str]
+
+
+@dataclass
+class ProviderResult:
+    name: str
+    required: bool
+    status: str  # "ok" | "failed"
+    path: str | None = None
+    attempts: int = 0
+    error: str | None = None
+    error_path: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "required": self.required,
+            "status": self.status,
+            "path": self.path,
+            "attempts": self.attempts,
+            "error": self.error,
+            "error_path": self.error_path,
+        }
+
+
+@dataclass
+class QuorumManifest:
+    role: str
+    results: list[ProviderResult] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """True iff every required provider produced valid output."""
+        return all(r.status == "ok" for r in self.results if r.required)
+
+    @property
+    def failed_required(self) -> list[str]:
+        return [r.name for r in self.results if r.required and r.status != "ok"]
+
+    def to_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "ok": self.ok,
+            "failed_required": self.failed_required,
+            "results": [r.to_dict() for r in self.results],
+        }
+
+
+def validate_output(text: str | None, *, min_bytes: int = 20) -> str | None:
+    """Return a failure reason if ``text`` is not a substantive response, else None."""
+    if text is None:
+        return "no output"
+    stripped = text.strip()
+    if len(stripped.encode("utf-8")) < min_bytes:
+        return f"output too short (<{min_bytes} bytes)"
+    for marker in INVALID_MARKERS:
+        if stripped.startswith(marker):
+            return f"output starts with failure marker {marker!r}"
+    return None
+
+
+def _run_one_provider(
+    provider: Provider,
+    required: bool,
+    execute: ExecuteFn,
+    output_dir: Path,
+    role_name: str,
+    max_attempts: int,
+    min_bytes: int,
+) -> ProviderResult:
+    # Clear any stale artifacts from a previous run so a failure can't leave an
+    # old success file (or vice versa) for a later reader to pick up.
+    ok_path = output_dir / f"{role_name}-{provider.name}.md"
+    err_path = output_dir / f"{role_name}-{provider.name}.error.md"
+    ok_path.unlink(missing_ok=True)
+    err_path.unlink(missing_ok=True)
+
+    # Only required providers are retried; an optional provider gets one shot.
+    attempts_allowed = max(1, max_attempts) if required else 1
+    last_error: str | None = None
+    attempt = 0
+    for attempt in range(1, attempts_allowed + 1):
+        try:
+            text = execute(provider)
+        except Exception as exc:  # noqa: BLE001 - any provider failure is retryable
+            last_error = f"execution failed: {exc}"
+            continue
+        problem = validate_output(text, min_bytes=min_bytes)
+        if problem:
+            last_error = problem
+            continue
+        ok_path.write_text(text)
+        return ProviderResult(provider.name, required, "ok", str(ok_path), attempt, None)
+
+    err_path.write_text(last_error or "unknown error")
+    return ProviderResult(
+        provider.name, required, "failed", None, attempt, last_error, str(err_path)
+    )
+
+
+def run_role_quorum(
+    plan: RolePlan,
+    execute: ExecuteFn,
+    output_dir: str | Path,
+    *,
+    max_attempts: int = 2,
+    min_bytes: int = 20,
+    max_workers: int | None = None,
+    write_manifest: bool = True,
+) -> QuorumManifest:
+    """Run a role's providers concurrently with retries and output validation.
+
+    Required and optional providers run in parallel. Required providers are
+    retried up to ``max_attempts`` times; optional providers fail without
+    blocking the quorum. A ``{role}-manifest.json`` records per-provider status.
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Required first; dedupe by name (a provider listed twice, or in both
+    # required and optional, must not run twice and clobber its own file).
+    tasks: list[tuple[Provider, bool]] = []
+    seen: set[str] = set()
+    for provider, required in [(p, True) for p in plan.required] + [(p, False) for p in plan.optional]:
+        if provider.name in seen:
+            continue
+        seen.add(provider.name)
+        tasks.append((provider, required))
+    order = {p.name: i for i, (p, _) in enumerate(tasks)}
+
+    results: list[ProviderResult] = []
+    if tasks:
+        workers = max_workers or len(tasks)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(
+                    _run_one_provider,
+                    provider, required, execute, out, plan.role.name, max_attempts, min_bytes,
+                )
+                for provider, required in tasks
+            ]
+            for fut in concurrent.futures.as_completed(futures):
+                results.append(fut.result())
+
+    # Deterministic order: required (config order) then optional.
+    results.sort(key=lambda r: order.get(r.name, 1_000))
+    manifest = QuorumManifest(plan.role.name, results)
+
+    if write_manifest:
+        (out / f"{plan.role.name}-manifest.json").write_text(
+            json.dumps(manifest.to_dict(), indent=2)
+        )
+    return manifest

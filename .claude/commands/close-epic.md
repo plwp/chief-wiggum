@@ -327,15 +327,14 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
   5. What is the highest-risk area of this epic that needs the most attention before shipping?
   6. Are there any gaps the automated checks could not cover?
 
-Run Codex and Gemini in parallel:
+Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" codex $CW_TMP/close-epic-review-prompt.md -o $CW_TMP/close-review-codex.md --cwd "$TARGET_REPO" &
-python3 "$CW_HOME/scripts/consult_ai.py" gemini $CW_TMP/close-epic-review-prompt.md -o $CW_TMP/close-review-gemini.md --cwd "$TARGET_REPO" &
-wait
+python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/close-epic-review-prompt.md \
+  --output-dir "$CW_TMP/close-review" --cwd "$TARGET_REPO"
 ```
 
-Synthesise both reviews. Categorise findings:
+Read `$CW_TMP/close-review/reviewer-codex.md` and `reviewer-gemini.md` (status in `reviewer-manifest.json`). Synthesise both reviews. Categorise findings:
 - **Consensus risks**: Both AIs flagged the same area — high confidence, address before shipping
 - **Unique insights**: Only one AI flagged — investigate, may be a genuine blind spot or a false positive
 - **Recommendations**: Suggestions for the retrospective and future epics
