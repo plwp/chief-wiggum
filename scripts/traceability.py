@@ -65,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if n == 0:
             print(f"Warning: no rows matched ticket #{args.ticket}", file=sys.stderr)
-        path.write_text(tr.render_markdown(matrix))
+        # Rewrite only the table span, preserving surrounding prose.
+        path.write_text(tr.replace_table(path.read_text(), matrix))
         print(f"OK: updated {n} row(s) to {args.status}")
     return 0
 

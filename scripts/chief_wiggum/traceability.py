@@ -18,6 +18,7 @@ STATUSES = ("pending", "covered", "passing", "failing", "missing")
 
 _COLUMN_KEYS = {
     "ticket": "ticket",
+    "ac": "ac",
     "acceptance criterion": "ac",
     "acceptance criteria": "ac",
     "unit test": "unit_test",
@@ -25,6 +26,7 @@ _COLUMN_KEYS = {
     "e2e test": "e2e_test",
     "status": "status",
 }
+_REQUIRED_COLUMNS = ("ticket", "ac", "status")
 
 
 @dataclass
@@ -51,6 +53,9 @@ class TraceRow:
 class TraceMatrix:
     rows: list[TraceRow] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Inclusive line span of the parsed table in the source (for in-place edits).
+    table_start: int | None = None
+    table_end: int | None = None
 
     def to_dict(self) -> dict:
         return {"rows": [r.to_dict() for r in self.rows], "warnings": list(self.warnings)}
@@ -99,31 +104,59 @@ def _parse_ticket(value: str) -> int | None:
         return None
 
 
-def parse_matrix(markdown: str) -> TraceMatrix:
-    """Parse the first markdown table in ``markdown`` into a :class:`TraceMatrix`."""
-    matrix = TraceMatrix()
-    header: list[str] | None = None
-    col_index: dict[str, int] = {}
-
-    for raw in markdown.splitlines():
+def _header_candidates(lines: list[str]) -> list[tuple[int, dict[str, int]]]:
+    """Find (index, column-map) for each ``| header |`` line followed by a separator."""
+    candidates: list[tuple[int, dict[str, int]]] = []
+    for i, raw in enumerate(lines):
         line = raw.strip()
         if not line.startswith("|"):
-            if header is not None:
-                break  # table ended
             continue
         cells = _split_cells(line)
-        if header is None:
-            header = [c.lower() for c in cells]
-            col_index = {
-                _COLUMN_KEYS[h]: i for i, h in enumerate(header) if h in _COLUMN_KEYS
-            }
-            for required in ("ticket", "ac", "status"):
-                if required not in col_index:
-                    matrix.warnings.append(f"missing required column: {required}")
-            continue
-        if _is_separator(cells):
-            continue
+        col_index = {
+            _COLUMN_KEYS[c.lower()]: j for j, c in enumerate(cells) if c.lower() in _COLUMN_KEYS
+        }
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if nxt.startswith("|") and _is_separator(_split_cells(nxt)):
+            candidates.append((i, col_index))
+    return candidates
 
+
+def parse_matrix(markdown: str) -> TraceMatrix:
+    """Parse the traceability table in ``markdown`` into a :class:`TraceMatrix`.
+
+    Detects the real matrix robustly: scans for a ``| header |`` line followed by
+    a separator, preferring the first one that has all required columns (so an
+    unrelated earlier table doesn't shadow it). Tracks the table's line span so a
+    later update can rewrite *only* the table, preserving surrounding prose.
+    """
+    matrix = TraceMatrix()
+    lines = markdown.splitlines()
+    candidates = _header_candidates(lines)
+    if not candidates:
+        matrix.warnings.append("no traceability table found")
+        return matrix
+
+    chosen = next(
+        (c for c in candidates if set(_REQUIRED_COLUMNS) <= set(c[1])),
+        candidates[0],
+    )
+    header_idx, col_index = chosen
+    for required in _REQUIRED_COLUMNS:
+        if required not in col_index:
+            matrix.warnings.append(f"missing required column: {required}")
+
+    matrix.table_start = header_idx
+    matrix.table_end = header_idx + 1  # separator line
+    i = header_idx + 2
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line.startswith("|"):
+            break
+        cells = _split_cells(line)
+        if _is_separator(cells):
+            matrix.table_end = i
+            i += 1
+            continue
         status = _cell(cells, col_index, "status").lower() or "pending"
         if status not in STATUSES:
             matrix.warnings.append(
@@ -139,10 +172,20 @@ def parse_matrix(markdown: str) -> TraceMatrix:
                 status=status,
             )
         )
-
-    if header is None:
-        matrix.warnings.append("no traceability table found")
+        matrix.table_end = i
+        i += 1
     return matrix
+
+
+def replace_table(original: str, matrix: TraceMatrix) -> str:
+    """Rewrite only the table span in ``original``, preserving surrounding prose."""
+    if matrix.table_start is None or matrix.table_end is None:
+        return original
+    lines = original.splitlines()
+    rendered = render_markdown(matrix).rstrip("\n").splitlines()
+    new_lines = lines[: matrix.table_start] + rendered + lines[matrix.table_end + 1 :]
+    text = "\n".join(new_lines)
+    return text + "\n" if original.endswith("\n") else text
 
 
 def update_status(
@@ -179,12 +222,15 @@ def audit(matrix: TraceMatrix) -> dict:
     """Summarize coverage: counts per status, gaps, and ticket rollup."""
     counts = dict.fromkeys(STATUSES, 0)
     gaps: list[dict] = []
+    covered = 0
     for row in matrix.rows:
         counts[row.status] = counts.get(row.status, 0) + 1
+        # Genuinely covered: a covered/passing status backed by a real test ref.
+        if row.status in ("covered", "passing") and row.has_test:
+            covered += 1
         if not row.has_test or row.status in ("missing", "failing"):
             gaps.append({"ticket": row.ticket, "ac": row.ac, "status": row.status})
     total = len(matrix.rows)
-    covered = counts["covered"] + counts["passing"]
     return {
         "total": total,
         "counts": counts,

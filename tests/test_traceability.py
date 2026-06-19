@@ -61,6 +61,23 @@ def test_parse_no_table_warns():
     assert any("no traceability table" in w for w in m.warnings)
 
 
+def test_parse_accepts_ac_header():
+    table = "| Ticket | AC | Unit Test | Status |\n|---|---|---|---|\n| #1 | do x | t | covered |\n"
+    m = tr.parse_matrix(table)
+    assert m.rows[0].ac == "do x"
+    assert "missing required column: ac" not in " ".join(m.warnings)
+
+
+def test_parse_skips_unrelated_earlier_table():
+    text = (
+        "| Name | Value |\n|---|---|\n| foo | bar |\n\n"
+        "| Ticket | Acceptance Criterion | Status |\n|---|---|---|\n| #5 | real AC | pending |\n"
+    )
+    m = tr.parse_matrix(text)
+    assert len(m.rows) == 1
+    assert m.rows[0].ac == "real AC"
+
+
 def test_parse_unknown_status_warns():
     table = (
         "| Ticket | Acceptance Criterion | Status |\n|---|---|---|\n| #1 | x | bogus |\n"
@@ -153,3 +170,23 @@ def test_cli_update_in_place(tmp_path, capsys):
     assert rc == 0
     m = tr.parse_matrix(f.read_text())
     assert [r.status for r in m.rows if r.ticket == 44] == ["covered"]
+
+
+def test_update_preserves_surrounding_prose(tmp_path):
+    f = tmp_path / "traceability.md"
+    f.write_text(TABLE)
+    cli.main(["update", str(f), "--ticket", "42", "--status", "passing"])
+    out = f.read_text()
+    assert "Some intro prose." in out
+    assert "More prose after." in out
+
+
+def test_audit_does_not_count_covered_without_test():
+    table = (
+        "| Ticket | Acceptance Criterion | Unit Test | Status |\n|---|---|---|---|\n"
+        "| #1 | x | — | covered |\n"
+    )
+    m = tr.parse_matrix(table)
+    a = tr.audit(m)
+    assert a["covered"] == 0  # covered status but no test ref
+    assert a["gaps"]  # still flagged as a gap
