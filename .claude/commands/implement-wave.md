@@ -230,7 +230,7 @@ For each ticket in the current wave (up to `--max-parallel`):
      - Step 10: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
-     - You are in a git worktree. Verify with `git rev-parse --show-toplevel`. Never operate on the main checkout.
+     - You are in a git worktree. Assert isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.
      - Write all temp files to `$TICKET_TMP/` (pass the path explicitly).
      - If you encounter a blocking error after 3 retries, report it and stop — do not silently skip steps.
      - Do NOT run `gh pr create`, `gh pr merge`, or `git push`. The orchestrator handles all of this.
