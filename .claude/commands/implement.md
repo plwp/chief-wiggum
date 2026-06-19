@@ -102,22 +102,15 @@ Also check for **formal model artifacts** in `$EPIC_DIR/models/`:
 - `test_state_machine.py` — Hypothesis RuleBasedStateMachine skeleton
 - `transition-map.json` — transition ↔ ticket mapping (updated by `/implement`)
 
-Set flags for downstream steps:
+Build the artifact inventory once with the tested helper, then read its flags (it discovers prose/model/design artifacts, validates model JSON, and runs the unresolved-marker scan in one pass):
 ```bash
-HAS_FORMAL_MODELS=false
-HAS_UI_SPEC=false
-HAS_TRANSITION_MAP=false
-if [ -n "${EPIC_DIR:-}" ] && [ -f "$EPIC_DIR/models/state-machines.json" ]; then
-  HAS_FORMAL_MODELS=true
-  MODELS_DIR="$EPIC_DIR/models"
-fi
-if [ -n "${EPIC_DIR:-}" ] && [ -f "$EPIC_DIR/models/ui-spec.json" ]; then
-  HAS_UI_SPEC=true
-fi
-if [ -n "${EPIC_DIR:-}" ] && [ -f "$EPIC_DIR/models/transition-map.json" ]; then
-  HAS_TRANSITION_MAP=true
-fi
+python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "${EPIC_SLUG:-}" --issue "$issue_number" > "$TICKET_TMP/inventory.json"
+HAS_FORMAL_MODELS=$(jq -r '.flags.HAS_FORMAL_MODELS' "$TICKET_TMP/inventory.json")
+HAS_UI_SPEC=$(jq -r '.flags.HAS_UI_SPEC' "$TICKET_TMP/inventory.json")
+HAS_TRANSITION_MAP=$(jq -r '.flags.HAS_TRANSITION_MAP' "$TICKET_TMP/inventory.json")
+[ "$HAS_FORMAL_MODELS" = "true" ] && MODELS_DIR="$EPIC_DIR/models"
 ```
+The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) feed the unresolved-unknowns gate below.
 
 These artifacts are **hard constraints** on the implementation. The coding sub-agent MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
