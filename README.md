@@ -42,14 +42,25 @@ claude /implement owner/repo#42
 
 ### Portable Skills
 
-Harness-portable skills are stored under `skills/`. To install the Claude interactive delegate skill in Codex:
+Harness-portable skills are stored under `skills/`. The umbrella **`skills/chief-wiggum`** skill packages the whole SDLC loop: a short `SKILL.md` routes to per-workflow references under `references/workflows/` (loaded on demand), with Codex metadata isolated in `agents/openai.yaml`. The workflow references are the same canonical bodies the Claude Code `.claude/commands/` adapter uses (single source of truth), so the two stay in sync.
+
+Install paths — the skill runs from the repo checkout (symlink the skill directory; do not copy, as the references are repo-relative symlinks):
+
+- **Claude Code** — point `commandDirs` at `.claude/commands` (above); the slash commands and the skill share the same workflow bodies.
+- **Codex** — symlink the skill into Codex's skill discovery path:
+  ```bash
+  ln -sfn ~/repos/chief-wiggum/skills/chief-wiggum ~/.codex/skills/chief-wiggum
+  ```
+- **Generic skill-aware harness** — symlink `skills/chief-wiggum` into the harness's skill directory; it reads `SKILL.md` + `references/`.
+
+The standalone Claude interactive delegate skill installs the same way:
 
 ```bash
 ln -sfn ~/repos/chief-wiggum/skills/claude-interactive-delegate ~/.codex/skills/claude-interactive-delegate
 python3 ~/.codex/skills/claude-interactive-delegate/scripts/claude_delegate.py start
 ```
 
-For other harnesses, install or symlink `skills/<name>` into the harness's skill discovery path. See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
+See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 
 **Important**: Run skills from your target project directory, not from chief-wiggum itself.
 

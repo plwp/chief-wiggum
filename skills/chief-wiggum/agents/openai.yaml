@@ -1,0 +1,36 @@
+# Codex / OpenAI harness metadata for the chief-wiggum skill.
+# Optional adapter data only — the portable workflow contract lives in SKILL.md
+# and references/. Do not put workflow semantics here.
+name: chief-wiggum
+description: >-
+  Harness-portable agentic SDLC orchestration. Routes to the SDLC workflows
+  (design, plan-epic, architect, implement, implement-wave, close-epic) and
+  supporting workflows, each loaded on demand from references/workflows/.
+entrypoint: SKILL.md
+workflows:
+  - id: design
+    reference: references/workflows/design.md
+  - id: plan-epic
+    reference: references/workflows/plan-epic.md
+  - id: architect
+    reference: references/workflows/architect.md
+  - id: implement
+    reference: references/workflows/implement.md
+  - id: implement-wave
+    reference: references/workflows/implement-wave.md
+  - id: close-epic
+    reference: references/workflows/close-epic.md
+  - id: seed
+    reference: references/workflows/seed.md
+  - id: create-issue
+    reference: references/workflows/create-issue.md
+  - id: ship
+    reference: references/workflows/ship.md
+  - id: transcribe
+    reference: references/workflows/transcribe.md
+  - id: setup
+    reference: references/workflows/setup.md
+  - id: update
+    reference: references/workflows/update.md
+  - id: stitch-audit
+    reference: references/workflows/stitch-audit.md
