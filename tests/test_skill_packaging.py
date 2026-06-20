@@ -47,20 +47,21 @@ def test_skill_md_is_short_progressive_disclosure():
     assert len(body.encode()) < 6000, "SKILL.md should be small (<6 KB)"
 
 
-def test_core_workflow_references_resolve_to_command_bodies():
+def test_core_workflow_references_are_symlinks_to_command_bodies():
     for wf in CORE_WORKFLOWS:
         ref = WORKFLOWS / f"{wf}.md"
-        assert ref.is_file(), f"missing workflow reference: {ref}"
-        # It must resolve to a real, non-empty command body (single source of truth).
+        # Single source of truth: it must be a *symlink* to the canonical command
+        # body (a copy would drift and is rejected), with the exact relative target.
+        assert ref.is_symlink(), f"{ref} must be a symlink to the command body, not a copy"
+        assert ref.readlink() == Path(f"../../../../.claude/commands/{wf}.md")
         assert ref.resolve().is_file()
         assert ref.read_text().strip(), f"workflow reference {wf} resolves to empty content"
 
 
-def test_workflow_reference_symlinks_are_relative():
+def test_all_workflow_references_are_relative_symlinks():
     for ref in WORKFLOWS.glob("*.md"):
-        if ref.is_symlink():
-            target = Path(ref.readlink() if hasattr(ref, "readlink") else __import__("os").readlink(ref))
-            assert not target.is_absolute(), f"{ref.name} symlink target must be relative, got {target}"
+        assert ref.is_symlink(), f"{ref.name} must be a symlink"
+        assert not ref.readlink().is_absolute(), f"{ref.name} symlink target must be relative"
 
 
 def test_command_bodies_still_intact():

@@ -7,11 +7,17 @@ description: Harness-portable agentic SDLC orchestration. Routes to the design, 
 
 Portable SDLC orchestration. The workflow "brains" are reference files loaded
 on demand (progressive disclosure); the deterministic mechanics are tested
-Python helpers under `scripts/`; AI backends are selected by **provider role**,
-not hard-coded model names. Sub-tasks are run by **workers** described by
-harness-neutral contracts (`docs/worker-contracts.md`).
+Python helpers; AI backends are selected by **provider role**, not hard-coded
+model names. Sub-tasks are run by **workers** described by harness-neutral
+contracts.
 
 Run workflows from the **target repo**, not from the Chief Wiggum checkout.
+
+> **Paths in this skill** — `scripts/`, `docs/`, and `config/` referenced below
+> live at the **Chief Wiggum checkout root**, not inside this skill directory.
+> This skill installs as a symlink back into that checkout; workflows resolve
+> the checkout root at runtime with `python3 "$CW_HOME/scripts/env.py" home`
+> (the workflow references already do this).
 
 ## Workflows
 

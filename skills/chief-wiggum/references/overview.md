@@ -4,6 +4,11 @@ The Chief Wiggum skill is harness-portable: the same workflow contract runs from
 Claude Code, Codex, or another skill-aware harness. This reference defines the
 portable concepts so a harness can map them to its own mechanisms.
 
+> **Paths** — `scripts/`, `docs/`, and `config/` mentioned here live at the
+> **Chief Wiggum checkout root**, not inside `skills/chief-wiggum/`. The skill
+> installs as a symlink back into the checkout; workflows resolve the checkout
+> root at runtime via `scripts/env.py home` (`$CW_HOME`).
+
 ## Concepts
 
 - **Skill** — the umbrella entrypoint (`SKILL.md`) plus its `references/`,
