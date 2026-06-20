@@ -125,6 +125,55 @@ def test_cli_missing_server_is_graceful(tmp_path, capsys, monkeypatch):
     assert out["available"] is False and "not installed" in out["reason"]
 
 
+# --- lifecycle robustness (no real server) ----------------------------------
+
+
+class _FakeProc:
+    def __init__(self):
+        import io
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()  # EOF immediately
+        self.stderr = io.BytesIO()
+        self.terminated = self.killed = False
+        self._alive = True
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def wait(self, timeout=None):
+        self._alive = False
+        return 0
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+        self._alive = False
+
+
+def test_enter_cleans_up_when_initialize_fails(monkeypatch):
+    proc = _FakeProc()
+    client = lsp.LspClient(lsp.GOPLS, ".", spawner=lambda *a, **k: proc, timeout=0.3)
+    # initialize will time out (the fake server never responds) -> __enter__ must
+    # not leak the process.
+    with pytest.raises(lsp.LspError):
+        client.__enter__()
+    assert proc.poll() == 0  # reaped/cleaned up
+
+
+def test_transport_eof_wakes_pending_request(monkeypatch):
+    proc = _FakeProc()  # stdout is EOF -> reader exits immediately
+    client = lsp.LspClient(lsp.GOPLS, ".", spawner=lambda *a, **k: proc, timeout=2.0)
+    client.start()
+    # A request must fail fast with a transport error, not hang for the timeout.
+    import time as _t
+    t0 = _t.monotonic()
+    with pytest.raises(lsp.LspError, match="closed"):
+        client._request("initialize", {})
+    assert _t.monotonic() - t0 < 1.5  # woken by EOF, not the 2s timeout
+
+
 # --- integration: real gopls ------------------------------------------------
 
 

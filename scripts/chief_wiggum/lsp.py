@@ -19,6 +19,7 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,6 +157,8 @@ class LspClient:
         self._pending: dict[int, _Pending] = {}
         self._diagnostics: dict[str, list[dict]] = {}
         self._diag_seen: set[str] = set()
+        self._diag_seq = 0  # bumped on every publishDiagnostics (settle tracking)
+        self._closed = False  # set when the transport dies (reader exits)
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
 
@@ -179,15 +182,27 @@ class LspClient:
         # read1() returns as soon as *some* data is available (read() would block
         # until the full count or EOF, deadlocking on a single small response).
         reader = getattr(stdout, "read1", None) or stdout.read
-        while True:
-            chunk = reader(65536)
-            if not chunk:
-                break
-            try:
+        try:
+            while True:
+                chunk = reader(65536)
+                if not chunk:
+                    break
                 for msg in self._buf.push(chunk):
                     self._dispatch(msg)
-            except LspError:
-                break
+        except (LspError, ValueError, OSError):
+            pass
+        finally:
+            # EOF or transport error: wake every waiter rather than stranding it
+            # until its own timeout.
+            self._fail_all_pending("server closed the connection")
+
+    def _fail_all_pending(self, reason: str) -> None:
+        with self._cond:
+            self._closed = True
+            for pending in self._pending.values():
+                if not pending.event.is_set():
+                    pending.error = {"message": reason}
+                    pending.event.set()
 
     def _drain_stderr(self) -> None:
         if not self._proc or not self._proc.stderr:
@@ -210,6 +225,7 @@ class LspClient:
                 with self._cond:
                     self._diagnostics[uri] = params.get("diagnostics", [])
                     self._diag_seen.add(uri)
+                    self._diag_seq += 1
                     self._cond.notify_all()
 
     def _send(self, obj: dict) -> None:
@@ -220,15 +236,19 @@ class LspClient:
 
     def _request(self, method: str, params: dict, *, timeout: float | None = None) -> object:
         with self._cond:
+            if self._closed:
+                raise LspError(f"{method} failed: server closed the connection")
             self._next_id += 1
             req_id = self._next_id
             pending = _Pending()
             self._pending[req_id] = pending
         self._send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
-        if not pending.event.wait(timeout or self._timeout):
-            raise LspError(f"timeout waiting for {method}")
-        with self._cond:
-            self._pending.pop(req_id, None)
+        try:
+            if not pending.event.wait(timeout or self._timeout):
+                raise LspError(f"timeout waiting for {method}")
+        finally:
+            with self._cond:
+                self._pending.pop(req_id, None)
         if pending.error:
             raise LspError(f"{method} failed: {pending.error}")
         return pending.result
@@ -303,16 +323,27 @@ class LspClient:
         contents = result.get("contents") if isinstance(result, dict) else None
         return {"signature": _hover_text(contents)}
 
-    def diagnostics(self, path, *, timeout: float | None = None) -> list[dict]:
+    def diagnostics(self, path, *, timeout: float | None = None, settle: float = 0.6) -> list[dict]:
         """Return the latest diagnostics published for ``path``.
 
-        Waits (up to a deadline) for at least one publishDiagnostics for the URI,
-        since diagnostics arrive asynchronously after didOpen.
+        Diagnostics arrive asynchronously after didOpen, and a server may publish
+        an initial empty/stale set before analysis completes. So this waits for
+        the first publish, then for the stream to *settle* (no new publish for
+        ``settle`` seconds) before returning the latest — bounded by the deadline.
         """
         uri = path_to_uri(path)
-        deadline = timeout or self._timeout
+        end = time.monotonic() + (timeout or self._timeout)
         with self._cond:
-            self._cond.wait_for(lambda: uri in self._diag_seen, timeout=deadline)
+            self._cond.wait_for(lambda: uri in self._diag_seen, timeout=max(0.0, end - time.monotonic()))
+            while True:
+                seq = self._diag_seq
+                remaining = min(settle, end - time.monotonic())
+                if remaining <= 0:
+                    break
+                # Wait for a *newer* publish; if none arrives within the settle
+                # window, the diagnostics have settled.
+                if not self._cond.wait_for(lambda s=seq: self._diag_seq > s, timeout=remaining):
+                    break
             raw = list(self._diagnostics.get(uri, []))
         return [_diagnostic_to_dict(d) for d in raw]
 
@@ -324,15 +355,29 @@ class LspClient:
         except LspError:
             pass
         finally:
-            if self._proc:
+            self._fail_all_pending("client shutting down")
+            if self._proc and self._proc.poll() is None:
                 try:
-                    self._proc.wait(timeout=5)
+                    self._proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._proc.terminate()
+                    try:
+                        self._proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        self._proc.kill()
+                        try:
+                            self._proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            pass
 
     def __enter__(self) -> LspClient:
         self.start()
-        self.initialize()
+        try:
+            self.initialize()
+        except BaseException:
+            # Never leak the server process if the handshake fails.
+            self.shutdown()
+            raise
         return self
 
     def __exit__(self, *exc) -> None:
