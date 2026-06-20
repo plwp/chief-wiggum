@@ -180,6 +180,7 @@ WORKFLOW_PROFILES = {
     "ship": ["core"],
     "transcribe": ["transcription"],
     "stitch-audit": ["core", "gemini"],
+    "saas-gate": ["core"],
     "update": ["core"],
     "keep-going": ["core"],
 }
