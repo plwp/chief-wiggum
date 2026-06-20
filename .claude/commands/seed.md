@@ -56,7 +56,7 @@ Most seed failures are not bad architecture — they're architecture built on **
 1. **Existing data model** — "Does this product read from or write to an existing data source? Where does its truth live?" If yes, ingest it **before any data contracts are written**:
    - The semantic/modeling layer (dbt, Dataform, LookML, a metrics store) — canonical metric definitions, dimensions, measures
    - The physical schema — introspect it (run `\d`/`SHOW CREATE TABLE`/`db.collection.findOne()` against a real instance, or read migration files). Never trust table/column names from memory or docs alone.
-   - The transformation repo's **history and PRs** — deprecations, frozen sources, unit/locale normalisation rules, test-record exclusions, dedup patterns, known-bad data. Send an **explorer worker** over the repo history; caveats live in PR descriptions, not schemas.
+   - The transformation repo's **history and PRs** — deprecations, frozen sources, unit/locale normalisation rules, test-record exclusions, dedup patterns, known-bad data. Send an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) over the repo history; caveats live in PR descriptions, not schemas.
 2. **Real use cases** — "Where do real user requests live?" (issue tracker, support queue, team chat channels, existing dashboards). If accessible, mine them with a worker to derive:
    - The question patterns the product must answer (these become golden eval cases for `/architect` traceability)
    - The dimensions/measures/entities users actually slice by

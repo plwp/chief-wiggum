@@ -17,7 +17,7 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 
 **Every step is mandatory.** You do NOT get to decide that a change is "too small" to warrant code review, or that consultations are "good enough" with only 2 of 3 responses. The process exists for a reason — follow it completely every time, no exceptions. Specifically:
 - **Never skip the multi-AI code review** (Step 7), regardless of change size. A one-line fix gets the same review process as a 500-line feature. No developer gets to self-certify their own code.
-- **Never skip AI consultations** (Step 4). Wait for ALL consultations (Codex, Gemini, Opus) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
+- **Never skip AI consultations** (Step 4). Wait for ALL consultations (codex, gemini, and the exploration worker) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
 - **Never skip browser-use/E2E validation** (Step 10) unless `--skip-browser-use` was explicitly passed by the user.
 - **Never create a PR before review is complete.** The PR is the final artifact (Step 11), not an intermediate checkpoint.
 
@@ -186,7 +186,7 @@ Before launching, prepare the approach prompt at `$TICKET_TMP/approach-prompt.md
   - **Do NOT include**: specific files suspected to be relevant, suggested root causes, or preliminary solution directions. Let each AI discover what's relevant independently — the divergence is the value.
 - Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
-**HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (Codex, Gemini, Opus) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
+**HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (codex, gemini, and the exploration worker) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
 
 **Validate consultation output after `wait`**: After all background processes complete, check each output file:
 ```bash
@@ -205,7 +205,7 @@ Once all three approaches are ready, ensure the codebase deep-dive explorer work
 2. Read the codebase context file (`$TICKET_TMP/codebase-context.md`) from the deep-dive agent
 3. Read the epic context files (contracts, invariants, state machines) if they exist
 4. Identify consensus, conflicts, and unique insights
-5. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
+5. Produce a **comprehensive implementation plan** detailed enough that the implementation worker can execute it mechanically. The plan must include:
    - **Files to create/modify** with specific paths
    - **Ordered implementation steps** — each step should specify exactly what to do, in which file, with enough detail that no further codebase exploration is needed
    - **Code patterns to follow** — reference specific existing files/functions as templates
@@ -222,7 +222,7 @@ Present a concise summary to the user. If there are open questions that genuinel
 
 **Write failing tests before writing implementation code.** This transforms the objective from "implement this feature" to "make these tests pass" — a more constrained and verifiable target.
 
-**If formal models exist** (`$HAS_FORMAL_MODELS == true`), generate mechanical test artifacts BEFORE launching the worker. The orchestrator does this directly — it's a deterministic script call, not LLM work:
+**If formal models exist** (`$HAS_FORMAL_MODELS == true`), generate mechanical test artifacts BEFORE the implementation worker runs. The orchestrator does this directly — it's a deterministic script call, not LLM work:
 
 ```bash
 # One idempotent call generates every model-derived test artifact (test paths,
@@ -330,7 +330,7 @@ The worker should:
 
 Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then **the orchestrator independently verifies the final state** — this is not delegatable.
 
-1. **Apply clear-cut fixes** directly (don't re-launch a worker for trivial changes)
+1. **Apply clear-cut fixes** directly (don't re-run a worker for trivial changes)
 2. **Flag ambiguous feedback** for user decision — only block on items that genuinely need input
 3. **Run static analysis** on the changed files:
    - Go: `golangci-lint run ./...`
@@ -394,7 +394,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    - Would you be proud to ship this?
 10. **Clean up** — Stop any services you started (`docker compose down`)
 
-If ANY verification fails: fix it directly, or re-launch the coding worker with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
+If ANY verification fails: fix it directly, or re-launch the coding worker (contract: `docs/worker-contracts.md#implementation-worker`) with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
 ### Step 9: UX sanity + design-fidelity gate
 
@@ -467,7 +467,7 @@ for name, value in spec.get('design', {}).get('tokens', {}).get('colors', {}).it
 done
 ```
 
-#### Phase 2: Opus UX + design-fidelity review
+#### Phase 2: UX + design-fidelity review
 
 Launch a **review worker** (contract: `docs/worker-contracts.md#review-worker`) and give it: *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
 

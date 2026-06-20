@@ -35,6 +35,9 @@ MARKER_PATTERNS = (
     (re.compile(r"\bsub-agent\b", re.IGNORECASE), "sub-agent"),
     (re.compile(r"general-purpose"), "general-purpose"),
     (re.compile(r"""model:\s*['"]?\s*(?:opus|sonnet)""", re.IGNORECASE), "model tier"),
+    # Bare Claude model-tier names (capitalized proper nouns) in prose.
+    (re.compile(r"\bOpus\b"), "Opus model tier"),
+    (re.compile(r"\bSonnet\b"), "Sonnet model tier"),
     (re.compile(r"""isolation:\s*['"]?\s*worktree"""), 'isolation: "worktree"'),
     (re.compile(r"run_in_background"), "run_in_background"),
     (re.compile(r"\bthoroughness\b"), "thoroughness"),
@@ -42,6 +45,13 @@ MARKER_PATTERNS = (
     (re.compile(r"\bwill notify\b", re.IGNORECASE), "completion notification"),
     (re.compile(r"Agent notification", re.IGNORECASE), "Agent notification"),
     (re.compile(r"Do not poll", re.IGNORECASE), "Do not poll"),
+)
+
+# A line that *launches* a worker (vs. merely describing one) must bind a contract.
+LAUNCH_RE = re.compile(
+    r"\b(?:launch(?:es|ing)?|send|spawn|run(?:s|ning)?\s+[a-z0-9 ,'`\"-]*?\b(?:in|inside))\b"
+    r"[^.\n]*?\bworkers?\b",
+    re.IGNORECASE,
 )
 
 ADAPTER_TAG = "Claude Code adapter"
@@ -85,21 +95,27 @@ def check_command_markers(path: Path) -> tuple[list[Violation], set[str]]:
     for a in (ANCHOR_RE.findall(line) for line in lines):
         anchors.update(a)
     for i, line in enumerate(lines):
-        markers = _markers_on(line)
-        if not markers:
-            continue
-        if ADAPTER_TAG not in line:
-            violations.append(
-                Violation(path.name, i + 1,
-                          f"Claude-only marker(s) {markers} outside an adapter note")
-            )
-            continue
         window = lines[max(0, i - ADAPTER_LOOKBACK): i + 1]
-        if not any(ANCHOR_RE.search(w) for w in window):
+        anchored = any(ANCHOR_RE.search(w) for w in window)
+        markers = _markers_on(line)
+        if markers:
+            if ADAPTER_TAG not in line:
+                violations.append(
+                    Violation(path.name, i + 1,
+                              f"Claude-only marker(s) {markers} outside an adapter note")
+                )
+            elif not anchored:
+                violations.append(
+                    Violation(path.name, i + 1,
+                              f"adapter note with marker(s) {markers} is not bound to a "
+                              f"worker-contracts.md#<anchor> (launder guard)")
+                )
+        elif LAUNCH_RE.search(line) and not anchored:
+            # A worker launch with no Claude marker still must bind a contract,
+            # otherwise an unanchored "launch a worker" launders the gate.
             violations.append(
                 Violation(path.name, i + 1,
-                          f"adapter note with marker(s) {markers} is not bound to a "
-                          f"worker-contracts.md#<anchor> (launder guard)")
+                          "worker launch is not bound to a worker-contracts.md#<anchor>")
             )
     return violations, anchors
 
@@ -134,14 +150,18 @@ def check_contract_doc(doc: Path, referenced_anchors: set[str]) -> list[Violatio
     for anchor in sorted(referenced_anchors):
         if anchor not in sections:
             violations.append(Violation(doc.name, 0, f"referenced anchor #{anchor} not defined"))
-    # Every *-worker section must define all required fields.
+    # Every *-worker section must define all required fields as labeled fields
+    # (a bold label containing the field word, followed by ':'), not just mention
+    # the words in prose.
     for anchor, body in sections.items():
         if not anchor.endswith("-worker"):
             continue
-        low = body.lower()
-        missing = [f for f in REQUIRED_CONTRACT_FIELDS if f not in low]
+        missing = [
+            f for f in REQUIRED_CONTRACT_FIELDS
+            if not re.search(rf"\*\*[^*]*{f}[^*]*\*\*\s*:", body, re.IGNORECASE)
+        ]
         if missing:
-            violations.append(Violation(doc.name, 0, f"#{anchor} missing fields: {missing}"))
+            violations.append(Violation(doc.name, 0, f"#{anchor} missing labeled fields: {missing}"))
     return violations
 
 

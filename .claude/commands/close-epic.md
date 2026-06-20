@@ -232,12 +232,12 @@ The worker returns a manifest at `$CW_TMP/ux-audit/manifest.json`:
 
 If the target repo has no Playwright or browser-use setup, flag the gap and skip to the findings report.
 
-#### Opus UX review
+#### UX review
 
 Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) with: *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
 - Epic goal and the original ticket requirements for each ticket referenced in the journeys
 - `contracts.md`, `state-machines.md`, and `invariants.md` from the epic
-- The full journey manifest with screenshot paths (Opus can view images)
+- The full journey manifest with screenshot paths (the worker can view images)
 
 The worker should evaluate each journey for epic-level UX concerns:
 

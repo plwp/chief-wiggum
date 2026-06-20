@@ -13,11 +13,11 @@ import check_portability as cp
 
 REPO = Path(__file__).resolve().parents[1]
 
-# A complete contract doc body for synthetic repos.
+# A complete contract doc body for synthetic repos (labeled-field format).
 GOOD_DOC = (
     "### implementation-worker\n"
-    "- role: x\n- inputs: x\n- output artifact paths: x\n"
-    "- write scope: x\n- isolation: x\n- stop condition: x\n"
+    "- **Role**: x\n- **Inputs**: x\n- **Output artifact paths**: x\n"
+    "- **Write scope**: x\n- **Isolation**: x\n- **Stop condition**: x\n"
 )
 
 
@@ -92,14 +92,14 @@ def test_referenced_anchor_must_exist(tmp_path):
 
 
 def test_incomplete_contract_section_flagged(tmp_path):
-    bad_doc = "### implementation-worker\n- role: x\n- inputs: x\n"  # missing fields
+    bad_doc = "### implementation-worker\n- **Role**: x\n- **Inputs**: x\n"  # missing fields
     repo = _repo(
         tmp_path,
         "Launch a worker (contract: `docs/worker-contracts.md#implementation-worker`). "
         "*Claude Code adapter:* `subagent_type: x`.\n",
         doc=bad_doc, name="implement.md",
     )
-    assert any("missing fields" in v.detail for v in cp.check_repo(repo))
+    assert any("missing labeled fields" in v.detail for v in cp.check_repo(repo))
 
 
 def test_worker_command_must_reference_a_contract_anchor(tmp_path):
