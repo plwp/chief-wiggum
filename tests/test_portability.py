@@ -68,6 +68,18 @@ def test_adapter_tag_without_contract_anchor_is_rejected(tmp_path):
     assert any("launder guard" in v.detail for v in cp.check_repo(repo))
 
 
+def test_unanchored_worker_delegation_is_caught(tmp_path):
+    # A delegation that swaps the verb ("generate with a worker", "use a worker")
+    # must still bind a contract — no launder path.
+    for phrasing in (
+        "Generate each direction with a parallel worker (use a good model).",
+        "Use a synthesis worker to reconcile the inputs.",
+        "Delegate this to an implementation worker.",
+    ):
+        repo = _repo(tmp_path / phrasing[:8], phrasing + "\n")
+        assert any("not bound" in v.detail for v in cp.check_repo(repo)), phrasing
+
+
 def test_bound_adapter_note_passes(tmp_path):
     repo = _repo(
         tmp_path,

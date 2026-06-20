@@ -47,10 +47,17 @@ MARKER_PATTERNS = (
     (re.compile(r"Do not poll", re.IGNORECASE), "Do not poll"),
 )
 
-# A line that *launches* a worker (vs. merely describing one) must bind a contract.
+# A line that *delegates* to a worker (vs. merely describing one) must bind a
+# contract. Covers launch/send/spawn, run-inside, generate-with, use/delegate/
+# hand-off, and "with a/the ... worker" phrasings so a launch can't be laundered
+# by swapping the verb.
 LAUNCH_RE = re.compile(
-    r"\b(?:launch(?:es|ing)?|send|spawn|run(?:s|ning)?\s+[a-z0-9 ,'`\"-]*?\b(?:in|inside))\b"
-    r"[^.\n]*?\bworkers?\b",
+    r"\b(?:"
+    r"launch(?:es|ing)?|send|spawn|delegat\w*|hand(?:s|ed|ing)?\s+\w+\s+to|"
+    r"run(?:s|ning)?\s+[a-z0-9 ,'`\"-]*?\b(?:in|inside)|"
+    r"generat\w*\s+[a-z0-9 ,'`\"-]*?\bwith|"
+    r"use|using|with)\b"
+    r"\s+(?:a|an|the|each)?\s*[a-z0-9 ,'`\"-]*?\bworkers?\b",
     re.IGNORECASE,
 )
 

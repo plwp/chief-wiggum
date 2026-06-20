@@ -119,6 +119,17 @@ scope / isolation / stop) is what another harness implements.
 - **Stop condition**: every scenario executed and the evidence artifact written;
   on a critical failure, stop and report instead of continuing.
 
+### design-direction-worker
+
+- **Role**: generate one rendered design direction (mockups-as-code).
+- **Inputs**: the shared design context (domain context, screens, token
+  convention, quality bar) plus this direction's brief.
+- **Output artifact paths**: the direction's HTML mockups under
+  `$DESIGN_TMP/directions/<direction>/`.
+- **Write scope**: its own direction output directory only.
+- **Isolation**: none required.
+- **Stop condition**: the direction's mockups rendered and written.
+
 ### issue-authoring-worker
 
 - **Role**: create GitHub issues/labels from a planned set.
