@@ -34,9 +34,12 @@ from pathlib import Path
 
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
 
-ID_RE = re.compile(r"\b(BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}\b")
+# An ID ends at the 3-digit suffix and must not run into more id chars
+# (so CTR-order-001oops is NOT a valid CTR-order-001).
+ID_RE = re.compile(r"\b(BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
 TRACE_RE = re.compile(
-    r"@cw-trace\s+(?P<verb>realizes|guards|ensures|verifies)\s+(?P<ids>(?:(?:BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}[\s,]*)+)",
+    r"@cw-trace\s+(?P<verb>realizes|guards|ensures|verifies)\s+"
+    r"(?P<ids>(?:(?:BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])[\s,]*)+)",
     re.IGNORECASE,
 )
 # Where a defined ID is *declared*: a markdown heading `### CTR-...`, a bold
@@ -46,7 +49,10 @@ DEFINE_RE = re.compile(
     re.MULTILINE,
 )
 
-SOURCE_EXTS = {".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs", ".md"}
+# Code/test annotations live in code/test files — not markdown. Prose docs
+# (including this checker's own examples and the epic's realizes lines) are
+# handled only by scan_epic_annotations, so they aren't double-counted.
+SOURCE_EXTS = {".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs"}
 
 
 @dataclass
@@ -55,7 +61,8 @@ class Annotation:
     target: str
     file: str
     line: int
-    source_kind: str  # "code" | "test"
+    source_kind: str  # "code" | "test" | "CTR" | "INV"
+    source_id: str | None = None  # for realizes: the declaring contract/invariant ID
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -162,10 +169,19 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
         except OSError:
             continue
         rel = str(path.relative_to(root))
+        # A realizes annotation is attributed to the nearest contract/invariant
+        # *declared above it* in the same file, so it is tied to a real source.
+        nearest_contract: str | None = None
         for i, line in enumerate(lines, start=1):
+            for dm in DEFINE_RE.finditer(line):
+                if kind_of(dm.group(1)) in ("CTR", "INV"):
+                    nearest_contract = dm.group(1)
             for verb, ids in parse_annotations(line):
+                src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
                 for target in ids:
-                    annotations.append(Annotation(verb, target, rel, i, "CTR"))
+                    annotations.append(
+                        Annotation(verb, target, rel, i, src_kind, source_id=nearest_contract)
+                    )
     return annotations
 
 
@@ -228,7 +244,14 @@ def build_report(
             )
             continue
         if ann.verb == "realizes":
-            realized.add(ann.target)
+            # Only a realizes from a *defined* contract/invariant counts; a stray
+            # realizes with no declaring contract above it doesn't clear the orphan.
+            if ann.source_id and ann.source_id in defined:
+                realized.add(ann.target)
+            else:
+                report.invalid_links.append(
+                    {**ann.to_dict(), "reason": "realizes has no declaring contract/invariant source"}
+                )
         elif ann.verb in ("guards", "ensures"):
             guarded.add(ann.target)
         elif ann.verb == "verifies":
@@ -298,6 +321,11 @@ def main(argv: list[str] | None = None) -> int:
         schema = load_schema(Path(args.schema))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"Error: cannot load TIM schema: {exc}", file=sys.stderr)
+        return 2
+
+    # A missing epic dir is a usage error (a typo), not graceful absence.
+    if not Path(args.epic_dir).exists():
+        print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
     report = check(args.epic_dir, args.source, schema=schema)

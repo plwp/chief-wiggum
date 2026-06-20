@@ -31,6 +31,11 @@ def test_parse_ignores_malformed_ids():
     assert ct.parse_annotations("@cw-trace guards CTR-order-1") == []  # not 3 digits
 
 
+def test_suffixed_id_is_not_accepted():
+    # CTR-order-001oops must not be parsed as CTR-order-001.
+    assert ct.parse_annotations("@cw-trace guards CTR-order-001oops") == []
+
+
 # --- defined-id extraction --------------------------------------------------
 
 
@@ -79,7 +84,8 @@ def test_business_rule_realized_is_not_orphan():
     # CTR.md realizing the BR: realizes originates from CTR (a defined-doc concept).
     # In code annotations, realizes is code->BR which is invalid; we model realizes
     # via the contract doc using a CTR source — represent that with source_kind CTR.
-    r = _report({"BR-x-001": "BR"}, [ct.Annotation("realizes", "BR-x-001", "f", 1, "CTR")])
+    r = _report({"BR-x-001": "BR", "CTR-x-001": "CTR"},
+                [ct.Annotation("realizes", "BR-x-001", "f", 1, "CTR", source_id="CTR-x-001")])
     assert r.orphan_business_rules == []
 
 
@@ -111,7 +117,7 @@ def test_invalid_link_verb_node_mismatch():
 
 def test_soundness_and_coverage_flags():
     clean = _report({"BR-x-001": "BR", "CTR-x-001": "CTR"}, [
-        ct.Annotation("realizes", "BR-x-001", "f", 1, "CTR"),
+        ct.Annotation("realizes", "BR-x-001", "f", 1, "CTR", source_id="CTR-x-001"),
         _ann("guards", "CTR-x-001", "code"),
         _ann("verifies", "CTR-x-001", "test"),
     ])
@@ -135,6 +141,32 @@ def test_realizes_link_from_epic_docs_clears_orphan(tmp_path):
     assert r.orphan_business_rules == []
     assert r.uncovered_contracts == [] and r.untested_contracts == []
     assert r.soundness_ok and r.coverage_ok
+
+
+def test_stray_realizes_without_contract_source_does_not_clear_orphan(tmp_path):
+    # A realizes line with no contract/invariant declared above it must not clear
+    # the orphan, and is flagged as an invalid link.
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "rules.md").write_text("**BR-x-001**: x\n<!-- @cw-trace realizes BR-x-001 -->\n")
+    r = ct.check(epic)
+    assert "BR-x-001" in r.orphan_business_rules
+    assert any("no declaring contract" in d.get("reason", "") for d in r.invalid_links)
+
+
+def test_markdown_docs_not_scanned_as_source(tmp_path):
+    # A .md file under the source root (e.g. docs with @cw-trace EXAMPLES) must not
+    # be treated as code annotations -> no false dangling/invalid links.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "guide.md").write_text("Example: `# @cw-trace guards CTR-ghost-001`\n")
+    assert ct.scan_source(src) == []
+
+
+def test_cli_missing_epic_dir_is_usage_error(tmp_path, capsys):
+    rc = ct.main([str(tmp_path / "nope")])
+    assert rc == 2
+    assert "not found" in capsys.readouterr().err
 
 
 def test_graceful_when_no_annotations():
