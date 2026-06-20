@@ -1,0 +1,1 @@
+../../../../.claude/commands/architect.md
