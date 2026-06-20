@@ -1,0 +1,11 @@
+{
+  "$comment": "Traceability Information Model (TIM) for #36. Declares the node and link types of the business-rule -> contract -> code -> test graph. scripts/check_traceability.py validates annotation instances against this.",
+  "node_types": ["BR", "CTR", "INV", "code", "test"],
+  "link_types": {
+    "realizes": { "from": ["CTR", "INV"], "to": ["BR"] },
+    "guards": { "from": ["code"], "to": ["CTR", "INV"] },
+    "ensures": { "from": ["code"], "to": ["CTR", "INV"] },
+    "verifies": { "from": ["test"], "to": ["CTR", "INV"] }
+  },
+  "id_pattern": "^(BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}$"
+}

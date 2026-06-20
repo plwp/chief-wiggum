@@ -308,6 +308,13 @@ python3 "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
 
 # Unresolved-unknowns scan — TBD/UNRESOLVED/PLACEHOLDER markers across all artifacts
 python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
+
+# Traceability soundness gate — orphan business rules + dangling/invalid links in
+# the contract/invariant graph (see docs/traceability.md). Code/test coverage is
+# checked later by /close-epic; at architect time this validates the doc-level
+# graph. Assign stable BR-/CTR-/INV- IDs and `@cw-trace realizes` links so this
+# passes; it degrades gracefully when no IDs exist yet.
+python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
 ```
 
 Check the graph analysis output for:
