@@ -66,7 +66,7 @@ Each direction is **mockups-as-code**: one self-contained HTML file per represen
 3. **Real content from the domain**: populate with realistic data, names, and copy from `docs/domain-context.md` — never lorem ipsum, never `Item 1`. Include at least one empty state with real voice ("No sessions yet — upload your first video to get started"), not "No data".
 4. **High design quality is the point**: distinctive typography pairing with a reason, a purposeful palette with rationale, deliberate spacing rhythm. If a direction looks like a component library's default theme, that direction failed — regenerate it.
 
-Generate each direction with a **parallel sub-agent** (use Opus — design quality is the product here). All sub-agents get identical context (domain context, screens, token convention, quality bar); only the direction brief differs. Divergence comes from the briefs, not from temperature.
+Generate each direction with a **design-direction worker** (contract: `docs/worker-contracts.md#design-direction-worker`) — design quality is the product here, so use a high-capability model. All workers get identical context (domain context, screens, token convention, quality bar); only the direction brief differs. Divergence comes from the briefs, not from temperature.
 
 **Render and look.** Screenshot every mock with Playwright at desktop (1440×900) and mobile (390×844) widths:
 
@@ -101,6 +101,8 @@ Iterate the chosen direction's mocks against the feedback — re-render and re-s
 This is the **only** step that blocks on the user. Do not add approval gates elsewhere.
 
 ### Step 4: Multi-AI design critique
+
+The critique is a **review worker** task (contract: `docs/worker-contracts.md#review-worker`) run through the `design_critic` provider role rather than a Claude worker — so it is portable across harnesses.
 
 Unless `--skip-critique`: send the approved direction's screenshots to the `design_critic` quorum with the **same prompt** (value is in natural divergence). The role runs its providers in parallel with retries + output validation:
 

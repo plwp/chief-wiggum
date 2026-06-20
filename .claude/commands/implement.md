@@ -11,13 +11,13 @@ The core orchestration skill. Takes a ticket and drives it through the full impl
 
 If the answer to any of these is no — fix it. Don't ship "good enough."
 
-**The validation loop is not negotiable.** Sub-agents will take shortcuts. The orchestrator is the quality gate. Never trust a sub-agent's self-reported "tests pass" — independently verify.
+**The validation loop is not negotiable.** Workers will take shortcuts. The orchestrator is the quality gate. Never trust a worker's self-reported "tests pass" — independently verify.
 
 **Never punt to the user.** If Docker isn't running, start it. If a dependency is missing, install it. If you can't run the tests, that's YOUR problem to solve. "Want to skip this step?" is never the right question.
 
 **Every step is mandatory.** You do NOT get to decide that a change is "too small" to warrant code review, or that consultations are "good enough" with only 2 of 3 responses. The process exists for a reason — follow it completely every time, no exceptions. Specifically:
 - **Never skip the multi-AI code review** (Step 7), regardless of change size. A one-line fix gets the same review process as a 500-line feature. No developer gets to self-certify their own code.
-- **Never skip AI consultations** (Step 4). Wait for ALL consultations (Codex, Gemini, Opus) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
+- **Never skip AI consultations** (Step 4). Wait for ALL consultations (codex, gemini, and the exploration worker) to complete. If one times out, retry it. Never proceed to reconciliation with partial results.
 - **Never skip browser-use/E2E validation** (Step 10) unless `--skip-browser-use` was explicitly passed by the user.
 - **Never create a PR before review is complete.** The PR is the final artifact (Step 11), not an intermediate checkpoint.
 
@@ -112,7 +112,7 @@ HAS_TRANSITION_MAP=$(jq -r '.flags.HAS_TRANSITION_MAP' "$TICKET_TMP/inventory.js
 ```
 The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) feed the unresolved-unknowns gate below.
 
-These artifacts are **hard constraints** on the implementation. The coding sub-agent MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
+These artifacts are **hard constraints** on the implementation. The coding worker MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
 **Unresolved-unknowns gate**: scan the epic artifacts for markers this ticket would inherit:
 ```bash
@@ -150,7 +150,7 @@ If you do need to ask, keep it tight:
 
 ### Step 4: Consult AIs on approach
 
-This step has two phases, each in its own sub-agent. This keeps the heavy codebase exploration and synthesis out of the main context window.
+This step has two phases, each in its own worker. This keeps the heavy codebase exploration and synthesis out of the main context window.
 
 #### Phase A: Gather approaches (parallel)
 
@@ -163,12 +163,12 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
    wait
    ```
 
-2. **Opus exploration** — Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel with the above. This sub-agent should:
+2. **Opus exploration** — Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel with the above. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`. This worker should:
    - Explore the target repo codebase thoroughly (read key files, understand patterns)
    - Form its own implementation approach
    - Write its findings to `$TICKET_TMP/approach-opus.md`
 
-3. **Codebase deep-dive** — Launch a **Sonnet Explore sub-agent** (`subagent_type: "Explore"`, thoroughness: "very thorough") in parallel with all of the above, running in the background (`run_in_background: true`). This sub-agent should:
+3. **Codebase deep-dive** — Launch a background **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel with all of the above; it signals completion by writing its findings artifact (and a status file), not via a harness notification. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough", `run_in_background: true`. This worker should:
    - Read key files in the areas the ticket will touch (based on ticket description and labels)
    - Document existing patterns, conventions, test infrastructure, and relevant data models
    - Write findings to `$TICKET_TMP/codebase-context.md`
@@ -186,7 +186,7 @@ Before launching, prepare the approach prompt at `$TICKET_TMP/approach-prompt.md
   - **Do NOT include**: specific files suspected to be relevant, suggested root causes, or preliminary solution directions. Let each AI discover what's relevant independently — the divergence is the value.
 - Question: "Propose an implementation approach including: files to modify/create, step-by-step plan, design decisions and trade-offs, risks/gotchas, testing strategy"
 
-**HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (Codex, Gemini, Opus) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
+**HARD RULE**: Do NOT proceed to Phase B until ALL THREE approaches (codex, gemini, and the exploration worker) have completed successfully. If any consultation times out or fails, retry it — do not proceed with partial results. The value of multi-AI consultation comes from diverse perspectives; 2 of 3 is not acceptable.
 
 **Validate consultation output after `wait`**: After all background processes complete, check each output file:
 ```bash
@@ -199,13 +199,13 @@ If any output is empty, missing, or contains only an error message, **retry that
 
 #### Phase B: Reconcile into implementation plan
 
-Once all three approaches are ready, ensure the codebase deep-dive agent (Phase A, task 3) has also completed. Then launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
+Once all three approaches are ready, ensure the codebase deep-dive explorer worker (Phase A, task 3) has also completed (its findings artifact exists). Then launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile them. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`. This worker should:
 
 1. Read all three approach files (`approach-codex.md`, `approach-gemini.md`, `approach-opus.md`)
 2. Read the codebase context file (`$TICKET_TMP/codebase-context.md`) from the deep-dive agent
 3. Read the epic context files (contracts, invariants, state machines) if they exist
 4. Identify consensus, conflicts, and unique insights
-5. Produce a **comprehensive implementation plan** detailed enough that a Sonnet coding agent can execute it mechanically. The plan must include:
+5. Produce a **comprehensive implementation plan** detailed enough that the implementation worker can execute it mechanically. The plan must include:
    - **Files to create/modify** with specific paths
    - **Ordered implementation steps** — each step should specify exactly what to do, in which file, with enough detail that no further codebase exploration is needed
    - **Code patterns to follow** — reference specific existing files/functions as templates
@@ -222,7 +222,7 @@ Present a concise summary to the user. If there are open questions that genuinel
 
 **Write failing tests before writing implementation code.** This transforms the objective from "implement this feature" to "make these tests pass" — a more constrained and verifiable target.
 
-**If formal models exist** (`$HAS_FORMAL_MODELS == true`), generate mechanical test artifacts BEFORE launching the sub-agent. The orchestrator does this directly — it's a deterministic script call, not LLM work:
+**If formal models exist** (`$HAS_FORMAL_MODELS == true`), generate mechanical test artifacts BEFORE the implementation worker runs. The orchestrator does this directly — it's a deterministic script call, not LLM work:
 
 ```bash
 # One idempotent call generates every model-derived test artifact (test paths,
@@ -233,19 +233,19 @@ python3 "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" --out
 
 The manifest (`$TICKET_TMP/formal-artifacts-manifest.json`) lists the generated files and per-model status; a non-zero exit means a present model failed validation — fix the model before building on it.
 
-These mechanically generated artifacts are passed to the sub-agent as inputs — the sub-agent adapts them to the target repo's test framework and conventions, not invents tests from scratch.
+These mechanically generated artifacts are passed to the worker as inputs — the worker adapts them to the target repo's test framework and conventions, not invents tests from scratch.
 
-Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it:
+Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) — it must operate in its own isolated checkout and never touch the main checkout. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it:
 - The implementation plan from Step 4
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
 - **If formal models exist**: the generated test plan (`$TICKET_TMP/test-plan.md`), test paths (`$TICKET_TMP/test-paths.json`), contract assertions (`$TICKET_TMP/contract-assertions.md`), Hypothesis skeleton (`$TICKET_TMP/test_state_machine.py`), and guard templates (`$TICKET_TMP/guards.py`) — all listed in `$TICKET_TMP/formal-artifacts-manifest.json`
-- **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The sub-agent MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
-**HARD RULES for sub-agent**:
+- **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The worker MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
+**HARD RULES for worker**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
-- You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the worktree root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You work in an **isolated checkout** (required isolation behavior). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the checkout root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
-The sub-agent should:
+The worker should:
 
 1. Create a feature branch named after the ticket (e.g., `feat/42-add-dark-mode`)
 2. Write test files FIRST, covering:
@@ -259,17 +259,17 @@ The sub-agent should:
 4. Commit the test files with message: `test: add failing tests for #[number] — [title]`
 5. Report back: which tests were written (noting which are model-derived vs LLM-written), which frameworks used, any gaps in the traceability matrix
 
-**Important**: The sub-agent should report the worktree path and branch name. The implementation sub-agent in Step 6 will work in the SAME worktree.
+**Important**: The worker should report the worktree path and branch name. The implementation worker in Step 6 will work in the SAME worktree.
 
 ### Step 6: Implement
 
-Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
+Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) in the **same isolated checkout** from Step 5. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
-**HARD RULES for sub-agent**:
+**HARD RULES for worker**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 11).
 - You are working in a **git worktree** (the same one from Step 5). Confirm isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
-The sub-agent should:
+The worker should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**
 2. Enforce epic contracts as runtime guards:
    - Every REQUIRES block → input validation / guard clause at function entry
@@ -291,9 +291,9 @@ The sub-agent should:
 
 **THIS STEP IS NEVER OPTIONAL.** Every implementation gets a multi-AI code review, regardless of change size. A one-line typo fix, a 10-line config change, a 500-line feature — all get the same review process. You do not get to self-certify your own code. No exceptions, no shortcuts.
 
-**IMPORTANT**: Run this entire step inside a **Sonnet sub-agent** (`subagent_type: "general-purpose"`, `model: "sonnet"`). The main thread should only receive the synthesized review summary with actionable items.
+**IMPORTANT**: Run this entire step inside a **review worker** (contract: `docs/worker-contracts.md#review-worker`). The orchestrator should only receive the synthesized review summary with actionable items. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`.
 
-The sub-agent should:
+The worker should:
 
 1. Get the diff from the implementation:
    ```bash
@@ -330,7 +330,7 @@ The sub-agent should:
 
 Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then **the orchestrator independently verifies the final state** — this is not delegatable.
 
-1. **Apply clear-cut fixes** directly (don't re-launch a sub-agent for trivial changes)
+1. **Apply clear-cut fixes** directly (don't re-run a worker for trivial changes)
 2. **Flag ambiguous feedback** for user decision — only block on items that genuinely need input
 3. **Run static analysis** on the changed files:
    - Go: `golangci-lint run ./...`
@@ -356,7 +356,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    - Check that invalid state transitions are rejected (try one via curl or test)
    - Check that ENSURES postconditions hold after operations complete
 8. **Formal model conformance check** (if `$HAS_FORMAL_MODELS == true`):
-   This is the mechanical verification step that doesn't rely on sub-agent self-reports.
+   This is the mechanical verification step that doesn't rely on worker self-reports.
    - **State machine coverage**: For each test path in `test-paths.json`, verify a corresponding test exists and passes. Count: paths covered / paths total.
    - **Invalid transition coverage**: For each invalid transition in the model, verify a negative test exists that asserts rejection. Count: invalid transitions tested / invalid transitions total.
    - **Guard clause presence**: For each REQUIRES precondition in `contracts.json`, grep the implementation for a corresponding guard clause or validation check. Flag missing guards.
@@ -394,7 +394,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    - Would you be proud to ship this?
 10. **Clean up** — Stop any services you started (`docker compose down`)
 
-If ANY verification fails: fix it directly, or re-launch the coding sub-agent with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
+If ANY verification fails: fix it directly, or re-launch the coding worker (contract: `docs/worker-contracts.md#implementation-worker`) with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
 ### Step 9: UX sanity + design-fidelity gate
 
@@ -467,9 +467,9 @@ for name, value in spec.get('design', {}).get('tokens', {}).get('colors', {}).it
 done
 ```
 
-#### Phase 2: Opus UX + design-fidelity review
+#### Phase 2: UX + design-fidelity review
 
-Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) and give it:
+Launch a **review worker** (contract: `docs/worker-contracts.md#review-worker`) and give it: *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
 
 1. **The screenshots** — pass paths to all captured images in `$TICKET_TMP/ux-screenshots/`
 2. **Requirement prose** — the full ticket body (not just AC bullet points): title, description, user story, and any comments
@@ -477,7 +477,7 @@ Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"
 4. **The visual design contract** (if `ui-spec.json` has a `design` section): the design tokens, component-library binding, brand assets, voice guidelines, and — critically — any `reference-screenshot` assets whose `applies_to` covers the pages this ticket touches. Pass the reference image paths so the reviewer can compare side by side. If the target repo has `docs/design/` (produced by `/design`), the approved-mock screenshots in `docs/design/reference/` are the comparison baseline — pass them even if the epic's ui-spec assets don't list one for these pages, and treat `docs/design/mockups/*.html` as the living reference implementation when layout questions arise. Include the Phase 1b token-check output.
 5. **The AC bullets** — for reference, but instruct the reviewer: *"These bullets define the floor, not the ceiling. Your job is to evaluate whether the screens make sense to a user trying to accomplish the goal described in the prose, and whether they honor the visual design contract."*
 
-The sub-agent should evaluate:
+The worker should evaluate:
 
 - **Information architecture**: Is the right information on the right screen? Is anything missing that a user would expect to see? Is anything shown that shouldn't be visible at this stage?
 - **Menu and navigation coherence**: If menus or navigation changed, do the new entries make sense in context? Are they in the right place, with the right label? Do they appear/disappear at the right times?
@@ -492,13 +492,13 @@ The sub-agent should evaluate:
   - Does visible copy match the voice guidelines (empty states with personality, not "No data")?
   - **Surface-level correctness a human would catch in 2 seconds**: 0-indexed lists shown to users, raw enum values in labels, placeholder copy, truncated text, misaligned elements, debug output visible in the UI.
 
-The sub-agent returns findings in the same confidence categories as the code review:
+The worker returns findings in the same confidence categories as the code review:
 
 - **High-confidence**: Clear UX problems — missing confirmation message after submit, a Cancel button that should not appear in PENDING state, a form field exposing an internal DB ID — and clear design-contract violations: design tokens not applied (Phase 1b MISSING), a page that plainly doesn't match its reference screenshot, a missing brand asset, user-visible 0-indexing or debug output. These have an obvious fix and **fail the ticket until fixed**.
 - **Medium-confidence**: Likely issues that need a quick look — a menu label that's technically correct but potentially confusing, an empty state with no guidance copy. These should be applied but are worth a quick sanity check.
 - **Low-confidence**: Subjective observations or minor polish — layout density, label wording choices, optional affordances the ticket doesn't require. Flag for awareness, do not block.
 
-The sub-agent writes findings to `$TICKET_TMP/ux-review.md` and returns a concise summary.
+The worker writes findings to `$TICKET_TMP/ux-review.md` and returns a concise summary.
 
 #### Phase 3: Apply findings
 
