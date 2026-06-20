@@ -85,6 +85,35 @@ def test_csrf_no_cookie_warns():
     assert sg.check_csrf([], auth_mode="cookie").status == sg.WARN
 
 
+def test_csrf_samesite_none_fails():
+    f = sg.check_csrf(["sid=abc; HttpOnly; SameSite=None"], auth_mode="cookie")
+    assert f.status == sg.FAIL
+
+
+def test_csrf_weakest_cookie_fails_among_many():
+    # A strong CSRF cookie does not excuse a weak session cookie.
+    f = sg.check_csrf(
+        ["csrf=xyz; HttpOnly; SameSite=Strict", "sid=abc; HttpOnly; SameSite=None"],
+        auth_mode="cookie",
+    )
+    assert f.status == sg.FAIL
+
+
+# --- Set-Cookie extraction (pure) -------------------------------------------
+
+
+def test_extract_set_cookies_from_list():
+    assert sg._extract_set_cookies({"set-cookie": ["a=1", "b=2"]}) == ["a=1", "b=2"]
+
+
+def test_extract_set_cookies_from_str():
+    assert sg._extract_set_cookies({"Set-Cookie": "a=1"}) == ["a=1"]
+
+
+def test_extract_set_cookies_absent():
+    assert sg._extract_set_cookies({"content-type": "text/html"}) == []
+
+
 # --- structured logging (pure) ----------------------------------------------
 
 
@@ -218,3 +247,38 @@ def test_integration_against_real_http_server(live_server):
     assert statuses["health"] == sg.PASS
     assert statuses["rate-limit"] == sg.PASS  # 429 + Retry-After observed
     assert r.ok is True
+
+
+class _MultiCookieHandler(BaseHTTPRequestHandler):
+    """Sends two Set-Cookie headers; the weak session cookie is NOT last."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        # Weak session cookie FIRST, strong cookie LAST: a dict-collapse would
+        # keep only the strong one and wrongly PASS.
+        self.send_header("Set-Cookie", "sid=abc; HttpOnly; SameSite=None")
+        self.send_header("Set-Cookie", "csrf=xyz; HttpOnly; SameSite=Strict")
+        self.end_headers()
+
+
+@pytest.fixture()
+def multi_cookie_server():
+    server = HTTPServer(("127.0.0.1", 0), _MultiCookieHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_integration_multiple_set_cookie_not_collapsed(multi_cookie_server):
+    # The weak session cookie must be seen even though a later cookie is strong.
+    r = sg.run_gate(".", multi_cookie_server)
+    statuses = {f.name: f.status for f in r.findings}
+    assert statuses["csrf"] == sg.FAIL

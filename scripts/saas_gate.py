@@ -129,11 +129,20 @@ def check_security_headers(headers: dict, *, https: bool = False) -> list[Findin
     if csp and ("unsafe-inline" in csp or "default-src *" in csp.replace("'", "")):
         findings.append(Finding("security", "csp-strength", WARN, "weak CSP (unsafe-inline / default-src *)"))
     xfo = _hget(headers, "x-frame-options")
-    frame_ancestors = bool(csp and "frame-ancestors" in csp)
+    xfo_ok = (xfo or "").strip().lower() in ("deny", "sameorigin")
+    # frame-ancestors must be present and not the wildcard *.
+    fa_ok = False
+    if csp:
+        for directive in csp.split(";"):
+            directive = directive.strip()
+            if directive.lower().startswith("frame-ancestors"):
+                value = directive[len("frame-ancestors"):].strip()
+                fa_ok = bool(value) and "*" not in value
     findings.append(Finding(
         "security", "clickjacking",
-        PASS if (xfo or frame_ancestors) else FAIL,
-        xfo or ("CSP frame-ancestors" if frame_ancestors else "no X-Frame-Options or CSP frame-ancestors"),
+        PASS if (xfo_ok or fa_ok) else FAIL,
+        ("X-Frame-Options=" + xfo if xfo_ok else "")
+        or ("CSP frame-ancestors" if fa_ok else (f"unsafe/absent (X-Frame-Options={xfo!r})")),
     ))
     findings.append(Finding(
         "security", "referrer-policy",
@@ -148,43 +157,71 @@ def check_security_headers(headers: dict, *, https: bool = False) -> list[Findin
     return findings
 
 
+def _cookie_attrs(cookie: str) -> dict[str, str | bool]:
+    """Parse a Set-Cookie value's attributes (everything after ``name=value``)."""
+    attrs: dict[str, str | bool] = {}
+    for part in cookie.split(";")[1:]:
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            key, _, value = part.partition("=")
+            attrs[key.strip().lower()] = value.strip()
+        else:
+            attrs[part.lower()] = True
+    return attrs
+
+
 def check_csrf(set_cookie_headers: list[str], *, auth_mode: str = "cookie", https: bool = False) -> Finding:
-    """CSRF posture from Set-Cookie (cookie auth) or N/A for bearer/API auth."""
+    """CSRF posture from Set-Cookie (cookie auth) or N/A for bearer/API auth.
+
+    Attributes are parsed, not substring-matched: ``SameSite=None`` does NOT
+    mitigate CSRF (only ``Lax``/``Strict`` do), so it is treated as a failure.
+    """
     if auth_mode == "bearer":
         return Finding("security", "csrf", NA, "bearer/API auth — CSRF tokens not applicable")
     if not set_cookie_headers:
         return Finding("security", "csrf", WARN, "no session cookie observed; cannot assess SameSite")
-    problems = []
+    fails: list[str] = []
+    warns: list[str] = []
     for cookie in set_cookie_headers:
-        low = cookie.lower()
-        if "samesite" not in low:
-            problems.append("missing SameSite")
-        if "httponly" not in low:
-            problems.append("missing HttpOnly")
-        if https and "secure" not in low:
-            problems.append("missing Secure on HTTPS")
-    if any("samesite" in p.lower() for p in problems):
-        return Finding("security", "csrf", FAIL, "; ".join(sorted(set(problems))))
-    if problems:
-        return Finding("security", "csrf", WARN, "; ".join(sorted(set(problems))))
-    return Finding("security", "csrf", PASS, "session cookie has SameSite + HttpOnly")
+        attrs = _cookie_attrs(cookie)
+        samesite = str(attrs.get("samesite", "")).lower()
+        if samesite not in ("lax", "strict"):
+            fails.append(f"SameSite={samesite or 'missing'} (need Lax/Strict)")
+        if "httponly" not in attrs:
+            warns.append("missing HttpOnly")
+        if https and "secure" not in attrs:
+            fails.append("missing Secure on HTTPS")
+    if fails:
+        return Finding("security", "csrf", FAIL, "; ".join(sorted(set(fails + warns))))
+    if warns:
+        return Finding("security", "csrf", WARN, "; ".join(sorted(set(warns))))
+    return Finding("security", "csrf", PASS, "session cookie(s) have SameSite=Lax/Strict + HttpOnly")
 
 
 def check_structured_logging(log_lines: list[str]) -> Finding:
-    if not log_lines:
-        return Finding("observability", "structured-logging", SKIPPED, "no log sample provided")
+    """Scan ALL non-blank log lines; FAIL (non-JSON) takes precedence over WARN."""
+    non_blank = [ln.strip() for ln in log_lines if ln.strip()]
+    if not non_blank:
+        return Finding("observability", "structured-logging", SKIPPED, "no (non-blank) log sample provided")
+    fail_detail: str | None = None
+    warned = False
     parsed = 0
-    for line in log_lines:
-        line = line.strip()
-        if not line:
-            continue
+    for line in non_blank:
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
-            return Finding("observability", "structured-logging", FAIL, f"non-JSON log line: {line[:60]!r}")
+            fail_detail = fail_detail or f"non-JSON log line: {line[:60]!r}"
+            continue
         if not isinstance(obj, dict) or not ({"level", "severity"} & set(obj)):
-            return Finding("observability", "structured-logging", WARN, "JSON logs lack a level/severity field")
+            warned = True
+            continue
         parsed += 1
+    if fail_detail:
+        return Finding("observability", "structured-logging", FAIL, fail_detail)
+    if warned:
+        return Finding("observability", "structured-logging", WARN, "some JSON logs lack a level/severity field")
     return Finding("observability", "structured-logging", PASS, f"{parsed} structured log line(s)")
 
 
@@ -244,16 +281,43 @@ def check_tenant_isolation(
 # --- default HTTP getter ----------------------------------------------------
 
 
+def _headers_to_dict(message) -> dict:
+    """Lower-case header dict, preserving ALL Set-Cookie values as a list.
+
+    A plain ``dict`` comprehension collapses duplicate headers, dropping all but
+    the last Set-Cookie — and the session cookie is frequently not the last one.
+    ``email.message.Message.get_all`` keeps every value.
+    """
+    headers = {k.lower(): v for k, v in message.items()}
+    if message is not None:
+        headers["set-cookie"] = message.get_all("set-cookie") or []
+    return headers
+
+
 def default_http_get(url: str, *, timeout: float = 10.0) -> tuple[int, dict, str]:
     req = urllib.request.Request(url, headers={"User-Agent": "chief-wiggum-saas-gate"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - gate probes a user-supplied URL
-            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read(8192).decode("utf-8", "replace")
+            return resp.status, _headers_to_dict(resp.headers), resp.read(8192).decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        return exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, ""
+        return exc.code, _headers_to_dict(exc.headers) if exc.headers else {}, ""
 
 
 # --- orchestration ----------------------------------------------------------
+
+
+def _extract_set_cookies(headers: dict) -> list[str]:
+    """Normalise Set-Cookie from a headers dict into a list of cookie strings.
+
+    ``default_http_get`` stores a list (all values preserved); simpler/injected
+    getters may store a single string. Other key casings are tolerated.
+    """
+    for k, v in headers.items():
+        if k.lower() == "set-cookie":
+            if isinstance(v, (list, tuple)):
+                return [str(c) for c in v]
+            return [str(v)]
+    return []
 
 
 def run_gate(
@@ -273,7 +337,7 @@ def run_gate(
         https = base_url.startswith("https://") or require_https
         try:
             _, headers, _ = http_get(base_url)
-            set_cookie = [v for k, v in headers.items() if k.lower() == "set-cookie"]
+            set_cookie = _extract_set_cookies(headers)
             for f in check_security_headers(headers, https=https):
                 report.findings.append(f)
             report.findings.append(check_csrf(set_cookie, auth_mode=auth_mode, https=https))
