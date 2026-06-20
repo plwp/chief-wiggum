@@ -134,6 +134,16 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
 
+### Step 2e: SaaS NFR gate (optional)
+
+For SaaS products, validate non-functional requirements (security headers + CSRF posture, auth rate-limiting, tenant isolation, health + structured logging) against the running app. Start the app if needed (don't punt), then:
+
+```bash
+python3 "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" --base-url "$BASE_URL" --gate --markdown
+```
+
+It reports five statuses (`pass`/`fail`/`warn`/`skipped`/`not_applicable`); a real `fail` (e.g. missing CSP, a cross-tenant data leak) blocks the epic close, while `warn`/`skipped` are surfaced but don't block. See `/saas-gate` for the full check list (tenant isolation, performance, data integrity need the live multi-user app).
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.

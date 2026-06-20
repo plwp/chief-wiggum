@@ -214,6 +214,7 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 
 /ship                           # Create PR with mermaid diagrams (standalone)
 /stitch-audit owner/repo --trace keyword   # Cross-layer data flow audit
+/saas-gate owner/repo --base-url <url>     # SaaS non-functional-requirements gate (security/isolation/perf/observability)
 /update                         # Refresh model IDs and library versions
 ```
 
