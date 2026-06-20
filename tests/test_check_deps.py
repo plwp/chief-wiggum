@@ -110,3 +110,13 @@ def test_recommend_workflows_include_direct_provider_usage():
 
 def test_keep_going_workflow_is_mapped():
     assert check_deps.recommend_profiles(workflows=["keep-going"]) == ["core"]
+
+
+def test_go_lsp_profile_requires_gopls():
+    assert check_deps.is_required("cmds", "gopls", ["go-lsp"])
+    assert check_deps.is_required("cmds", "go", ["go-lsp"])
+    assert not check_deps.is_required("cmds", "gopls", ["core"])
+
+
+def test_python_lsp_profile_requires_pyright():
+    assert check_deps.is_required("cmds", "pyright-langserver", ["python-lsp"])

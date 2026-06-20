@@ -90,6 +90,16 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": {"langchain-google-vertexai", "google-cloud-aiplatform"},
         "secrets": {"GOOGLE_CLOUD_PROJECT"},
     },
+    "go-lsp": {
+        "cmds": {"gopls", "go"},
+        "pkgs": set(),
+        "secrets": set(),
+    },
+    "python-lsp": {
+        "cmds": {"pyright-langserver"},
+        "pkgs": set(),
+        "secrets": set(),
+    },
 }
 
 
@@ -311,6 +321,9 @@ def main():
     check_cmd("tmux", "tmux", "-V", is_required("cmds", "tmux", workflows))
     check_cmd("ffmpeg", "ffmpeg", "-version", is_required("cmds", "ffmpeg", workflows))
     check_cmd("git", "git", "--version", is_required("cmds", "git", workflows))
+    check_cmd("go", "go", "version", is_required("cmds", "go", workflows))
+    check_cmd("gopls", "gopls", "version", is_required("cmds", "gopls", workflows))
+    check_cmd("pyright-langserver", "pyright-langserver", "--version", is_required("cmds", "pyright-langserver", workflows))
 
     print("\n--- Python Packages ---")
     check_python_pkg("keyring", "keyring", is_required("pkgs", "keyring", workflows))
