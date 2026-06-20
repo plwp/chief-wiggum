@@ -1,6 +1,6 @@
 # Implement Wave - Parallel Epic Implementation
 
-Takes an epic and implements all its tickets in dependency-ordered waves. Tickets within a wave have no interdependencies and run as parallel sub-agents, each in its own worktree. After each wave lands, the next wave starts from an updated main.
+Takes an epic and implements all its tickets in dependency-ordered waves. Tickets within a wave have no interdependencies and run as parallel workers, each in its own worktree. After each wave lands, the next wave starts from an updated main.
 
 This is the high-throughput alternative to running `/implement` sequentially per ticket. Use it when:
 - The epic has 3+ tickets
@@ -10,7 +10,7 @@ This is the high-throughput alternative to running `/implement` sequentially per
 ## Ownership
 
 Same principles as `/implement`: you own the solution, not just the code. The validation loop is not negotiable. But here, validation happens at **two levels**:
-- **Per-ticket**: Each parallel sub-agent runs the full `/implement` loop (Steps 5-8)
+- **Per-ticket**: Each parallel worker runs the full `/implement` loop (Steps 5-8)
 - **Per-wave**: After merging a wave, the orchestrator runs integration checks before starting the next wave
 
 ## Usage
@@ -188,7 +188,7 @@ Revised Wave 3: #45, #46
 
 #### 4a: Generate formal test artifacts (if formal models exist)
 
-**Before launching any sub-agents**, the orchestrator generates mechanical test artifacts from the formal models. This is deterministic — no LLM involved — and provides test scaffolding that sub-agents adapt rather than inventing tests from scratch.
+**Before launching any workers**, the orchestrator generates mechanical test artifacts from the formal models. This is deterministic — no LLM involved — and provides test scaffolding that workers adapt rather than inventing tests from scratch.
 
 ```bash
 if [ "$HAS_FORMAL_MODELS" = true ]; then
@@ -200,9 +200,9 @@ if [ "$HAS_FORMAL_MODELS" = true ]; then
 fi
 ```
 
-The shared `$CW_TMP/formal-test-artifacts/formal-artifacts-manifest.json` lists the generated files; every sub-agent in the wave adapts the same artifacts to its ticket.
+The shared `$CW_TMP/formal-test-artifacts/formal-artifacts-manifest.json` lists the generated files; every worker in the wave adapts the same artifacts to its ticket.
 
-These artifacts are shared across all tickets in the wave — each sub-agent receives the same test plan and adapts the relevant portions for its ticket.
+These artifacts are shared across all tickets in the wave — each worker receives the same test plan and adapts the relevant portions for its ticket.
 
 #### 4b: Launch parallel implementations
 
@@ -216,10 +216,10 @@ For each ticket in the current wave (up to `--max-parallel`):
 
 2. Launch a background **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) — it operates in its own isolated checkout, never the main checkout, and signals completion by writing its status/diff artifacts. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`, `run_in_background: true`.
 
-   The sub-agent prompt must include:
+   The worker prompt must include:
    - The full ticket details (title, body, acceptance criteria)
    - The epic context (contracts, invariants, state machines, traceability)
-   - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the sub-agent: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
+   - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the worker: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
    - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
      - Step 4: Consult 3 AIs on approach (Codex + Gemini as background processes, self as the third perspective), reconcile into plan
      - Step 5: Write failing tests (TDD) — **use model-derived test cases as the starting point**, supplement with LLM-written tests for edge cases
@@ -237,41 +237,41 @@ For each ticket in the current wave (up to `--max-parallel`):
    - The target repo path and default branch name
    - Instructions to report back: branch name, test results, review findings, any issues
 
-3. If the wave has more tickets than `--max-parallel`, queue the excess. As each sub-agent completes, launch the next queued ticket.
+3. If the wave has more tickets than `--max-parallel`, queue the excess. As each worker completes, launch the next queued ticket.
 
-**Sub-agent timeout**: If a sub-agent has not completed after **3 hours**, consider it hung. Implementation sub-agents run the full /implement loop internally (AI consultations, TDD, review, validation) which legitimately takes 60-120 minutes per ticket. Only after the 3-hour mark should you log a warning, note the ticket as failed for this wave, and proceed with collecting results from completed agents. The hung ticket can be retried in a later wave or handled manually with `/implement`.
+**Worker timeout**: If a worker has not completed after **3 hours**, consider it hung. Implementation workers run the full /implement loop internally (AI consultations, TDD, review, validation) which legitimately takes 60-120 minutes per ticket. Only after the 3-hour mark should you log a warning, note the ticket as failed for this wave, and proceed with collecting results from completed agents. The hung ticket can be retried in a later wave or handled manually with `/implement`.
 
-**While sub-agents run**, the orchestrator should monitor for completion notifications. Do not poll — the Agent tool will notify when each background agent finishes.
+**While workers run**, the orchestrator waits for each worker's completion signal — its output/status artifact appearing at the agreed path (see `docs/worker-contracts.md` → completion signalling). *Claude Code adapter:* a background Agent's task-notification fires when a worker finishes; treat it as the "artifact is ready" signal, not the contract itself.
 
 #### 4c: Collect and verify results
 
-As each sub-agent in the wave completes, collect:
+As each worker in the wave completes, collect:
 - **Branch name** and worktree path
 - **Test results**: did the full suite pass?
 - **Review findings**: what was flagged, what was fixed?
 - **Issues**: any blockers or unresolved items?
 
-If a sub-agent reports failure:
+If a worker reports failure:
 - **Test failures**: Attempt to diagnose. If it's a real issue, flag it. If it's a flaky test or pre-existing failure, note it.
 - **Blocking errors**: Log the error. The ticket may need to be moved to a later wave or handled manually.
-- **Timeout**: The sub-agent may still be running. Check its status before declaring failure.
+- **Timeout**: The worker may still be running. Check its status before declaring failure.
 
-Do not proceed to the merge step until ALL sub-agents in the wave have completed (successfully or with documented failures).
+Do not proceed to the merge step until ALL workers in the wave have completed (successfully or with documented failures).
 
-**Rogue PR detection**: After all sub-agents complete, check for unauthorized PRs:
+**Rogue PR detection**: After all workers complete, check for unauthorized PRs:
 ```bash
 gh pr list --repo "$owner_repo" --state open --limit 10 --json number,title,author,headRefName
 ```
-If any PRs were created by a sub-agent during this wave (matching ticket branch names), close them with a comment explaining the orchestrator handles PR creation. Warn the user.
+If any PRs were created by a worker during this wave (matching ticket branch names), close them with a comment explaining the orchestrator handles PR creation. Warn the user.
 
-**Orchestrator independent verification**: For each successfully completed ticket, the orchestrator must independently verify (not just trust the sub-agent's report):
+**Orchestrator independent verification**: For each successfully completed ticket, the orchestrator must independently verify (not just trust the worker's report):
 1. Check out the ticket's branch in its worktree
 2. Run the full test suite
 3. Run linting
 4. Verify the branch has the expected commits
-5. **For frontend tickets**: verify screenshots exist in `$TICKET_TMP/ux-screenshots/` and LOOK at them. A sub-agent reporting "design review passed" without screenshots is a sub-agent that skipped the gate. If the epic has a design contract and the screenshots show default-theme output, the ticket is not done.
+5. **For frontend tickets**: verify screenshots exist in `$TICKET_TMP/ux-screenshots/` and LOOK at them. A worker reporting "design review passed" without screenshots is a worker that skipped the gate. If the epic has a design contract and the screenshots show default-theme output, the ticket is not done.
 
-This is the same principle as `/implement` Step 8 — the orchestrator is the quality gate, not the sub-agent.
+This is the same principle as `/implement` Step 8 — the orchestrator is the quality gate, not the worker.
 
 #### 4d: Merge wave to a staging branch
 
@@ -433,8 +433,8 @@ After all waves complete:
 ## Key Principles
 
 - **Waves respect the dependency graph.** A ticket never starts until all its dependencies have merged to main. This is a hard constraint, not an optimisation hint.
-- **Each sub-agent runs the full /implement loop.** No shortcuts — TDD, multi-AI review, linting, tests. The parallelism is in running multiple tickets simultaneously, not in cutting steps per ticket.
-- **The orchestrator owns the merge.** Sub-agents produce branches. The orchestrator merges, resolves conflicts, and runs integration checks. Sub-agents never merge or create PRs.
+- **Each worker runs the full /implement loop.** No shortcuts — TDD, multi-AI review, linting, tests. The parallelism is in running multiple tickets simultaneously, not in cutting steps per ticket.
+- **The orchestrator owns the merge.** Workers produce branches. The orchestrator merges, resolves conflicts, and runs integration checks. Workers never merge or create PRs.
 - **Integration checks between waves catch seam bugs early.** A test that passes in isolation but fails after merge is exactly the kind of bug this workflow is designed to catch.
 - **Max-parallel limits API pressure.** Two concurrent tickets means up to 8 simultaneous AI API calls (3-4 consultations per ticket). Respect rate limits. Increase only with high-tier API access.
 - **Failed tickets don't block the wave.** If one ticket in a wave fails, the other tickets in that wave can still merge. The failed ticket is retried or deferred to a later wave.

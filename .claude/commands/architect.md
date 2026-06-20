@@ -91,9 +91,9 @@ Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` 
 
 Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile all three consultations into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
 
-**The sub-agent MUST produce structured JSON models first.** The prose markdown is then generated mechanically from the JSON — never the other way around. This ensures the machine-readable and human-readable artifacts stay in sync.
+**The worker MUST produce structured JSON models first.** The prose markdown is then generated mechanically from the JSON — never the other way around. This ensures the machine-readable and human-readable artifacts stay in sync.
 
-Include the JSON Schema files from `$CW_HOME/templates/formal-models/` in the sub-agent prompt as reference, plus the worked example from `$CW_HOME/docs/formal-methods/examples/order-lifecycle.*.json` as a concrete template to follow.
+Include the JSON Schema files from `$CW_HOME/templates/formal-models/` in the worker prompt as reference, plus the worked example from `$CW_HOME/docs/formal-methods/examples/order-lifecycle.*.json` as a concrete template to follow.
 
 #### 4a. Data Contracts — structured model (`contracts.json`)
 
@@ -107,11 +107,11 @@ For every entity and API endpoint the epic touches, define:
 
 **Ground every data fact in a real source.** Field names, metric definitions, and external identifiers must come from `docs/domain-context.md` (or direct introspection) — cite the source in `notes`. Where a fact genuinely cannot be confirmed yet (external system unavailable, awaiting client answer), write an explicit `TBD:` marker in the field — e.g. `"notes": "TBD: confirm column name against dbt model orders_daily"`. Markers are machine-detected and **gate dependent tickets** in `/implement-wave`; a silent guess does not.
 
-**Verifier-in-the-loop**: After the sub-agent produces `contracts.json`, validate it:
+**Verifier-in-the-loop**: After the worker produces `contracts.json`, validate it:
 ```bash
 python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/contracts.json"
 ```
-If validation fails, feed the errors back to the sub-agent and have it fix the JSON. Repeat until valid.
+If validation fails, feed the errors back to the worker and have it fix the JSON. Repeat until valid.
 
 #### 4b. State Machines — structured model (`state-machines.json`)
 
@@ -153,7 +153,7 @@ python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view
 
 Produce a JSON file conforming to `$CW_HOME/templates/formal-models/ui-spec-schema.json`.
 
-This is the **UI contract** that prevents sub-agents from making conflicting design decisions. Without it, one agent builds a sidebar panel, another builds a separate page, and a third uses a dropdown — for the same feature.
+This is the **UI contract** that prevents workers from making conflicting design decisions. Without it, one agent builds a sidebar panel, another builds a separate page, and a third uses a dropdown — for the same feature.
 
 The UI spec defines:
 
@@ -173,7 +173,7 @@ The UI spec defines:
    **If no `docs/design/` exists** and the epic has frontend tickets, recommend running `/design` first — a brainstormed token list is a weaker contract than an approved rendered design. If the user declines, author the section from the seed decisions:
    - `source`: where the design comes from — the design system / reference product / brand kit discovered by `/seed` Step 3, with references (URLs, repo paths, reference screenshots). Only `net-new` if `/seed` confirmed nothing exists to match.
    - `tokens`: concrete values — colors (primary required; include brand gradients), typography (fonts + scale), spacing, radii, shadows. Derived from the seed design source when present; deliberate choices (with rationale in the ADR) when net-new. **Never leave a component library's default theme as the implicit answer.**
-   - `component_library`: which library and whether to `adopt`, `extend`, or go `custom` — sub-agents must not hand-roll components when the contract says adopt.
+   - `component_library`: which library and whether to `adopt`, `extend`, or go `custom` — workers must not hand-roll components when the contract says adopt.
    - `assets`: logo/wordmark/illustrations/reference screenshots, each with `applies_to` pages. Per-page `design_refs` link pages to the reference screenshots they must visually match.
    - `voice`: tone and empty-state guidelines, so empty states get personality instead of "No data".
 
@@ -181,9 +181,9 @@ The UI spec defines:
 
 **Critical constraint**: Every component that could be implemented as multiple UI patterns (dropdown vs tab vs modal vs page) MUST have an explicit interaction contract specifying which pattern to use.
 
-Include the worked example from `$CW_HOME/docs/formal-methods/examples/kanban-app-ui-spec.json` in the sub-agent prompt as a template.
+Include the worked example from `$CW_HOME/docs/formal-methods/examples/kanban-app-ui-spec.json` in the worker prompt as a template.
 
-**Verifier-in-the-loop**: After the sub-agent produces `ui-spec.json`, validate it:
+**Verifier-in-the-loop**: After the worker produces `ui-spec.json`, validate it:
 ```bash
 python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/ui-spec.json"
 ```

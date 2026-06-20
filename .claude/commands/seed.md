@@ -57,7 +57,7 @@ Most seed failures are not bad architecture — they're architecture built on **
    - The semantic/modeling layer (dbt, Dataform, LookML, a metrics store) — canonical metric definitions, dimensions, measures
    - The physical schema — introspect it (run `\d`/`SHOW CREATE TABLE`/`db.collection.findOne()` against a real instance, or read migration files). Never trust table/column names from memory or docs alone.
    - The transformation repo's **history and PRs** — deprecations, frozen sources, unit/locale normalisation rules, test-record exclusions, dedup patterns, known-bad data. Send an **explorer worker** over the repo history; caveats live in PR descriptions, not schemas.
-2. **Real use cases** — "Where do real user requests live?" (issue tracker, support queue, team chat channels, existing dashboards). If accessible, mine them with a sub-agent to derive:
+2. **Real use cases** — "Where do real user requests live?" (issue tracker, support queue, team chat channels, existing dashboards). If accessible, mine them with a worker to derive:
    - The question patterns the product must answer (these become golden eval cases for `/architect` traceability)
    - The dimensions/measures/entities users actually slice by
    - Domain caveats stated by the team ("ignore test accounts", "EU revenue is net of VAT")
@@ -167,7 +167,7 @@ For each issue, define:
 
 These go in the first sprint — they're needed as soon as there's code to test and deploy.
 
-Run issue creation in a **worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`, here writing issues rather than findings) to keep the orchestrator context clean. *Claude Code adapter:* `subagent_type: "general-purpose"`. The worker should use `gh issue create` for each issue and `gh label create` for any new labels.
+Run issue creation in an **issue-authoring worker** (contract: `docs/worker-contracts.md#issue-authoring-worker`) to keep the orchestrator context clean. *Claude Code adapter:* `subagent_type: "general-purpose"`. The worker should use `gh issue create` for each issue and `gh label create` for any new labels.
 
 ### Step 9: Report
 

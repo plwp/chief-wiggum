@@ -105,3 +105,26 @@ scope / isolation / stop) is what another harness implements.
 - **Write scope**: its own output artifact only.
 - **Isolation**: none required.
 - **Stop condition**: synthesized artifact written.
+
+### verification-worker
+
+- **Role**: execute integration tests / browser journeys — starts services, runs
+  tests, captures evidence. Distinct from review-worker (which only reads a diff).
+- **Inputs**: the test scenarios / integration-test spec, the target repo.
+- **Output artifact paths**: a results/evidence file (pass/fail summary,
+  screenshots, manifests) under `$CW_TMP/`.
+- **Write scope**: its evidence artifacts only; it may start/stop services but
+  must not modify repo source.
+- **Isolation**: none required against the repo; runs against the target repo.
+- **Stop condition**: every scenario executed and the evidence artifact written;
+  on a critical failure, stop and report instead of continuing.
+
+### issue-authoring-worker
+
+- **Role**: create GitHub issues/labels from a planned set.
+- **Inputs**: the planned issues and labels.
+- **Output artifact paths**: the created issue numbers / a summary artifact.
+- **Write scope**: GitHub issues/labels via `gh` only; it must not modify repo
+  files.
+- **Isolation**: none required (no repo writes).
+- **Stop condition**: every planned issue/label created and reported.
