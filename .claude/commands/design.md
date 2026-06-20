@@ -102,6 +102,8 @@ This is the **only** step that blocks on the user. Do not add approval gates els
 
 ### Step 4: Multi-AI design critique
 
+The critique is a **review worker** task (contract: `docs/worker-contracts.md#review-worker`) run through the `design_critic` provider role rather than a Claude sub-agent — so it is portable across harnesses.
+
 Unless `--skip-critique`: send the approved direction's screenshots to the `design_critic` quorum with the **same prompt** (value is in natural divergence). The role runs its providers in parallel with retries + output validation:
 
 ```bash

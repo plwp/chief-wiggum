@@ -52,7 +52,7 @@ ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 
 ### Step 2: Explore the codebase
 
-Launch an **Explore sub-agent** (`subagent_type: "Explore"`, thoroughness: "very thorough") to understand the current state of the areas this epic will touch. The agent should report:
+Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) to understand the current state of the areas this epic will touch. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough". The worker should report:
 
 - Current data models (structs, types, schemas) relevant to the epic
 - Existing API endpoints that will be extended or consumed
@@ -83,13 +83,13 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/arch
   --output-dir "$CW_TMP/architect-consult" --cwd "$TARGET_REPO"
 ```
 
-Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` with status in `architecture_critic-manifest.json`. Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel to explore the codebase and produce its own architectural analysis at `$CW_TMP/architect-opus.md`.
+Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` with status in `architecture_critic-manifest.json`. Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel to explore the codebase and produce its own architectural analysis at `$CW_TMP/architect-opus.md`. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
 
 **HARD RULE**: Wait for ALL THREE before proceeding.
 
 ### Step 4: Synthesise into architectural artifacts
 
-Launch a **second Opus sub-agent** to reconcile all three consultations into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
+Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile all three consultations into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
 
 **The sub-agent MUST produce structured JSON models first.** The prose markdown is then generated mechanically from the JSON — never the other way around. This ensures the machine-readable and human-readable artifacts stay in sync.
 

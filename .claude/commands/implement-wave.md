@@ -214,7 +214,7 @@ For each ticket in the current wave (up to `--max-parallel`):
    mkdir -p "$TICKET_TMP"
    ```
 
-2. Launch a **sub-agent in a worktree** (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`, `run_in_background: true`).
+2. Launch a background **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) — it operates in its own isolated checkout, never the main checkout, and signals completion by writing its status/diff artifacts. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`, `run_in_background: true`.
 
    The sub-agent prompt must include:
    - The full ticket details (title, body, acceptance criteria)
@@ -293,7 +293,7 @@ This is the same principle as `/implement` Step 8 — the orchestrator is the qu
 3. **If merge conflicts occur** (expected when tickets in the same wave touch shared files):
    - Log which files conflict
    - Attempt automatic resolution for trivial conflicts (e.g., both sides added different imports)
-   - For non-trivial conflicts: launch a **Sonnet sub-agent** to resolve the conflict, passing it both branches' changes and the epic contracts as constraints
+   - For non-trivial conflicts: launch an **implementation worker** to resolve the conflict, passing it both branches' changes and the epic contracts as constraints
    - After resolution, run the full test suite to verify the merge is clean
 
 #### 4e: Wave integration check
@@ -306,7 +306,7 @@ Run the integration check **on the staging branch, before promoting to main**:
 4. **Smoke test**: If services can be started, start them and verify health endpoints respond
 
 If the integration check fails:
-- **Test failure caused by merge**: Fix it on the staging branch. Launch a Sonnet sub-agent to diagnose and fix.
+- **Test failure caused by merge**: Fix it on the staging branch. Launch an implementation worker to diagnose and fix.
 - **Build failure**: This is a hard blocker. Fix before proceeding.
 - Do NOT push until all checks pass.
 

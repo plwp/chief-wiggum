@@ -136,7 +136,7 @@ For each integration test:
 
 If the target repo has Playwright or E2E infrastructure, use it for UI-surface assertions. Otherwise, use API calls and database queries.
 
-**Run inside a sub-agent** (`subagent_type: "general-purpose"`, `model: "sonnet"`) to keep the heavy test execution out of the main context. The sub-agent should:
+**Run inside a worker** (contract: `docs/worker-contracts.md#review-worker`) to keep the heavy test execution out of the orchestrator context. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`. The worker should:
 - Start services if needed (`docker compose up -d`)
 - Execute each integration test
 - Capture results
@@ -201,7 +201,7 @@ If `integration-tests.md` has no UI-facing journeys, skip this step and note the
 
 #### Walk each journey with Playwright/browser-use
 
-Run inside a sub-agent (`subagent_type: "general-purpose"`, `model: "sonnet"`) that has access to the target repo's Playwright or browser-use setup. For each journey:
+Run inside a worker (contract: `docs/worker-contracts.md#review-worker`) that has access to the target repo's Playwright or browser-use setup. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`. For each journey:
 
 1. Start from a clean authenticated session (or unauthenticated if the journey requires it)
 2. Follow every step in the journey spec
@@ -234,7 +234,7 @@ If the target repo has no Playwright or browser-use setup, flag the gap and skip
 
 #### Opus UX review
 
-Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) with:
+Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) with: *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
 - Epic goal and the original ticket requirements for each ticket referenced in the journeys
 - `contracts.md`, `state-machines.md`, and `invariants.md` from the epic
 - The full journey manifest with screenshot paths (Opus can view images)

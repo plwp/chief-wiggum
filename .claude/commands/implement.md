@@ -163,12 +163,12 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
    wait
    ```
 
-2. **Opus exploration** — Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) in parallel with the above. This sub-agent should:
+2. **Opus exploration** — Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel with the above. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`. This worker should:
    - Explore the target repo codebase thoroughly (read key files, understand patterns)
    - Form its own implementation approach
    - Write its findings to `$TICKET_TMP/approach-opus.md`
 
-3. **Codebase deep-dive** — Launch a **Sonnet Explore sub-agent** (`subagent_type: "Explore"`, thoroughness: "very thorough") in parallel with all of the above, running in the background (`run_in_background: true`). This sub-agent should:
+3. **Codebase deep-dive** — Launch a background **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel with all of the above; it signals completion by writing its findings artifact (and a status file), not via a harness notification. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough", `run_in_background: true`. This worker should:
    - Read key files in the areas the ticket will touch (based on ticket description and labels)
    - Document existing patterns, conventions, test infrastructure, and relevant data models
    - Write findings to `$TICKET_TMP/codebase-context.md`
@@ -199,7 +199,7 @@ If any output is empty, missing, or contains only an error message, **retry that
 
 #### Phase B: Reconcile into implementation plan
 
-Once all three approaches are ready, ensure the codebase deep-dive agent (Phase A, task 3) has also completed. Then launch a **second Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) to reconcile them. This sub-agent should:
+Once all three approaches are ready, ensure the codebase deep-dive explorer worker (Phase A, task 3) has also completed (its findings artifact exists). Then launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile them. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`. This worker should:
 
 1. Read all three approach files (`approach-codex.md`, `approach-gemini.md`, `approach-opus.md`)
 2. Read the codebase context file (`$TICKET_TMP/codebase-context.md`) from the deep-dive agent
@@ -235,7 +235,7 @@ The manifest (`$TICKET_TMP/formal-artifacts-manifest.json`) lists the generated 
 
 These mechanically generated artifacts are passed to the sub-agent as inputs — the sub-agent adapts them to the target repo's test framework and conventions, not invents tests from scratch.
 
-Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it:
+Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) — it must operate in its own isolated checkout and never touch the main checkout. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it:
 - The implementation plan from Step 4
 - The epic contracts and traceability matrix (if they exist)
 - The target repo's test framework and conventions
@@ -243,7 +243,7 @@ Launch a **Sonnet sub-agent** in a worktree (`subagent_type: "general-purpose"`,
 - **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The sub-agent MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
-- You are working in a **git worktree** (created by the `isolation: "worktree"` parameter). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the worktree root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You work in an **isolated checkout** (required isolation behavior). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the checkout root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 
 The sub-agent should:
 
@@ -263,7 +263,7 @@ The sub-agent should:
 
 ### Step 6: Implement
 
-Launch a **Sonnet sub-agent** in the **same worktree** from Step 5 (`subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`). Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
+Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) in the **same isolated checkout** from Step 5. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
 **HARD RULES for sub-agent**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 11).
@@ -291,7 +291,7 @@ The sub-agent should:
 
 **THIS STEP IS NEVER OPTIONAL.** Every implementation gets a multi-AI code review, regardless of change size. A one-line typo fix, a 10-line config change, a 500-line feature — all get the same review process. You do not get to self-certify your own code. No exceptions, no shortcuts.
 
-**IMPORTANT**: Run this entire step inside a **Sonnet sub-agent** (`subagent_type: "general-purpose"`, `model: "sonnet"`). The main thread should only receive the synthesized review summary with actionable items.
+**IMPORTANT**: Run this entire step inside a **review worker** (contract: `docs/worker-contracts.md#review-worker`). The orchestrator should only receive the synthesized review summary with actionable items. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`.
 
 The sub-agent should:
 
@@ -469,7 +469,7 @@ done
 
 #### Phase 2: Opus UX + design-fidelity review
 
-Launch an **Opus sub-agent** (`subagent_type: "general-purpose"`, `model: "opus"`) and give it:
+Launch a **review worker** (contract: `docs/worker-contracts.md#review-worker`) and give it: *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
 
 1. **The screenshots** — pass paths to all captured images in `$TICKET_TMP/ux-screenshots/`
 2. **Requirement prose** — the full ticket body (not just AC bullet points): title, description, user story, and any comments
