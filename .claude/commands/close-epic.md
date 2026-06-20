@@ -124,6 +124,16 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
 
 Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the fact was resolved during implementation (update the artifact with the real value and a citation) or it wasn't (which means some ticket was built on a guess — trace it and verify what actually shipped). Target: zero markers.
 
+### Step 2d: Traceability coverage gate
+
+Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`):
+
+```bash
+python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
+```
+
+**Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.
