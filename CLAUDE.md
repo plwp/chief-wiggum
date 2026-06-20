@@ -54,6 +54,8 @@ Chief Wiggum dependency checks are profile-based:
 - `transcription` - ffmpeg and OpenAI Whisper
 - `browser-validation` - browser-use, Playwright, and Anthropic browser-use integration
 - `vertex` - Vertex AI packages and project configuration
+- `go-lsp` - `gopls` + Go toolchain, for semantic code intelligence in `/implement` (optional; `scripts/lsp_query.py`)
+- `python-lsp` - `pyright-langserver`, for Python semantic code intelligence (optional; same helper)
 
 Example:
 

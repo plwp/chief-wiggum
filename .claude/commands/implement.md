@@ -271,6 +271,12 @@ Launch an **implementation worker** (contract: `docs/worker-contracts.md#impleme
 
 The worker should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**
+
+   **Semantic code intelligence (optional, Go/Python)**: while writing, resolve ground-truth facts with the LSP helper instead of guessing — go-to-definition, references, hover types, and live diagnostics. It degrades gracefully (if the language server isn't installed it returns `available: false` and you fall back):
+   ```bash
+   python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" --line <L> --col <C> hover path/to/file.go
+   python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics path/to/file.py
+   ```
 2. Enforce epic contracts as runtime guards:
    - Every REQUIRES block → input validation / guard clause at function entry
    - Every ENSURES block → verify postcondition before returning (or via integration test)
@@ -333,6 +339,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 1. **Apply clear-cut fixes** directly (don't re-run a worker for trivial changes)
 2. **Flag ambiguous feedback** for user decision — only block on items that genuinely need input
 3. **Run static analysis** on the changed files:
+   - **Live LSP diagnostics first (Go/Python, optional)** — surface semantic errors (undefined symbols, type mismatches) before the linter gate, per changed file: `python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics <changed-file>`. This augments, never replaces, the linter; it returns `available: false` and is skipped when the language server isn't installed.
    - Go: `golangci-lint run ./...`
    - TypeScript/JavaScript: `npx eslint --no-warn-ignored` or `npx biome check`
    - Python: `ruff check` or `flake8`
