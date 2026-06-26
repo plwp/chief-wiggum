@@ -24,7 +24,7 @@
     "claude-interactive": {
       "type": "delegate",
       "delegate": "claude-interactive",
-      "enabled": true
+      "enabled": false
     }
   },
   "roles": {
@@ -37,20 +37,20 @@
       "optional": ["claude-interactive"]
     },
     "reviewer": {
-      "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"]
+      "required": ["codex"],
+      "optional": ["gemini", "claude-interactive"]
     },
     "architecture_critic": {
       "required": ["codex"],
       "optional": ["gemini", "claude-interactive"]
     },
     "design_critic": {
-      "required": ["gemini"],
-      "optional": ["codex", "claude-interactive"]
+      "required": ["codex"],
+      "optional": ["gemini", "claude-interactive"]
     },
     "risky_diff_review": {
-      "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"]
+      "required": ["codex"],
+      "optional": ["gemini", "claude-interactive"]
     }
   }
 }

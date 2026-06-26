@@ -19,6 +19,8 @@ As a CLI:
     python3 keychain.py list
 """
 
+from __future__ import annotations
+
 import getpass
 import sys
 
