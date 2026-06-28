@@ -8,6 +8,18 @@ Harness-portable agentic SDLC orchestration. It turns vague tickets into a disci
 - Chief Wiggum adds explicit contracts, multi-model consultation, worktree isolation, independent verification, and GitHub-integrated shipping steps.
 - The goal is not "let the model code unsupervised". The goal is a repeatable engineering workflow that still holds up under review.
 
+## Benchmarks
+
+Chief Wiggum is evaluated black-box against public end-to-end benchmarks (the framework sees only the task input; held-out tests grade the output). Full methodology and per-task results are in [`benchmarks/`](benchmarks/).
+
+| Benchmark | Metric | Chief Wiggum | Best published baseline |
+|---|---|---|---|
+| [E2EDev](https://github.com/SCUNLP/E2EDev) (46 web-app tasks) | Test Accuracy | **67.1%** | 69.4% (Claude-Haiku 4.5 + GPT-Engineer) |
+| E2EDev | Requirement Accuracy | **52.9%** | 53.8% |
+| [SWE-bench Verified](https://www.swebench.com/) (random 20-instance subset) | Resolved | **15/20 (75%)** | ~60–75% (full 500) |
+
+Notes: backbones differ across rows, so comparisons are directional. E2EDev's 18%→67% gain came from general engineering principles now shipped in `/implement` (no native dialogs, follow demonstrated conventions, complete components), not benchmark-specific tuning — see the [E2EDev report](benchmarks/e2edev-report.md). The SWE-bench figure is a seeded random 20-instance subset of Verified (high variance at N=20, ~±19pp); a full 500-run is compute/disk-bound on a laptop under x86 emulation. Details + per-instance results in the [SWE-bench report](benchmarks/swebench-report.md).
+
 ## Core Capabilities
 
 - **Epic planning**: group issues into execution waves with dependency and integration-risk analysis
