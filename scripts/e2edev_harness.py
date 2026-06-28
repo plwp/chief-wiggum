@@ -171,9 +171,20 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="E2EDev <-> Chief Wiggum benchmark adapter")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list").set_defaults(func=cmd_list)
-    pi = sub.add_parser("issue"); pi.add_argument("bench"); pi.set_defaults(func=cmd_issue)
-    ps = sub.add_parser("stage"); ps.add_argument("bench"); ps.add_argument("--from", dest="frm", required=True); ps.set_defaults(func=cmd_stage)
-    pg = sub.add_parser("grade"); pg.add_argument("benches", nargs="*"); pg.set_defaults(func=cmd_grade)
+
+    pi = sub.add_parser("issue")
+    pi.add_argument("bench")
+    pi.set_defaults(func=cmd_issue)
+
+    ps = sub.add_parser("stage")
+    ps.add_argument("bench")
+    ps.add_argument("--from", dest="frm", required=True)
+    ps.set_defaults(func=cmd_stage)
+
+    pg = sub.add_parser("grade")
+    pg.add_argument("benches", nargs="*")
+    pg.set_defaults(func=cmd_grade)
+
     args = ap.parse_args()
     args.func(args)
 
