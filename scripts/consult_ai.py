@@ -12,6 +12,8 @@ Usage:
 Tools: codex, gemini, gemini-vertex, claude
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import subprocess

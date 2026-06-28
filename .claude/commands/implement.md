@@ -293,6 +293,11 @@ The worker should:
 7. If stuck after 3 attempts at the same error, report back to the user
 8. **Report honestly.** If you could not run a test or validation step, say so clearly with the reason. Do NOT silently skip steps or mark them as passed when they were not executed. The orchestrator will verify independently — discrepancies will be caught.
 
+**Frontend build principles (UI tickets).** When the ticket produces user-facing HTML/JS/CSS, apply these regardless of what the tests check — they make the build correct, accessible, and testable, and are the dominant quality lever for frontend work:
+- **No native browser dialogs for user-facing messages.** Never use `window.alert`/`confirm`/`prompt` — they block automated tests, are inaccessible, and are poor UX. Render every notification/error/success message into a visible on-page element (a toast/alert region) carrying the exact required text. (Honor the prompt literally only where it explicitly mandates a native dialog.)
+- **Match the conventions the spec or codebase demonstrates.** If some elements are given a naming/id/attribute style (e.g. kebab-case `data-testid`s, BEM classes), apply that SAME style consistently to the equivalent elements you build — the same way you match surrounding code style. Stay consistent; do NOT speculatively decorate elements no requirement calls for.
+- **Build the complete, idiomatic component — not the literal minimum.** A navigation bar gets its brand and the links the app needs; a data table gets proper column headers. Implement the whole feature a user would expect from the requirements, but do not invent features the requirements don't call for.
+
 ### Step 7: Multi-AI code review with structured checklist
 
 **THIS STEP IS NEVER OPTIONAL.** Every implementation gets a multi-AI code review, regardless of change size. A one-line typo fix, a 10-line config change, a 500-line feature — all get the same review process. You do not get to self-certify your own code. No exceptions, no shortcuts.

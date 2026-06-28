@@ -6,6 +6,8 @@ Checks system keyring for secrets (never prints values).
 Requires Python >= 3.11.
 """
 
+from __future__ import annotations
+
 import argparse
 import importlib
 import shutil
