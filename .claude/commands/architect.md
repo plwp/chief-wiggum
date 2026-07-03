@@ -405,6 +405,18 @@ gh pr create --repo "$owner_repo" --title "arch: add epic architecture — [Epic
 gh pr merge --squash --auto
 ```
 
+**Ratchet baseline** (see `docs/ratchet.md`): once the artifacts are on the default branch, enter the approved contract definitions into the quality ratchet's high-water mark so implementation workers can't weaken them silently. If the target repo has no ratchet config yet, initialize it first:
+
+```bash
+python3 "$CW_HOME/scripts/ratchet.py" init --repo "$TARGET_REPO"   # no-op if config exists
+python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --no-tests
+python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
+  --event baseline --ref "$EPIC_SLUG" --merged --notes "epic architecture approved"
+git -C "$TARGET_REPO" add docs/quality && git -C "$TARGET_REPO" commit -m "chore: ratchet baseline for $EPIC_SLUG" && git -C "$TARGET_REPO" push
+```
+
+If the user later revises a contract (a legitimate re-architecture, not a workaround), the revision is journaled at `/close-epic` with `--amend`/`--retire` — never by silently editing the docs.
+
 ### Step 8: Update issue descriptions
 
 For each ticket in the epic, append a reference to the architectural artifacts. `install_epic_artifacts.py` (Step 7) already emits a ready-to-post `issue_comment` body in its JSON output — reuse it (it links every artifact, including the UI spec when present) rather than hand-writing the body:
