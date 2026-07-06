@@ -377,7 +377,7 @@ def cmd_record(args) -> None:
         raise SystemExit(
             "playwright not installed. Install with:\n"
             "  python3 scripts/install_deps.py --for tutorial-video"
-        )
+        ) from None
 
     durations: dict[str, float] = {}
     if args.narration:
