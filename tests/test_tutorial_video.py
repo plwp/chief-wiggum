@@ -191,3 +191,28 @@ def test_pronunciations_schema_validated():
     assert tv.validate_storyboard(board) == []
     bad = _board(pronunciations={"Dogeared": 3})
     assert any("pronunciations" in e for e in tv.validate_storyboard(bad))
+
+
+# --- templating + upload action ---------------------------------------------
+
+
+def test_resolve_value_var_and_missing(monkeypatch):
+    assert tv.resolve_value("Bella {{var:take}}", {"take": "7"}) == "Bella 7"
+    assert tv.resolve_value("plain", {}) == "plain"
+    with pytest.raises(SystemExit, match="--var take"):
+        tv.resolve_value("{{var:take}}", {})
+
+
+def test_resolve_value_keyring(monkeypatch):
+    import keychain
+    monkeypatch.setattr(keychain, "get_secret", lambda name: "s3cret" if name == "MY_KEY" else None)
+    assert tv.resolve_value("{{keyring:MY_KEY}}", {}) == "s3cret"
+    with pytest.raises(SystemExit, match="not in the keyring"):
+        tv.resolve_value("{{keyring:OTHER}}", {})
+
+
+def test_upload_and_select_validation():
+    assert tv.validate_action({"type": "upload", "selector": "#f"}, "x") == ["x (upload) missing 'file'"]
+    assert tv.validate_action({"type": "upload", "selector": "#f", "file": "a.mp4"}, "x") == []
+    assert tv.validate_action({"type": "select", "selector": "#s"}, "x") == ["x (select) needs 'value' or 'label'"]
+    assert tv.validate_action({"type": "select", "selector": "#s", "label": "Course A"}, "x") == []

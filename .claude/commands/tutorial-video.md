@@ -109,9 +109,16 @@ Narration guidelines:
 ```
 
 Action types: `goto` (url), `click`/`hover`/`wait_for` (selector), `fill`
-(selector, value), `press` (selector, key), `select` (selector, value),
-`scroll` (selector or y), `wait` (seconds). The first action of the first
-scene must be a `goto`.
+(selector, value), `press` (selector, key), `select` (selector, value or
+label), `scroll` (selector or y), `wait` (seconds), `upload` (selector,
+file). The first action of the first scene must be a `goto`.
+
+Values (`fill` value, `goto` url, `select` value/label, `upload` file) may
+embed templates: `{{var:name}}` resolves from the storyboard's top-level
+`"vars"` defaults overridden by repeated `--var name=value` flags (use for
+per-run unique entity names and file paths, so re-records don't collide);
+`{{keyring:NAME}}` resolves from the system keyring at record time (use for
+sign-in passwords — never commit a secret in a storyboard).
 
 `pronunciations` (optional) rewrites words for the TTS engine only — captions
 keep the real spelling. Use it when the product name or jargon is mispronounced

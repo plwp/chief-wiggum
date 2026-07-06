@@ -68,10 +68,11 @@ ACTION_TYPES = {
     "fill": {"selector", "value"},
     "press": {"selector", "key"},
     "hover": {"selector"},
-    "select": {"selector", "value"},
+    "select": {"selector"},  # needs "value" or "label"
     "scroll": set(),  # needs "selector" or "y"
     "wait": {"seconds"},
     "wait_for": {"selector"},
+    "upload": {"selector", "file"},
 }
 
 # Visible cursor + click ripple, injected before any page script so the
@@ -177,9 +178,37 @@ def validate_action(action: dict, where: str) -> list[str]:
     ]
     if atype == "scroll" and "selector" not in action and "y" not in action:
         errors.append(f"{where} (scroll) needs 'selector' or 'y'")
+    if atype == "select" and "value" not in action and "label" not in action:
+        errors.append(f"{where} (select) needs 'value' or 'label'")
     if atype == "wait" and not isinstance(action.get("seconds"), (int, float)):
         errors.append(f"{where} (wait) 'seconds' must be a number")
     return errors
+
+
+TEMPLATE_RE = re.compile(r"\{\{(var|keyring):([A-Za-z0-9_-]+)\}\}")
+
+
+def resolve_value(value: str, variables: dict[str, str]) -> str:
+    """Expand {{var:name}} / {{keyring:NAME}} templates in an action value.
+
+    Keeps secrets (passwords for recorded sign-ins) and per-run values (unique
+    entity names, sample file paths) out of committed storyboards. Keyring
+    lookups use the chief-wiggum service; resolved values are never logged.
+    """
+    def expand(match: re.Match) -> str:
+        kind, name = match.group(1), match.group(2)
+        if kind == "var":
+            if name not in variables:
+                raise SystemExit(f"storyboard uses {{{{var:{name}}}}} — pass --var {name}=... or add it to storyboard 'vars'")
+            return variables[name]
+        from keychain import get_secret
+
+        secret = get_secret(name)
+        if not secret:
+            raise SystemExit(f"storyboard uses {{{{keyring:{name}}}}} but it is not in the keyring")
+        return secret
+
+    return TEMPLATE_RE.sub(expand, value)
 
 
 def apply_pronunciations(text: str, mapping: dict[str, str]) -> str:
@@ -333,10 +362,10 @@ def scene_hold_seconds(elapsed: float, narration_duration: float, tail: float = 
     return max(0.0, narration_duration + tail - elapsed)
 
 
-def run_action(page, action: dict, base_url: str | None, pace: float) -> None:
+def run_action(page, action: dict, base_url: str | None, pace: float, variables: dict[str, str]) -> None:
     atype = action["type"]
     if atype == "goto":
-        page.goto(resolve_url(action["url"], base_url), wait_until="load")
+        page.goto(resolve_url(resolve_value(action["url"], variables), base_url), wait_until="load")
     elif atype == "click":
         locator = page.locator(action["selector"]).first
         locator.hover()
@@ -346,13 +375,22 @@ def run_action(page, action: dict, base_url: str | None, pace: float) -> None:
         locator = page.locator(action["selector"]).first
         locator.click()
         locator.fill("")  # replace, don't append to, any existing value
-        locator.press_sequentially(str(action["value"]), delay=45)
+        locator.press_sequentially(resolve_value(str(action["value"]), variables), delay=45)
     elif atype == "press":
         page.locator(action["selector"]).first.press(action["key"])
     elif atype == "hover":
         page.locator(action["selector"]).first.hover()
     elif atype == "select":
-        page.locator(action["selector"]).first.select_option(str(action["value"]))
+        locator = page.locator(action["selector"]).first
+        if "label" in action:
+            locator.select_option(label=resolve_value(str(action["label"]), variables))
+        else:
+            locator.select_option(resolve_value(str(action["value"]), variables))
+    elif atype == "upload":
+        file_path = Path(resolve_value(str(action["file"]), variables))
+        if not file_path.is_file():
+            raise SystemExit(f"upload action: no such file {file_path}")
+        page.locator(action["selector"]).first.set_input_files(str(file_path))
     elif atype == "scroll":
         if "selector" in action:
             page.locator(action["selector"]).first.scroll_into_view_if_needed()
@@ -384,6 +422,13 @@ def cmd_record(args) -> None:
         manifest = json.loads((Path(args.narration) / "manifest.json").read_text(encoding="utf-8"))
         durations = {sid: entry["duration"] for sid, entry in manifest.items()}
 
+    variables = dict(board.get("vars") or {})
+    for pair in args.var or []:
+        name, sep, value = pair.partition("=")
+        if not sep:
+            raise SystemExit(f"--var expects name=value, got '{pair}'")
+        variables[name] = value
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     viewport = board.get("viewport") or DEFAULT_VIEWPORT
@@ -407,7 +452,7 @@ def cmd_record(args) -> None:
             start = time.monotonic() - t0
             print(f"  scene {scene['id']} @ {start:.1f}s")
             for action in scene["actions"]:
-                run_action(page, action, base_url, 0.1 if args.dry_run else pace)
+                run_action(page, action, base_url, 0.1 if args.dry_run else pace, variables)
             if not args.dry_run:
                 elapsed = (time.monotonic() - t0) - start
                 hold = scene_hold_seconds(elapsed, durations.get(scene["id"], 0.0))
@@ -524,6 +569,7 @@ def cmd_produce(args) -> None:
     record_args = argparse.Namespace(
         storyboard=args.storyboard, out=str(out_dir / "recording"),
         narration=str(out_dir / "narration"), headed=args.headed, dry_run=False,
+        var=args.var,
     )
     assemble_args = argparse.Namespace(
         storyboard=args.storyboard, workdir=str(out_dir),
@@ -621,6 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("storyboard")
     p_record.add_argument("--out", required=True)
     p_record.add_argument("--narration", default=None, help="Narration dir (for pacing)")
+    p_record.add_argument("--var", action="append", default=[], help="Template variable name=value (repeatable)")
     p_record.add_argument("--dry-run", action="store_true", help="Execute actions without video")
     p_record.add_argument("--headed", action="store_true")
     p_record.set_defaults(func=cmd_record)
@@ -637,6 +684,7 @@ def main(argv: list[str] | None = None) -> int:
     p_produce.add_argument("--engine", choices=["auto", "elevenlabs", "openai", "say"], default="auto")
     p_produce.add_argument("--voice", default=None)
     p_produce.add_argument("--tts-model", default=None, help="TTS model (per-engine default)")
+    p_produce.add_argument("--var", action="append", default=[], help="Template variable name=value (repeatable)")
     p_produce.add_argument("--headed", action="store_true")
     p_produce.set_defaults(func=cmd_produce)
 
