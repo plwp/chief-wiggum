@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,12 @@ NARRATION_TAIL = 0.7  # seconds of quiet held after narration ends
 OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
 DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "alloy"
+ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
+DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
+# "George" — a premade voice usable via API on the free tier. Library voices
+# (e.g. the preferred narrators 5GZaeOOG7yqLdoTRsaa6 / U9VgC8Xinl7nnNsyDd3J)
+# require a paid ElevenLabs plan for API use; pass them with --voice.
+DEFAULT_ELEVENLABS_VOICE = "JBFqnCBsd6RMkjVDRZzb"
 
 ACTION_TYPES = {
     "goto": {"url"},
@@ -118,6 +125,12 @@ def validate_storyboard(board: dict) -> list[str]:
         return ["storyboard must be a JSON object"]
     if not (board.get("title") or "").strip():
         errors.append("missing top-level 'title'")
+    pronunciations = board.get("pronunciations", {})
+    if not (
+        isinstance(pronunciations, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in pronunciations.items())
+    ):
+        errors.append("'pronunciations' must be an object of string -> string")
     scenes = board.get("scenes")
     if not isinstance(scenes, list) or not scenes:
         errors.append("'scenes' must be a non-empty list")
@@ -169,6 +182,17 @@ def validate_action(action: dict, where: str) -> list[str]:
     return errors
 
 
+def apply_pronunciations(text: str, mapping: dict[str, str]) -> str:
+    """Rewrite narration for the TTS engine only (captions keep the original).
+
+    Keys are matched case-insensitively on word boundaries, longest first, so
+    "Dogeared Coach" -> "dog eared coach" wins over a shorter "Dogeared" entry.
+    """
+    for word in sorted(mapping, key=len, reverse=True):
+        text = re.sub(rf"\b{re.escape(word)}\b", mapping[word], text, flags=re.IGNORECASE)
+    return text
+
+
 def resolve_url(url: str, base_url: str | None) -> str:
     """Resolve a possibly-relative storyboard URL against the base URL."""
     if urllib.parse.urlparse(url).scheme:
@@ -207,6 +231,36 @@ def synthesize_openai(text: str, out_path: Path, model: str, voice: str) -> None
         raise SystemExit(f"OpenAI TTS failed ({exc.code}): {detail}") from exc
 
 
+def synthesize_elevenlabs(text: str, out_path: Path, model: str, voice_id: str) -> None:
+    from keychain import get_secret
+
+    api_key = get_secret("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "ELEVENLABS_API_KEY not in keyring. Store it with:\n"
+            "  python3 scripts/keychain.py set ELEVENLABS_API_KEY\n"
+            "or use another engine: --engine openai / --engine say"
+        )
+    payload = json.dumps({"text": text, "model_id": model}).encode("utf-8")
+    request = urllib.request.Request(
+        ELEVENLABS_TTS_URL.format(voice_id=voice_id),
+        data=payload,
+        headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            out_path.write_bytes(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        hint = ""
+        if exc.code == 402:
+            hint = (
+                "\nThis voice needs a paid ElevenLabs plan for API use — "
+                "use a premade voice (default works) or --engine say."
+            )
+        raise SystemExit(f"ElevenLabs TTS failed ({exc.code}): {detail}{hint}") from exc
+
+
 def synthesize_say(text: str, out_path: Path, voice: str | None) -> None:
     """Offline macOS fallback: `say` renders AIFF, ffmpeg converts to WAV."""
     if not shutil.which("say"):
@@ -221,20 +275,22 @@ def synthesize_say(text: str, out_path: Path, voice: str | None) -> None:
 
 
 def resolve_engine(engine: str) -> str:
-    """Resolve --engine auto: OpenAI when the key is in the keyring, else `say`."""
+    """Resolve --engine auto by key availability: elevenlabs > openai > say."""
     if engine != "auto":
         return engine
     from keychain import has_secret
 
+    if has_secret("ELEVENLABS_API_KEY"):
+        return "elevenlabs"
     if has_secret("OPENAI_API_KEY"):
         return "openai"
     if shutil.which("say"):
-        print("  engine auto: OPENAI_API_KEY not in keyring, using offline `say`")
+        print("  engine auto: no TTS key in keyring, using offline `say`")
         return "say"
     raise SystemExit(
-        "No TTS engine available: OPENAI_API_KEY is not in the keyring and "
-        "`say` is not on this platform. Store a key with:\n"
-        "  python3 scripts/keychain.py set OPENAI_API_KEY"
+        "No TTS engine available: neither ELEVENLABS_API_KEY nor OPENAI_API_KEY "
+        "is in the keyring and `say` is not on this platform. Store a key with:\n"
+        "  python3 scripts/keychain.py set ELEVENLABS_API_KEY"
     )
 
 
@@ -245,11 +301,19 @@ def cmd_narrate(args) -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, dict] = {}
+    pronunciations = board.get("pronunciations", {})
     for scene in board["scenes"]:
-        text = scene["narration"].strip()
-        if engine == "openai":
+        text = apply_pronunciations(scene["narration"].strip(), pronunciations)
+        if engine == "elevenlabs":
             audio = out_dir / f"scene-{scene['id']}.mp3"
-            synthesize_openai(text, audio, args.tts_model, args.voice or DEFAULT_TTS_VOICE)
+            synthesize_elevenlabs(
+                text, audio,
+                args.tts_model or DEFAULT_ELEVENLABS_MODEL,
+                args.voice or DEFAULT_ELEVENLABS_VOICE,
+            )
+        elif engine == "openai":
+            audio = out_dir / f"scene-{scene['id']}.mp3"
+            synthesize_openai(text, audio, args.tts_model or DEFAULT_TTS_MODEL, args.voice or DEFAULT_TTS_VOICE)
         else:
             audio = out_dir / f"scene-{scene['id']}.wav"
             synthesize_say(text, audio, args.voice)
@@ -548,9 +612,9 @@ def main(argv: list[str] | None = None) -> int:
     p_narrate = sub.add_parser("narrate", help="Generate narration audio per scene")
     p_narrate.add_argument("storyboard")
     p_narrate.add_argument("--out", required=True)
-    p_narrate.add_argument("--engine", choices=["auto", "openai", "say"], default="auto")
+    p_narrate.add_argument("--engine", choices=["auto", "elevenlabs", "openai", "say"], default="auto")
     p_narrate.add_argument("--voice", default=None)
-    p_narrate.add_argument("--tts-model", default=DEFAULT_TTS_MODEL)
+    p_narrate.add_argument("--tts-model", default=None, help="TTS model (per-engine default)")
     p_narrate.set_defaults(func=cmd_narrate)
 
     p_record = sub.add_parser("record", help="Record the click-through with Playwright")
@@ -570,9 +634,9 @@ def main(argv: list[str] | None = None) -> int:
     p_produce = sub.add_parser("produce", help="narrate + record + assemble")
     p_produce.add_argument("storyboard")
     p_produce.add_argument("--out-dir", required=True)
-    p_produce.add_argument("--engine", choices=["auto", "openai", "say"], default="auto")
+    p_produce.add_argument("--engine", choices=["auto", "elevenlabs", "openai", "say"], default="auto")
     p_produce.add_argument("--voice", default=None)
-    p_produce.add_argument("--tts-model", default=DEFAULT_TTS_MODEL)
+    p_produce.add_argument("--tts-model", default=None, help="TTS model (per-engine default)")
     p_produce.add_argument("--headed", action="store_true")
     p_produce.set_defaults(func=cmd_produce)
 

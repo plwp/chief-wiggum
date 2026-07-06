@@ -365,6 +365,7 @@ def main():
     print()
     check_secret("ANTHROPIC_API_KEY", is_required("secrets", "ANTHROPIC_API_KEY", workflows))
     check_secret("OPENAI_API_KEY", is_required("secrets", "OPENAI_API_KEY", workflows))
+    check_secret("ELEVENLABS_API_KEY", is_required("secrets", "ELEVENLABS_API_KEY", workflows))
     check_secret("GEMINI_API_KEY", is_required("secrets", "GEMINI_API_KEY", workflows))
     check_secret("GOOGLE_CLOUD_PROJECT", is_required("secrets", "GOOGLE_CLOUD_PROJECT", workflows))
     check_secret("GOOGLE_CLOUD_LOCATION", is_required("secrets", "GOOGLE_CLOUD_LOCATION", workflows))

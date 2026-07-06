@@ -165,6 +165,8 @@ def test_resolve_engine_passthrough_and_auto(monkeypatch):
     assert tv.resolve_engine("openai") == "openai"
     import keychain
     monkeypatch.setattr(keychain, "has_secret", lambda name: True)
+    assert tv.resolve_engine("auto") == "elevenlabs"
+    monkeypatch.setattr(keychain, "has_secret", lambda name: name == "OPENAI_API_KEY")
     assert tv.resolve_engine("auto") == "openai"
     monkeypatch.setattr(keychain, "has_secret", lambda name: False)
     monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/say")
@@ -172,3 +174,20 @@ def test_resolve_engine_passthrough_and_auto(monkeypatch):
     monkeypatch.setattr(tv.shutil, "which", lambda name: None)
     with pytest.raises(SystemExit):
         tv.resolve_engine("auto")
+
+
+# --- pronunciations ---------------------------------------------------------
+
+
+def test_apply_pronunciations_word_boundary_case_insensitive():
+    mapping = {"Dogeared Coach": "dog eared coach", "Dogeared": "dog eared"}
+    assert tv.apply_pronunciations("Welcome to Dogeared Coach.", mapping) == "Welcome to dog eared coach."
+    # longest key wins; bare word also mapped; no substring mangling
+    assert tv.apply_pronunciations("dogeared style, undogeared", mapping) == "dog eared style, undogeared"
+
+
+def test_pronunciations_schema_validated():
+    board = _board(pronunciations={"Dogeared": "dog eared"})
+    assert tv.validate_storyboard(board) == []
+    bad = _board(pronunciations={"Dogeared": 3})
+    assert any("pronunciations" in e for e in tv.validate_storyboard(bad))

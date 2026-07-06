@@ -7,14 +7,14 @@ cursor, generate voice narration, and assemble them into an `.mp4` with an
 
 ## Usage
 ```
-/tutorial-video owner/repo --feature "Owner sets pricing" [--url http://localhost:3000] [--engine auto|openai|say] [--voice alloy]
+/tutorial-video owner/repo --feature "Owner sets pricing" [--url http://localhost:3000] [--engine auto|elevenlabs|openai|say] [--voice alloy]
 ```
 
 ## Parameters
 - `owner/repo`: Target repository
 - `--feature`: What the tutorial should teach (a user-facing flow, not a code path)
 - `--url`: Base URL of the running app. If omitted, start the target repo's dev server yourself — never ask the user to start it
-- `--engine`: TTS engine. `auto` (default) uses `openai` when `OPENAI_API_KEY` is in the keyring, else falls back to the offline macOS `say` engine
+- `--engine`: TTS engine. `auto` (default) picks by keyring key availability: `elevenlabs`, then `openai`, then the offline macOS `say` engine
 - `--voice`: Narration voice (see `models.md` → Text-to-Speech)
 
 ## Output
@@ -91,6 +91,7 @@ Narration guidelines:
   "title": "Owner sets pricing",
   "base_url": "http://localhost:3000",
   "viewport": {"width": 1280, "height": 720},
+  "pronunciations": {"Acme": "ak mee"},
   "scenes": [
     {
       "id": "open-pricing",
@@ -111,6 +112,11 @@ Action types: `goto` (url), `click`/`hover`/`wait_for` (selector), `fill`
 (selector, value), `press` (selector, key), `select` (selector, value),
 `scroll` (selector or y), `wait` (seconds). The first action of the first
 scene must be a `goto`.
+
+`pronunciations` (optional) rewrites words for the TTS engine only — captions
+keep the real spelling. Use it when the product name or jargon is mispronounced
+(e.g. `"Dogeared": "dog eared"`). Listen for this in QA: if a name sounds
+wrong in the narration, add a mapping and re-produce.
 
 Validate the schema:
 
