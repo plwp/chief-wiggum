@@ -51,6 +51,15 @@ Refresh with `/update`.
 | `base` | 74M | Fast, good for English |
 | `tiny` | 39M | Fastest, lowest accuracy |
 
+## Text-to-Speech (narration)
+
+| Engine | Model | Notes |
+|--------|-------|-------|
+| ElevenLabs | `eleven_multilingual_v2` | Preferred for `/tutorial-video` (auto when `ELEVENLABS_API_KEY` is in the keyring). Default voice `JBFqnCBsd6RMkjVDRZzb` (George, premade — free-tier API OK). Preferred narrator voices `5GZaeOOG7yqLdoTRsaa6` / `U9VgC8Xinl7nnNsyDd3J` are voice-library voices — API use needs a paid plan; pass via `--voice` |
+| OpenAI TTS | `gpt-4o-mini-tts` | Fallback; voices: alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer |
+| OpenAI TTS | `tts-1-hd` | Higher fidelity, slower |
+| macOS `say` | system voices | Offline fallback (`--engine say`), no API key needed |
+
 ## Python Libraries
 
 | Package | Version | Notes |

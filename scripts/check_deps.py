@@ -76,6 +76,12 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": {"whisper"},
         "secrets": set(),
     },
+    "tutorial-video": {
+        "extends": {"core"},
+        "cmds": {"ffmpeg"},
+        "pkgs": {"playwright"},
+        "secrets": set(),  # OPENAI_API_KEY optional: `--engine say` is the offline fallback
+    },
     "browser": {
         "extends": {"browser-validation"},
         "cmds": set(),
@@ -181,6 +187,7 @@ WORKFLOW_PROFILES = {
     "create-issue": ["core"],
     "ship": ["core"],
     "transcribe": ["transcription"],
+    "tutorial-video": ["tutorial-video"],
     "stitch-audit": ["core", "gemini"],
     "saas-gate": ["core"],
     "update": ["core"],
@@ -358,6 +365,7 @@ def main():
     print()
     check_secret("ANTHROPIC_API_KEY", is_required("secrets", "ANTHROPIC_API_KEY", workflows))
     check_secret("OPENAI_API_KEY", is_required("secrets", "OPENAI_API_KEY", workflows))
+    check_secret("ELEVENLABS_API_KEY", is_required("secrets", "ELEVENLABS_API_KEY", workflows))
     check_secret("GEMINI_API_KEY", is_required("secrets", "GEMINI_API_KEY", workflows))
     check_secret("GOOGLE_CLOUD_PROJECT", is_required("secrets", "GOOGLE_CLOUD_PROJECT", workflows))
     check_secret("GOOGLE_CLOUD_LOCATION", is_required("secrets", "GOOGLE_CLOUD_LOCATION", workflows))
