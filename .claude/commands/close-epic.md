@@ -134,7 +134,27 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
 
-### Step 2e: SaaS NFR gate (optional)
+### Step 2e: Ratchet gate
+
+If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact and no contract definition weakened or removed since the `/architect` baseline:
+
+```bash
+python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO"
+python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
+```
+
+A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
+
+```bash
+python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
+  --ref "$EPIC_SLUG" --merged --amend CTR-xxx-001 --retire INV-xxx-002 \
+  --notes "<why the contract changed, link to the decision>"
+```
+
+Otherwise, once the check passes, record the epic close (same command without `--amend`/`--retire`) and commit `docs/quality/`. The journal entry is the epic's quality sign-off and feeds the next epic's amnesia context.
+
+### Step 2f: SaaS NFR gate (optional)
 
 For SaaS products, validate non-functional requirements (security headers + CSRF posture, auth rate-limiting, tenant isolation, health + structured logging) against the running app. Start the app if needed (don't punt), then:
 

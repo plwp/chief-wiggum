@@ -354,6 +354,12 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --markdown
    ```
    It exits non-zero if any step fails. ALL tests must pass. Zero tolerance.
+4b. **Ratchet check** (see `docs/ratchet.md`) — if the target repo has `docs/quality/ratchet.json`, verify this ticket doesn't slide quality backward:
+   ```bash
+   python3 "$CW_HOME/scripts/ratchet.py" score --repo "$(git rev-parse --show-toplevel)"
+   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$(git rev-parse --show-toplevel)"
+   ```
+   A violation is a hard blocker, same as a failing test: a `missing_tests` entry means a previously-passing case regressed; `weakened_contracts`/`removed_contracts` means the branch edited a contract definition to make the implementation pass. Fix the code — never the contract. If a contract genuinely needs revising, that is a human decision: surface it to the user and journal it with `record --amend`/`--retire`, don't edit around the gate. Skip this item only when the repo has no ratchet config (not yet adopted).
 5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
@@ -649,6 +655,16 @@ python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" \
 ```
 
 Commit the updated `traceability.md` (or comment on the epic milestone if other tickets are in flight).
+
+**Journal the ratchet** (if the repo has `docs/quality/ratchet.json`): once the PR is merged, record the ticket so its passing tests enter the high-water mark:
+
+```bash
+python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
+  --event ticket --ref "#$issue_number" --merged --notes "<one line: what shipped>"
+git -C "$TARGET_REPO" add docs/quality && git -C "$TARGET_REPO" commit -m "chore: ratchet record for #$issue_number" && git -C "$TARGET_REPO" push
+```
+
+(If the PR hasn't merged yet, record with `--gate pass` and without `--merged` — an unmerged record documents the run but doesn't move the high-water mark. In `/implement-wave` this is handled per wave instead.)
 
 Close the loop:
 - Ask if the issue should be updated with a comment linking to the PR
