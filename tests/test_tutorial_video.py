@@ -234,3 +234,14 @@ def test_selector_templates_resolve(monkeypatch):
 
     tv.run_action(FakePage(), {"type": "wait_for", "selector": "text={{var:email}}"}, None, 0, {"email": "a@b.c"})
     assert calls["selector"] == "text=a@b.c" and calls["waited"]
+
+
+# --- setup pre-roll ----------------------------------------------------------
+
+
+def test_setup_actions_validated():
+    board = _board(setup=[{"type": "goto", "url": "/sign-in"}, {"type": "click", "selector": "#x"}])
+    assert tv.validate_storyboard(board) == []
+    bad = _board(setup=[{"type": "warp"}])
+    assert any("setup[0] unknown action type" in e for e in tv.validate_storyboard(bad))
+    assert any("'setup' must be a list" in e for e in tv.validate_storyboard(_board(setup="nope")))

@@ -120,6 +120,11 @@ per-run unique entity names and file paths, so re-records don't collide);
 `{{keyring:NAME}}` resolves from the system keyring at record time (use for
 sign-in passwords — never commit a secret in a storyboard).
 
+`setup` (optional, top-level) is a list of actions that run BEFORE recording
+starts, on a throwaway page whose footage is discarded — session state (e.g.
+sign-in) carries over to the recorded scenes. Use it so tutorials don't all
+open with a login: only a tutorial that *teaches* signing in should show it.
+
 `pronunciations` (optional) rewrites words for the TTS engine only — captions
 keep the real spelling. Use it when the product name or jargon is mispronounced
 (e.g. `"Dogeared": "dog eared"`). Listen for this in QA: if a name sounds

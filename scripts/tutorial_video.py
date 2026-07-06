@@ -126,6 +126,12 @@ def validate_storyboard(board: dict) -> list[str]:
         return ["storyboard must be a JSON object"]
     if not (board.get("title") or "").strip():
         errors.append("missing top-level 'title'")
+    setup = board.get("setup", [])
+    if not isinstance(setup, list):
+        errors.append("'setup' must be a list of actions")
+    else:
+        for j, action in enumerate(setup):
+            errors.extend(validate_action(action, f"setup[{j}]"))
     pronunciations = board.get("pronunciations", {})
     if not (
         isinstance(pronunciations, dict)
@@ -330,6 +336,12 @@ def cmd_narrate(args) -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, dict] = {}
+    setup = board.get("setup", [])
+    if not isinstance(setup, list):
+        errors.append("'setup' must be a list of actions")
+    else:
+        for j, action in enumerate(setup):
+            errors.extend(validate_action(action, f"setup[{j}]"))
     pronunciations = board.get("pronunciations", {})
     for scene in board["scenes"]:
         text = apply_pronunciations(scene["narration"].strip(), pronunciations)
@@ -446,7 +458,21 @@ def cmd_record(args) -> None:
             context_kwargs["record_video_size"] = viewport
         context = browser.new_context(**context_kwargs)
         context.add_init_script(CURSOR_OVERLAY_JS)
+
+        # Setup pre-roll: actions that must happen (sign-in, seeding a route)
+        # but should NOT appear in the tutorial. They run on a throwaway page;
+        # auth/session state carries over in the context, and only the scenes
+        # page's video is kept.
+        setup_page = None
+        if board.get("setup"):
+            setup_page = context.new_page()
+            print(f"  setup: {len(board['setup'])} action(s) (not recorded)")
+            for action in board["setup"]:
+                run_action(setup_page, action, base_url, 0.1, variables)
+
         page = context.new_page()
+        if setup_page is not None:
+            setup_page.close()
         t0 = time.monotonic()
         page.wait_for_timeout(SCENE_SETTLE * 1000)
 
@@ -475,7 +501,11 @@ def cmd_record(args) -> None:
         browser.close()
         if not args.dry_run and video:
             recording = out_dir / "recording.webm"
-            Path(video.path()).rename(recording)
+            scene_file = Path(video.path())
+            scene_file.rename(recording)
+            for stray in out_dir.glob("*.webm"):  # discard setup-page footage
+                if stray != recording:
+                    stray.unlink()
             print(f"Recording: {recording}")
 
     (out_dir / "markers.json").write_text(json.dumps(markers, indent=2), encoding="utf-8")
