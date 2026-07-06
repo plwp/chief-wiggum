@@ -216,3 +216,19 @@ def test_upload_and_select_validation():
     assert tv.validate_action({"type": "upload", "selector": "#f", "file": "a.mp4"}, "x") == []
     assert tv.validate_action({"type": "select", "selector": "#s"}, "x") == ["x (select) needs 'value' or 'label'"]
     assert tv.validate_action({"type": "select", "selector": "#s", "label": "Course A"}, "x") == []
+
+
+def test_selector_templates_resolve(monkeypatch):
+    calls = {}
+
+    class FakeLocator:
+        def wait_for(self, **kw): calls["waited"] = True
+        @property
+        def first(self): return self
+
+    class FakePage:
+        def locator(self, sel): calls["selector"] = sel; return FakeLocator()
+        def wait_for_timeout(self, ms): pass
+
+    tv.run_action(FakePage(), {"type": "wait_for", "selector": "text={{var:email}}"}, None, 0, {"email": "a@b.c"})
+    assert calls["selector"] == "text=a@b.c" and calls["waited"]

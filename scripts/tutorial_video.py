@@ -364,6 +364,8 @@ def scene_hold_seconds(elapsed: float, narration_duration: float, tail: float = 
 
 def run_action(page, action: dict, base_url: str | None, pace: float, variables: dict[str, str]) -> None:
     atype = action["type"]
+    if "selector" in action:
+        action = {**action, "selector": resolve_value(str(action["selector"]), variables)}
     if atype == "goto":
         page.goto(resolve_url(resolve_value(action["url"], variables), base_url), wait_until="load")
     elif atype == "click":
