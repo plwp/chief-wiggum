@@ -35,6 +35,7 @@ SUBCOMMANDS: dict[str, tuple[str, str]] = {
     "traceability": ("traceability", "Traceability matrix parse/update/audit"),
     "close-epic-audit": ("close_epic_audit", "Close-epic audit orchestrator"),
     "install-design": ("install_design_artifacts", "Install product design artifacts"),
+    "tutorial-video": ("tutorial_video", "Produce a narrated click-through tutorial video"),
 }
 
 

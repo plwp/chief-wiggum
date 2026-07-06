@@ -34,3 +34,5 @@ workflows:
     reference: references/workflows/update.md
   - id: stitch-audit
     reference: references/workflows/stitch-audit.md
+  - id: tutorial-video
+    reference: references/workflows/tutorial-video.md

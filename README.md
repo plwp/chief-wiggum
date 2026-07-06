@@ -105,6 +105,7 @@ See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 | `/create-issue` | Create well-structured GitHub issues |
 | `/ship` | PR creation with mermaid architecture diagrams |
 | `/stitch-audit` | Cross-layer data flow analysis |
+| `/tutorial-video` | Narrated click-through tutorial video: script → recording → TTS narration → .mp4 + .srt |
 | `/update` | Refresh AI model IDs and library versions |
 
 ### Portable Skills

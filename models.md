@@ -51,6 +51,14 @@ Refresh with `/update`.
 | `base` | 74M | Fast, good for English |
 | `tiny` | 39M | Fastest, lowest accuracy |
 
+## Text-to-Speech (narration)
+
+| Engine | Model | Notes |
+|--------|-------|-------|
+| OpenAI TTS | `gpt-4o-mini-tts` | Default for `/tutorial-video`; voices: alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer |
+| OpenAI TTS | `tts-1-hd` | Higher fidelity, slower |
+| macOS `say` | system voices | Offline fallback (`--engine say`), no API key needed |
+
 ## Python Libraries
 
 | Package | Version | Notes |

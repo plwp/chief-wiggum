@@ -30,7 +30,7 @@ Load the reference for the stage you need from `references/workflows/`:
 - **`implement-wave`** — parallel implementation of an epic in dependency-ordered waves.
 - **`close-epic`** — epic-level quality gate.
 
-Supporting: `seed`, `create-issue`, `ship`, `transcribe`, `setup`, `update`, `stitch-audit` (also under `references/workflows/`).
+Supporting: `seed`, `create-issue`, `ship`, `transcribe`, `tutorial-video`, `setup`, `update`, `stitch-audit` (also under `references/workflows/`).
 
 ## Conventions
 

@@ -76,6 +76,12 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": {"whisper"},
         "secrets": set(),
     },
+    "tutorial-video": {
+        "extends": {"core"},
+        "cmds": {"ffmpeg"},
+        "pkgs": {"playwright"},
+        "secrets": set(),  # OPENAI_API_KEY optional: `--engine say` is the offline fallback
+    },
     "browser": {
         "extends": {"browser-validation"},
         "cmds": set(),
@@ -181,6 +187,7 @@ WORKFLOW_PROFILES = {
     "create-issue": ["core"],
     "ship": ["core"],
     "transcribe": ["transcription"],
+    "tutorial-video": ["tutorial-video"],
     "stitch-audit": ["core", "gemini"],
     "saas-gate": ["core"],
     "update": ["core"],
