@@ -336,12 +336,6 @@ def cmd_narrate(args) -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, dict] = {}
-    setup = board.get("setup", [])
-    if not isinstance(setup, list):
-        errors.append("'setup' must be a list of actions")
-    else:
-        for j, action in enumerate(setup):
-            errors.extend(validate_action(action, f"setup[{j}]"))
     pronunciations = board.get("pronunciations", {})
     for scene in board["scenes"]:
         text = apply_pronunciations(scene["narration"].strip(), pronunciations)
