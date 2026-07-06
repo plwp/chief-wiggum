@@ -227,7 +227,9 @@ def test_selector_templates_resolve(monkeypatch):
         def first(self): return self
 
     class FakePage:
-        def locator(self, sel): calls["selector"] = sel; return FakeLocator()
+        def locator(self, sel):
+            calls["selector"] = sel
+            return FakeLocator()
         def wait_for_timeout(self, ms): pass
 
     tv.run_action(FakePage(), {"type": "wait_for", "selector": "text={{var:email}}"}, None, 0, {"email": "a@b.c"})
