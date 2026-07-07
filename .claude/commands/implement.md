@@ -244,6 +244,7 @@ Launch an **implementation worker** (contract: `docs/worker-contracts.md#impleme
 **HARD RULES for worker**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
 - You work in an **isolated checkout** (required isolation behavior). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the checkout root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- **Carry over gitignored runtime files** the checkout needs but git doesn't bring: for each `.env.local` / `.env.*.local` present in the main checkout, COPY it into the same relative path in the worktree; symlink dependency dirs (`node_modules`, `.venv`) instead of reinstalling. A worktree without `.env.local` runs dev servers against the wrong backend/project — tests then fail in ways that look like app bugs (empty lists, 404s on writes) while direct API calls succeed. Copy them BEFORE starting any dev server or test run.
 
 The worker should:
 
