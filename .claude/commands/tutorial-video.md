@@ -120,6 +120,11 @@ per-run unique entity names and file paths, so re-records don't collide);
 `{{keyring:NAME}}` resolves from the system keyring at record time (use for
 sign-in passwords — never commit a secret in a storyboard).
 
+`setup` (optional, top-level) is a list of actions that run BEFORE recording
+starts, on a throwaway page whose footage is discarded — session state (e.g.
+sign-in) carries over to the recorded scenes. Use it so tutorials don't all
+open with a login: only a tutorial that *teaches* signing in should show it.
+
 `pronunciations` (optional) rewrites words for the TTS engine only — captions
 keep the real spelling. Use it when the product name or jargon is mispronounced
 (e.g. `"Dogeared": "dog eared"`). Listen for this in QA: if a name sounds
@@ -155,6 +160,14 @@ This narrates each scene (TTS), records the click-through paced so every scene
 lasts at least as long as its narration, and assembles `tutorial.mp4` +
 `tutorial.srt`. If the resolved engine was the offline `say` fallback, note
 the voice downgrade in your summary.
+
+**Narrator voice**: when no `--voice` is passed, the ElevenLabs engine defaults
+to the user's preferred narrator (`PREFERRED_ELEVENLABS_VOICE` in
+`tutorial_video.py` — the Aussie library voice). If ElevenLabs refuses that
+voice (plan/key), production FAILS by design — never silently ship a different
+narrator (that mistake shipped six wrong-voice tutorials once). Only pass
+`--allow-voice-fallback` (premade "George") if the user explicitly accepts the
+downgrade, and say so in your summary.
 
 ### Step 6: Verify the video — not negotiable
 

@@ -57,10 +57,14 @@ DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "alloy"
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
 DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
-# "George" — a premade voice usable via API on the free tier. Library voices
-# (e.g. the preferred narrators 5GZaeOOG7yqLdoTRsaa6 / U9VgC8Xinl7nnNsyDd3J)
-# require a paid ElevenLabs plan for API use; pass them with --voice.
-DEFAULT_ELEVENLABS_VOICE = "JBFqnCBsd6RMkjVDRZzb"
+# Preferred narrator: the user's Aussie ElevenLabs library voice — always the
+# default when no --voice is given. Library voices need a paid ElevenLabs plan
+# for API use; if the API refuses the preferred voice, production FAILS rather
+# than silently downgrading (a silent fallback to George shipped six
+# wrong-voice tutorials on 2026-07-07). Pass --allow-voice-fallback to accept
+# George ("JBFqnCBsd6RMkjVDRZzb", the free-tier premade) explicitly.
+PREFERRED_ELEVENLABS_VOICE = "5GZaeOOG7yqLdoTRsaa6"
+FALLBACK_ELEVENLABS_VOICE = "JBFqnCBsd6RMkjVDRZzb"
 
 ACTION_TYPES = {
     "goto": {"url"},
@@ -126,6 +130,12 @@ def validate_storyboard(board: dict) -> list[str]:
         return ["storyboard must be a JSON object"]
     if not (board.get("title") or "").strip():
         errors.append("missing top-level 'title'")
+    setup = board.get("setup", [])
+    if not isinstance(setup, list):
+        errors.append("'setup' must be a list of actions")
+    else:
+        for j, action in enumerate(setup):
+            errors.extend(validate_action(action, f"setup[{j}]"))
     pronunciations = board.get("pronunciations", {})
     if not (
         isinstance(pronunciations, dict)
@@ -260,7 +270,9 @@ def synthesize_openai(text: str, out_path: Path, model: str, voice: str) -> None
         raise SystemExit(f"OpenAI TTS failed ({exc.code}): {detail}") from exc
 
 
-def synthesize_elevenlabs(text: str, out_path: Path, model: str, voice_id: str) -> None:
+def synthesize_elevenlabs(
+    text: str, out_path: Path, model: str, voice_id: str, allow_fallback: bool = False
+) -> None:
     from keychain import get_secret
 
     api_key = get_secret("ELEVENLABS_API_KEY")
@@ -281,13 +293,25 @@ def synthesize_elevenlabs(text: str, out_path: Path, model: str, voice_id: str) 
             out_path.write_bytes(response.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
-        hint = ""
-        if exc.code == 402:
-            hint = (
-                "\nThis voice needs a paid ElevenLabs plan for API use — "
-                "use a premade voice (default works) or --engine say."
-            )
-        raise SystemExit(f"ElevenLabs TTS failed ({exc.code}): {detail}{hint}") from exc
+        # A blocked/unavailable voice must never silently change the narrator.
+        voice_blocked = exc.code in (401, 402, 403)
+        if voice_blocked and voice_id != FALLBACK_ELEVENLABS_VOICE:
+            if allow_fallback:
+                print(
+                    f"WARNING: voice {voice_id} unavailable ({exc.code}) — "
+                    f"FALLING BACK to premade George ({FALLBACK_ELEVENLABS_VOICE}). "
+                    "The narration will NOT be the preferred narrator.",
+                    file=sys.stderr,
+                )
+                synthesize_elevenlabs(text, out_path, model, FALLBACK_ELEVENLABS_VOICE)
+                return
+            raise SystemExit(
+                f"ElevenLabs refused voice {voice_id} ({exc.code}): {detail}\n"
+                "Refusing to narrate with a different voice than requested/preferred.\n"
+                f"Options: fix the plan/key, pass an explicit --voice, or pass\n"
+                "--allow-voice-fallback to accept the premade George voice."
+            ) from exc
+        raise SystemExit(f"ElevenLabs TTS failed ({exc.code}): {detail}") from exc
 
 
 def synthesize_say(text: str, out_path: Path, voice: str | None) -> None:
@@ -338,7 +362,8 @@ def cmd_narrate(args) -> None:
             synthesize_elevenlabs(
                 text, audio,
                 args.tts_model or DEFAULT_ELEVENLABS_MODEL,
-                args.voice or DEFAULT_ELEVENLABS_VOICE,
+                args.voice or PREFERRED_ELEVENLABS_VOICE,
+                allow_fallback=getattr(args, "allow_voice_fallback", False),
             )
         elif engine == "openai":
             audio = out_dir / f"scene-{scene['id']}.mp3"
@@ -446,7 +471,21 @@ def cmd_record(args) -> None:
             context_kwargs["record_video_size"] = viewport
         context = browser.new_context(**context_kwargs)
         context.add_init_script(CURSOR_OVERLAY_JS)
+
+        # Setup pre-roll: actions that must happen (sign-in, seeding a route)
+        # but should NOT appear in the tutorial. They run on a throwaway page;
+        # auth/session state carries over in the context, and only the scenes
+        # page's video is kept.
+        setup_page = None
+        if board.get("setup"):
+            setup_page = context.new_page()
+            print(f"  setup: {len(board['setup'])} action(s) (not recorded)")
+            for action in board["setup"]:
+                run_action(setup_page, action, base_url, 0.1, variables)
+
         page = context.new_page()
+        if setup_page is not None:
+            setup_page.close()
         t0 = time.monotonic()
         page.wait_for_timeout(SCENE_SETTLE * 1000)
 
@@ -475,7 +514,11 @@ def cmd_record(args) -> None:
         browser.close()
         if not args.dry_run and video:
             recording = out_dir / "recording.webm"
-            Path(video.path()).rename(recording)
+            scene_file = Path(video.path())
+            scene_file.rename(recording)
+            for stray in out_dir.glob("*.webm"):  # discard setup-page footage
+                if stray != recording:
+                    stray.unlink()
             print(f"Recording: {recording}")
 
     (out_dir / "markers.json").write_text(json.dumps(markers, indent=2), encoding="utf-8")
@@ -567,6 +610,7 @@ def cmd_produce(args) -> None:
     narrate_args = argparse.Namespace(
         storyboard=args.storyboard, out=str(out_dir / "narration"),
         engine=args.engine, voice=args.voice, tts_model=args.tts_model,
+        allow_voice_fallback=args.allow_voice_fallback,
     )
     record_args = argparse.Namespace(
         storyboard=args.storyboard, out=str(out_dir / "recording"),
@@ -662,6 +706,10 @@ def main(argv: list[str] | None = None) -> int:
     p_narrate.add_argument("--out", required=True)
     p_narrate.add_argument("--engine", choices=["auto", "elevenlabs", "openai", "say"], default="auto")
     p_narrate.add_argument("--voice", default=None)
+    p_narrate.add_argument(
+        "--allow-voice-fallback", action="store_true",
+        help="If the preferred/requested ElevenLabs voice is unavailable, fall back to premade George instead of failing",
+    )
     p_narrate.add_argument("--tts-model", default=None, help="TTS model (per-engine default)")
     p_narrate.set_defaults(func=cmd_narrate)
 
@@ -685,6 +733,10 @@ def main(argv: list[str] | None = None) -> int:
     p_produce.add_argument("--out-dir", required=True)
     p_produce.add_argument("--engine", choices=["auto", "elevenlabs", "openai", "say"], default="auto")
     p_produce.add_argument("--voice", default=None)
+    p_produce.add_argument(
+        "--allow-voice-fallback", action="store_true",
+        help="If the preferred/requested ElevenLabs voice is unavailable, fall back to premade George instead of failing",
+    )
     p_produce.add_argument("--tts-model", default=None, help="TTS model (per-engine default)")
     p_produce.add_argument("--var", action="append", default=[], help="Template variable name=value (repeatable)")
     p_produce.add_argument("--headed", action="store_true")

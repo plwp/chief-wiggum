@@ -234,3 +234,29 @@ def test_selector_templates_resolve(monkeypatch):
 
     tv.run_action(FakePage(), {"type": "wait_for", "selector": "text={{var:email}}"}, None, 0, {"email": "a@b.c"})
     assert calls["selector"] == "text=a@b.c" and calls["waited"]
+
+
+# --- setup pre-roll ----------------------------------------------------------
+
+
+def test_setup_actions_validated():
+    board = _board(setup=[{"type": "goto", "url": "/sign-in"}, {"type": "click", "selector": "#x"}])
+    assert tv.validate_storyboard(board) == []
+    bad = _board(setup=[{"type": "warp"}])
+    assert any("setup[0] unknown action type" in e for e in tv.validate_storyboard(bad))
+    assert any("'setup' must be a list" in e for e in tv.validate_storyboard(_board(setup="nope")))
+
+
+def test_narrate_with_setup_reaches_engine_resolution(tmp_path, monkeypatch):
+    # Regression: a stray setup-validation block in cmd_narrate raised
+    # NameError for any storyboard WITH a setup list before narration began.
+    import argparse
+    board_path = tmp_path / "storyboard.json"
+    board_path.write_text(json.dumps(_board(setup=[{"type": "goto", "url": "/x"}])))
+    calls = []
+    monkeypatch.setattr(tv, "synthesize_say", lambda text, out, voice: calls.append(text) or out.write_bytes(b"x"))
+    monkeypatch.setattr(tv, "ffprobe_duration", lambda p: 1.0)
+    args = argparse.Namespace(storyboard=str(board_path), out=str(tmp_path / "n"),
+                              engine="say", voice=None, tts_model=None)
+    tv.cmd_narrate(args)
+    assert calls == ["Welcome to the demo."]
