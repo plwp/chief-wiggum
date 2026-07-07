@@ -161,6 +161,14 @@ lasts at least as long as its narration, and assembles `tutorial.mp4` +
 `tutorial.srt`. If the resolved engine was the offline `say` fallback, note
 the voice downgrade in your summary.
 
+**Narrator voice**: when no `--voice` is passed, the ElevenLabs engine defaults
+to the user's preferred narrator (`PREFERRED_ELEVENLABS_VOICE` in
+`tutorial_video.py` — the Aussie library voice). If ElevenLabs refuses that
+voice (plan/key), production FAILS by design — never silently ship a different
+narrator (that mistake shipped six wrong-voice tutorials once). Only pass
+`--allow-voice-fallback` (premade "George") if the user explicitly accepts the
+downgrade, and say so in your summary.
+
 ### Step 6: Verify the video — not negotiable
 
 Never ship a video you have not looked at. Verify it yourself:
