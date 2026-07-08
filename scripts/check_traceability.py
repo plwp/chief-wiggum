@@ -214,7 +214,14 @@ def scan_source(source_root: str | Path) -> list[Annotation]:
         except OSError:
             continue
         rel = str(path.relative_to(root))
-        is_test = "test" in rel.lower() or "spec" in rel.lower()
+        rel_lower = rel.lower()
+        # e2e directories are test infrastructure (setup/fixtures/helpers) even when
+        # the filename itself carries no test/spec marker (e.g. ui/e2e/global-setup.ts).
+        is_test = (
+            "test" in rel_lower
+            or "spec" in rel_lower
+            or any(part == "e2e" for part in Path(rel_lower).parts)
+        )
         for i, line in enumerate(lines, start=1):
             for verb, ids in parse_annotations(line):
                 for target in ids:
