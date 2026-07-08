@@ -36,16 +36,18 @@ DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-mod
 
 # An ID ends at the 3-digit suffix and must not run into more id chars
 # (so CTR-order-001oops is NOT a valid CTR-order-001).
-ID_RE = re.compile(r"\b(BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
+# The epic slug segment is case-insensitive (CTR-order-001 and CTR-ADM-001 are both
+# valid); matching is normalised to lowercase at ingestion so links can't miss on case.
+ID_RE = re.compile(r"\b(BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
 TRACE_RE = re.compile(
     r"@cw-trace\s+(?P<verb>realizes|guards|ensures|verifies)\s+"
-    r"(?P<ids>(?:(?:BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])[\s,]*)+)",
+    r"(?P<ids>(?:(?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])[\s,]*)+)",
     re.IGNORECASE,
 )
 # Where a defined ID is *declared*: a markdown heading `### CTR-...`, a bold
 # label `**CTR-...**`, or a JSON `"id": "CTR-..."` field.
 DEFINE_RE = re.compile(
-    r"(?:^#{1,6}\s+|\*\*\s*|[\"']id[\"']\s*:\s*[\"'])((?:BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3})",
+    r"(?:^#{1,6}\s+|\*\*\s*|[\"']id[\"']\s*:\s*[\"'])((?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})",
     re.MULTILINE,
 )
 
@@ -120,12 +122,23 @@ def kind_of(node_id: str) -> str:
     return node_id.split("-", 1)[0].upper()
 
 
+def canonical_id(node_id: str) -> str:
+    """Canonical form: uppercase kind prefix, lowercase remainder.
+
+    IDs are matched case-insensitively (CTR-order-001 == CTR-ORDER-001); this
+    keeps the familiar display shape while making links immune to case drift
+    between epic docs and code annotations.
+    """
+    kind, _, rest = node_id.partition("-")
+    return f"{kind.upper()}-{rest.lower()}"
+
+
 def parse_annotations(text: str) -> list[tuple[str, list[str]]]:
     """Parse ``@cw-trace`` tags from text into (verb, [ids]) pairs."""
     out: list[tuple[str, list[str]]] = []
     for m in TRACE_RE.finditer(text):
         verb = m.group("verb").lower()
-        ids = [i.group(0) for i in ID_RE.finditer(m.group("ids"))]
+        ids = [canonical_id(i.group(0)) for i in ID_RE.finditer(m.group("ids"))]
         if ids:
             out.append((verb, ids))
     return out
@@ -145,7 +158,7 @@ def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
         except OSError:
             continue
         for m in DEFINE_RE.finditer(text):
-            node_id = m.group(1)
+            node_id = canonical_id(m.group(1))
             defined[node_id] = kind_of(node_id)
     return defined
 
@@ -175,7 +188,7 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
         for i, line in enumerate(lines, start=1):
             for dm in DEFINE_RE.finditer(line):
                 if kind_of(dm.group(1)) in ("CTR", "INV"):
-                    nearest_contract = dm.group(1)
+                    nearest_contract = canonical_id(dm.group(1))
             for verb, ids in parse_annotations(line):
                 src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
                 for target in ids:
