@@ -1,0 +1,60 @@
+{
+  "$comment": "Index of CONCRETE stack profiles: opinionated, real-vendor bindings of the vendor-neutral patterns in ../registry.json to a specific infrastructure stack, with a cost model and runnable stand-up skills. A stack profile is what turns the pattern catalog into a micro/mini-SaaS factory: the abstract pattern is the seam, the profile is the bound default. See docs/patterns-registry.md#stack-profiles. Each profile is patterns/stacks/<id>/{stack.md,manifest.json,bindings/*.md,skills/*.md}.",
+  "version": 1,
+  "stacks": [
+    {
+      "id": "gcp-serverless-saas",
+      "title": "GCP Serverless SaaS (the house stack)",
+      "status": "specified",
+      "summary": "Firebase Hosting + Cloud Run (Go) + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless WIF deploys. A single stack presented as a three-tier cost ladder (T0 static/DIY -> T1 thin-serverless -> T2 full-production) so the same blueprint scales from a zero-cost PoC to paid production without re-platforming.",
+      "spec": "patterns/stacks/gcp-serverless-saas/stack.md",
+      "manifest": "patterns/stacks/gcp-serverless-saas/manifest.json",
+      "provenance": ["plwp.net (T0)", "booking-forms (T1)", "dogeared-coach (T2)"],
+      "binds": [
+        "tiered-subscription",
+        "engagement-instrumentation",
+        "multi-tenant-isolation",
+        "provider-neutral-adapter",
+        "transactional-email-and-dunning",
+        "deployment-release",
+        "build-test-floor"
+      ]
+    }
+  ],
+  "cost_tiers": {
+    "$comment": "The cost ladder is a first-class artifact of the factory. Each tier is a coherent subset of the house stack with a monthly footprint and a graduation trigger to the next tier. Full detail per stack in its stack.md.",
+    "tiers": [
+      {
+        "id": "T0",
+        "name": "Static + DIY",
+        "monthly": "~$0",
+        "includes": ["Firebase Hosting (static, no build)", "DIY Firestore analytics (REST beacon + CLI reads)", "no auth", "manual deploy"],
+        "use_for": "landing pages, marketing sites, tiny tools, validating demand",
+        "exemplar": "plwp.net"
+      },
+      {
+        "id": "T1",
+        "name": "Thin serverless",
+        "monthly": "~$0-5",
+        "includes": ["+ Cloud Run (scale-to-zero, max-instances capped)", "+ Firestore (layered config + TTL cache)", "+ Resend (transactional email)", "+ Stripe (Connect or Checkout)", "+ per-tenant bearer admin", "+ keyless WIF deploy, prod-manual"],
+        "use_for": "real transactional micro-SaaS, per-tenant config, pay-per-use / marketplace",
+        "exemplar": "booking-forms"
+      },
+      {
+        "id": "T2",
+        "name": "Full production",
+        "monthly": "~$60-140",
+        "includes": ["+ Cloud Run prod min-instances=1", "+ MongoDB Atlas", "+ Firebase Auth + RBAC", "+ Stripe Checkout+Portal+webhooks", "+ provider-neutral media (e.g. Cloudflare Stream)", "+ promote-identical-image + bundle-guard", "+ cross-tenant isolation proof tests"],
+        "use_for": "subscription SaaS with real accounts, media, and compliance needs",
+        "exemplar": "dogeared-coach"
+      }
+    ],
+    "graduation_triggers": [
+      "T0->T1: need server-side logic / write-side validation / secrets -> add Cloud Run",
+      "T1->T2 (db): Firestore query model doesn't fit (joins, cross-entity transactions, aggregations) -> MongoDB Atlas",
+      "T1->T2 (auth): real user accounts + role-based access -> Firebase Auth + RBAC",
+      "T1->T2 (latency): cold starts hurt auth/playback UX -> prod min-instances=1 (the single biggest fixed-cost jump, ~$45-65/mo)",
+      "usage cliffs: Resend >3k mail/mo -> ~$20; Stripe fees linear from txn #1; media delivery is the only uncapped variable cost (bound it with plan caps)"
+    ]
+  }
+}

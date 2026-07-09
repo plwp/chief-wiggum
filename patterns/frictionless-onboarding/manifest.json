@@ -1,0 +1,51 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/frictionless-onboarding/pattern.md.",
+  "id": "frictionless-onboarding",
+  "version": 1,
+  "title": "Frictionless Onboarding (free -> upgrade)",
+  "category": "monetization",
+  "trust_class": "conversion-changes-are-end-user-signal-driven",
+
+  "applies_when": [
+    "product-led-growth SaaS with a free or trial tier converting to paid",
+    "self-serve upgrade, no sales touch",
+    "NOT for sales-led / enterprise-only products with human onboarding"
+  ],
+
+  "components": [
+    "value-first-free-tier: no credit card, free tier delivers a real complete unit of value, TTFV is the north-star",
+    "activation-instrumentation: define the aha activation event, instrument signup->activation->habit->upgrade funnel (trust-tagged) via engagement-instrumentation",
+    "progressive-disclosure: minimum up front, defer friction, collect more only when a feature needs it",
+    "just-in-time-upgrade-prompts: triggered by friction signals (limit-hit 409, locked-capability tap, approaching quota), not time-based nags; one-click self-serve",
+    "reverse-trial(optional): time-boxed premium with server-enforced independent TTL, then fall back to free",
+    "recovery-loops: activation nudges + failed-payment dunning via transactional-email-and-dunning"
+  ],
+
+  "parameters": {
+    "activation_event": {"type": "string", "required": true, "description": "The instrumented aha moment (funnel success step)."},
+    "free_tier_value_unit": {"type": "string", "required": true, "description": "The complete unit of value the free tier delivers."},
+    "upgrade_triggers": {"type": "array", "required": true, "description": "Friction signals that surface a contextual upgrade prompt."},
+    "reverse_trial_length": {"type": "string", "required": false, "description": "Optional time-boxed premium window; omit to disable."},
+    "nudge_cadence": {"type": "string", "required": false, "description": "Activation/re-engagement email schedule."}
+  },
+
+  "success_metrics": {
+    "$comment": "Conversion funnel; the loop's optimization target for this pattern, admin-gated (proposals touch pricing/paywall + are end-user-signal-driven).",
+    "metrics": [
+      {"id": "activation_rate", "goal": "up", "desc": "% of signups reaching the aha activation event"},
+      {"id": "time_to_first_value", "goal": "down", "desc": "TTFV: signup -> first real value"},
+      {"id": "free_to_paid_conversion", "goal": "up", "desc": "% of free users upgrading to paid"},
+      {"id": "prompt_conversion", "goal": "up", "desc": "contextual upgrade-prompt -> upgrade rate"},
+      {"id": "reverse_trial_conversion", "goal": "up", "desc": "% converting after the reverse-trial window (if enabled)"}
+    ]
+  },
+
+  "depends_on": {
+    "tiered-subscription": "limit-hit gate is the upgrade trigger; one-click upgrade drops into its lifecycle",
+    "engagement-instrumentation": "the activation/conversion funnel is captured as trust-tagged engagement signal"
+  },
+
+  "feeds": {
+    "improvement-loop": "conversion funnel is the optimization target; but proposals touch paywall/pricing (goalpost) and are end-user-signal-driven (untrusted), so they route to BLOCKING admin approval, never silent auto-deploy"
+  }
+}

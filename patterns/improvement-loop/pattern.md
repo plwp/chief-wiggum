@@ -201,6 +201,18 @@ Bound per app at apply time (schema in [`manifest.json`](./manifest.json)):
 | `deploy_cmd` | fix-forward deploy |
 | `schedule` | iteration cadence |
 
+## Success metrics
+
+Every pattern declares the metrics that define "it's working" — they are what the
+loop optimizes toward and what the ratchet holds monotonic. The loop's own:
+
+| Metric | Goal | What it measures |
+|--|--|--|
+| `highwater_trend` | ↑ | strict benchmark pass-set high-water mark (ratchet enforces never-down) |
+| `finding_close_rate` | ↑ | % of diagnosed finding-clusters resolved vs still-open after N iterations |
+| `escaped_defect_rate` | ↓ | high-water cases that regressed live post-deploy (target 0; caught by replay) |
+| `autonomy_ratio` | context | % changes auto-deployed vs parked/quarantined — the remaining human load |
+
 ## Relationship to existing CW machinery
 
 This pattern is **mostly a repackaging of machinery CW already owns**, pointed at

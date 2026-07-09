@@ -1,0 +1,75 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern --stack installer. Human spec: patterns/stacks/gcp-serverless-saas/stack.md. A stack profile binds vendor-neutral patterns (../../<id>) to concrete vendors, ships stand-up skills, and carries a cost model. Mined from plwp.net (T0), booking-forms (T1), dogeared-coach (T2).",
+  "id": "gcp-serverless-saas",
+  "version": 1,
+  "title": "GCP Serverless SaaS (the house stack)",
+  "status": "specified",
+  "provenance": {"T0": "plwp.net", "T1": "booking-forms", "T2": "dogeared-coach"},
+
+  "vendors": {
+    "hosting": {"vendor": "Firebase Hosting", "role": "static frontend, multi-site", "swappable_for": ["Vercel", "Netlify", "Cloudflare Pages"]},
+    "backend": {"vendor": "Cloud Run", "role": "Go API, scale-to-zero", "region": "us-central1", "swappable_for": ["Fly.io", "Render"]},
+    "database": {"vendor": "Firestore | MongoDB Atlas", "role": "Firestore T0/T1, Atlas T2", "swappable_for": ["Postgres/Supabase"]},
+    "auth": {"vendor": "Firebase Auth / Identity Platform", "role": "server-verified ID tokens + RBAC", "swappable_for": ["Clerk", "Auth0"]},
+    "payments": {"vendor": "Stripe", "role": "Checkout+Portal subscriptions | Connect marketplace", "swappable_for": ["Paddle", "Lemon Squeezy"]},
+    "email": {"vendor": "Resend", "role": "transactional email", "swappable_for": ["Postmark", "SES"]},
+    "media": {"vendor": "provider-neutral (Cloudflare Stream exemplar)", "role": "direct-to-CDN upload + signed playback", "swappable_for": ["Mux", "GCS+CDN"]},
+    "secrets": {"vendor": "GCP Secret Manager", "role": "containers via IaC, values out-of-band"},
+    "deploy_identity": {"vendor": "Workload Identity Federation (GitHub OIDC)", "role": "keyless, repo-scoped, least-privilege deployer"},
+    "observability": {"vendor": "Cloud Logging + append-only audit collections", "role": "structured stdout + /healthz; no paid APM by default"},
+    "iac": {"vendor": "Terraform", "role": "services + secret containers + IAM + WIF"}
+  },
+
+  "cost_tiers": [
+    {
+      "id": "T0", "name": "Static + DIY", "monthly": "~$0", "exemplar": "plwp.net",
+      "active_seams": ["hosting", "database(firestore, analytics-only)"],
+      "use_for": "landing pages, marketing, tiny tools, demand validation",
+      "free_tier_limits": ["Firestore ~20k writes/day", "Hosting 10GB storage + 360MB/day egress"]
+    },
+    {
+      "id": "T1", "name": "Thin serverless", "monthly": "~$0-5", "exemplar": "booking-forms",
+      "active_seams": ["hosting", "backend(scale-to-zero)", "database(firestore)", "email", "payments(connect)", "secrets", "deploy_identity"],
+      "use_for": "transactional micro-SaaS, per-tenant config, marketplace/deposits",
+      "first_ceiling": "Resend 3k mail/mo (100/day) free tier",
+      "cost_caps": ["Cloud Run max-instances cap (throughput ceiling doubles as cost cap)"]
+    },
+    {
+      "id": "T2", "name": "Full production", "monthly": "~$60-140", "exemplar": "dogeared-coach",
+      "active_seams": ["hosting", "backend(min-instances=1)", "database(atlas)", "auth", "payments(checkout+portal+webhooks)", "email", "media", "secrets", "deploy_identity", "observability"],
+      "use_for": "subscription SaaS with accounts, media, compliance",
+      "biggest_fixed_jump": "prod Cloud Run min-instances=1 (~$45-65/mo illustrative; depends on region/CPU/memory/billing-mode, not an invariant)",
+      "largest_uncapped_meter": "media delivery (bound with per-plan caps + soft alert); NOT the only metered line -- Firestore, Cloud Run egress, Hosting transfer, Logging, Artifact Registry, Resend, Stripe fees all scale with use. Put a project budget alert on everything.",
+      "db_graduation_is_a_migration": "Firestore->Atlas changes query/index/txn/backup semantics; needs dual-write/backfill/cutover, not a config flip"
+    }
+  ],
+
+  "graduation_triggers": [
+    {"from": "T0", "to": "T1", "trigger": "need server logic / write-side validation / secrets", "add": "Cloud Run"},
+    {"from": "T1", "to": "T2", "trigger": "Firestore query model doesn't fit (joins, cross-entity txns, aggregations)", "add": "MongoDB Atlas"},
+    {"from": "T1", "to": "T2", "trigger": "real user accounts + role-based access", "add": "Firebase Auth + RBAC"},
+    {"from": "T1", "to": "T2", "trigger": "cold starts hurt auth/media UX", "add": "prod min-instances=1 (biggest fixed jump)"}
+  ],
+
+  "bindings": {
+    "tiered-subscription": {"tier": "T2", "recipe": "bindings/tiered-subscription.md", "vendor": "Stripe Checkout+Portal", "source": "dogeared-coach"},
+    "engagement-instrumentation": {"tier": "T0+", "recipe": "bindings/engagement-instrumentation.md", "vendor": "DIY Firestore beacon", "source": "plwp.net"},
+    "multi-tenant-isolation": {"tier": "T1/T2", "recipe": "bindings/multi-tenant-isolation.md", "vendor": "server-derived scoping (2 variants)", "source": "booking-forms, dogeared-coach"},
+    "provider-neutral-adapter": {"tier": "T2", "recipe": "bindings/provider-neutral-adapter.md", "vendor": "Go interface + Cloudflare Stream", "source": "dogeared-coach"},
+    "transactional-email-and-dunning": {"tier": "T1+", "recipe": "bindings/transactional-email.md", "vendor": "Resend", "source": "booking-forms, dogeared-coach", "note": "dunning half aspirational (unbuilt in mined apps)"},
+    "deployment-release": {"tier": "T1+", "recipe": "bindings/deployment-release.md", "vendor": "keyless WIF + promote-identical", "source": "booking-forms, dogeared-coach"}
+  },
+
+  "skills": [
+    {"id": "deploy-gcp-wif", "path": "skills/deploy-gcp-wif.md", "stands_up": "keyless WIF deploy pipeline (staging-auto / prod-promote-identical)"},
+    {"id": "stripe-subscriptions-setup", "path": "skills/stripe-subscriptions-setup.md", "stands_up": "Stripe Checkout + Portal + webhook (fetch-on-webhook reconcile)"},
+    {"id": "firestore-diy-analytics-setup", "path": "skills/firestore-diy-analytics-setup.md", "stands_up": "zero-cost DIY Firestore analytics beacon + CLI"},
+    {"id": "secret-manager-setup", "path": "skills/secret-manager-setup.md", "stands_up": "Secret Manager containers + least-privilege runtime access"}
+  ],
+
+  "known_gaps": [
+    "dunning unbuilt in every mined app (Stripe sends billing emails); dunning binding half is aspirational",
+    "no standing job/queue infra; reconciliation is a PSK-gated pull endpoint poked by an external scheduler",
+    "observability is structured logs + audit collections only; no APM/error tracker wired"
+  ]
+}

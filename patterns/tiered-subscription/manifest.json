@@ -1,0 +1,53 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/tiered-subscription/pattern.md. Absorbs the former tiered-saas-enforcement candidate.",
+  "id": "tiered-subscription",
+  "version": 1,
+  "title": "Tiered Subscription",
+  "category": "saas-infra",
+  "trust_class": "entitlement-changes-are-protected-path",
+
+  "applies_when": [
+    "product has more than one paid tier, or free + paid",
+    "you need self-serve plan changes and enforcement at every mutating action",
+    "lapse/downgrade must degrade gracefully without deleting customer data"
+  ],
+
+  "components": [
+    "tier-matrix-single-source-of-truth: per-tier caps/flags, -1 unlimited sentinel, unknown-tier -> most-restrictive fallback",
+    "injected-gate-seams: Allow/Check interfaces into services + webhook handlers, check-before-act, documented bounded TOCTOU",
+    "stateless-quota: recompute usage fresh from source of truth, one path for enforce + display, pessimistic in-flight reservation",
+    "billing-webhook-source-of-truth: signed idempotent provider webhooks drive subscription state, never the client redirect",
+    "lifecycle: subscribe / upgrade(immediate,proration-by-provider) / downgrade(at-period-end) / cancel(retain-till-period-end) / reactivate; entitlement recomputed per transition",
+    "graceful-degradation: past_due -> dunning grace window; cancel/expire -> free-tier or read-only, never hard-delete; over-cap downgrade -> block-new keep-existing"
+  ],
+
+  "parameters": {
+    "tiers": {"type": "array", "required": true, "description": "Tier ids in ascending order."},
+    "matrix": {"type": "object", "required": true, "description": "Per-tier capability/limit matrix; -1 = unlimited."},
+    "billing_provider": {"type": "string", "required": true, "description": "Billing vendor, behind provider-neutral-adapter."},
+    "unknown_tier_fallback": {"type": "string", "required": false, "default": "free", "description": "Most-restrictive tier used for unknown/empty tier."},
+    "dunning_grace_window": {"type": "string", "required": false, "default": "14d", "description": "How long past_due retains access before degrade."},
+    "downgrade_policy": {"enum": ["block-new", "read-only"], "required": false, "default": "block-new", "description": "Over-cap downgrade behavior; never destructive."},
+    "lapse_policy": {"enum": ["free-tier", "read-only"], "required": false, "default": "free-tier", "description": "On cancel/expire; never delete data."}
+  },
+
+  "success_metrics": {
+    "$comment": "Monetization health; the loop optimizes packaging/thresholds toward these, admin-gated (entitlement/pricing are protected-path).",
+    "metrics": [
+      {"id": "mrr", "goal": "up", "desc": "monthly recurring revenue / ARPU"},
+      {"id": "upgrade_rate", "goal": "up", "desc": "% of accounts moving to a higher tier"},
+      {"id": "voluntary_churn_rate", "goal": "down", "desc": "% cancelling per period"},
+      {"id": "dunning_recovery_rate", "goal": "up", "desc": "% of past_due accounts recovered before degrade (involuntary churn saved)"},
+      {"id": "revenue_leak", "goal": "down", "desc": "unpaid-access or wrong-tier-grant incidents (target 0; asserted by the enforcement gate)"}
+    ]
+  },
+
+  "depends_on": {
+    "provider-neutral-adapter": "billing vendor + its signed webhooks sit behind the neutral seam"
+  },
+
+  "feeds": {
+    "frictionless-onboarding": "limit-hit 409 from the enforcement seam is the upgrade-prompt trigger",
+    "improvement-loop": "limit-hit / upgrade / downgrade / dunning events are monetization signal; entitlement+pricing defs are protected-path, so loop-proposed changes are admin-gated"
+  }
+}

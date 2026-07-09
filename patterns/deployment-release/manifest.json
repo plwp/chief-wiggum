@@ -1,0 +1,64 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/deployment-release/pattern.md. Mined from two shipped GCP apps (keyless WIF + promote-identical-image + staging-auto/prod-gate + bundle-guard).",
+  "id": "deployment-release",
+  "version": 1,
+  "title": "Deployment & Release",
+  "category": "gate",
+  "trust_class": "deploy-pipeline-and-promotion-authority-are-protected-path",
+
+  "applies_when": [
+    "product is deployed to a hosted environment on a cadence (essentially every SaaS)",
+    "you need a provable 'what we tested is what we shipped' guarantee",
+    "CI must reach the cloud without long-lived stored credentials"
+  ],
+
+  "components": [
+    "keyless-federated-ci-identity: CI mints a short-lived OIDC token scoped to the exact repo; no long-lived cloud keys at rest",
+    "environment-split-with-promotion-gate: merge->staging auto-deploy after floor; production is manual human-gated promotion (protected env / required reviewers)",
+    "promote-identical-artifact: prod ships the byte-identical staged build (pull/retag/push, no rebuild); per-env rebuild is documented exception behind the fence",
+    "config-leak-fence: mechanical assertion that the artifact carries no lower-env config/secrets; fail-closed",
+    "least-privilege-deploy-identity: deployer can roll releases but cannot mutate infra or read secret values; infra changes are a separate human-run privileged path",
+    "floor-gated: no deploy without build/test/lint floor passing, mirrored locally",
+    "post-deploy-smoke: assert liveness + core-dependency health before the deploy is considered live",
+    "secret-containers-out-of-band-values: IaC creates secret containers + grants runtime read; values added out-of-band, never in state or repo"
+  ],
+
+  "parameters": {
+    "ci_provider": {"type": "string", "required": true, "description": "CI system minting the OIDC identity."},
+    "cloud": {"type": "string", "required": true, "description": "Target cloud."},
+    "federated_identity": {"type": "object", "required": true, "description": "Keyless workload-identity binding scoped to the source repo."},
+    "environments": {"type": "array", "required": true, "description": "Ordered env list; each with its deploy trigger and gate."},
+    "promote_strategy": {"enum": ["identical-artifact", "rebuild-guarded"], "required": false, "default": "identical-artifact", "description": "How prod gets its artifact."},
+    "floor_cmd": {"type": "string", "required": true, "description": "Build/test/lint floor, mirrored locally."},
+    "build_guard_cmd": {"type": "string", "required": false, "description": "Config-leak fence assertion."},
+    "smoke_cmd": {"type": "string", "required": true, "description": "Post-deploy liveness + dependency-health check."},
+    "deployer_permissions": {"type": "object", "required": true, "description": "Least-privilege set: roll-release yes; mutate-infra / read-secrets no."},
+    "prod_promotion_authority": {"type": "string", "required": true, "description": "How a human is required to approve prod (protected env / required reviewers / signed promotion)."}
+  },
+
+  "success_metrics": {
+    "$comment": "DORA-flavored delivery health. Pipeline definition is protected-path, so changes to how deploys happen are always human-reviewed.",
+    "metrics": [
+      {"id": "deploy_frequency", "goal": "up", "desc": "releases reaching prod per unit time"},
+      {"id": "lead_time_to_prod", "goal": "down", "desc": "merged-commit -> live-in-prod latency"},
+      {"id": "change_failure_rate", "goal": "down", "desc": "% of prod deploys causing an incident / rollback"},
+      {"id": "staging_prod_drift", "goal": "down", "desc": "build/config divergence between staging and prod (target 0; asserted by identical-artifact + fence)"},
+      {"id": "hotfix_rate", "goal": "down", "desc": "out-of-band emergency deploys (proxy for gate escapes)"}
+    ]
+  },
+
+  "protected_paths": [
+    "the CI/CD workflow definitions",
+    "the promotion gate + required-reviewer config",
+    "the federated-identity bindings",
+    "the config-leak fence script"
+  ],
+
+  "depends_on": {
+    "build-test-floor": "the floor is the pre-condition gate enforced before any deploy"
+  },
+
+  "feeds": {
+    "improvement-loop": "deploy frequency / change-failure / smoke outcomes are operational signal; the loop's deploy_cmd is realized here; pipeline defs are protected-path so loop changes to them are human-gated"
+  }
+}
