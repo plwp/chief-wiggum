@@ -1,0 +1,88 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/improvement-loop/pattern.md.",
+  "id": "improvement-loop",
+  "version": 1,
+  "title": "Improvement Lifecycle Loop",
+  "category": "process-loop",
+  "trust_class": "trust-aware",
+
+  "applies_when": [
+    "product has a stream of gradeable outcomes (conversations/requests/transactions)",
+    "product has a deterministic benchmark to ratchet against",
+    "editable surfaces (prompts/config/code) are separable from goalposts (objective/guardrails/gate)"
+  ],
+
+  "parameters": {
+    "signal_sources": {
+      "type": "array",
+      "required": true,
+      "description": "Heterogeneous signal inputs, each normalized to a Finding.",
+      "items": {
+        "kind": {"enum": ["conversations", "feedback", "errors", "backlog"], "required": true},
+        "locator": {"type": "string", "required": true, "description": "How to read the source (connection/collection/path/query)."},
+        "trust": {"enum": ["trusted", "untrusted"], "required": true, "description": "trusted = internal/authenticated-admin origin; untrusted = end-user-supplied content. Drives the human gate. An app's own error logs stay trusted even in a public app."}
+      }
+    },
+    "benchmark": {
+      "type": "object",
+      "required": true,
+      "fields": {
+        "strict_cmd": {"type": "string", "required": true, "description": "Command emitting per-case pass/fail for the strict (deterministic) pass-set."},
+        "golden_dir": {"type": "string", "required": true, "description": "Fix-visible benchmark cases."},
+        "holdout_dir": {"type": "string", "required": false, "description": "Gate-only cases withheld from the fixer's context."}
+      }
+    },
+    "floor_cmd": {"type": "string", "required": true, "description": "Language-agnostic build/test floor (e.g. a pre-merge-check script)."},
+    "product_model_family": {"type": "string", "required": true, "description": "Operational model family under test."},
+    "judge_model_family": {"type": "string", "required": true, "description": "Decorrelated judge family; MUST differ from product_model_family."},
+    "protected_paths": {"type": "array", "required": true, "description": "Goalposts the loop must not move; added to the app's ratchet protected pathset.", "items": {"type": "string"}},
+    "human_channel": {"type": "string", "required": true, "description": "Destination for park-and-notify and approval requests."},
+    "admin_authority": {"type": "object", "required": true, "description": "How admin identity is verified for approvals.", "fields": {
+      "kind": {"enum": ["codeowners", "signed-commit", "allowlist"], "required": true},
+      "locator": {"type": "string", "required": false}
+    }},
+    "deploy_cmd": {"type": "string", "required": true, "description": "Fix-forward deploy command (no rollback)."},
+    "schedule": {"type": "string", "required": false, "default": "nightly", "description": "Iteration cadence."}
+  },
+
+  "installs": {
+    "$comment": "Files the pattern stamps into the target repo. scaffold/ is NOT YET BUILT — these are the intended install targets.",
+    "app_skill": ".app/skills/improvement-loop/SKILL.md",
+    "scripts": ".app/skills/improvement-loop/scripts/{ingest_*,recent_errors,synthesize,ratchet,guard_protected_paths,recent_queries}.py",
+    "judge_rubric": ".app/skills/improvement-loop/judge_rubric.md",
+    "state_dir": ".app/skills/improvement-loop/state/",
+    "business_rules": "docs/business-rules.md",
+    "quarantine_dir": "docs/patterns/pending-approval/",
+    "adoption_record": "docs/patterns/adopted.json"
+  },
+
+  "protected_paths_added": [
+    "eval/**",
+    ".app/skills/improvement-loop/scripts/ratchet.py",
+    ".app/skills/improvement-loop/scripts/guard_protected_paths.sh",
+    ".app/skills/improvement-loop/state/**",
+    ".app/skills/improvement-loop/judge_rubric.md",
+    "docs/quality/**"
+  ],
+
+  "trust_model": {
+    "$comment": "The core generalization. See docs/patterns-registry.md#trust-model.",
+    "finding_trust": "each Finding inherits signal_trust from its source",
+    "change_trust": "a proposed change inherits the LOWEST trust of the findings in its cluster",
+    "gates": [
+      {"provenance": "only trusted signals, no protected path", "gate": "autonomous-fix-forward", "blocking": false},
+      {"provenance": "touches a protected path (any provenance)", "gate": "park-and-notify", "blocking": false},
+      {"provenance": "any untrusted signal", "gate": "quarantine-then-admin-approval", "blocking": true}
+    ],
+    "approval": {
+      "command": "patterns approve <id> --admin <identity>",
+      "identity_verified_against": "admin_authority parameter (codeowners/signed-commit/allowlist), never self-asserted",
+      "journaled": "approval and approver appended to the tamper-evident ratchet journal"
+    }
+  },
+
+  "requires_target": {
+    "ratchet": "reuses docs/quality/ratchet.json (scripts/ratchet.py) for the high-water mark, journal, and protected pathset",
+    "unresolved_gate": "unbound parameters become TBD: markers gated by scripts/check_unresolved.py"
+  }
+}
