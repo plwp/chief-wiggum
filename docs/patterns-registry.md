@@ -52,25 +52,30 @@ be re-derived, or forgotten. A registry:
 
 ```
 patterns/
-├── registry.json                 # the index: id, category, status, trust-class, one-liner
-├── improvement-loop/             # pattern #1 (this proposal)
+├── registry.json                 # the index: specified patterns + mined candidates + meta-disciplines
+├── improvement-loop/             # specified pattern
 │   ├── pattern.md                # the spec: what / when-to-apply / mechanism / parameters
 │   ├── manifest.json             # machine-readable: params, installs[], protected_paths, trust
 │   └── scaffold/                 # (future) the templated files stamped into the target app
-└── <future patterns>/
+├── engagement-instrumentation/   # specified pattern — the signal tier that feeds the loop
+│   ├── pattern.md
+│   └── manifest.json
+└── <candidate patterns>/         # mined, catalogued in registry.json, not yet fully specified
 ```
 
-Each pattern is a directory. Two files are the contract:
+Each specified pattern is a directory. Two files are the contract:
 
 - **`pattern.md`** — the human-facing spec. What the pattern is, when to apply it,
-  the mechanism (as a set of generic components), its parameters, the reference
-  implementation it was distilled from, and its trust requirements.
+  the mechanism (as a set of generic components), its parameters, and its trust
+  requirements.
 - **`manifest.json`** — the machine-readable surface a future `apply-pattern`
   script consumes: parameter schema, the files/scaffold it installs, the paths it
   adds to the product's protected pathset, and its trust class.
 
 `registry.json` is a thin index over the directories so a workflow can list and
-filter patterns without opening each manifest.
+filter patterns without opening each manifest. It also carries **candidates**
+(patterns mined but not yet fully specified) and **meta-disciplines** (recurring
+cross-pattern rules — fail-closed, idempotency, injected seams, documented TOCTOU).
 
 ## How a pattern gets applied (proposed `/apply-pattern`)
 
@@ -182,21 +187,57 @@ trust-appropriate behavior, no fork.
 
 ## Candidate patterns (the backlog the registry seeds)
 
-The improvement loop distills into a set of mechanisms
-(`patterns/improvement-loop/pattern.md` catalogs them). Several are strong enough
-to stand alone as their own registry entries CW could apply independently:
+Candidates come from two sources: mechanisms the improvement loop decomposes into,
+and patterns **mined from shipped apps** CW has built.
 
-| Candidate pattern | One-liner | Notes |
+### From the improvement loop
+
+The loop distills into a set of mechanisms
+(`patterns/improvement-loop/pattern.md` catalogs them), several strong enough to
+stand alone:
+
+| Candidate | One-liner | Notes |
 |--|--|--|
-| **improvement-loop** | Autonomous, signal-driven, ratchet-gated fix-forward refinement | Pattern #1, this proposal |
 | **protected-pathset + ratchet** | Monotonic quality high-water mark + fenced goalposts, embedded in the product | CW already runs this on *its own* work; the pattern is embedding it *in the built app* |
 | **decorrelated-judge / shadow-audit** | Referee model family ≠ player model family; blind re-generation to catch shared blind spots | For any product with an LLM-judge or generative success path |
 | **gate-only-holdout** | Train/holdout eval split; holdout withheld from the fixer's context | Anti-overfit for any self-modifying, test-graded product |
 | **signal-ingestion + findings** | Heterogeneous signals → one uniform, pointer-only, idempotent `Finding` shape | The abstraction that makes the loop source-agnostic; carries the trust tag |
 | **business-rules-registry** | Human corrections captured as provenance-bearing, version-controlled rules that outrank inference | The admin-approval trust gate rides on this |
-| **build-test-floor** | Language-agnostic auto-detecting build+test gate | A generic pre-merge check the loop's floor reuses |
 
-Capturing these is future work; the registry structure is built to hold them.
+### Mined from a shipped multi-tenant SaaS app
+
+Mining an existing production app (genericized — no app, domain, or vendor names)
+surfaced a coherent set of reusable shapes. Two observations shaped how they land:
+
+- The **feedback/instrumentation stack** was promoted to its own specified pattern
+  ([`engagement-instrumentation`](../patterns/engagement-instrumentation/pattern.md))
+  because it is precisely the signal supply the improvement loop's *enabling
+  condition* (strong monitoring + feedback) calls for — and one of its
+  sub-patterns, a documented per-metric **trust-boundary "honesty note"**,
+  directly reinforces the [trust model](#trust-model-the-core-generalization):
+  a loop that ingests a signal must know that signal's trust class or it will
+  optimize against a gameable proxy.
+- The **multi-tenant isolation stack** is the *floor* that makes mining per-tenant
+  behavioral data safe — the loop can read across tenants for analysis without
+  leaking between them only atop a fail-closed, server-derived scoping layer.
+
+| Candidate | Category | One-liner |
+|--|--|--|
+| **multi-tenant-isolation** | saas-infra | Server-only tenant resolution → fail-closed tenant-scoped repository → standing cross-tenant isolation proof gate → quarantined cascade erasure. One multi-tenancy blueprint |
+| **provider-neutral-adapter** | multi-provider | Vendor-agnostic seam (neutral DTOs, unexported concrete types = compile-time swappability); behind it: signed-webhook-as-source-of-truth, sign-per-request access tokens, direct browser→CDN upload |
+| **reconciliation-sweep** | process-loop | Periodic bidirectional local↔external drift repair, fail-closed on unknown state, re-confirm before destroy, per-run counts report |
+| **tiered-saas-enforcement** | saas-infra | Single-source tier matrix (unlimited sentinel, restrictive fallback) + stateless quota computed fresh (self-healing, one path for enforce+display) |
+| **immutable-assignment-snapshot** | data-structure | Version-pin assigned composite items so template edits never mutate outstanding assignments; keeps completion analysis drift-free |
+| **elevated-access-session** | saas-infra | Revocable, time-boxed support impersonation with independent TTL, future-skew guard, fail-closed revocation, full audit |
+| **build-test-floor** | gate | Language-agnostic auto-detecting build+test+lint gate with local mirror; optionally zero-cost-until-opt-in |
+
+Plus **meta-disciplines** recurring across the mined patterns — fail-closed on
+unknown input, idempotency + guarded conditional updates, injected interface seams
+for every gate, documented-not-hidden TOCTOU limitations — catalogued in
+`registry.json` as rules rather than installable patterns.
+
+Fully specifying the candidates (a `pattern.md` + `manifest.json` each) is future
+work; the registry structure is built to hold them.
 
 ## Applying a pattern to CW itself
 
