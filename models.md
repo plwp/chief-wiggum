@@ -55,7 +55,7 @@ Refresh with `/update`.
 
 | Engine | Model | Notes |
 |--------|-------|-------|
-| ElevenLabs | `eleven_multilingual_v2` | Preferred for `/tutorial-video` (auto when `ELEVENLABS_API_KEY` is in the keyring). Default voice `JBFqnCBsd6RMkjVDRZzb` (George, premade — free-tier API OK). Preferred narrator voices `5GZaeOOG7yqLdoTRsaa6` / `U9VgC8Xinl7nnNsyDd3J` are voice-library voices — API use needs a paid plan; pass via `--voice` |
+| ElevenLabs | `eleven_multilingual_v2` | Preferred for `/tutorial-video` (auto when `ELEVENLABS_API_KEY` is in the keyring). Narrator voice comes from the target repo's `docs/tutorials/voice.json` (chosen: Sally the Aussie, `5GZaeOOG7yqLdoTRsaa6` — paid plan is active). George (`JBFqnCBsd6RMkjVDRZzb`) is only reachable via explicit `--allow-voice-fallback`; a refused/unavailable voice is a hard failure, never a silent fallback |
 | OpenAI TTS | `gpt-4o-mini-tts` | Fallback; voices: alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer |
 | OpenAI TTS | `tts-1-hd` | Higher fidelity, slower |
 | macOS `say` | system voices | Offline fallback (`--engine say`), no API key needed |
