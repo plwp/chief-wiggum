@@ -315,7 +315,16 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 # graph. Assign stable BR-/CTR-/INV- IDs and `@cw-trace realizes` links so this
 # passes; it degrades gracefully when no IDs exist yet.
 python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
+
+# Single-writer soundness gate — validates that "single write path"/"single source
+# of truth" invariants carry well-formed `controls_field` + `sanctioned_writers`
+# metadata, and (with --source) surfaces every existing writer of the controlled
+# fields so a second, unsanctioned mutator is visible at design time (see
+# docs/single-writer.md). Degrades gracefully when no such invariant exists.
+python3 "$CW_HOME/scripts/check_single_writer.py" "$CW_TMP" --source "$TARGET_REPO" --gate soundness --format text
 ```
+
+Any invariant that says "single write path" or "single source of truth" for a field/state MUST name its `controls_field` and `sanctioned_writers` — either as arrays on the structured `state-machines.json` invariant, or via a `<!-- @cw-writes INV-... controls_field=a.b sanctioned_writers=Sym,path.go -->` tag next to its `**INV-...**` label in `invariants.md`. Without this metadata the invariant is prose only and a second mutator (e.g. a legacy admin control) can silently violate it. Review the surfaced writer inventory: if the gate lists a writer outside the sanctioned set, that is a pre-existing violation to fix or explicitly sanction before the epic builds on the invariant.
 
 Check the graph analysis output for:
 - **Unreachable states**: States that can't be reached from the initial state — these are model bugs

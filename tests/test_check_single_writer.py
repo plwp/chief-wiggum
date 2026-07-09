@@ -1,0 +1,304 @@
+"""Tests for the single-writer / mutator-inventory checker."""
+
+from __future__ import annotations
+
+import json
+
+import check_single_writer as sw
+
+# --- invariant metadata parsing ---------------------------------------------
+
+
+def test_parse_prose_invariant_with_tag():
+    text = (
+        "**INV-bil-001**: single atomic Stripe→plan write\n"
+        "<!-- @cw-writes INV-bil-001 controls_field=provider.plan,provider.stripe_plan "
+        "sanctioned_writers=ReconcileStripe,internal/billing/reconcile.go -->\n"
+    )
+    invs, malformed = sw.parse_prose_invariants(text, "invariants.md")
+    assert malformed == []
+    assert len(invs) == 1
+    inv = invs[0]
+    assert inv.id == "INV-bil-001"
+    assert inv.controls_field == ["provider.plan", "provider.stripe_plan"]
+    assert inv.sanctioned_writers == ["ReconcileStripe", "internal/billing/reconcile.go"]
+    assert inv.description == "single atomic Stripe→plan write"
+
+
+def test_prose_tag_attrs_order_free():
+    text = (
+        "<!-- @cw-writes INV-x-001 sanctioned_writers=Foo controls_field=a.b -->\n"
+    )
+    invs, _ = sw.parse_prose_invariants(text, "f.md")
+    assert invs[0].controls_field == ["a.b"]
+    assert invs[0].sanctioned_writers == ["Foo"]
+
+
+def test_prose_incomplete_metadata_is_malformed():
+    text = "<!-- @cw-writes INV-x-001 controls_field=a.b -->\n"  # no sanctioned_writers
+    invs, malformed = sw.parse_prose_invariants(text, "f.md")
+    assert invs == []
+    assert malformed and "both" in malformed[0]["reason"]
+
+
+def test_structured_invariant_parsed():
+    data = {
+        "invariants": [
+            {
+                "id": "INV-bil-001",
+                "description": "single write path",
+                "controls_field": ["provider.stripe_plan"],
+                "sanctioned_writers": ["ReconcileStripe"],
+            },
+            {"id": "INV-bil-002", "description": "unrelated invariant"},  # skipped
+        ]
+    }
+    invs, malformed = sw.parse_structured_invariants(data, "state-machines.json")
+    assert malformed == []
+    assert [i.id for i in invs] == ["INV-bil-001"]  # the plain one is skipped
+
+
+def test_structured_one_sided_metadata_is_malformed():
+    data = {"invariants": [{"id": "INV-x-001", "controls_field": ["a.b"]}]}
+    invs, malformed = sw.parse_structured_invariants(data, "sm.json")
+    assert invs == []
+    assert malformed and "not both" in malformed[0]["reason"]
+
+
+def test_invariant_without_metadata_is_skipped_gracefully():
+    data = {"invariants": [{"id": "INV-x-001", "description": "prose only invariant"}]}
+    invs, malformed = sw.parse_structured_invariants(data, "sm.json")
+    assert invs == [] and malformed == []
+
+
+# --- field token derivation -------------------------------------------------
+
+
+def test_field_tokens_cover_snake_and_camel():
+    inv = sw.SingleWriterInvariant(
+        "INV-x-001", "", ["provider.stripe_plan"], ["Foo"], "src"
+    )
+    toks = inv.field_tokens()
+    assert "stripe_plan" in toks and "stripeplan" in toks
+
+
+# --- writer scanning --------------------------------------------------------
+
+
+def _inv():
+    return sw.SingleWriterInvariant(
+        id="INV-bil-001",
+        description="single write path",
+        controls_field=["provider.plan", "provider.stripe_plan"],
+        sanctioned_writers=["ReconcileStripe", "internal/billing/reconcile.go"],
+        source="invariants.md",
+    )
+
+
+def test_go_assignment_writer_detected(tmp_path):
+    (tmp_path / "admin.go").write_text(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert len(writers) == 1
+    w = writers[0]
+    assert w.file == "admin.go" and w.symbol == "ChangePlan"
+    assert w.sanctioned is False  # ChangePlan is NOT in the sanctioned set
+
+
+def test_sanctioned_by_symbol(tmp_path):
+    (tmp_path / "other.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert len(writers) == 1 and writers[0].sanctioned is True
+
+
+def test_sanctioned_by_file_path(tmp_path):
+    d = tmp_path / "internal" / "billing"
+    d.mkdir(parents=True)
+    (d / "reconcile.go").write_text(
+        "func doWrite(p *Provider, v string) {\n\tp.Plan = v\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert len(writers) == 1 and writers[0].sanctioned is True  # file is sanctioned
+
+
+def test_struct_literal_write_detected(tmp_path):
+    (tmp_path / "seed.go").write_text(
+        "func mkProvider() Provider {\n\treturn Provider{Plan: \"pro\"}\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert any(w.field == "provider.plan" for w in writers)
+
+
+def test_bson_set_mutation_detected(tmp_path):
+    (tmp_path / "repo.go").write_text(
+        "func setPlan(c *mongo.Collection, v string) {\n"
+        "\tc.UpdateOne(ctx, filter, bson.M{\"$set\": bson.M{\"stripe_plan\": v}})\n"
+        "}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert any("stripe_plan" in w.text for w in writers)
+
+
+def test_bare_field_literal_without_mutation_context_ignored(tmp_path):
+    # A DTO response struct tag mentioning "plan" is not a write.
+    (tmp_path / "dto.go").write_text(
+        "type Resp struct {\n\tName string `json:\"plan\"`\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    # No assignment/struct-set/mutation — should not be flagged as a writer.
+    assert all("`json" not in w.text for w in writers)
+
+
+def test_test_files_are_not_violations(tmp_path):
+    (tmp_path / "admin_test.go").write_text(
+        "func TestX(t *testing.T) {\n\tp.StripePlan = \"pro\"\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert writers and all(w.sanctioned and w.is_test for w in writers)
+
+
+# --- end-to-end: the ChangePlan incident ------------------------------------
+
+
+def _write_billing_epic(tmp_path):
+    """Reproduce INV-BIL-001: single atomic Stripe→plan write."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text(
+        "# Invariants\n\n"
+        "**INV-bil-001**: single atomic Stripe→plan write / single write path\n"
+        "<!-- @cw-writes INV-bil-001 controls_field=provider.plan,provider.stripe_plan "
+        "sanctioned_writers=ReconcileStripe,internal/billing/reconcile.go -->\n"
+    )
+    return epic
+
+
+def test_incident_flags_legacy_changeplan_writer(tmp_path):
+    """The pre-existing admin ChangePlan control is a SECOND writer of stripe_plan
+    and must be flagged as an unsanctioned single-write-path violation."""
+    epic = _write_billing_epic(tmp_path)
+
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    # Sanctioned writer — the reconcile path.
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "package billing\n\n"
+        "func ReconcileStripe(p *Provider, sub *stripe.Subscription) {\n"
+        "\tp.StripePlan = sub.Plan.ID\n"
+        "}\n"
+    )
+    # LEGACY unsanctioned writer — the admin plan dropdown from an earlier epic.
+    (src / "internal" / "admin").mkdir(parents=True)
+    (src / "internal" / "admin" / "handlers.go").write_text(
+        "package admin\n\n"
+        "func ChangePlan(p *Provider, newPlan string) {\n"
+        "\tp.StripePlan = newPlan  // SECOND writer — violates INV-bil-001\n"
+        "}\n"
+    )
+
+    report = sw.check(epic, src)
+
+    # Exactly one violation: ChangePlan.
+    assert len(report.violations) == 1
+    v = report.violations[0]
+    assert v["invariant_id"] == "INV-bil-001"
+    assert v["symbol"] == "ChangePlan"
+    assert v["file"].endswith("handlers.go")
+    assert v["field"] == "provider.stripe_plan"
+
+    # The reconcile writer is present but sanctioned (not a violation).
+    sanctioned = [w for w in report.writers if w["symbol"] == "ReconcileStripe"]
+    assert sanctioned and sanctioned[0]["sanctioned"] is True
+
+    # Gates: soundness OK (metadata well-formed), coverage FAILS (unsanctioned writer).
+    assert report.soundness_ok is True
+    assert report.coverage_ok is False
+
+
+def test_incident_clean_when_only_sanctioned_writer(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    report = sw.check(epic, src)
+    assert report.violations == []
+    assert report.coverage_ok is True
+
+
+# --- graceful degradation + gates -------------------------------------------
+
+
+def test_graceful_when_no_metadata(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text("**INV-x-001**: some prose invariant\n")
+    report = sw.check(epic, tmp_path)
+    assert report.warnings and report.soundness_ok and report.coverage_ok
+
+
+def test_no_writer_found_warns(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "unrelated.go").write_text("func f() { x := 1; _ = x }\n")
+    report = sw.check(epic, src)
+    assert any("no writer found" in w for w in report.warnings)
+    assert report.coverage_ok  # no writer means no violation
+
+
+# --- CLI --------------------------------------------------------------------
+
+
+def test_cli_coverage_gate_fails_on_violation(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "admin").mkdir(parents=True)
+    (src / "internal" / "admin" / "h.go").write_text(
+        "func ChangePlan(p *Provider) {\n\tp.StripePlan = \"x\"\n}\n"
+    )
+    rc = sw.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["violations"] == 1
+    assert data["violations"][0]["symbol"] == "ChangePlan"
+
+
+def test_cli_soundness_gate_fails_on_malformed(tmp_path, capsys):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text(
+        "<!-- @cw-writes INV-x-001 controls_field=a.b -->\n"  # missing sanctioned_writers
+    )
+    rc = sw.main([str(epic), "--gate", "soundness"])
+    assert rc == 1
+
+
+def test_cli_soundness_passes_with_wellformed_metadata(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    # Soundness does not fail on existing writers — only on malformed metadata.
+    rc = sw.main([str(epic), "--gate", "soundness"])
+    assert rc == 0
+
+
+def test_cli_missing_epic_dir_is_usage_error(tmp_path, capsys):
+    rc = sw.main([str(tmp_path / "nope")])
+    assert rc == 2
+    assert "not found" in capsys.readouterr().err
+
+
+def test_cli_text_output(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    rc = sw.main([str(epic)])
+    assert rc == 0
+    assert "# Single-Writer Audit" in capsys.readouterr().out
+
+
+def test_report_json_serializable(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    report = sw.check(epic, None)
+    json.loads(json.dumps(report.to_dict()))

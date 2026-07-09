@@ -242,6 +242,16 @@
           "enum": ["data_integrity", "consistency", "operational_safety", "authorization", "temporal"],
           "description": "Classification for reporting"
         },
+        "controls_field": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Single-write-path invariants only: the fully-qualified field path(s) this invariant declares a single source of truth / single write path for (e.g. 'provider.plan', 'provider.stripe_plan'). scripts/check_single_writer.py scans the repo for ALL writers of these fields and flags any not in sanctioned_writers."
+        },
+        "sanctioned_writers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Single-write-path invariants only: the ONLY authorized writers of controls_field — function/method symbol names (e.g. 'ReconcileStripe') and/or source file paths (e.g. 'internal/billing/reconcile.go'). Any other writer of the field is a violation."
+        },
         "derived_from": {
           "type": "array",
           "items": { "$ref": "#/$defs/provenance" }
