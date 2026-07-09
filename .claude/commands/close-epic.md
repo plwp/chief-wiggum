@@ -134,7 +134,17 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
 
-### Step 2e: Ratchet gate
+### Step 2e: Single-writer coverage gate
+
+For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*.
+
+```bash
+python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
+```
+
+Any writer of a controlled field whose enclosing symbol/file is **not** in `sanctioned_writers` is a hard-blocking violation — either route it through the sanctioned path or add it to (and re-justify) the invariant's sanctioned set. Test-file writes are treated as fixtures, not violations. Degrades gracefully when the epic declares no single-write-path invariants.
+
+### Step 2f: Ratchet gate
 
 If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact and no contract definition weakened or removed since the `/architect` baseline:
 
@@ -154,7 +164,7 @@ python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-
 
 Otherwise, once the check passes, record the epic close (same command without `--amend`/`--retire`) and commit `docs/quality/`. The journal entry is the epic's quality sign-off and feeds the next epic's amnesia context.
 
-### Step 2f: SaaS NFR gate (optional)
+### Step 2g: SaaS NFR gate (optional)
 
 For SaaS products, validate non-functional requirements (security headers + CSRF posture, auth rate-limiting, tenant isolation, health + structured logging) against the running app. Start the app if needed (don't punt), then:
 
