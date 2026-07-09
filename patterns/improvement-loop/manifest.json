@@ -81,6 +81,16 @@
     }
   },
 
+  "success_metrics": {
+    "$comment": "What 'this pattern is working' means, and what the loop optimizes toward. Captured by the monitoring group; ratcheted so they only move up.",
+    "metrics": [
+      {"id": "highwater_trend", "goal": "up", "desc": "strict benchmark pass-set high-water mark; the ratchet enforces never-down"},
+      {"id": "finding_close_rate", "goal": "up", "desc": "% of diagnosed finding-clusters resolved vs still-open after N iterations"},
+      {"id": "escaped_defect_rate", "goal": "down", "desc": "high-water cases that regressed live post-deploy (target 0; detected by replay)"},
+      {"id": "autonomy_ratio", "goal": "context", "desc": "% changes auto-deployed vs parked/quarantined; measures remaining human load"}
+    ]
+  },
+
   "requires_target": {
     "ratchet": "reuses docs/quality/ratchet.json (scripts/ratchet.py) for the high-water mark, journal, and protected pathset",
     "unresolved_gate": "unbound parameters become TBD: markers gated by scripts/check_unresolved.py"

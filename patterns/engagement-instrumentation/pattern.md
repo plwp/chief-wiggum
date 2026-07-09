@@ -95,6 +95,17 @@ source are [parameters](#parameters).
 | `event_source` | the player/content events the client emitter subscribes to |
 | `signal_trust` | per-metric trust class annotation (feeds the improvement loop) |
 
+## Success metrics
+
+This pattern *is* a monitoring pattern, so its own metrics are about the health of
+the instrument — the signal quality every other pattern's metrics depend on:
+
+| Metric | Goal | What it measures |
+|--|--|--|
+| `signal_coverage` | ↑ | % of assigned work-items with tracked engagement |
+| `latch_integrity` | ↑ | the monotonic-latch never-regressed invariant holds (violations → 0) |
+| `funnel_resolvability` | ↑ | drop-off computable per funnel step (trusted denominator, no gaps) |
+
 ## Relationship to other patterns
 
 - **Feeds `improvement-loop`.** The per-item completion rates, drop-off points,

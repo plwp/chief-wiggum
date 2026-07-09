@@ -1,5 +1,5 @@
 {
-  "$comment": "Index of reusable product patterns Chief Wiggum can stamp into the apps it builds. See docs/patterns-registry.md. Each entry points at patterns/<id>/{pattern.md,manifest.json}. Candidates are mined but not yet fully specified.",
+  "$comment": "Index of reusable product patterns Chief Wiggum can stamp into the apps it builds. See docs/patterns-registry.md. Each entry points at patterns/<id>/{pattern.md,manifest.json}. Candidates are mined/known but not yet fully specified.",
   "version": 1,
   "patterns": [
     {
@@ -22,13 +22,39 @@
       "feeds": "improvement-loop",
       "spec": "patterns/engagement-instrumentation/pattern.md",
       "manifest": "patterns/engagement-instrumentation/manifest.json"
+    },
+    {
+      "id": "tiered-subscription",
+      "title": "Tiered Subscription",
+      "category": "saas-infra",
+      "status": "specified",
+      "trust_class": "entitlement-changes-are-protected-path",
+      "summary": "Subscribe -> enforce -> lifecycle machinery for a plan-tiered SaaS: single-source tier matrix, injected gate seams, stateless quota, billing-webhook as source of truth, and non-destructive graceful degradation on downgrade/lapse. Absorbs the former tiered-saas-enforcement candidate.",
+      "feeds": "frictionless-onboarding, improvement-loop",
+      "spec": "patterns/tiered-subscription/pattern.md",
+      "manifest": "patterns/tiered-subscription/manifest.json"
+    },
+    {
+      "id": "frictionless-onboarding",
+      "title": "Frictionless Onboarding (free -> upgrade)",
+      "category": "monetization",
+      "status": "specified",
+      "trust_class": "conversion-changes-are-end-user-signal-driven",
+      "summary": "Minimize time-to-value on a free tier, convert at contextual friction points (limit-hit prompts, optional reverse trial), self-serve. The mini-SaaS pattern most improved by the loop -- and, since its proposals touch pricing/paywall driven by end-user behavior, always admin-gated.",
+      "depends_on": "tiered-subscription, engagement-instrumentation",
+      "feeds": "improvement-loop",
+      "spec": "patterns/frictionless-onboarding/pattern.md",
+      "manifest": "patterns/frictionless-onboarding/manifest.json"
     }
   ],
   "candidates": [
     {"id": "multi-tenant-isolation", "title": "Multi-Tenant Isolation Stack", "category": "saas-infra", "status": "candidate", "summary": "Server-only tenant resolution (rejects client hints) -> context-injected, fail-closed tenant-scoped repository (AND-wrapped filters, reject-don't-override, recursive field-scan, unexported handles) -> standing cross-tenant isolation proof as an executable test gate (positive controls + negative matrix + no-foreign-id-in-denial) -> quarantined transactional cascade erasure. Composes into one multi-tenancy blueprint; the floor that makes mining per-tenant data safe.", "reusability": "high"},
     {"id": "provider-neutral-adapter", "title": "Provider-Neutral Port/Adapter", "category": "multi-provider", "status": "candidate", "summary": "Vendor-agnostic seam for a swappable external service: neutral DTOs only, concrete vendor types unexported (compile-time swappability), vendor states mapped to internal enums with safe defaults. Behind it: signed-webhook ingestion normalized to idempotent internal events (webhook is source of truth, not the client callback), sign-per-request short-lived access tokens, and direct browser->CDN upload via a one-time server-minted ticket.", "reusability": "high"},
     {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
-    {"id": "tiered-saas-enforcement", "title": "Tiered-SaaS Limit Enforcement", "category": "saas-infra", "status": "candidate", "summary": "Single-source-of-truth tier matrix (unlimited sentinel, unknown-tier falls back to most-restrictive) enforced via injected check-before-act gate seams; stateless quota computed fresh from source of truth (no stored counters, self-healing on delete) with one shared path for enforce + display and pessimistic in-flight reservation. Limit-hit events are strong upgrade-intent signal.", "reusability": "high"},
+    {"id": "transactional-email-and-dunning", "title": "Transactional Email & Dunning Lifecycle", "category": "process-loop", "status": "candidate", "summary": "Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge (fires if a signed-up user hasn't hit the activation event), re-engagement, and a failed-payment dunning sequence with bounded retries before degrade. Send-once keys prevent duplicate sends across retries. Recovery outcomes are conversion/retention signal.", "reusability": "high"},
+    {"id": "referral-invite-loop", "title": "Referral / Invite Growth Loop", "category": "process-loop", "status": "candidate", "summary": "Invite -> signed invite token (server-trusted, single-use, expiring) -> attribution on accept -> reward both sides. Reuses the signed-token discipline; attribution is trust-tagged signal. A self-serve growth loop the improvement loop can optimize (reward size/copy) under admin gating.", "reusability": "medium-high"},
+    {"id": "feature-entitlements", "title": "Feature Entitlements Read-Model", "category": "saas-infra", "status": "candidate", "summary": "A single entitlement resolver deriving capability flags from tier + per-account overrides + grandfathering, consumed identically by backend gates and the frontend (one source of 'what can this account do'). Distinct from the tier matrix: it layers overrides and is the read model onboarding + UI both query.", "reusability": "medium-high"},
+    {"id": "self-serve-billing-portal", "title": "Self-Serve Billing Portal", "category": "saas-infra", "status": "candidate", "summary": "Let users manage plan, payment method, and seats without support -- provider-hosted portal session minted server-side + a local mirror of plan/seat state kept authoritative via billing webhooks. Removes the #1 support-ticket class for tiered SaaS.", "reusability": "medium"},
     {"id": "immutable-assignment-snapshot", "title": "Immutable Assignment Snapshot", "category": "data-structure", "status": "candidate", "summary": "Pin the exact version of a composite item at assignment time (draft -> immutable published version -> assignment references a version, not the live template) so later edits never retroactively mutate outstanding assignments. Keeps longitudinal completion analysis clean (no denominator drift).", "reusability": "medium-high"},
     {"id": "elevated-access-session", "title": "Revocable Elevated-Access Session", "category": "saas-infra", "status": "candidate", "summary": "Time-boxed support impersonation with a short server-enforced TTL independent of the identity token, future-skew guard, per-request self-consistency check, fail-closed revocation lookup, fixed middleware order, and full audit. High value but only for products needing operator act-as.", "reusability": "medium"},
     {"id": "build-test-floor", "title": "Language-Agnostic Build/Test Floor", "category": "gate", "status": "candidate", "summary": "Auto-detecting build+test+lint gate across a polyglot repo, with a local pre-merge script mirroring CI; optionally zero-cost-until-opt-in (manual-dispatch trigger) for cost-sensitive private repos.", "reusability": "medium"}
@@ -37,9 +63,10 @@
     "$comment": "Recurring cross-pattern engineering rules worth stating once, not registry entries themselves.",
     "rules": [
       "fail-closed on unknown/ambiguous input (grace windows, revocation lookups, tenant resolution, unknown-tier fallback)",
-      "idempotency + guarded conditional updates for anything touching external state",
+      "idempotency + guarded conditional updates for anything touching external state (incl. send-once keys for messaging)",
       "injected interface seams for every gate so services stay testable without real infra",
-      "document accepted TOCTOU/limitation classes inline rather than hiding them"
+      "document accepted TOCTOU/limitation classes inline rather than hiding them",
+      "external state changes are authoritative via signed webhooks, never the client redirect"
     ]
   }
 }

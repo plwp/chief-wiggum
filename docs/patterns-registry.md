@@ -66,11 +66,15 @@ patterns/
 Each specified pattern is a directory. Two files are the contract:
 
 - **`pattern.md`** — the human-facing spec. What the pattern is, when to apply it,
-  the mechanism (as a set of generic components), its parameters, and its trust
-  requirements.
+  the mechanism (as a set of generic components), its parameters, its
+  **success metrics**, and its trust requirements.
 - **`manifest.json`** — the machine-readable surface a future `apply-pattern`
   script consumes: parameter schema, the files/scaffold it installs, the paths it
-  adds to the product's protected pathset, and its trust class.
+  adds to the product's protected pathset, its **`success_metrics`**, and its
+  trust class.
+
+Declaring **success metrics is mandatory**, not decorative — see
+[Success metrics make patterns improvable](#success-metrics-make-patterns-improvable).
 
 `registry.json` is a thin index over the directories so a workflow can list and
 filter patterns without opening each manifest. It also carries **candidates**
@@ -131,6 +135,59 @@ contributes the tenant-scoping invariant + the cross-tenant-proof integration
 test; `engagement-instrumentation` contributes the trusted-denominator +
 monotonic-latch contracts; `improvement-loop` contributes the protected-pathset +
 ratchet-gate + trust-model contracts.
+
+## Success metrics make patterns improvable
+
+Every pattern **must declare its own success metrics** (`success_metrics` in the
+manifest, a table in `pattern.md`). This is the hinge that turns a pattern from a
+static scaffold into a **self-improving unit**, and it's what makes the whole
+registry more than a snippet library:
+
+> **A pattern's metric is its objective.** The metric defines "is this working";
+> the [monitoring group](#monitoring--signal-is-a-pattern-group) captures it as
+> trust-tagged signal; the [improvement loop](../patterns/improvement-loop/pattern.md)
+> optimizes the pattern toward it; the ratchet holds it monotonic so it only ever
+> improves. Without a declared metric, the loop has nothing to optimize and the
+> pattern can only ever be as good as the day it was stamped.
+
+Each metric carries a **goal direction** (`up` / `down` / `context`), so a
+downstream loop knows which way is better without a human re-explaining it every
+iteration. Examples already specified:
+
+- `frictionless-onboarding` → `activation_rate ↑`, `time_to_first_value ↓`,
+  `free_to_paid_conversion ↑`.
+- `tiered-subscription` → `mrr ↑`, `dunning_recovery_rate ↑`, `revenue_leak ↓`.
+- `engagement-instrumentation` → `signal_coverage ↑`, `latch_integrity ↑` (a
+  monitoring pattern's metrics are about the *quality of the instrument*).
+- `improvement-loop` → `highwater_trend ↑`, `escaped_defect_rate ↓`.
+
+Because monetization and conversion metrics are optimized from **end-user
+behavioral signal** and touch **pricing/paywall goalposts**, loop-proposed changes
+against them are exactly what the [trust model](#trust-model-the-core-generalization)
+routes to **blocking admin approval** — the pattern iterates continuously, but a
+human signs off on changes to how the product makes money.
+
+## Monitoring & signal is a pattern group
+
+Patterns fall into groups, and **monitoring / signal** is a first-class one — the
+substrate the rest depend on, because *every* pattern's success metrics have to be
+captured by *something*. It's the supply side of the "declare a metric" contract
+above.
+
+| Group | Members (specified + candidate) |
+|--|--|
+| **monitoring & signal** | `engagement-instrumentation` (flagship); candidates: dual-scope `audit-log`, error-signature ingestion + `signal-ingestion + findings` (from the loop), funnel/activation capture |
+| **process loops** | `improvement-loop`, `reconciliation-sweep`, `transactional-email-and-dunning`, `referral-invite-loop` |
+| **monetization / growth** | `tiered-subscription`, `frictionless-onboarding`, `feature-entitlements`, `self-serve-billing-portal` |
+| **saas-infra** | `multi-tenant-isolation`, `provider-neutral-adapter`, `elevated-access-session` |
+| **gates** | `build-test-floor`, `protected-pathset + ratchet`, `decorrelated-judge`, `gate-only-holdout` |
+
+The three groups compose into one loop: **monitoring** captures each pattern's
+declared metric → the **improvement loop** (a process loop) optimizes toward it →
+**gates** keep it from sliding back → and the **monetization/saas-infra** patterns
+are the surfaces being improved. Grouping also guides `/seed`'s selection: pick the
+saas-infra floor, the monetization surface you're monetizing, and always the
+monitoring group underneath so the rest are measurable.
 
 ## Trust model — the core generalization
 
@@ -250,18 +307,49 @@ surfaced a coherent set of reusable shapes. Two observations shaped how they lan
 | **multi-tenant-isolation** | saas-infra | Server-only tenant resolution → fail-closed tenant-scoped repository → standing cross-tenant isolation proof gate → quarantined cascade erasure. One multi-tenancy blueprint |
 | **provider-neutral-adapter** | multi-provider | Vendor-agnostic seam (neutral DTOs, unexported concrete types = compile-time swappability); behind it: signed-webhook-as-source-of-truth, sign-per-request access tokens, direct browser→CDN upload |
 | **reconciliation-sweep** | process-loop | Periodic bidirectional local↔external drift repair, fail-closed on unknown state, re-confirm before destroy, per-run counts report |
-| **tiered-saas-enforcement** | saas-infra | Single-source tier matrix (unlimited sentinel, restrictive fallback) + stateless quota computed fresh (self-healing, one path for enforce+display) |
 | **immutable-assignment-snapshot** | data-structure | Version-pin assigned composite items so template edits never mutate outstanding assignments; keeps completion analysis drift-free |
 | **elevated-access-session** | saas-infra | Revocable, time-boxed support impersonation with independent TTL, future-skew guard, fail-closed revocation, full audit |
 | **build-test-floor** | gate | Language-agnostic auto-detecting build+test+lint gate with local mirror; optionally zero-cost-until-opt-in |
 
 Plus **meta-disciplines** recurring across the mined patterns — fail-closed on
 unknown input, idempotency + guarded conditional updates, injected interface seams
-for every gate, documented-not-hidden TOCTOU limitations — catalogued in
+for every gate, documented-not-hidden TOCTOU limitations, external state
+authoritative via signed webhooks not client redirects — catalogued in
 `registry.json` as rules rather than installable patterns.
 
-Fully specifying the candidates (a `pattern.md` + `manifest.json` each) is future
-work; the registry structure is built to hold them.
+### Mini-SaaS growth & monetization
+
+The reusable building blocks every product-led SaaS re-implements. Two were
+promoted to **specified** patterns (they carry the clearest "re-used *and improved
+on*" story — the loop optimizes them over time, admin-gated because they touch how
+the product asks for money):
+
+- [`tiered-subscription`](../patterns/tiered-subscription/pattern.md) — subscribe →
+  enforce → lifecycle, with billing webhooks as source of truth and **non-destructive**
+  degradation on downgrade/lapse. Absorbs the mined `tiered-saas-enforcement`.
+- [`frictionless-onboarding`](../patterns/frictionless-onboarding/pattern.md) —
+  value-first free tier, contextual upgrade prompts at limit-hit friction points,
+  optional reverse trial. Consumes `tiered-subscription` + `engagement-instrumentation`.
+
+The **through-line** the loop makes real: a limit-hit `409` from tiered-subscription
+is the upgrade trigger for onboarding; the resulting conversion funnel is captured
+by engagement-instrumentation as trust-tagged signal; the improvement loop optimizes
+prompt copy / thresholds / trial length against that funnel — but every such change
+is **admin-gated**, because it's driven by end-user behavior (an injection surface)
+and touches pricing/paywall (a goalpost). Continuously improved, human always signs
+off on the ask for money.
+
+Supporting monetization candidates in `registry.json`:
+
+| Candidate | Category | One-liner |
+|--|--|--|
+| **transactional-email-and-dunning** | process-loop | Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge, re-engagement, failed-payment dunning with bounded retries + send-once keys. Recovery outcomes are retention signal |
+| **referral-invite-loop** | process-loop | Invite → signed single-use expiring token → attribution → two-sided reward. Reuses the signed-token discipline; a self-serve growth loop |
+| **feature-entitlements** | saas-infra | One resolver: capability flags from tier + per-account overrides + grandfathering, queried identically by backend gates and frontend UI |
+| **self-serve-billing-portal** | saas-infra | User-managed plan / payment / seats; provider-hosted portal session + a webhook-authoritative local mirror. Kills the #1 support-ticket class |
+
+Fully specifying the remaining candidates (a `pattern.md` + `manifest.json` each)
+is future work; the registry structure is built to hold them.
 
 ## Applying a pattern to CW itself
 

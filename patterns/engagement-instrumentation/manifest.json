@@ -32,6 +32,15 @@
     "improvement-loop": "supplies signal_sources of kind 'conversations'/'feedback'/'errors' analog: per-item completion, drop-off, last-activity, plus audit-log events; the per-metric signal_trust is the input to the loop's trust model"
   },
 
+  "success_metrics": {
+    "$comment": "This pattern IS a monitoring pattern, so its metrics are about signal quality/coverage — the health of the instrument the loop depends on.",
+    "metrics": [
+      {"id": "signal_coverage", "goal": "up", "desc": "% of assigned work-items with tracked engagement"},
+      {"id": "latch_integrity", "goal": "up", "desc": "monotonic-latch never-regressed invariant holds (violations -> 0)"},
+      {"id": "funnel_resolvability", "goal": "up", "desc": "drop-off computable per funnel step (denominator trusted, no gaps)"}
+    ]
+  },
+
   "depends_on": {
     "multi-tenant-isolation": "mining per-tenant behavioral data safely requires a fail-closed, server-derived tenant-scoping data layer"
   }
