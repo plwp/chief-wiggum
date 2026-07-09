@@ -22,18 +22,29 @@ improving without a human writing every ticket.
 
 ## When to apply
 
-Apply when the built product has **all three** of:
+The one enabling condition is **strong monitoring and feedback**. Wherever a
+product emits rich signal about how it's actually doing — quality-gradeable
+outcomes, explicit user corrections, structured error telemetry — the loop has
+something real to act on. This is not specific to conversational or analytics
+agents; any system with good observability + feedback is a candidate. Conversely,
+a product with weak monitoring has no error signal, and the loop has nothing to
+drive it — don't bother.
 
-1. **A stream of gradeable outcomes** — conversations, requests, or transactions
-   whose quality can be judged (by assertion or by a decorrelated judge).
-2. **A deterministic benchmark** — a golden set the loop can ratchet against, so
-   "fix forward, no rollback" is survivable.
-3. **A safe blast radius** — surfaces the loop may edit (prompts, config, code)
-   are separable from the goalposts it must not (objective, guardrails, the gate
-   itself).
+Signal strength gets the loop *value*. Two further properties govern *how
+autonomous* it's allowed to be — this is a spectrum, not a yes/no:
 
-Do **not** apply to a product with no benchmark and no gradeable outcome stream —
-the loop has no error signal and no floor, and autonomy is unsafe.
+| Monitoring / feedback | Deterministic gate (benchmark + trust) | Loop runs as |
+|--|--|--|
+| Strong | Strong — golden benchmark to ratchet against, and trusted signals | Fully autonomous fix-forward, auto-deploy |
+| Strong | Weak / none, **or** any untrusted signal | Loop still surfaces, diagnoses, and *proposes* — but **every change is human-gated** (quarantine → approval; no auto-deploy) |
+| Weak | (any) | Not a candidate — no error signal to drive it |
+
+So a **deterministic benchmark** and a **safe blast radius** (editable surfaces
+separable from the goalposts the loop must not move) aren't preconditions for
+running the loop — they're what unlocks the *autonomous* column. Without them, or
+with untrusted signals, the loop is still valuable as a human-gated proposer. The
+[trust model](#trust-model) is the mechanism that places a given change in the
+right row.
 
 ## Mechanism — generic components
 
