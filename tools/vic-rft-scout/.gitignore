@@ -1,0 +1,7 @@
+.venv/
+state/
+digests/*
+!digests/.gitkeep
+__pycache__/
+*.pyc
+rows.json

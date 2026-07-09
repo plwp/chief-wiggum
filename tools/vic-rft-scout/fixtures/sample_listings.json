@@ -1,0 +1,107 @@
+[
+  {
+    "id": "326699", "rfx": "REQ-33834", "preset": "open",
+    "title": "Electronic Speed Limit Signs - Network Management System Upgrade",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Department of Transport and Planning",
+    "unspsc": ["43000000 - Information Technology Broadcasting and Telecommunications"],
+    "opened": "Thu, 09 July 2026 2:15 pm", "closing": "Thu, 06 August 2026 2:00 pm"
+  },
+  {
+    "id": "900001", "rfx": "EOI-PINP", "preset": "open",
+    "title": "Website Redevelopment",
+    "tender_type": "Expression of Interest", "status": "Open",
+    "buyer": "Phillip Island Nature Park Board of Management Inc",
+    "unspsc": ["43232200 - Content management software", "43232107 - Web page creation and editing software"],
+    "opened": "Mon, 29 June 2026 2:00 pm", "closing": "Tue, 21 July 2026 2:00 pm"
+  },
+  {
+    "id": "900002", "rfx": "N1000271", "preset": "open",
+    "title": "Student Demand Forecasting Model & Visualisation Tool(s)",
+    "tender_type": "Request for Quotation", "status": "Open",
+    "buyer": "Department of Education",
+    "unspsc": ["86000000 - Education and Training Services"],
+    "opened": "Tue, 23 June 2026 2:15 pm", "closing": "Mon, 20 July 2026 2:00 pm"
+  },
+  {
+    "id": "324729", "rfx": "25-26-122", "preset": "open",
+    "title": "The Departments of Government Services, Treasury and Finance and Premier and Cabinet Employee Assistance Program (EAP) Provider",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Department of Government Services",
+    "unspsc": ["84131609 - Employee assistance programs", "80110000 - Human resources services", "80000000 - Management and Business Professionals and Administrative Services"],
+    "opened": "Wed, 24 June 2026 12:00 pm", "closing": "Fri, 31 July 2026 11:55 pm"
+  },
+  {
+    "id": "326219", "rfx": "N1000253", "preset": "open",
+    "title": "Wellbeing Support Program for early childhood staff in the community services sector",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Department of Education",
+    "unspsc": ["86000000 - Education and Training Services"],
+    "opened": "Tue, 07 July 2026 12:10 pm", "closing": "Fri, 31 July 2026 2:00 pm"
+  },
+  {
+    "id": "323293", "rfx": "2025018", "preset": "future",
+    "title": "Governance, Risk & Compliance Software",
+    "tender_type": "Advanced Tender Notice", "status": "Advance",
+    "buyer": "Westernport Water",
+    "unspsc": ["43232305 - Data base reporting software", "43230000 - Software"],
+    "opened": "Fri, 05 June 2026 12:00 pm", "closing": "Mon, 31 August 2026 2:00 pm"
+  },
+  {
+    "id": "900003", "rfx": "RITM0044432", "preset": "open",
+    "title": "Silverfort Licencing and Support",
+    "tender_type": "Request for Quotation", "status": "Open",
+    "buyer": "Department of Parliamentary Services, Parliament of Victoria - IT Operations",
+    "unspsc": ["43233200 - Security and protection software"],
+    "opened": "Wed, 01 July 2026 5:00 pm", "closing": "Fri, 10 July 2026 1:00 pm"
+  },
+  {
+    "id": "326018", "rfx": "C5379-2026", "preset": "open",
+    "title": "Ladders and Walkways Compliance Program 2026",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Southern Rural Water",
+    "unspsc": ["83101500 - Water and sewer utilities"],
+    "opened": "Fri, 03 July 2026 3:10 pm", "closing": "Fri, 14 August 2026 5:00 pm"
+  },
+
+  {
+    "id": "323445", "rfx": "BBVNPRP26", "preset": "open",
+    "title": "Newhaven Pier Restoration Project",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Victorian Fisheries Authority",
+    "unspsc": ["72141200 - Marine construction services"],
+    "opened": "Fri, 05 June 2026 12:00 pm", "closing": "Wed, 29 July 2026 5:00 pm"
+  },
+  {
+    "id": "325220", "rfx": "2026-009", "preset": "open",
+    "title": "Cleaning Services",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Triple Zero Victoria",
+    "unspsc": ["76110000 - Cleaning and janitorial services", "47000000 - Cleaning Equipment and Supplies"],
+    "opened": "Thu, 02 July 2026 11:00 am", "closing": "Thu, 06 August 2026 2:00 pm"
+  },
+  {
+    "id": "900004", "rfx": "DOT44674", "preset": "open",
+    "title": "Installation of Traffic Signals and associated works on Grubb Road at Smithton Grove, Ocean Grove",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "Department of Transport and Planning",
+    "unspsc": ["46161504 - Traffic signals"],
+    "opened": "Tue, 30 June 2026 10:45 am", "closing": "Wed, 19 August 2026 3:30 pm"
+  },
+  {
+    "id": "900005", "rfx": "EGH-Willaura-2026", "preset": "open",
+    "title": "Willaura Redevelopment",
+    "tender_type": "Request for Tender", "status": "Open",
+    "buyer": "East Grampians Health Services",
+    "unspsc": ["72000000 - Building and Facility Construction and Maintenance Services"],
+    "opened": "Mon, 15 June 2026 2:00 pm", "closing": "Thu, 13 August 2026 2:00 pm"
+  },
+  {
+    "id": "315961", "rfx": "ATN 2841", "preset": "future",
+    "title": "Supply of Multi-Purpose Chairs (MPCs)",
+    "tender_type": "Advanced Tender Notice", "status": "Advance",
+    "buyer": "Ambulance Victoria",
+    "unspsc": ["42170000 - Mobile medical services products"],
+    "opened": "Sat, 21 March 2026 8:40 am", "closing": "Thu, 31 December 2026 2:00 pm"
+  }
+]

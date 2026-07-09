@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the VIC RFT scout. Runs run.sh daily at 08:00 in your
+  user session (so it can drive a real browser past Cloudflare).
+
+  Install:
+    1. Replace __SCOUT_DIR__ below with the absolute path to this folder, e.g.
+       /Users/you/repos/chief-wiggum/tools/vic-rft-scout
+    2. cp com.plwp.vic-rft-scout.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.plwp.vic-rft-scout.plist
+    3. Run once now:  launchctl start com.plwp.vic-rft-scout
+  Uninstall:
+       launchctl unload ~/Library/LaunchAgents/com.plwp.vic-rft-scout.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.plwp.vic-rft-scout</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__SCOUT_DIR__/run.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__SCOUT_DIR__</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/vic-rft-scout.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/vic-rft-scout.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

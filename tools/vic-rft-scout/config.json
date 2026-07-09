@@ -1,0 +1,32 @@
+{
+  "presets": ["open", "future"],
+  "max_pages": 5,
+  "headless": true,
+  "browser_channel": "chrome",
+  "request_delay_seconds": 3,
+  "retry_backoff_seconds": 8,
+  "max_retries": 3,
+
+  "_comment": "A listing matches if ANY of its UNSPSC codes starts with a prefix below, OR its title/buyer contains a keyword (whole-word match). Profile: software/digital/web + data/AI/analytics + psychosocial/wellbeing/compliance. 43=IT/telecom/software/data, 8413=employee-assistance/HR wellbeing.",
+
+  "unspsc_prefixes": ["43", "8413"],
+
+  "keywords": {
+    "software": [
+      "software", "system", "platform", "web", "website", "cms",
+      "content management", "application", "digital", "portal", "api",
+      "saas", "cloud", "integration", "automation", "database", "ict"
+    ],
+    "data/ai": [
+      "analytics", "dashboard", "reporting", "visualisation",
+      "visualization", "forecasting", "model", "machine learning",
+      "artificial intelligence", "ai", "insights"
+    ],
+    "wellbeing/compliance": [
+      "wellbeing", "well-being", "psychosocial", "employee assistance",
+      "eap", "mental health", "occupational health", "workplace safety",
+      "worksafe", "governance", "compliance", "grc", "learning hub",
+      "learning management"
+    ]
+  }
+}
