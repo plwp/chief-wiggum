@@ -45,8 +45,26 @@
       "feeds": "improvement-loop",
       "spec": "patterns/frictionless-onboarding/pattern.md",
       "manifest": "patterns/frictionless-onboarding/manifest.json"
+    },
+    {
+      "id": "deployment-release",
+      "title": "Deployment & Release",
+      "category": "gate",
+      "status": "specified",
+      "trust_class": "deploy-pipeline-and-promotion-authority-are-protected-path",
+      "summary": "build -> stage -> promote machinery that gets a change to prod safely and provably: keyless federated CI identity, environment split with a human-gated prod promotion, promotion of the byte-identical staged artifact, a config-leak fence, a least-privilege deploy identity that can roll releases but not mutate infra/read secrets, and post-deploy smoke verification. Mined from two shipped GCP apps.",
+      "feeds": "improvement-loop",
+      "spec": "patterns/deployment-release/pattern.md",
+      "manifest": "patterns/deployment-release/manifest.json"
     }
   ],
+  "stacks": {
+    "$comment": "Concrete stack profiles bind these vendor-neutral patterns to a real infrastructure stack + runnable stand-up skills + a cost model. This is the layer that turns the catalog into a micro/mini-SaaS factory. Index: patterns/stacks/registry.json. See docs/patterns-registry.md#stack-profiles.",
+    "index": "patterns/stacks/registry.json",
+    "profiles": [
+      {"id": "gcp-serverless-saas", "summary": "Firebase Hosting + Cloud Run + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless WIF, as a T0->T1->T2 cost ladder ($0 PoC -> paid prod).", "provenance": ["plwp.net", "booking-forms", "dogeared-coach"]}
+    ]
+  },
   "candidates": [
     {"id": "multi-tenant-isolation", "title": "Multi-Tenant Isolation Stack", "category": "saas-infra", "status": "candidate", "summary": "Server-only tenant resolution (rejects client hints) -> context-injected, fail-closed tenant-scoped repository (AND-wrapped filters, reject-don't-override, recursive field-scan, unexported handles) -> standing cross-tenant isolation proof as an executable test gate (positive controls + negative matrix + no-foreign-id-in-denial) -> quarantined transactional cascade erasure. Composes into one multi-tenancy blueprint; the floor that makes mining per-tenant data safe.", "reusability": "high"},
     {"id": "provider-neutral-adapter", "title": "Provider-Neutral Port/Adapter", "category": "multi-provider", "status": "candidate", "summary": "Vendor-agnostic seam for a swappable external service: neutral DTOs only, concrete vendor types unexported (compile-time swappability), vendor states mapped to internal enums with safe defaults. Behind it: signed-webhook ingestion normalized to idempotent internal events (webhook is source of truth, not the client callback), sign-per-request short-lived access tokens, and direct browser->CDN upload via a one-time server-minted ticket.", "reusability": "high"},

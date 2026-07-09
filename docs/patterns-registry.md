@@ -52,7 +52,7 @@ be re-derived, or forgotten. A registry:
 
 ```
 patterns/
-├── registry.json                 # the index: specified patterns + mined candidates + meta-disciplines
+├── registry.json                 # the index: specified patterns + mined candidates + meta-disciplines + stacks pointer
 ├── improvement-loop/             # specified pattern
 │   ├── pattern.md                # the spec: what / when-to-apply / mechanism / parameters
 │   ├── manifest.json             # machine-readable: params, installs[], protected_paths, trust
@@ -60,7 +60,14 @@ patterns/
 ├── engagement-instrumentation/   # specified pattern — the signal tier that feeds the loop
 │   ├── pattern.md
 │   └── manifest.json
-└── <candidate patterns>/         # mined, catalogued in registry.json, not yet fully specified
+├── <candidate patterns>/         # mined, catalogued in registry.json, not yet fully specified
+└── stacks/                       # CONCRETE layer: vendor-bound profiles (the factory) — see #stack-profiles
+    ├── registry.json             # index of stack profiles + the cost-tier ladder
+    └── gcp-serverless-saas/
+        ├── stack.md              # the house stack: topology, cost tiers, graduation triggers, provenance
+        ├── manifest.json         # machine-readable: vendors, tiers, bindings, cost model, skills
+        ├── bindings/             # pattern × this-stack → concrete recipe (one .md per bound pattern)
+        └── skills/               # runnable stand-up playbooks ("the skills to use them")
 ```
 
 Each specified pattern is a directory. Two files are the contract:
@@ -350,6 +357,70 @@ Supporting monetization candidates in `registry.json`:
 
 Fully specifying the remaining candidates (a `pattern.md` + `manifest.json` each)
 is future work; the registry structure is built to hold them.
+
+## Stack profiles — the concrete layer (the factory)
+
+Everything above is deliberately **vendor-neutral**: `provider-neutral-adapter` is
+the seam, `tiered-subscription` names no billing vendor. That abstraction is
+correct — but a catalog of seams is not yet a **factory**. To actually *stamp a
+working product* you need an opinionated, real-vendor **default** for each seam,
+wired the way that has already shipped, with the runnable steps to stand it up and a
+cost model so you know the zero-cost PoC footprint and where money starts.
+
+A **stack profile** (`patterns/stacks/<id>/`) is that default. It **binds** the
+abstract patterns to a concrete infrastructure stack, ships the **skills** to stand
+each piece up, and carries a **cost model**. The abstract pattern stays neutral (you
+can swap Cloud Run for Fly, Stripe for Paddle); the profile is the bound default the
+factory reaches for first.
+
+```
+  ABSTRACT (patterns/<id>)         CONCRETE (patterns/stacks/<id>)
+  vendor-neutral seam         ×    named vendor + wiring    →   runnable recipe + cost
+```
+
+Each profile is four things:
+
+- **`stack.md`** — the house stack: vendor table, the **cost-tier ladder**, the
+  **graduation triggers** between tiers, provenance (which shipped apps it was mined
+  from), and honest known-gaps.
+- **`manifest.json`** — machine-readable: `vendors`, `cost_tiers`,
+  `graduation_triggers`, `bindings` (pattern → recipe → source app), `skills`.
+- **`bindings/*.md`** — one per bound pattern: the concrete realization *on this
+  stack*, including the non-obvious glue and the gotchas mined from real code.
+- **`skills/*.md`** — runnable stand-up playbooks with real commands (the *"skills
+  to use them"*).
+
+### The cost axis is first-class
+
+A micro/mini-SaaS factory lives or dies on **zero-cost PoC deployments and
+predictable cost scaling**, so every profile declares a **tier ladder**: the lowest
+tier is a genuine ~$0 footprint (scale-to-zero compute, free-tier datastore, no
+vendor), and each higher tier adds one seam with its cost and a **graduation
+trigger** (the concrete signal that says "now add this"). The single most important
+number a profile surfaces is the **first real fixed-cost jump** and the **only
+uncapped variable cost** — so a builder knows exactly what they're signing up for.
+
+### First profile: `gcp-serverless-saas`
+
+The house stack behind every CW-built app so far — **Firebase Hosting + Cloud Run
+(Go) + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless
+WIF deploys** — presented as a **T0 → T1 → T2 cost ladder** ($0 static/DIY →
+$0–5 thin-serverless → $60–140 full-production). It was mined from three shipped
+apps (`plwp.net`, `booking-forms`, `dogeared-coach`) and binds
+`tiered-subscription`, `engagement-instrumentation`, `multi-tenant-isolation`
+(two variants), `provider-neutral-adapter`, `transactional-email-and-dunning`
+(dunning half flagged aspirational — honestly unbuilt in the mined apps), and
+`deployment-release`. See [`patterns/stacks/gcp-serverless-saas/stack.md`](../patterns/stacks/gcp-serverless-saas/stack.md).
+
+### How a stack profile threads through the workflow
+
+A profile extends, not replaces, the [pattern threading](#how-patterns-thread-through-the-existing-workflow):
+`/seed` selects the patterns *and* a stack profile for the product's cost tier;
+`/architect` binds the profile's concrete contracts (still with the abstract
+patterns' stable IDs); `/apply-pattern --stack` stamps the profile's scaffold and
+runs the stand-up skills; the cost tier chosen becomes an explicit product decision
+(like a chosen design direction). Every vendor stays swappable because the binding
+sits *below* the abstract pattern's neutral seam.
 
 ## Applying a pattern to CW itself
 
