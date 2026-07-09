@@ -67,6 +67,8 @@ Write the findings to `$CW_TMP/domain-context.md` with **citations** (file paths
 
 If the product has no existing data source and no usage history (true greenfield), note that in `domain-context.md` and move on — don't invent ceremony.
 
+**If the product holds regulated or sensitive data** (health, financial, biometric, children's, government-classified, or PII at scale), also research and fill `templates/compliance-requirements.md` into `$CW_TMP/compliance-requirements.md` (copied to `docs/compliance-requirements.md` at Step 7). This is where the compliance posture is grounded before contracts are written — data classification, privacy/cross-border law, retention + legal hold, de-identification, and the **AI/LLM data-path gate** (if regulated data is sent to any third-party model, its residency / no-training / no-retention posture is a GO/NO-GO gate resolved *here*, not deferred — it frequently overturns the default cloud/provider choice). Unconfirmed obligations get `TBD:` markers and gate dependent tickets; `/saas-gate` later verifies the filled doc. This is heavy web/legal research — spin it out to parallel workers by dimension (privacy law, security frameworks, data-path, retention) and keep only the cited findings.
+
 ### Step 3: Interactive architecture brainstorm
 
 Work through the key architecture decisions with the user. Don't assume — ask. Cover:
@@ -133,14 +135,15 @@ When both reviews are back:
 
 ### Step 7: Commit architecture decisions
 
-Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. If Step 2.5 produced domain context, copy it to `docs/domain-context.md` — `/architect` loads it before writing data contracts. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
+Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. If Step 2.5 produced domain context, copy it to `docs/domain-context.md` — `/architect` loads it before writing data contracts. If Step 2.5 produced a compliance-requirements doc (regulated-data products), copy it to `docs/compliance-requirements.md` — `/architect` folds it into security/privacy contracts and `/saas-gate` verifies it. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
 
 Commit and push:
 ```bash
 cd "$TARGET_DIR"
 mkdir -p docs
 cp "$CW_TMP/domain-context.md" docs/domain-context.md 2>/dev/null || true
-git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md
+cp "$CW_TMP/compliance-requirements.md" docs/compliance-requirements.md 2>/dev/null || true
+git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md docs/compliance-requirements.md
 git commit -m "Add architecture decisions from seed session"
 git push
 ```
