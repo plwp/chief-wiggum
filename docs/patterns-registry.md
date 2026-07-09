@@ -108,6 +108,30 @@ Patterns are **project-agnostic** and installed by *value* into the target — t
 same principle as every other CW skill. CW never hardcodes the target's
 warehouse, model, or channel; those are parameters.
 
+## How patterns thread through the existing workflow
+
+Applying a pattern is not a one-shot stamp — it threads through the existing
+build loop. The division of labor: **`/seed` selects, `/architect` binds,
+`/implement` builds, `/close-epic` verifies.** A registry pattern is best thought
+of as a **contract pack** — it ships stable-ID contracts, invariants, integration
+tests, protected paths, and parameters, and the workflow stages consume them
+rather than re-deriving.
+
+| Stage | Role with patterns |
+|--|--|
+| **`/seed`** (or the product-architecture step) | **Selects.** Proposes applicable patterns from the registry given the product's shape ("multi-tenant SaaS with untrusted users" → `multi-tenant-isolation` + `engagement-instrumentation` + `improvement-loop`), records the choice and the per-app trust bindings — the "chosen, not converged" moment, like `/design`. |
+| **`/architect`** | **Binds.** For each selected pattern this epic realizes: folds the pattern's contracts/invariants into `contracts.md` / `invariants.md` **with their stable IDs, pulled from the manifest** (not re-derived); threads its integration tests into `integration-tests.md`; registers its `protected_paths` into `docs/quality/ratchet.json`; and emits `TBD:` markers for any unbound parameter (gated by `check_unresolved.py`) so dependent tickets can't build on a guess. |
+| **`/implement` / `/implement-wave`** | **Builds.** Implements against the pattern-supplied contracts; the `scaffold/` may already be stamped by `/apply-pattern`, and tickets fill in the app-specific parameterization. Workers touching the pattern's protected paths are parked, exactly as with any goalpost. |
+| **`/close-epic`** | **Verifies.** Confirms the pattern's invariants and gates held across the epic (e.g. the cross-tenant isolation proof passes, the ratchet held, the trust gate is wired). |
+
+So the answer to "does `/architect` need to reference the patterns?" is **yes** —
+`/architect` is where a pattern stops being a catalog entry and becomes this
+epic's contracts, gates, and protected paths. Concretely: `multi-tenant-isolation`
+contributes the tenant-scoping invariant + the cross-tenant-proof integration
+test; `engagement-instrumentation` contributes the trusted-denominator +
+monotonic-latch contracts; `improvement-loop` contributes the protected-pathset +
+ratchet-gate + trust-model contracts.
+
 ## Trust model — the core generalization
 
 This is the piece a **trusted-insider** loop can skip, and the reason a registry
