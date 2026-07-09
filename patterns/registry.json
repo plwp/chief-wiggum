@@ -1,0 +1,45 @@
+{
+  "$comment": "Index of reusable product patterns Chief Wiggum can stamp into the apps it builds. See docs/patterns-registry.md. Each entry points at patterns/<id>/{pattern.md,manifest.json}. Candidates are mined but not yet fully specified.",
+  "version": 1,
+  "patterns": [
+    {
+      "id": "improvement-loop",
+      "title": "Improvement Lifecycle Loop",
+      "category": "process-loop",
+      "status": "specified",
+      "trust_class": "trust-aware",
+      "summary": "Autonomous, signal-driven, ratchet-gated fix-forward refinement installed into the product. Trusted-signal changes deploy autonomously; untrusted-signal (end-user) changes quarantine for blocking admin approval.",
+      "spec": "patterns/improvement-loop/pattern.md",
+      "manifest": "patterns/improvement-loop/manifest.json"
+    },
+    {
+      "id": "engagement-instrumentation",
+      "title": "Engagement Instrumentation",
+      "category": "monitoring-feedback",
+      "status": "specified",
+      "trust_class": "produces-trust-tagged-signal",
+      "summary": "Server-trusted, tamper-resistant capture of how far users get through assigned work/content, robust to out-of-order/replay/concurrent/clock-drift. The instrumentation tier that feeds the improvement loop; each signal annotated with its trust class.",
+      "feeds": "improvement-loop",
+      "spec": "patterns/engagement-instrumentation/pattern.md",
+      "manifest": "patterns/engagement-instrumentation/manifest.json"
+    }
+  ],
+  "candidates": [
+    {"id": "multi-tenant-isolation", "title": "Multi-Tenant Isolation Stack", "category": "saas-infra", "status": "candidate", "summary": "Server-only tenant resolution (rejects client hints) -> context-injected, fail-closed tenant-scoped repository (AND-wrapped filters, reject-don't-override, recursive field-scan, unexported handles) -> standing cross-tenant isolation proof as an executable test gate (positive controls + negative matrix + no-foreign-id-in-denial) -> quarantined transactional cascade erasure. Composes into one multi-tenancy blueprint; the floor that makes mining per-tenant data safe.", "reusability": "high"},
+    {"id": "provider-neutral-adapter", "title": "Provider-Neutral Port/Adapter", "category": "multi-provider", "status": "candidate", "summary": "Vendor-agnostic seam for a swappable external service: neutral DTOs only, concrete vendor types unexported (compile-time swappability), vendor states mapped to internal enums with safe defaults. Behind it: signed-webhook ingestion normalized to idempotent internal events (webhook is source of truth, not the client callback), sign-per-request short-lived access tokens, and direct browser->CDN upload via a one-time server-minted ticket.", "reusability": "high"},
+    {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
+    {"id": "tiered-saas-enforcement", "title": "Tiered-SaaS Limit Enforcement", "category": "saas-infra", "status": "candidate", "summary": "Single-source-of-truth tier matrix (unlimited sentinel, unknown-tier falls back to most-restrictive) enforced via injected check-before-act gate seams; stateless quota computed fresh from source of truth (no stored counters, self-healing on delete) with one shared path for enforce + display and pessimistic in-flight reservation. Limit-hit events are strong upgrade-intent signal.", "reusability": "high"},
+    {"id": "immutable-assignment-snapshot", "title": "Immutable Assignment Snapshot", "category": "data-structure", "status": "candidate", "summary": "Pin the exact version of a composite item at assignment time (draft -> immutable published version -> assignment references a version, not the live template) so later edits never retroactively mutate outstanding assignments. Keeps longitudinal completion analysis clean (no denominator drift).", "reusability": "medium-high"},
+    {"id": "elevated-access-session", "title": "Revocable Elevated-Access Session", "category": "saas-infra", "status": "candidate", "summary": "Time-boxed support impersonation with a short server-enforced TTL independent of the identity token, future-skew guard, per-request self-consistency check, fail-closed revocation lookup, fixed middleware order, and full audit. High value but only for products needing operator act-as.", "reusability": "medium"},
+    {"id": "build-test-floor", "title": "Language-Agnostic Build/Test Floor", "category": "gate", "status": "candidate", "summary": "Auto-detecting build+test+lint gate across a polyglot repo, with a local pre-merge script mirroring CI; optionally zero-cost-until-opt-in (manual-dispatch trigger) for cost-sensitive private repos.", "reusability": "medium"}
+  ],
+  "meta_disciplines": {
+    "$comment": "Recurring cross-pattern engineering rules worth stating once, not registry entries themselves.",
+    "rules": [
+      "fail-closed on unknown/ambiguous input (grace windows, revocation lookups, tenant resolution, unknown-tier fallback)",
+      "idempotency + guarded conditional updates for anything touching external state",
+      "injected interface seams for every gate so services stay testable without real infra",
+      "document accepted TOCTOU/limitation classes inline rather than hiding them"
+    ]
+  }
+}

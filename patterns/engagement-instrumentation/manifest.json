@@ -1,0 +1,38 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/engagement-instrumentation/pattern.md.",
+  "id": "engagement-instrumentation",
+  "version": 1,
+  "title": "Engagement Instrumentation",
+  "category": "monitoring-feedback",
+  "trust_class": "produces-trust-tagged-signal",
+
+  "applies_when": [
+    "product assigns work/content and 'did the user engage with / complete it' is worth answering",
+    "you want deliberate, robust feedback signal (retention/funnel/drop-off), not best-effort telemetry",
+    "designed in from the start — the value is the server-trusted monotonic discipline, not a later patch"
+  ],
+
+  "components": [
+    "client-throttled-emitter: throttle steady ticks, flush on boundary, keepalive on unmount, skip without trusted denominator, no-retry (server is monotonic), preview-never-writes guard",
+    "server-trusted-monotonic-tracker: one row per (assignment, item), lazy create, tenant-scoped, monotonic-max progress, one-way completion latch past threshold, server-trusted denominator (client duration advisory only), upsert (max/set/set-on-insert) with dup-key retry, bounded roll-up query budget",
+    "trust-boundary-honesty-note: per-metric statement of what it proves vs not; robust-against-bugs != robust-against-adversary; enumerate accepted races",
+    "dual-scope-audit-log: append-only tenant-scoped + system-global event trails"
+  ],
+
+  "parameters": {
+    "work_item": {"type": "string", "required": true, "description": "The entity whose engagement is tracked."},
+    "completion_threshold": {"type": "number", "required": true, "description": "Fraction past which the one-way completed latch trips."},
+    "trusted_denominator": {"type": "string", "required": true, "description": "Server-side source of truth for the completion denominator (pinned-at-assignment snapshot or canonical record)."},
+    "throttle_interval": {"type": "string", "required": false, "default": "10s", "description": "Steady-state client report cadence."},
+    "event_source": {"type": "string", "required": true, "description": "Player/content events the client emitter subscribes to."},
+    "signal_trust": {"type": "string", "required": true, "description": "Per-metric trust class annotation; feeds the improvement-loop trust model."}
+  },
+
+  "feeds": {
+    "improvement-loop": "supplies signal_sources of kind 'conversations'/'feedback'/'errors' analog: per-item completion, drop-off, last-activity, plus audit-log events; the per-metric signal_trust is the input to the loop's trust model"
+  },
+
+  "depends_on": {
+    "multi-tenant-isolation": "mining per-tenant behavioral data safely requires a fail-closed, server-derived tenant-scoping data layer"
+  }
+}

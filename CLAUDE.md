@@ -164,6 +164,7 @@ python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 skills/              # Harness-portable skills and bundled resources
 scripts/             # Python helpers called by skills
 templates/           # Issue, PR, review, and checklist templates
+patterns/            # Registry of reusable product patterns CW stamps into built apps (see docs/patterns-registry.md)
 models.md            # AI model IDs and library versions (refresh with /update)
 ```
 
