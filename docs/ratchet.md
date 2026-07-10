@@ -21,6 +21,52 @@ Three rules, all mechanical:
    **protected pathset**. A worker branch that touches them is *parked* for
    human review, never auto-merged.
 
+Plus one **report-only** dimension:
+
+4. **Complexity & churn only ratchet down.** Mean cyclomatic complexity (McCabe
+   1976), the share of functions over CCN 10, and relative churn (churned-LOC /
+   total-LOC — Nagappan & Ball 2005) are snapshotted alongside the scorecard.
+   This dimension is [new, so it ships **report-only**](gate-rollout.md): `check`
+   prints the deltas but does not block on them unless you pass `--gate-quality`.
+
+## Complexity & churn: direction and tolerance
+
+The pass-set ratchets **up** (its high-water mark is the *largest* set; it
+regresses when it *shrinks*). Complexity ratchets the **opposite** way: it is a
+cost, so the high-water mark is the **lowest (best)** value ever merged, and a
+metric that *rises* is the regression. The portfolio audit motivating this
+(issue #110) saw `duplicat-rex` mean CCN drift 3.1→5.2 and `chief-wiggum` reach
+16.7 % of functions over CCN 10 before self-correcting — exactly the upward
+creep this dimension catches.
+
+Because per-run noise is normal, a metric regresses only when it exceeds a
+**tolerance band** around the best value:
+
+```
+regressed  ⇔  current  >  best × (1 + <metric>_rel)  +  <metric>_abs
+```
+
+The band is configurable per repo under `quality_tolerance` in `ratchet.json`
+(defaults in `ratchet.py:DEFAULT_QUALITY_TOLERANCE`):
+
+```json
+{
+  "quality_tolerance": {
+    "ccn_mean_rel": 0.10,       "ccn_mean_abs": 0.5,
+    "pct_ccn_gt10_rel": 0.10,   "pct_ccn_gt10_abs": 1.0,
+    "relative_churn_rel": 0.25, "relative_churn_abs": 0.05
+  }
+}
+```
+
+`score` records `quality: {ccn_mean, pct_ccn_gt10, relative_churn, ...}` in the
+hash-chained record. The snapshot is **optional and fast-failing**: it leans on
+`lizard` (from the [code-metrics](../scripts/quality) engines), and if lizard is
+absent it records `quality: {"skipped": ...}` and never crashes `score` — skipped
+snapshots contribute nothing to the high-water mark and never register a
+regression. Journals written before this dimension existed carry no `quality`
+block; chain verification and high-water derivation tolerate that unchanged.
+
 ## Tamper-evident journal
 
 The journal (`docs/quality/ratchet-journal.jsonl` in the target repo) is an
@@ -55,7 +101,8 @@ parser (`go-test-json`, `junit-xml`, or `pass-fail-lines`):
      "cwd": "web", "parser": "junit-xml", "report": "web/junit.xml"}
   ],
   "epic_docs": "docs/epics",
-  "protected_paths": ["docs/epics/*/contracts.md", "docs/quality/**", "..."]
+  "protected_paths": ["docs/epics/*/contracts.md", "docs/quality/**", "..."],
+  "quality_tolerance": {"ccn_mean_rel": 0.10, "ccn_mean_abs": 0.5, "...": "..."}
 }
 ```
 
@@ -63,9 +110,12 @@ parser (`go-test-json`, `junit-xml`, or `pass-fail-lines`):
 
 ```bash
 python3 scripts/ratchet.py init --repo <target>        # starter config (autodetects go/pytest)
-python3 scripts/ratchet.py score                       # run suites + hash contracts → scorecard
+python3 scripts/ratchet.py score                       # run suites + hash contracts + complexity/churn → scorecard
 python3 scripts/ratchet.py score --no-tests            # contract hashes only (cheap baseline)
+python3 scripts/ratchet.py score --no-quality          # skip the complexity/churn snapshot (no lizard)
+python3 scripts/ratchet.py score --venv <venv>         # point the quality snapshot at a venv with lizard
 python3 scripts/ratchet.py check                       # exit 1 on regression/weakening/removal
+python3 scripts/ratchet.py check --gate-quality        # ALSO exit 1 on complexity/churn regression (opt-in)
 python3 scripts/ratchet.py protected --base origin/main  # exit 1 if goalposts touched
 python3 scripts/ratchet.py record --event ticket --ref "#42" --merged --notes "..."
 python3 scripts/ratchet.py record --event epic-close --ref order-lifecycle --merged \
@@ -91,6 +141,12 @@ scorecard (run `score` first), `4` journal tamper.
   the epic, then `record --event epic-close --merged`. Legitimate contract
   revisions are journaled here with `--amend`/`--retire` — a deliberate,
   visible human decision, not a silent edit.
+
+The **complexity/churn** dimension is not wired as a blocker anywhere yet: per
+[gate-rollout.md](gate-rollout.md) it ships report-only (`check` surfaces the
+deltas in the run output but only `--gate-quality` blocks) until it has been
+validated on a real, already-shipped repo. Promote it to `--gate-quality` in a
+follow-up that cites the dry-run.
 
 Like the other gates, it degrades gracefully: a target repo with no
 `docs/quality/ratchet.json` skips the ratchet (the workflows treat it as

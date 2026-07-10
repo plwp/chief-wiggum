@@ -50,3 +50,14 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 - [ ] Known limitations documented in the script docstring/`--help` and its `docs/` page.
 - [ ] Wired into the workflow report-only first; promoted to `--gate` in a follow-up that
       cites the dry-run.
+
+## Gate ledger
+
+| Gate | Script | Blocking flag | Status |
+| --- | --- | --- | --- |
+| Traceability | `check_traceability.py` | `--gate` | blocking (`/architect`, `/close-epic`) |
+| Single-writer | `check_single_writer.py` | `--gate` | blocking (precision fix in #93) |
+| Unresolved markers | `check_unresolved.py` | `--gate` | blocking (`/implement-wave`) |
+| Ratchet: pass-set + contract hashes | `ratchet.py check` | (blocks by default) | blocking (`/implement`, waves, `/close-epic`) |
+| **Ratchet: complexity + relative churn** | `ratchet.py check --gate-quality` | `--gate-quality` | **NEW — report-only** (#110); validate on a shipped repo before wiring as a blocker |
+| SaaS NFR | `saas_gate.py --gate` | `--gate` | blocking (`/saas-gate`) |
