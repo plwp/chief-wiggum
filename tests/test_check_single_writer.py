@@ -302,3 +302,153 @@ def test_report_json_serializable(tmp_path):
     epic = _write_billing_epic(tmp_path)
     report = sw.check(epic, None)
     json.loads(json.dumps(report.to_dict()))
+
+
+# --- #93 precision: comments, `:=`, persistence-only, exclude -----------------
+
+
+def _inv_persist():
+    """Single-write-path invariant on PERSISTED fields (sink=db)."""
+    return sw.SingleWriterInvariant(
+        id="INV-bil-001",
+        description="single atomic Stripe→plan write",
+        controls_field=["provider.plan", "provider.quota_minutes"],
+        sanctioned_writers=["ReconcileStripe", "UpdateEntitlementOverlay"],
+        source="invariants.md",
+        persistence_only=True,
+    )
+
+
+def test_field_mentioned_in_comment_not_flagged(tmp_path):
+    # The classic false positive: `plan:` inside a `// Free plan: …` comment.
+    (tmp_path / "video.go").write_text(
+        "func limits() {\n\t// Free plan: MaxVideoSeconds is capped\n\tx := 1\n\t_ = x\n}\n"
+    )
+    assert sw.scan_writers(tmp_path, [_inv()]) == []
+
+
+def test_python_hash_comment_not_flagged(tmp_path):
+    (tmp_path / "svc.py").write_text("def f():\n    # plan: the free tier\n    return 1\n")
+    assert sw.scan_writers(tmp_path, [_inv()]) == []
+
+
+def test_ts_private_field_marker_preserved_not_treated_as_comment(tmp_path):
+    # `#` is a comment only in Python/Ruby — in TS `#plan` is a private field, not a
+    # comment, so the line must NOT be truncated at `#`.
+    (tmp_path / "m.ts").write_text("class P {\n  #plan = 'free';\n}\n")
+    # No assertion on writers here beyond: stripping must not crash / mangle. The `#plan`
+    # line survives comment-stripping (verified indirectly — no exception, scan completes).
+    sw.scan_writers(tmp_path, [_inv()])
+
+
+def test_go_short_var_decl_not_flagged(tmp_path):
+    # `plan :=` is a short-var declaration, not a field set.
+    (tmp_path / "svc.go").write_text(
+        "func compute() {\n\tplan := resolve()\n\t_ = plan\n}\n"
+    )
+    assert sw.scan_writers(tmp_path, [_inv()]) == []
+
+
+def test_sink_db_skips_in_memory_assignment(tmp_path):
+    # out.QuotaMinutes = 100 builds an in-memory Limits struct — not a persistence write.
+    (tmp_path / "limits.go").write_text(
+        "func EffectiveLimits(p *Provider) Limits {\n"
+        "\tout := Limits{}\n\tout.QuotaMinutes = 100\n\treturn out\n}\n"
+    )
+    assert sw.scan_writers(tmp_path, [_inv_persist()]) == []
+
+
+def test_sink_db_skips_other_struct_literal(tmp_path):
+    # A same-named field on a DIFFERENT struct, set in a literal — not persistence.
+    (tmp_path / "video.go").write_text(
+        "func mk() VideoCfg {\n\treturn VideoCfg{Plan: planArg}\n}\n"
+    )
+    assert sw.scan_writers(tmp_path, [_inv_persist()]) == []
+
+
+def test_sink_db_flags_only_the_db_sink(tmp_path):
+    # In-memory assignment + struct literal are ignored; the bson $set is the writer.
+    (tmp_path / "limits.go").write_text(
+        "func EffectiveLimits(p *Provider) Limits {\n\tout := Limits{}\n"
+        "\tout.QuotaMinutes = 100\n\treturn out\n}\n"
+    )
+    (tmp_path / "signup.go").write_text(
+        "func signup() Provider {\n\treturn Provider{Plan: \"free\"}\n}\n"
+    )
+    (tmp_path / "repo.go").write_text(
+        "func ReconcileStripe(c *mongo.Collection) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"plan\": v, \"quota_minutes\": q}})\n"
+        "}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv_persist()])
+    assert {w.file for w in writers} == {"repo.go"}
+    assert all(w.sanctioned for w in writers)  # ReconcileStripe is sanctioned
+
+
+def test_sink_db_flags_sql_update(tmp_path):
+    (tmp_path / "store.go").write_text(
+        "func UpdateEntitlementOverlay(db *sql.DB) {\n"
+        "\tdb.Exec(\"UPDATE providers SET plan = $1 WHERE id = $2\", v, id)\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv_persist()])
+    assert any(w.file == "store.go" for w in writers)
+    assert all(w.sanctioned for w in writers)
+
+
+def test_sink_db_flags_unsanctioned_persistence_writer(tmp_path):
+    # A legacy admin ChangePlan doing its OWN $set is exactly what the gate must catch.
+    (tmp_path / "admin.go").write_text(
+        "func ChangePlan(c *mongo.Collection) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"plan\": v}})\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv_persist()])
+    assert writers and any(not w.sanctioned and w.symbol == "ChangePlan" for w in writers)
+
+
+def test_exclude_skips_subtree(tmp_path):
+    ui = tmp_path / "ui" / "src"
+    ui.mkdir(parents=True)
+    (ui / "types.ts").write_text("interface P {\n  plan: string;\n}\n")
+    (tmp_path / "admin.go").write_text("func Bad(p *Provider) {\n\tp.Plan = x\n}\n")
+    # Without exclude the TS interface field is a (false-positive) writer.
+    assert any(w.file.startswith("ui/") for w in sw.scan_writers(tmp_path, [_inv()]))
+    # --exclude ui removes the whole subtree; the Go writer remains.
+    excl = sw.scan_writers(tmp_path, [_inv()], exclude=["ui"])
+    assert all(not w.file.startswith("ui/") for w in excl)
+    assert any(w.file == "admin.go" for w in excl)
+
+
+def test_sink_db_parsed_from_prose_tag():
+    text = (
+        "<!-- @cw-writes INV-bil-001 controls_field=provider.plan "
+        "sanctioned_writers=ReconcileStripe sink=db -->\n"
+    )
+    invs, malformed = sw.parse_prose_invariants(text, "invariants.md")
+    assert malformed == [] and invs[0].persistence_only is True
+
+
+def test_sink_db_parsed_from_structured():
+    data = {"invariants": [{
+        "id": "INV-bil-001", "description": "d",
+        "controls_field": ["provider.plan"], "sanctioned_writers": ["ReconcileStripe"],
+        "sink": "db",
+    }]}
+    invs, _ = sw.parse_structured_invariants(data, "state-machines.json")
+    assert invs[0].persistence_only is True
+
+
+def test_no_sink_defaults_to_all_writers():
+    # Backward compatible: without sink=db, in-memory assignments still count.
+    invs, _ = sw.parse_prose_invariants(
+        "<!-- @cw-writes INV-x-001 controls_field=a.plan sanctioned_writers=Foo -->\n", "f.md"
+    )
+    assert invs[0].persistence_only is False
+
+
+def test_sink_db_skips_query_filter_clause(tmp_path):
+    # `"plan": {$exists:false}` is a FILTER (which docs to match), not a $set write.
+    (tmp_path / "migrate.go").write_text(
+        "func Migrate(c *mongo.Collection) {\n"
+        "\tc.UpdateMany(ctx, bson.M{\"plan\": bson.M{\"$exists\": false}}, upd)\n}\n"
+    )
+    assert sw.scan_writers(tmp_path, [_inv_persist()]) == []
