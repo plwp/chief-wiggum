@@ -30,19 +30,38 @@ Convention (mirrors ``@cw-trace``; see ``docs/single-writer.md``):
       { "id": "INV-bil-001",
         "description": "single atomic Stripe→plan write",
         "controls_field": ["provider.plan", "provider.stripe_plan"],
-        "sanctioned_writers": ["ReconcileStripe", "internal/billing/reconcile.go"] }
+        "sanctioned_writers": ["ReconcileStripe", "internal/billing/reconcile.go"],
+        "sink": "db" }
 
 - **Prose** — an ``invariants.md`` invariant gains a namespaced tag on/near its
   ``**INV-...**`` line::
 
       **INV-bil-001**: single atomic Stripe→plan write
       <!-- @cw-writes INV-bil-001 controls_field=provider.plan,provider.stripe_plan
-           sanctioned_writers=ReconcileStripe,internal/billing/reconcile.go -->
+           sanctioned_writers=ReconcileStripe,internal/billing/reconcile.go sink=db -->
 
 A ``sanctioned_writer`` is either a **symbol** (a function/method name, matched
 against the nearest enclosing ``func`` above a write) or a **file path** (matched
 as a suffix of the writer's file). A field path ``provider.stripe_plan`` matches
 writes to its leaf token (``stripe_plan`` / ``StripePlan``) — see ``field_tokens``.
+
+``sink=db`` (a.k.a. ``write_kind=persistence`` / structured ``"sink": "db"``) narrows
+matching to **persistence sinks only** — DB updates (``$set``/``UpdateOne``, SQL
+``UPDATE ... SET``) — ignoring in-memory Go assignments, struct/map literals, reads,
+response DTOs, and TS interface fields. Use it for a single-write-path invariant on a
+*persisted* field (the question is who writes the row, not who assigns a struct). For a
+purely in-memory single-owner field, omit it and every assignment is considered.
+``--exclude <glob>`` (repeatable) skips whole subtrees (e.g. a TS frontend that never
+persists the field) as belt-and-suspenders on a polyglot repo.
+
+Known limitations (regex, not a type checker): even with ``sink=db`` two residual false
+positives remain because they need collection/type awareness the scanner doesn't have —
+(1) a same-named field written to a DIFFERENT collection in a mutation context (e.g. an
+audit-log ``bson.M{"plan": …}``), and (2) a FILTER clause with a literal value
+(``bson.M{"plan": ""}`` — a ``$``-operator filter IS skipped, a bare-literal one is not).
+Mitigate with precise ``sanctioned_writers`` and ``--exclude``. Because of this, wire a
+new single-write-path invariant on a common field as **report-only first** (no ``--gate``)
+and confirm the finding set is clean before making it a ``coverage`` blocker.
 
 Backward-compatible: invariants without the metadata are skipped (degrade
 gracefully), exactly like ``check_traceability.py`` when IDs are absent.
@@ -57,6 +76,7 @@ Exit codes: 0 = ok, 1 = gate violation, 2 = usage error.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import re
 import sys
@@ -94,6 +114,22 @@ def canonical_id(node_id: str) -> str:
     return f"{kind.upper()}-{rest.lower()}"
 
 
+def _excluded(rel: str, patterns: list[str]) -> bool:
+    """True if repo-relative path ``rel`` matches any ``--exclude`` pattern. A bare
+    token (``ui``) matches that directory and everything under it; a glob
+    (``ui/*``, ``**/*.gen.ts``) matches via fnmatch. Belt-and-suspenders for polyglot
+    repos where a whole subtree (e.g. the TS frontend) never persists the field."""
+    for g in patterns:
+        g = g.rstrip("/")
+        if not g:
+            continue
+        if rel == g or rel.startswith(g + "/"):
+            return True
+        if fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel, g + "/*"):
+            return True
+    return False
+
+
 @dataclass
 class SingleWriterInvariant:
     """An invariant that declares a single write path on one or more fields."""
@@ -103,6 +139,13 @@ class SingleWriterInvariant:
     controls_field: list[str]
     sanctioned_writers: list[str]
     source: str  # where the metadata was declared (file:line or file)
+    # When True (metadata `sink=db` / `write_kind=persistence`), only PERSISTENCE
+    # sinks count as writers — DB updates (`$set`/`UpdateOne`, SQL `UPDATE ... SET`) —
+    # not in-memory Go assignments or struct/map literals. This is the right lens for a
+    # single-write-path invariant on a *persisted* field: the question is who writes the
+    # ROW, not who assigns the in-memory struct. Skips the false positives (reads,
+    # DTO/response copies, other structs' same-named fields, TS interface fields).
+    persistence_only: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -184,16 +227,22 @@ class SingleWriterReport:
 # --- parsing invariants -----------------------------------------------------
 
 
-def _parse_attrs(attr_str: str) -> tuple[list[str], list[str]]:
+def _parse_attrs(attr_str: str) -> tuple[list[str], list[str], bool]:
     controls: list[str] = []
     writers: list[str] = []
+    persistence_only = False
     for key, val in ATTR_RE.findall(attr_str):
+        k = key.lower()
         items = [v for v in val.split(",") if v]
-        if key.lower() == "controls_field":
+        if k == "controls_field":
             controls.extend(items)
-        elif key.lower() == "sanctioned_writers":
+        elif k == "sanctioned_writers":
             writers.extend(items)
-    return controls, writers
+        elif k == "sink":
+            persistence_only = persistence_only or val.lower() in {"db", "database", "persistence"}
+        elif k == "write_kind":
+            persistence_only = persistence_only or val.lower() == "persistence"
+    return controls, writers, persistence_only
 
 
 def parse_prose_invariants(text: str, rel: str) -> tuple[list[SingleWriterInvariant], list[dict]]:
@@ -215,7 +264,7 @@ def parse_prose_invariants(text: str, rel: str) -> tuple[list[SingleWriterInvari
     for i, line in enumerate(lines, start=1):
         for tag in WRITES_TAG_RE.finditer(line):
             inv_id = canonical_id(tag.group("id"))
-            controls, writers = _parse_attrs(tag.group("attrs"))
+            controls, writers, persistence_only = _parse_attrs(tag.group("attrs"))
             loc = f"{rel}:{i}"
             if not controls or not writers:
                 malformed.append({
@@ -230,6 +279,7 @@ def parse_prose_invariants(text: str, rel: str) -> tuple[list[SingleWriterInvari
                 controls_field=controls,
                 sanctioned_writers=writers,
                 source=loc,
+                persistence_only=persistence_only,
             ))
     return invariants, malformed
 
@@ -260,12 +310,20 @@ def parse_structured_invariants(data: dict, rel: str) -> tuple[list[SingleWriter
                 "reason": "controls_field and sanctioned_writers must be arrays of strings",
             })
             continue
+        sink = str(inv.get("sink", "")).lower()
+        write_kind = str(inv.get("write_kind", "")).lower()
+        persistence_only = (
+            bool(inv.get("persistence_only"))
+            or sink in {"db", "database", "persistence"}
+            or write_kind == "persistence"
+        )
         invariants.append(SingleWriterInvariant(
             id=inv_id,
             description=str(inv.get("description", "")),
             controls_field=[str(c) for c in controls],
             sanctioned_writers=[str(w) for w in writers],
             source=rel,
+            persistence_only=persistence_only,
         ))
     return invariants, malformed
 
@@ -315,7 +373,9 @@ def _writer_patterns(token: str) -> list[re.Pattern]:
     #    := is a Go declaration+assignment which IS a write, so allow it).
     pats.append(re.compile(rf"\.{ident}\s*:?=[^=]", re.IGNORECASE))
     # 2. Struct-literal / map set: `Plan: value` or `"plan": value` or `Key: "plan"`.
-    pats.append(re.compile(rf"""(^|[\s,{{(])['"]?{ident}['"]?\s*:\s*""", re.IGNORECASE))
+    #    `:(?!=)` so Go's short-var-decl `plan := expr` is NOT read as a field set
+    #    (the token would be the local var name, and `:` the `:` of `:=`).
+    pats.append(re.compile(rf"""(^|[\s,{{(])['"]?{ident}['"]?\s*:(?!=)\s*""", re.IGNORECASE))
     # 3. bson/Mongo update key referencing the field literally in a set expression.
     pats.append(re.compile(rf"""['"]{ident}['"]""", re.IGNORECASE))
     # 4. SQL UPDATE ... SET plan =
@@ -331,6 +391,52 @@ MUTATION_CONTEXT_RE = re.compile(
     r"\$set|UpdateOne|UpdateMany|UpdateByID|FindOneAndUpdate|bson\.[ME]|SET\b|UPDATE\b",
     re.IGNORECASE,
 )
+
+# A bson/Mongo QUERY operator on the same line means the `"field":` there is a FILTER
+# clause (which document to match), not a `$set` value (what to write). e.g.
+# `bson.M{"plan": bson.M{"$exists": false}}` selects rows, it doesn't write plan. Skip it.
+FILTER_OPERATOR_RE = re.compile(
+    r"\$(?:exists|in|nin|ne|eq|gt|gte|lt|lte|regex|or|and|not|nor|type|all|elemMatch|size)\b"
+)
+
+# Line-comment markers per language. Used to strip trailing comments before matching,
+# so a field name mentioned in a comment (e.g. `// Free plan: …`) is not read as a write.
+_COMMENT_MARKERS = {
+    ".go": ("//",), ".ts": ("//",), ".tsx": ("//",), ".js": ("//",), ".jsx": ("//",),
+    ".java": ("//",), ".rs": ("//",), ".py": ("#",), ".rb": ("#",),
+}
+
+
+def _strip_line_comment(line: str, suffix: str) -> str:
+    """Drop a trailing line comment, respecting string/char literals so an in-string
+    marker (a URL's `//`, a TS `#private`, a `#` inside a Python string) is preserved.
+    Multi-line strings aren't tracked (per-line scan) — acceptable: at worst a comment
+    marker inside a rare multi-line literal truncates a line we only search for writes."""
+    markers = _COMMENT_MARKERS.get(suffix)
+    if not markers:
+        return line
+    quote: str | None = None
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            i += 1
+            continue
+        for m in markers:
+            if line.startswith(m, i):
+                return line[:i]
+        i += 1
+    return line
+
 
 GO_FUNC_RE = re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)")
 PY_FUNC_RE = re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -367,9 +473,11 @@ def _distinct_field_forms(inv: SingleWriterInvariant) -> list[tuple[str, str]]:
 def scan_writers(
     source_root: str | Path,
     invariants: list[SingleWriterInvariant],
+    exclude: list[str] | None = None,
 ) -> list[Writer]:
     """Find every writer of every controlled field across the repo."""
     root = Path(source_root)
+    exclude = exclude or []
     writers: list[Writer] = []
     if not root.exists() or not invariants:
         return writers
@@ -387,39 +495,54 @@ def scan_writers(
             continue
         if any(part in SKIP_PARTS for part in path.parts):
             continue
+        rel = str(path.relative_to(root))
+        if _excluded(rel, exclude):
+            continue
         try:
-            lines = path.read_text().splitlines()
+            raw_lines = path.read_text().splitlines()
         except OSError:
             continue
-        rel = str(path.relative_to(root))
+        # Match on comment-stripped lines so a field mentioned in a comment is not read
+        # as a write; keep raw_lines only for the human-readable `text` of a finding.
+        code_lines = [_strip_line_comment(rl, path.suffix) for rl in raw_lines]
         is_test = _is_test_path(rel)
-        for i, line in enumerate(lines):
+        for i, line in enumerate(code_lines):
             for inv, field_pats in inv_patterns:
                 for fpath, _tok, pats in field_pats:
                     hit = False
                     for pi, pat in enumerate(pats):
+                        # persistence_only (`sink=db`): only DB sinks count — the bare
+                        # quoted-literal-in-mutation-context (#3, index 2) and SQL
+                        # UPDATE (#4, index 3). Skip in-memory assignment (#1) and
+                        # struct/map literals (#2) — those don't write the row.
+                        if inv.persistence_only and pi in (0, 1):
+                            continue
                         if not pat.search(line):
                             continue
                         # Pattern #3 (bare quoted literal, index 2) only counts as a
                         # write inside a mutation context; otherwise skip (DTO field).
                         if pi == 2 and not (
                             MUTATION_CONTEXT_RE.search(line)
-                            or (i > 0 and MUTATION_CONTEXT_RE.search(lines[i - 1]))
-                            or (i > 1 and MUTATION_CONTEXT_RE.search(lines[i - 2]))
+                            or (i > 0 and MUTATION_CONTEXT_RE.search(code_lines[i - 1]))
+                            or (i > 1 and MUTATION_CONTEXT_RE.search(code_lines[i - 2]))
                         ):
+                            continue
+                        # ...but a query-operator on the line makes it a filter clause,
+                        # not a write (which document to match, not what to set). Skip.
+                        if pi == 2 and FILTER_OPERATOR_RE.search(line):
                             continue
                         hit = True
                         break
                     if not hit:
                         continue
-                    symbol = _enclosing_symbol(lines, i)
+                    symbol = _enclosing_symbol(code_lines, i)
                     sanctioned = is_test or _is_sanctioned(inv, rel, symbol)
                     writers.append(Writer(
                         invariant_id=inv.id,
                         field=fpath,
                         file=rel,
                         line=i + 1,
-                        text=line.strip()[:200],
+                        text=raw_lines[i].strip()[:200],
                         symbol=symbol,
                         sanctioned=sanctioned,
                         is_test=is_test,
@@ -451,7 +574,11 @@ def _is_sanctioned(inv: SingleWriterInvariant, rel: str, symbol: str | None) -> 
 # --- top-level check --------------------------------------------------------
 
 
-def check(epic_dir: str | Path, source_root: str | Path | None = None) -> SingleWriterReport:
+def check(
+    epic_dir: str | Path,
+    source_root: str | Path | None = None,
+    exclude: list[str] | None = None,
+) -> SingleWriterReport:
     report = SingleWriterReport()
     invariants, malformed = collect_invariants(epic_dir)
     report.invariants = [inv.to_dict() for inv in invariants]
@@ -465,7 +592,7 @@ def check(epic_dir: str | Path, source_root: str | Path | None = None) -> Single
         return report
 
     if source_root:
-        writers = scan_writers(source_root, invariants)
+        writers = scan_writers(source_root, invariants, exclude=exclude)
         report.writers = [w.to_dict() for w in writers]
         report.violations = [w.to_dict() for w in writers if not w.sanctioned]
         # Surface any invariant whose controlled field has NO writer at all — the
@@ -527,6 +654,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("epic_dir", help="docs/epics/<slug> directory (or CW_TMP at architect time)")
     parser.add_argument("--source", help="Repo root to scan for writers of controlled fields")
     parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="Repo-relative path/dir/glob to skip; repeatable (e.g. --exclude ui --exclude '**/*.gen.ts')",
+    )
+    parser.add_argument(
         "--gate",
         choices=["soundness", "coverage"],
         help="Fail (exit 1) on this gate's findings (soundness=malformed metadata; "
@@ -539,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    report = check(args.epic_dir, args.source)
+    report = check(args.epic_dir, args.source, exclude=args.exclude)
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))
