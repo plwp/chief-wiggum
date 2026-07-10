@@ -174,6 +174,26 @@ python3 "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" --base-url "$BASE_
 
 It reports five statuses (`pass`/`fail`/`warn`/`skipped`/`not_applicable`); a real `fail` (e.g. missing CSP, a cross-tenant data leak) blocks the epic close, while `warn`/`skipped` are surfaced but don't block. See `/saas-gate` for the full check list (tenant isolation, performance, data integrity need the live multi-user app).
 
+### Step 2h: Adversarial security review (user-facing / auth / money epics)
+
+If the epic touches **user input, authentication, identity, or money** (public or authed endpoints, login/reset/invite flows, billing), run an adversarial security review. The deterministic NFR gate (2g) checks a running app's *posture* (headers, CSRF, a live isolation probe); it cannot reason about *this epic's* logic. This step exists because functional tests, traceability, and the ratchet all pass while a real vulnerability ships — a feedback epic once closed green with an unthrottled submit endpoint (a spam/abuse vector) and a PII-in-logs leak that only a manual audit caught afterward.
+
+Launch a **review-worker** (contract: `docs/worker-contracts.md#review-worker`) — *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"` — prompted to ATTACK the epic's new/changed endpoints and data paths against this checklist, citing `file:line` for each finding:
+
+- **Account enumeration** — auth / reset / invite / login flows return uniform responses **and timing** whether or not the account exists.
+- **Rate limiting / abuse** — every public or cheap-to-hit authed endpoint (feedback, reset, search, upload) has a limiter; an unbounded one is a spam/DoS vector.
+- **IDOR / tenant isolation** — every new data-access path scopes by tenant/owner **server-side** (never trusts a client-supplied id); cross-tenant reads/writes are rejected.
+- **PII / secrets in logs** — no email, token, key, or raw request body written to logs.
+- **Input bounds** — unbounded strings/payloads are capped (oversized free-text fields, giant uploads).
+
+Run the same prompt through the reviewer quorum for divergence, then reconcile the two into one findings list:
+
+```bash
+python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer "$CW_TMP/security-review-prompt.md" --output-dir "$CW_TMP/security-review" --cwd "$TARGET_REPO"
+```
+
+Triage every finding like the other gates: a confirmed exploitable issue is **blocking** (fix before close); a plausible-but-unproven one is **parked for the human** with the `file:line` and the concrete attack. Never close a user-facing/auth/money epic on an unreviewed security surface. Skip only when the epic is purely internal/back-office with **no new external surface** — and say so explicitly in the close report.
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.
