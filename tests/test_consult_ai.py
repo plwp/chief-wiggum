@@ -182,11 +182,13 @@ def test_claude_interactive_uses_delegate_submit_without_precreating_task(tmp_pa
     result_file.write_text("delegate response")
     calls = []
 
-    def fake_run(cmd, **kwargs):
+    def fake_run_capture(cmd, **kwargs):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout=f"RESULT={result_file}\n", stderr="")
+        return f"RESULT={result_file}\n"
 
-    monkeypatch.setattr(consult_ai.subprocess, "run", fake_run)
+    # consult_* now route through _run_capture (process-group-aware runner, #95),
+    # not subprocess.run — mock at that seam.
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
 
     output = consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
 
@@ -195,3 +197,41 @@ def test_claude_interactive_uses_delegate_submit_without_precreating_task(tmp_pa
     assert "submit" in cmd
     assert "--prompt-file" in cmd
     assert "--task-id" not in cmd
+
+
+# --- _run_capture: hard-timeout process-group runner (#95) -------------------
+
+import time as _time  # noqa: E402
+
+
+def test_run_capture_returns_stdout():
+    assert consult_ai._run_capture(
+        ["sh", "-c", "printf hello"], input_text=None, timeout=10, cwd=None, tool="t"
+    ) == "hello"
+
+
+def test_run_capture_passes_stdin():
+    assert consult_ai._run_capture(
+        ["cat"], input_text="piped-in", timeout=10, cwd=None, tool="t"
+    ) == "piped-in"
+
+
+def test_run_capture_raises_calledprocesserror_on_nonzero():
+    with pytest.raises(subprocess.CalledProcessError):
+        consult_ai._run_capture(
+            ["sh", "-c", "exit 3"], input_text=None, timeout=10, cwd=None, tool="t"
+        )
+
+
+def test_run_capture_timeout_does_not_hang_on_surviving_grandchild():
+    # A grandchild inherits the stdout pipe and outlives the timeout. subprocess.run
+    # would block in communicate() draining that pipe for the grandchild's full 30s;
+    # _run_capture must kill the whole process group and return promptly.
+    start = _time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        consult_ai._run_capture(
+            ["sh", "-c", "sleep 30 & sleep 30"],
+            input_text=None, timeout=2, cwd=None, tool="t",
+        )
+    elapsed = _time.monotonic() - start
+    assert elapsed < 15, f"timeout did not return promptly ({elapsed:.1f}s) — pipe hang not fixed"

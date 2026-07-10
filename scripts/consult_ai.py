@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 # Allow importing keychain from the same directory
@@ -44,8 +47,84 @@ TOOL_TIMEOUTS: dict[str, int] = {
 }
 TIMEOUT = 600  # fallback
 
+# Interval (seconds) between liveness heartbeats emitted to stderr while a provider CLI
+# runs. A silent multi-minute consult is indistinguishable from a hang to a worker's
+# stream-watchdog; a periodic line proves the consult is alive and progressing.
+HEARTBEAT_INTERVAL = 30
+
 # Default model for Vertex AI path (override with --model)
 DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """SIGTERM then SIGKILL the child's whole process group, so the provider CLI **and
+    any subprocesses it spawned** die — not just the direct child. This is the crux of
+    the hang fix: a surviving grandchild that inherited the stdout pipe keeps
+    communicate() blocked forever otherwise."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue  # escalate to SIGKILL
+
+
+def _run_capture(
+    cmd: list[str], *, input_text: str | None, timeout: int, cwd: str | None, tool: str,
+    check: bool = True,
+) -> str:
+    """Run a provider CLI, capturing stdout, with a HARD timeout that actually fires.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child; if the CLI spawned
+    grandchildren holding the stdout pipe open, the follow-up ``communicate()`` blocks
+    reading that pipe until they exit — so the "timeout" never returns and the calling
+    worker hangs (the root cause of consult-driven stalls, #95). Here the CLI runs in
+    its OWN session/process group (``start_new_session``) and a timeout kills the whole
+    group, guaranteeing control returns within ``timeout``. A daemon thread emits a
+    stderr heartbeat so a long-but-live consult is not mistaken for a hang.
+
+    Raises ``subprocess.TimeoutExpired`` / ``subprocess.CalledProcessError`` to preserve
+    the previous ``subprocess.run(check=True, timeout=...)`` contract.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=cwd, start_new_session=True,
+    )
+    stop = threading.Event()
+
+    def _heartbeat() -> None:
+        start = time.monotonic()
+        while not stop.wait(HEARTBEAT_INTERVAL):
+            elapsed = int(time.monotonic() - start)
+            print(f"[consult:{tool}] still running ({elapsed}s / {timeout}s budget)",
+                  file=sys.stderr, flush=True)
+
+    hb = threading.Thread(target=_heartbeat, daemon=True)
+    hb.start()
+    try:
+        out, err = proc.communicate(input_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            proc.communicate(timeout=10)  # drain now-closed pipes; group is dead
+        except Exception:
+            pass
+        raise
+    finally:
+        stop.set()
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, output=out, stderr=err)
+    return out
 
 
 def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
@@ -64,12 +143,10 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
     if model:
         cmd.extend(["--model", model])
     cmd.append("-")  # read prompt from stdin
-    result = subprocess.run(
-        cmd, input=prompt, capture_output=True, text=True, check=True,
-        timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
-        cwd=cwd,
+    return _run_capture(
+        cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
+        cwd=cwd, tool="codex",
     )
-    return result.stdout
 
 
 def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
@@ -82,12 +159,10 @@ def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None
     cmd = ["gemini", "--yolo", "--output-format", "text", "-p", ""]
     if model:
         cmd.extend(["-m", model])
-    result = subprocess.run(
-        cmd, input=prompt, capture_output=True, text=True, check=True,
-        timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
-        cwd=cwd,
+    return _run_capture(
+        cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
+        cwd=cwd, tool="gemini",
     )
-    return result.stdout
 
 
 def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
@@ -117,12 +192,10 @@ def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None
     cmd = ["claude", "-p", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
-    result = subprocess.run(
-        cmd, input=prompt, capture_output=True, text=True,
-        check=True, timeout=TOOL_TIMEOUTS.get("claude", TIMEOUT),
-        cwd=cwd,
+    return _run_capture(
+        cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("claude", TIMEOUT),
+        cwd=cwd, tool="claude",
     )
-    return result.stdout
 
 
 def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
@@ -145,20 +218,17 @@ def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str |
         ]
         if cwd:
             cmd.extend(["--cwd", cwd])
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=TOOL_TIMEOUTS["claude-interactive"],
+        stdout = _run_capture(
+            cmd, input_text=None, timeout=TOOL_TIMEOUTS["claude-interactive"],
+            cwd=None, tool="claude-interactive",
         )
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             if line.startswith("RESULT="):
                 result_path = Path(line.removeprefix("RESULT="))
                 if result_path.exists():
                     return result_path.read_text()
                 raise RuntimeError(f"claude-interactive result path does not exist: {result_path}")
-        raise RuntimeError(f"claude-interactive completed without RESULT line: {result.stdout}")
+        raise RuntimeError(f"claude-interactive completed without RESULT line: {stdout}")
     finally:
         prompt_file.unlink(missing_ok=True)
 
