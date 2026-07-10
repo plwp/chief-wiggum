@@ -51,13 +51,14 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 - [ ] Wired into the workflow report-only first; promoted to `--gate` in a follow-up that
       cites the dry-run.
 
-## Gate status
+## Gate ledger
 
-| Gate | Script | Status |
-| --- | --- | --- |
-| traceability | `check_traceability.py` | blocking (`--gate`) |
-| single-writer | `check_single_writer.py` | blocking (`--gate`) |
-| unresolved-markers | `check_unresolved.py` | blocking |
-| ratchet | `ratchet.py` | blocking |
-| SaaS NFR | `saas_gate.py` | blocking (`--gate`, on real `fail`) |
-| minimal-CI | `ci_scaffold.py` | **report-only** (new; wired into `/close-epic` report-only per this doc — has a `--gate` mode held off until validated across shipped repos) |
+| Gate | Script | Blocking flag | Status |
+| --- | --- | --- | --- |
+| Traceability | `check_traceability.py` | `--gate` | blocking (`/architect`, `/close-epic`) |
+| Single-writer | `check_single_writer.py` | `--gate` | blocking (precision fix in #93) |
+| Unresolved markers | `check_unresolved.py` | `--gate` | blocking (`/implement-wave`) |
+| Ratchet: pass-set + contract hashes | `ratchet.py check` | (blocks by default) | blocking (`/implement`, waves, `/close-epic`) |
+| **Ratchet: complexity + relative churn** | `ratchet.py check --gate-quality` | `--gate-quality` | **NEW — report-only** (#110); validate on a shipped repo before wiring as a blocker |
+| SaaS NFR | `saas_gate.py --gate` | `--gate` | blocking (`/saas-gate`) |
+| **Minimal-CI** | `ci_scaffold.py` | `--gate` | **report-only** (#111); wired into `/close-epic` report-only; `--gate` mode held off until validated across shipped repos |
