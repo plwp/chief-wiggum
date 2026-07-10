@@ -12,7 +12,7 @@ A collection of portable workflow contracts, scripts, and Claude Code slash-comm
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
 - **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, and independent verification per ticket.
 - **Wave level**: `/implement-wave` — parallel implementation of an entire epic in dependency-ordered waves. Each wave runs multiple `/implement` loops concurrently in isolated worktrees, merges to main, then starts the next wave.
-- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`, `/tutorial-video`.
+- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`, `/code-metrics`, `/tutorial-video`.
 
 ## Key Principles
 
@@ -218,6 +218,7 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 
 /ship                           # Create PR with mermaid diagrams (standalone)
 /stitch-audit owner/repo --trace keyword   # Cross-layer data flow audit
+/code-metrics owner/repo                    # Literature-grounded code-quality metrics (churn/complexity/survival/duplication)
 /tutorial-video owner/repo --feature "..."  # Narrated click-through tutorial video
 /saas-gate owner/repo --base-url <url>     # SaaS non-functional-requirements gate (security/isolation/perf/observability)
 /update                         # Refresh model IDs and library versions
