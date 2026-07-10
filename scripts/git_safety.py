@@ -11,6 +11,10 @@ Examples:
     # Abort unless cwd is a worktree distinct from the main checkout
     python3 scripts/git_safety.py assert-worktree --main "$TARGET_REPO"
 
+    # Abort unless the main checkout is on the default branch with a clean tree
+    # (catches a worker that leaked a branch into main — isolation leak)
+    python3 scripts/git_safety.py assert-main-pristine --main "$TARGET_REPO" --default-branch main
+
     # Validate a branch name
     python3 scripts/git_safety.py check-branch feat/my-thing
 
@@ -37,6 +41,14 @@ def main(argv: list[str] | None = None) -> int:
     p_wt.add_argument("--main", required=True, help="Path to the main checkout")
     p_wt.add_argument("--worktree", default=".", help="Worktree path (default: cwd)")
 
+    p_pristine = sub.add_parser(
+        "assert-main-pristine",
+        help="Assert the main checkout is on the default branch with a clean tree "
+        "(catches a worker that leaked a branch into the main checkout)",
+    )
+    p_pristine.add_argument("--main", required=True, help="Path to the main checkout")
+    p_pristine.add_argument("--default-branch", required=True, help="Expected default branch")
+
     p_branch = sub.add_parser("check-branch", help="Validate a branch name")
     p_branch.add_argument("name")
 
@@ -54,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "assert-worktree":
             root = gitops.assert_worktree(args.worktree, args.main)
             print(f"OK: worktree {root} is isolated from main")
+        elif args.command == "assert-main-pristine":
+            gitops.assert_main_pristine(args.main, args.default_branch)
+            print(f"OK: main checkout is pristine (on {args.default_branch}, clean tree)")
         elif args.command == "check-branch":
             gitops.assert_branch_name(args.name)
             print(f"OK: {args.name} is a valid branch name")

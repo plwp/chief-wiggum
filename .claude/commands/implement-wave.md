@@ -165,12 +165,16 @@ echo "test" | gemini --yolo --output-format text -p "" >/dev/null 2>&1 && echo "
 cd "$TARGET_REPO"
 git checkout "$DEFAULT_BRANCH"
 git pull --ff-only
-git status --porcelain  # must be empty
+# Guard: main must be on the default branch with a clean tree. Catches an isolation
+# LEAK from a previous run — a worker that ran `git checkout` in the main checkout
+# instead of its worktree leaves main on a feature branch, contaminating every base
+# branched off it. Re-run this before each wave's worktree creation and before merging.
+python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
 ```
 
 **If any AI tool fails auth, fix it now.** Do not discover auth failures 20 minutes into a parallel wave. If the user needs to run an interactive login, tell them to run `! codex auth login` or similar.
 
-**If the repo is not clean, STOP.** Uncommitted changes will cause worktree conflicts.
+**If `assert-main-pristine` fails, STOP** — main is on a feature branch or dirty (an isolation leak). Restore it (`git checkout "$DEFAULT_BRANCH"`, inspect/park any stray changes) before launching any wave, or every worktree will branch off a contaminated base.
 
 **Load amnesia context** (if the repo has `docs/quality/ratchet.json`): replay the recent ratchet journal so this session doesn't re-litigate decisions a previous wave already made (a parked ticket, an amended contract, a known-flaky suite):
 
@@ -293,6 +297,9 @@ This is the same principle as `/implement` Step 8 — the orchestrator is the qu
    cd "$TARGET_REPO"
    git checkout "$DEFAULT_BRANCH"
    git pull --ff-only
+   # Re-assert main is pristine before branching the staging base off it (a worker in
+   # this wave may have leaked a checkout into main).
+   python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
    git checkout -b "wave-$wave_number-staging"
    ```
 

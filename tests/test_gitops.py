@@ -150,3 +150,42 @@ def test_cli_assert_worktree_same_path_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(gitops, "assert_worktree", lambda *a, **k: (_ for _ in ()).throw(gitops.GitSafetyError("main checkout")))
     rc = git_safety.main(["assert-worktree", "--main", str(tmp_path)])
     assert rc == 1
+
+
+# --- main-checkout pristine guard (#96) -------------------------------------
+
+
+def _pristine_runner(*, branch="main", porcelain=""):
+    """Runner that answers `rev-parse` (current branch) and `status` (cleanliness)
+    differently, so assert_main_pristine's two git calls can be driven independently."""
+    def run(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=branch, stderr="")
+        if "status" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=porcelain, stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    return run
+
+
+def test_assert_main_pristine_ok_on_clean_default_branch():
+    # No exception when main is on the default branch with a clean tree.
+    gitops.assert_main_pristine(".", "main", runner=_pristine_runner(branch="main", porcelain=""))
+
+
+def test_assert_main_pristine_rejects_feature_branch_in_main():
+    # The #96 failure: a worker left main on a feature branch (isolation leak).
+    with pytest.raises(gitops.GitSafetyError, match="isolation leak"):
+        gitops.assert_main_pristine(".", "main", runner=_pristine_runner(branch="feat/162"))
+
+
+def test_assert_main_pristine_rejects_dirty_tree():
+    with pytest.raises(gitops.GitSafetyError, match="uncommitted"):
+        gitops.assert_main_pristine(
+            ".", "main", runner=_pristine_runner(branch="main", porcelain=" M svc.go\n")
+        )
+
+
+def test_assert_main_pristine_cli_wired():
+    # The subcommand is registered and delegates to gitops (feature-branch main -> exit 1).
+    rc = git_safety.main(["assert-main-pristine", "--main", ".", "--default-branch", "main"])
+    assert rc in (0, 1)  # 0 if this repo is on main+clean, 1 otherwise — never a crash/usage error

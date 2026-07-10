@@ -124,6 +124,35 @@ def assert_worktree(
     return wt_root
 
 
+def assert_main_pristine(
+    main_checkout: str | Path,
+    default_branch: str,
+    *,
+    runner: Runner = subprocess.run,
+) -> None:
+    """Assert the MAIN checkout is pristine: on ``default_branch`` with a clean tree.
+
+    The orchestrator-side complement of ``assert_worktree``. It catches the isolation
+    LEAK that ``assert_worktree`` (which each worker runs on itself) cannot see: a worker
+    that ran ``git checkout`` in the main checkout instead of its worktree leaves main on
+    a feature branch, silently contaminating the base of the next worker/wave. Called
+    before creating worktrees and before merging, so a leak fails loudly and early
+    instead of surfacing later as a mystified diff.
+    """
+    branch = current_branch(main_checkout, runner=runner)
+    if branch != default_branch:
+        raise GitSafetyError(
+            f"main checkout is on {branch!r}, not the default branch {default_branch!r} — "
+            f"a worker likely checked out a branch in the main checkout instead of its "
+            f"worktree (isolation leak). Restore: git -C <main> checkout {default_branch}"
+        )
+    if not is_clean(main_checkout, runner=runner):
+        raise GitSafetyError(
+            f"main checkout has uncommitted changes on {default_branch!r} — refusing to "
+            f"branch/merge off a dirty base. Inspect `git -C <main> status` first."
+        )
+
+
 # --- fast-forward promotion -------------------------------------------------
 
 
