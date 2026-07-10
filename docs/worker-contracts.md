@@ -83,6 +83,14 @@ scope / isolation / stop) is what another harness implements.
   checkout; never `gh pr create`/`merge` (the orchestrator owns shipping).
 - **Isolation**: required — operate in a dedicated git worktree and assert it is
   not the main checkout with `scripts/git_safety.py assert-worktree`.
+- **Commit incrementally**: commit after each meaningful unit (failing tests
+  written → commit; implementation green → commit; review fixes applied →
+  commit) — not one squashed commit at the end. The rationale is resilience,
+  not history hygiene: a worker can be killed mid-run (stream-watchdog timeout,
+  crash, cancellation), and the orchestrator recovers its progress from the
+  **last commit on the feature branch**. Anything uncommitted is presumed lost.
+  Squashing, if wanted, happens at merge time — never buy tidy history at the
+  cost of an unrecoverable interruption.
 - **Stop condition**: tests green, lint clean, acceptance verified; or a blocking
   error reported after the retry budget is exhausted.
 
