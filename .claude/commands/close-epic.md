@@ -194,6 +194,16 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer "$CW_TMP/security-revie
 
 Triage every finding like the other gates: a confirmed exploitable issue is **blocking** (fix before close); a plausible-but-unproven one is **parked for the human** with the `file:line` and the concrete attack. Never close a user-facing/auth/money epic on an unreviewed security surface. Skip only when the epic is purely internal/back-office with **no new external surface** — and say so explicitly in the close report.
 
+### Step 2i: AI-slop signals (report-only)
+
+Two signals the literature converged on for AI-generated code degradation: **elevated 2-week churn** (code reverted/reworked soon after authoring — GitClear; DORA 2024 stability drop) and **rising production duplication** (copy/paste written to be added, not reused). Run them over the target as a standing guardrail on top of the one-off `/code-metrics` audit:
+
+```bash
+python3 "$CW_HOME/scripts/quality_slop_gate.py" --repo "$TARGET_REPO" --report
+```
+
+This is **report-only** (per `docs/gate-rollout.md`): it computes code survival (% of added lines surviving 14/30 days via git-of-theseus) and production-only duplication (% clones, tests excluded, via jscpd), prints each against GitClear's `[VENDOR]` reference bands (survival: pre-AI ~96.9% / AI-assisted ~94.3%; duplication: pre-AI 8.3% / AI 12.3%), and **always exits 0** — it never blocks the close. Surface its output verbatim in the final report under `### AI-slop signals`. It degrades gracefully: if git-of-theseus / jscpd / node are absent it prints `skipped (tool not found)`, and survival self-skips when the repo has < 14 days of history (too young to measure 2-week survival) — report that caveat honestly rather than treating a young repo as a pass. A future blocking mode is behind `--gate` (off by default, and even then only a regression *past* the AI band counts — the bands are directional).
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.
@@ -489,6 +499,11 @@ Present the full epic close report:
 ### Invariants
 - X/Y verified
 - Failures: [details]
+
+### AI-slop signals (report-only)
+- Code survival (14d/30d): X% / Y% — [beats pre-AI baseline / between bands / past AI band] (or skipped: too young / tool absent)
+- Production duplication: Z% — [beats pre-AI baseline / between bands / past AI band] (or skipped: tool absent)
+- _[VENDOR] GitClear bands; directional. Informational — does not block the close._
 
 ### Multi-AI Analysis
 - Consensus risks: [areas both AIs flagged]

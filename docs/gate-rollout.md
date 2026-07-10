@@ -50,3 +50,17 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 - [ ] Known limitations documented in the script docstring/`--help` and its `docs/` page.
 - [ ] Wired into the workflow report-only first; promoted to `--gate` in a follow-up that
       cites the dry-run.
+
+## Ledger
+
+Gates and their rollout status. A gate stays report-only until a dry-run on a real shipped
+repo justifies promoting it to `--gate`.
+
+| Gate | Script | Workflow | Status |
+|------|--------|----------|--------|
+| Traceability soundness/coverage | `check_traceability.py --gate` | `/architect`, `/close-epic` | blocking |
+| Single-writer | `check_single_writer.py --gate` | `/architect`, `/close-epic` | blocking (after `#93` precision fix) |
+| Unresolved markers | `check_unresolved.py` | `/implement-wave`, `/close-epic` | blocking |
+| Ratchet | `ratchet.py check` | `/implement`, `/implement-wave`, `/close-epic` | blocking |
+| SaaS NFR | `saas_gate.py --gate` | `/close-epic` (SaaS) | blocking |
+| AI-slop signals (code survival + duplication) | `quality_slop_gate.py` | `/close-epic` | **report-only / new** (`--gate` exists, off by default; promote after a dry-run shows the bands don't false-positive on real shipped repos) |
