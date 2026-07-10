@@ -50,3 +50,14 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 - [ ] Known limitations documented in the script docstring/`--help` and its `docs/` page.
 - [ ] Wired into the workflow report-only first; promoted to `--gate` in a follow-up that
       cites the dry-run.
+
+## Gate status
+
+| Gate | Script | Status |
+| --- | --- | --- |
+| traceability | `check_traceability.py` | blocking (`--gate`) |
+| single-writer | `check_single_writer.py` | blocking (`--gate`) |
+| unresolved-markers | `check_unresolved.py` | blocking |
+| ratchet | `ratchet.py` | blocking |
+| SaaS NFR | `saas_gate.py` | blocking (`--gate`, on real `fail`) |
+| minimal-CI | `ci_scaffold.py` | **report-only** (new; wired into `/close-epic` report-only per this doc — has a `--gate` mode held off until validated across shipped repos) |

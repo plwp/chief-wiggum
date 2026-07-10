@@ -164,7 +164,17 @@ python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-
 
 Otherwise, once the check passes, record the epic close (same command without `--amend`/`--retire`) and commit `docs/quality/`. The journal entry is the epic's quality sign-off and feeds the next epic's amnesia context.
 
-### Step 2g: SaaS NFR gate (optional)
+### Step 2g: Minimal-CI check (report-only)
+
+An epic's quality is only as durable as the enforcement layer that keeps it green on `main`. Report whether the target repo has any GitHub Actions workflow at all — a repo with no CI lets red tests, lint errors, and uninstallable deps merge unnoticed:
+
+```bash
+python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --report
+```
+
+This is **report-only** (always exits 0, per `docs/gate-rollout.md`) — surface a `MISSING` finding in the close report, don't block on it. It also prints the detected stack(s); `/setup` can scaffold a minimal CI workflow (`--scaffold`) for a repo that has none.
+
+### Step 2h: SaaS NFR gate (optional)
 
 For SaaS products, validate non-functional requirements (security headers + CSRF posture, auth rate-limiting, tenant isolation, health + structured logging) against the running app. Start the app if needed (don't punt), then:
 
@@ -174,7 +184,7 @@ python3 "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" --base-url "$BASE_
 
 It reports five statuses (`pass`/`fail`/`warn`/`skipped`/`not_applicable`); a real `fail` (e.g. missing CSP, a cross-tenant data leak) blocks the epic close, while `warn`/`skipped` are surfaced but don't block. See `/saas-gate` for the full check list (tenant isolation, performance, data integrity need the live multi-user app).
 
-### Step 2h: Adversarial security review (user-facing / auth / money epics)
+### Step 2i: Adversarial security review (user-facing / auth / money epics)
 
 If the epic touches **user input, authentication, identity, or money** (public or authed endpoints, login/reset/invite flows, billing), run an adversarial security review. The deterministic NFR gate (2g) checks a running app's *posture* (headers, CSRF, a live isolation probe); it cannot reason about *this epic's* logic. This step exists because functional tests, traceability, and the ratchet all pass while a real vulnerability ships — a feedback epic once closed green with an unthrottled submit endpoint (a spam/abuse vector) and a PII-in-logs leak that only a manual audit caught afterward.
 

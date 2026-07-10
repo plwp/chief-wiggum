@@ -121,3 +121,15 @@ python3 $CW_HOME/scripts/check_deps.py --for vertex
 ```
 
 Provider roles are configured in `$CW_HOME/config/providers.json`. Validate role dependencies by running the matching provider profiles before a workflow starts.
+
+### Step 6: Guarantee a minimal CI workflow
+
+A target repo with no CI lets red tests, lint errors, and uninstallable deps sit unnoticed on `main`. Check whether the repo has any GitHub Actions workflow, and offer to scaffold a minimal, stack-appropriate one (checkout → install deps → build → test → lint) if it has none:
+
+```bash
+python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --report
+# If MISSING, scaffold one (idempotent; won't overwrite an existing workflow without --force):
+python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --scaffold
+```
+
+The stack is auto-detected (Go / Python / Node — possibly several) from `go.mod`, `pyproject.toml`/`requirements.txt`/`setup.py`, and `package.json`. Commit the generated `.github/workflows/ci.yml` so CI runs on the next push.
