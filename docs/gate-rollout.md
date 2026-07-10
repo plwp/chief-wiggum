@@ -62,3 +62,4 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 | **Ratchet: complexity + relative churn** | `ratchet.py check --gate-quality` | `--gate-quality` | **NEW — report-only** (#110); validate on a shipped repo before wiring as a blocker |
 | SaaS NFR | `saas_gate.py --gate` | `--gate` | blocking (`/saas-gate`) |
 | **Minimal-CI** | `ci_scaffold.py` | `--gate` | **report-only** (#111); wired into `/close-epic` report-only; `--gate` mode held off until validated across shipped repos |
+| **AI-slop signals (code survival + duplication)** | `quality_slop_gate.py` | `--gate` | **report-only** (#113); `/close-epic`; promote after a dry-run shows the GitClear bands don't false-positive on shipped repos |
