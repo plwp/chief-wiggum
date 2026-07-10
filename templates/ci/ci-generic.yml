@@ -1,0 +1,8 @@
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No recognized stack (go.mod / pyproject.toml / package.json) was found.
+      # Replace this placeholder with the project's real build, test, and lint steps.
+      - name: Placeholder
+        run: echo "TODO add build, test, and lint steps for this project"
