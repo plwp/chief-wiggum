@@ -98,6 +98,14 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": {"langchain-google-vertexai", "google-cloud-aiplatform"},
         "secrets": {"GOOGLE_CLOUD_PROJECT"},
     },
+    "quality-metrics": {
+        # Core path needs only lizard + radon + matplotlib + git.
+        # Everything else is optional enrichment (survival, duplication,
+        # cognitive complexity, cross-language complexity).
+        "cmds": set(),  # scc/gocyclo/gocognit/jscpd are OPTIONAL — checked as such
+        "pkgs": {"lizard", "radon", "matplotlib"},
+        "secrets": set(),
+    },
     "go-lsp": {
         "cmds": {"gopls", "go"},
         "pkgs": set(),
@@ -189,6 +197,7 @@ WORKFLOW_PROFILES = {
     "transcribe": ["transcription"],
     "tutorial-video": ["tutorial-video"],
     "stitch-audit": ["core", "gemini"],
+    "code-metrics": ["core", "quality-metrics"],
     "saas-gate": ["core"],
     "update": ["core"],
     "keep-going": ["core"],
@@ -347,6 +356,19 @@ def main():
         "langchain_anthropic",
         is_required("pkgs", "langchain-anthropic", workflows),
     )
+
+    print("\n--- Python Packages (quality-metrics — for /code-metrics) ---")
+    check_python_pkg("lizard", "lizard", is_required("pkgs", "lizard", workflows))
+    check_python_pkg("radon", "radon", is_required("pkgs", "radon", workflows))
+    check_python_pkg("matplotlib", "matplotlib", is_required("pkgs", "matplotlib", workflows))
+    # Optional enrichment — never required; skips gracefully at runtime if absent.
+    check_python_pkg("complexipy", "complexipy", False)
+    check_python_pkg("git-of-theseus", "git_of_theseus", False)
+    check_python_pkg("wily (optional)", "wily", False)
+    check_cmd("scc", "scc", "--version", False)
+    check_cmd("gocyclo", "gocyclo", "-h", False)
+    check_cmd("gocognit", "gocognit", "-h", False)
+    check_cmd("jscpd", "jscpd", "--version", False)
 
     print("\n--- Python Packages (Vertex AI — optional) ---")
     check_python_pkg(
