@@ -1,6 +1,8 @@
 """Tests for scripts/ratchet.py."""
 
+import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -224,3 +226,132 @@ def test_protected_hits_matches_goalpost_files(tmp_path):
         "docs/epics/order-lifecycle/models/contracts.json",
         "docs/quality/ratchet-journal.jsonl",
     ]
+
+
+# ---- complexity + churn (report-only dimension) --------------------------------
+
+
+def quality_scorecard(cfg, pass_set, quality):
+    sc = scorecard_from(cfg, pass_set)
+    sc["quality"] = quality
+    return sc
+
+
+def test_quality_block_is_recorded_and_hash_chained(tmp_path):
+    """A quality block rides inside the scorecard, so it is covered by the
+    per-record hash and survives chain verification untouched."""
+    cfg = make_repo(tmp_path)
+    q = {"functions": 100, "total_loc": 5000, "ccn_mean": 3.1,
+         "pct_ccn_gt10": 4.0, "relative_churn": 0.2, "churned_loc": 1000}
+    append_record(cfg, quality_scorecard(cfg, {"s::t1"}, q))
+    recs = ratchet.load_journal(cfg)  # raises TamperError if the chain is broken
+    assert recs[0]["scorecard"]["quality"]["ccn_mean"] == 3.1
+
+
+def test_quality_highwater_is_the_lowest_merged_value(tmp_path):
+    """Direction check: complexity ratchets DOWN — best-seen = the minimum."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, quality_scorecard(cfg, set(),
+        {"ccn_mean": 5.2, "pct_ccn_gt10": 16.7, "relative_churn": 0.4}), merged=True)
+    append_record(cfg, quality_scorecard(cfg, set(),
+        {"ccn_mean": 3.1, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}), merged=True)
+    # a WORSE unmerged snapshot must not pollute the high-water mark
+    append_record(cfg, quality_scorecard(cfg, set(),
+        {"ccn_mean": 9.9, "pct_ccn_gt10": 40.0, "relative_churn": 0.9}), merged=False)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))["quality"]
+    assert hw == {"ccn_mean": 3.1, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
+
+
+def test_quality_regression_when_complexity_rises_beyond_tolerance(tmp_path):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, quality_scorecard(cfg, set(),
+        {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}), merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))["quality"]
+    # within band (3.0 * 1.1 + 0.5 = 3.8): no regression
+    ok = {"ccn_mean": 3.7, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
+    assert ratchet.quality_regressions(ok, hw, cfg.quality_tolerance) == []
+    # beyond band: 5.2 > 3.8 -> ccn_mean regresses
+    bad = {"ccn_mean": 5.2, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
+    regs = ratchet.quality_regressions(bad, hw, cfg.quality_tolerance)
+    assert [r["metric"] for r in regs] == ["ccn_mean"]
+    assert regs[0]["best"] == 3.0 and regs[0]["current"] == 5.2
+
+
+def _write_scorecard(cfg, sc):
+    ratchet._write_json(cfg.scorecard, sc)
+
+
+def test_check_quality_regression_is_report_only_by_default(tmp_path, capsys):
+    """A complexity regression prints but MUST NOT change check's exit code
+    unless --gate-quality is passed — the pass-set/contract gates are unchanged."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, quality_scorecard(cfg, {"s::t1"},
+        {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}), merged=True)
+    # current snapshot: pass-set intact, but complexity blew past the band
+    _write_scorecard(cfg, quality_scorecard(cfg, {"s::t1"},
+        {"ccn_mean": 9.9, "pct_ccn_gt10": 40.0, "relative_churn": 0.9}))
+
+    report = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(report) == 0  # report-only: exits OK
+    assert "regressions" in capsys.readouterr().err
+
+    gated = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=True)
+    assert ratchet.cmd_check(gated) == 1  # opt-in gate: now blocks
+
+
+def test_check_pass_set_gate_unchanged_by_quality(tmp_path):
+    """Existing blocking behavior is preserved: a missing high-water test still
+    exits 1 regardless of the (absent/held) quality dimension."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, quality_scorecard(cfg, {"s::t1", "s::t2"},
+        {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}), merged=True)
+    _write_scorecard(cfg, quality_scorecard(cfg, {"s::t1"},  # t2 regressed
+        {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}))
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 1
+
+
+def test_backward_compat_journal_without_quality(tmp_path):
+    """Pre-existing records carry no quality block. Chain verification, high-water
+    derivation, and regression checks must all tolerate that and not crash."""
+    cfg = make_repo(tmp_path)
+    # scorecard_from() deliberately omits the quality field (old shape)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::t2"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::t2", "s::t3"}), merged=True)
+    recs = ratchet.load_journal(cfg)  # verifies fine
+    hw = ratchet.derive_highwater(recs)
+    assert hw["pass_set"] == ["s::t1", "s::t2", "s::t3"]
+    assert hw["quality"] == {}  # no quality high-water derivable — empty, not error
+    # a current snapshot without quality yields no quality regressions
+    assert ratchet.quality_regressions({}, hw["quality"], cfg.quality_tolerance) == []
+
+
+def test_skipped_quality_snapshot_never_regresses(tmp_path):
+    """If lizard was absent, the snapshot is {'skipped': ...}; it must be inert
+    for both high-water derivation and regression detection."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, quality_scorecard(cfg, set(),
+        {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}), merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))["quality"]
+    assert ratchet.quality_regressions({"skipped": "lizard not found"}, hw,
+                                       cfg.quality_tolerance) == []
+    # and a skipped record contributes nothing to the high-water mark
+    append_record(cfg, quality_scorecard(cfg, set(),
+        {"skipped": "lizard not found"}), merged=True)
+    hw2 = ratchet.derive_highwater(ratchet.load_journal(cfg))["quality"]
+    assert hw2 == {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
+
+
+@pytest.mark.skipif(shutil.which("lizard") is None,
+                    reason="lizard required for the end-to-end quality snapshot")
+def test_score_quality_end_to_end_on_a_real_repo(tmp_path):
+    """score_quality runs the code-metrics engines against chief-wiggum itself."""
+    repo = Path(__file__).resolve().parent.parent  # chief-wiggum repo root
+    cfg = make_repo(tmp_path)
+    cfg.repo = repo
+    q = ratchet.score_quality(cfg)
+    assert "skipped" not in q, q
+    assert q["functions"] > 0 and q["ccn_mean"] is not None
+    assert q["total_loc"] > 0 and 0 <= q["pct_ccn_gt10"] <= 100
+    # relative_churn requires git history; chief-wiggum has plenty
+    assert q["relative_churn"] is None or q["relative_churn"] >= 0

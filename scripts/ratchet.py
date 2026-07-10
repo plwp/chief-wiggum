@@ -22,6 +22,14 @@ Three ratcheted quantities, all project-agnostic:
   models, and the ratchet's own state are the goalposts. ``protected`` flags a
   branch diff that touches them so the orchestrator parks the change for human
   review instead of merging: workers must not move their own goalposts.
+- **Complexity & churn (report-only)** — mean cyclomatic complexity, %CCN>10,
+  and relative churn (churned-LOC/total-LOC) are snapshotted alongside the
+  scorecard. Their high-water mark is the LOWEST (best) value ever merged — the
+  ratchet drives them DOWN — and a value that rises beyond a tolerance band is a
+  regression. This dimension is NEW, so per docs/gate-rollout.md it is
+  REPORT-ONLY: ``check`` prints the deltas but only blocks on them when the
+  caller passes ``--gate-quality``. Missing lizard degrades to a skipped snapshot
+  and never crashes ``score``.
 
 Tamper-evidence: the journal is an append-only HASH CHAIN. The high-water mark
 is DERIVED from the verified chain, not read from a separately-editable file —
@@ -66,6 +74,21 @@ JOURNAL_NAME = "ratchet-journal.jsonl"
 HIGHWATER_NAME = "ratchet-highwater.json"
 SCORECARD_NAME = "ratchet-scorecard.json"
 DEFAULT_STATE_DIR = "docs/quality"
+
+# Complexity/churn ratchet tolerance (see docs/ratchet.md "Complexity & churn").
+# DIRECTION: unlike the pass-set (which may not SHRINK), complexity is a cost we
+# ratchet DOWNWARD — the high-water mark is the LOWEST (best) value ever merged,
+# and a metric that RISES beyond the band below is a regression. The band absorbs
+# ordinary noise: a metric regresses only if it exceeds
+#   best * (1 + rel) + abs_epsilon.
+DEFAULT_QUALITY_TOLERANCE = {
+    "ccn_mean_rel": 0.10,        # mean CCN may drift up ≤ 10%
+    "ccn_mean_abs": 0.5,         # ...plus an absolute epsilon (small repos)
+    "pct_ccn_gt10_rel": 0.10,    # %CCN>10 may drift up ≤ 10% (relative)
+    "pct_ccn_gt10_abs": 1.0,     # ...plus 1 absolute percentage point
+    "relative_churn_rel": 0.25,  # relative churn is advisory — a wide band
+    "relative_churn_abs": 0.05,
+}
 
 # Same stable-ID grammar as check_traceability.py: the ID ends at the 3-digit
 # suffix and must not run into more id chars.
@@ -119,6 +142,9 @@ class Config:
     suites: list[Suite] = field(default_factory=list)
     epic_docs: str = "docs/epics"
     protected_paths: list[str] = field(default_factory=lambda: list(DEFAULT_PROTECTED))
+    quality_tolerance: dict = field(
+        default_factory=lambda: dict(DEFAULT_QUALITY_TOLERANCE)
+    )
 
     @property
     def journal(self) -> Path:
@@ -152,12 +178,15 @@ def load_config(repo: Path) -> Config:
         )
     raw = json.loads(path.read_text())
     suites = [Suite(**s) for s in raw.get("suites", [])]
+    tol = dict(DEFAULT_QUALITY_TOLERANCE)
+    tol.update(raw.get("quality_tolerance", {}) or {})
     return Config(
         repo=repo,
         state_dir=path.parent,
         suites=suites,
         epic_docs=raw.get("epic_docs", "docs/epics"),
         protected_paths=raw.get("protected_paths", list(DEFAULT_PROTECTED)),
+        quality_tolerance=tol,
     )
 
 
@@ -297,6 +326,123 @@ def run_suite(cfg: Config, suite: Suite) -> set[str]:
     return {f"{suite.name}::{cid}" for cid in passed}
 
 
+# ---- complexity + churn snapshot (report-only dimension) -----------------------
+#
+# DIRECTION NOTE: complexity is a cost the ratchet drives DOWN. The high-water
+# mark for these fields is the LOWEST (best) value ever merged; a value that
+# RISES beyond the tolerance band is a regression. This is the OPPOSITE of the
+# pass-set, whose high-water mark is the LARGEST set and which regresses when it
+# SHRINKS. See docs/ratchet.md.
+
+
+def score_quality(cfg: Config, venv: str | None = None, gobin: str | None = None) -> dict:
+    """Snapshot mean CCN, %CCN>10, and relative churn for the target repo.
+
+    Optional and fast-failing: the ``quality`` engines live on the code-metrics
+    branch and lean on lizard. If they are unavailable (import error, or lizard
+    absent) this returns ``{"skipped": ...}`` and NEVER raises — ``score`` must
+    stay usable on repos without the metric toolchain installed.
+    """
+    try:
+        from quality import churn as _churn  # noqa: PLC0415
+        from quality import complexity as _complexity  # noqa: PLC0415
+    except Exception as e:  # pragma: no cover - import guard
+        return {"skipped": f"quality engines unavailable: {e}"}
+
+    repo = str(cfg.repo)
+    comp = _complexity.analyze(repo, venv=venv, gobin=gobin)
+    if "skipped" in comp:
+        return {"skipped": comp["skipped"], "note": comp.get("note")}
+
+    # Aggregate the per-language cyclomatic distributions into a single
+    # function-count-weighted mean CCN and %CCN>10 across all source functions.
+    total_fns = 0
+    ccn_sum = 0.0
+    ccn_gt10 = 0.0
+    for lang in (comp.get("languages") or {}).values():
+        cyc = lang.get("cyclomatic_src")
+        if not cyc:
+            continue
+        n = cyc.get("functions", 0)
+        if not n:
+            continue
+        total_fns += n
+        ccn_sum += cyc.get("ccn_mean", 0) * n
+        ccn_gt10 += cyc.get("pct_ccn_gt10", 0) / 100.0 * n
+
+    total_loc = (comp.get("src_loc_total", 0) or 0) + (comp.get("test_loc_total", 0) or 0)
+
+    # Relative churn = churned LOC (adds+deletes) / total tracked LOC. Nagappan &
+    # Ball (2005): absolute churn is a poor signal; always normalise by size.
+    ch = _churn.analyze(repo, no_merges=True)
+    churned = 0
+    if "error" not in ch:
+        c = ch.get("churn", {}) or {}
+        churned = (c.get("added", 0) or 0) + (c.get("deleted", 0) or 0)
+
+    out: dict = {
+        "functions": total_fns,
+        "total_loc": total_loc,
+        "ccn_mean": round(ccn_sum / total_fns, 2) if total_fns else None,
+        "pct_ccn_gt10": round(100 * ccn_gt10 / total_fns, 1) if total_fns else None,
+        "relative_churn": round(churned / total_loc, 3) if total_loc else None,
+        "churned_loc": churned,
+    }
+    return out
+
+
+# The complexity/churn fields ratcheted DOWN. Keys map to the tolerance-band
+# knobs ``<key>_rel`` / ``<key>_abs`` on ``quality_tolerance``.
+QUALITY_METRICS = ("ccn_mean", "pct_ccn_gt10", "relative_churn")
+
+
+def derive_quality_highwater(records: list[dict]) -> dict:
+    """Best-seen (LOWEST) complexity/churn per metric across MERGED records.
+
+    Backward-compatible: records predating this dimension carry no ``quality``
+    block (or a ``skipped`` one); they contribute nothing and never crash.
+    """
+    best: dict = {}
+    for rec in records:
+        if not rec.get("merged"):
+            continue
+        q = (rec.get("scorecard", {}) or {}).get("quality") or {}
+        if not isinstance(q, dict) or "skipped" in q:
+            continue
+        for m in QUALITY_METRICS:
+            v = q.get(m)
+            if isinstance(v, (int, float)):
+                cur = best.get(m)
+                if cur is None or v < cur:
+                    best[m] = v
+    return best
+
+
+def quality_regressions(quality: dict, hw: dict, tolerance: dict) -> list[dict]:
+    """Metrics that rose above ``best * (1 + rel) + abs`` — report-only findings.
+
+    ``quality`` is the current scorecard's block; ``hw`` the derived best-seen
+    high-water. Returns one entry per regressed metric (empty when none, or when
+    there is no baseline / the current snapshot was skipped)."""
+    if not isinstance(quality, dict) or "skipped" in quality:
+        return []
+    out: list[dict] = []
+    for m in QUALITY_METRICS:
+        best = hw.get(m)
+        cur = quality.get(m)
+        if not isinstance(best, (int, float)) or not isinstance(cur, (int, float)):
+            continue
+        rel = tolerance.get(f"{m}_rel", 0.0)
+        eps = tolerance.get(f"{m}_abs", 0.0)
+        limit = best * (1 + rel) + eps
+        if cur > limit:
+            out.append({
+                "metric": m, "current": cur, "best": best,
+                "limit": round(limit, 3), "delta": round(cur - best, 3),
+            })
+    return out
+
+
 # ---- hash-chained journal ------------------------------------------------------
 
 
@@ -338,7 +484,11 @@ def derive_highwater(records: list[dict]) -> dict:
             contract_hashes[cid] = h
         for cid in rec.get("retired", []) or []:
             contract_hashes.pop(cid, None)
-    return {"pass_set": sorted(pass_set), "contract_hashes": contract_hashes}
+    return {
+        "pass_set": sorted(pass_set),
+        "contract_hashes": contract_hashes,
+        "quality": derive_quality_highwater(records),
+    }
 
 
 def violations(scorecard: dict, highwater: dict) -> dict:
@@ -404,6 +554,7 @@ def cmd_init(args) -> int:
         "suites": detect_suites(repo),
         "epic_docs": "docs/epics",
         "protected_paths": list(DEFAULT_PROTECTED),
+        "quality_tolerance": dict(DEFAULT_QUALITY_TOLERANCE),
     }
     _write_json(path, cfg)
     print(f"ratchet: wrote {path} ({len(cfg['suites'])} suite(s) autodetected)")
@@ -419,16 +570,28 @@ def cmd_score(args) -> int:
     if not args.no_tests:
         for suite in cfg.suites:
             pass_set |= run_suite(cfg, suite)
+    quality = {"skipped": "quality metrics disabled (--no-quality)"}
+    if not args.no_quality:
+        quality = score_quality(cfg, venv=args.venv, gobin=args.gobin)
     sc = {
         "passed": len(pass_set),
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
         "tests_run": not args.no_tests,
+        "quality": quality,
     }
     _write_json(cfg.scorecard, sc)
+    if "skipped" in quality:
+        qmsg = f"quality={quality['skipped']}"
+    else:
+        qmsg = (
+            f"ccn_mean={quality.get('ccn_mean')} "
+            f"pct_ccn_gt10={quality.get('pct_ccn_gt10')} "
+            f"relative_churn={quality.get('relative_churn')}"
+        )
     print(
         f"ratchet: scored — {len(pass_set)} passing case(s), "
-        f"{len(contract_hashes)} contract definition(s)"
+        f"{len(contract_hashes)} contract definition(s); {qmsg}"
     )
     return 0
 
@@ -436,17 +599,36 @@ def cmd_score(args) -> int:
 def cmd_check(args) -> int:
     cfg = load_config(repo_root(args.repo))
     hw = derive_highwater(load_journal(cfg))
-    v = violations(_read_scorecard(cfg), hw)
+    sc = _read_scorecard(cfg)
+    v = violations(sc, hw)
+    # Complexity/churn is a NEW, report-only dimension (docs/gate-rollout.md): it
+    # prints its deltas vs the best-seen high-water but does NOT influence the
+    # exit code unless the caller opts in with --gate-quality. The pass-set and
+    # contract-hash gates keep their exact prior blocking semantics.
+    qregs = quality_regressions(
+        sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
+    )
+    hard = {k: v[k] for k in ("missing_tests", "weakened_contracts", "removed_contracts")}
     if args.format == "json":
-        print(json.dumps(v, indent=2))
-    if any(v.values()):
+        print(json.dumps({**hard, "quality_regressions": qregs}, indent=2))
+    elif qregs:
+        tag = "VIOLATED (gated)" if args.gate_quality else "report-only"
+        sys.stderr.write(f"ratchet: complexity/churn regressions [{tag}]:\n")
+        for r in qregs:
+            sys.stderr.write(
+                f"  {r['metric']}: {r['current']} > limit {r['limit']} "
+                f"(best {r['best']}, +{r['delta']})\n"
+            )
+    if any(hard.values()):
         if args.format != "json":
             sys.stderr.write(
                 "ratchet: VIOLATED —"
-                f" missing_tests={v['missing_tests']}"
-                f" weakened_contracts={v['weakened_contracts']}"
-                f" removed_contracts={v['removed_contracts']}\n"
+                f" missing_tests={hard['missing_tests']}"
+                f" weakened_contracts={hard['weakened_contracts']}"
+                f" removed_contracts={hard['removed_contracts']}\n"
             )
+        return 1
+    if args.gate_quality and qregs:
         return 1
     if args.format != "json":
         print("ratchet: OK (pass-set and contract definitions hold the high-water mark)")
@@ -456,7 +638,12 @@ def cmd_check(args) -> int:
 def cmd_regressed(args) -> int:
     cfg = load_config(repo_root(args.repo))
     hw = derive_highwater(load_journal(cfg))
-    print(json.dumps(violations(_read_scorecard(cfg), hw), indent=2))
+    sc = _read_scorecard(cfg)
+    out = violations(sc, hw)
+    out["quality_regressions"] = quality_regressions(
+        sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
+    )
+    print(json.dumps(out, indent=2))
     return 0
 
 
@@ -578,12 +765,19 @@ def main() -> int:
     sp = sub.add_parser("score", help="run suites + hash contracts, write scorecard")
     common(sp)
     sp.add_argument("--no-tests", action="store_true", help="contract hashes only (cheap baseline)")
+    sp.add_argument("--no-quality", action="store_true",
+                    help="skip the complexity/churn snapshot (skip if lizard is unavailable)")
+    sp.add_argument("--venv", default=None, help="virtualenv with lizard/radon for the quality snapshot")
+    sp.add_argument("--gobin", default=None, help="dir containing gocognit for the quality snapshot")
 
     for name in ("check", "regressed", "highwater", "recent"):
         sp = sub.add_parser(name)
         common(sp)
         if name == "check":
             sp.add_argument("--format", choices=["text", "json"], default="text")
+            sp.add_argument("--gate-quality", action="store_true",
+                            help="also block on complexity/churn regressions "
+                                 "(off by default — report-only, see docs/gate-rollout.md)")
         if name == "recent":
             sp.add_argument("--n", type=int, default=5)
 
