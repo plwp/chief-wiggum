@@ -82,6 +82,14 @@ scan_dir() {
     if [ -f "$dir/package.json" ]; then
         printf "\n${YELLOW}── %s (Node)${NC}\n" "$label"
 
+        # Install deps first — vitest/eslint/build all need node_modules, which a
+        # clean CI checkout never has. Use `npm install`, NOT `npm ci`: target repos
+        # frequently carry lockfile drift and `npm ci` hard-fails on any drift, which
+        # would turn "deps not installed" into a misleading red check.
+        if [ ! -d "$dir/node_modules" ]; then
+            run_check "$label: install" "cd '$dir' && npm install"
+        fi
+
         # Test: prefer vitest > jest > npm test
         if grep -q '"vitest"' "$dir/package.json" 2>/dev/null; then
             run_check "$label: tests" "cd '$dir' && npx vitest run"
