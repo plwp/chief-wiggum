@@ -91,6 +91,14 @@ scope / isolation / stop) is what another harness implements.
   **last commit on the feature branch**. Anything uncommitted is presumed lost.
   Squashing, if wanted, happens at merge time — never buy tidy history at the
   cost of an unrecoverable interruption.
+- **Stay alive under the stream-watchdog**: a harness that kills a worker after N
+  seconds of *no output* (Claude Code's ~600s stream-watchdog) reads a long silent
+  operation as a hang. Emit a progress line before and after each long step (AI
+  consult, full test run, build) so the watchdog sees liveness, and **background** a
+  long blocking call rather than waiting on it silently. The provider-consult path
+  already heartbeats to stderr (`consult_ai.py`, #95); mirror that for any other
+  multi-minute step. Combined with incremental commits, a worker that *is* killed is
+  both rarer and recoverable.
 - **Stop condition**: tests green, lint clean, acceptance verified; or a blocking
   error reported after the retry budget is exhausted.
 
