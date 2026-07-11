@@ -94,6 +94,18 @@
       "feeds": "elevated-access-session, improvement-loop, tiered-subscription",
       "spec": "patterns/multi-tenant-isolation/pattern.md",
       "manifest": "patterns/multi-tenant-isolation/manifest.json"
+    },
+    {
+      "id": "provider-neutral-adapter",
+      "title": "Provider-Neutral Port/Adapter",
+      "category": "multi-provider",
+      "status": "specified",
+      "trust_class": "seam-boundary-is-protected-path",
+      "summary": "The swappability seam for an external vendor: single-file vendor confinement (SDK imported in exactly one file, import-lint enforceable), neutral DTOs only + unexported concrete adapter with a compile-time var _ Port assertion (+ Fake), vendor-state->enum with safe defaults, signed-webhook-normalized-to-neutral-event (webhook is truth, not the client redirect), sign-per-request TTL-clamped tokens, and direct browser->CDN upload via a one-time ticket (API credential never reaches the browser). Promoted from candidate; realized twice in dogeared-coach (video + billing). INV-PNA-001..006.",
+      "invariants": "INV-PNA-001..006",
+      "feeds": "fetch-on-webhook-reconcile, tiered-subscription, elevated-access-session, multi-tenant-isolation",
+      "spec": "patterns/provider-neutral-adapter/pattern.md",
+      "manifest": "patterns/provider-neutral-adapter/manifest.json"
     }
   ],
   "stacks": {
@@ -104,7 +116,6 @@
     ]
   },
   "candidates": [
-    {"id": "provider-neutral-adapter", "title": "Provider-Neutral Port/Adapter", "category": "multi-provider", "status": "candidate", "summary": "Vendor-agnostic seam for a swappable external service: neutral DTOs only, concrete vendor types unexported (compile-time swappability), vendor states mapped to internal enums with safe defaults. Behind it: signed-webhook ingestion normalized to idempotent internal events (webhook is source of truth, not the client callback), sign-per-request short-lived access tokens, and direct browser->CDN upload via a one-time server-minted ticket.", "reusability": "high"},
     {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
     {"id": "transactional-email-and-dunning", "title": "Transactional Email & Dunning Lifecycle", "category": "process-loop", "status": "candidate", "summary": "Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge (fires if a signed-up user hasn't hit the activation event), re-engagement, and a failed-payment dunning sequence with bounded retries before degrade. Send-once keys prevent duplicate sends across retries. Recovery outcomes are conversion/retention signal.", "reusability": "high"},
     {"id": "referral-invite-loop", "title": "Referral / Invite Growth Loop", "category": "process-loop", "status": "candidate", "summary": "Invite -> signed invite token (server-trusted, single-use, expiring) -> attribution on accept -> reward both sides. Reuses the signed-token discipline; attribution is trust-tagged signal. A self-serve growth loop the improvement loop can optimize (reward size/copy) under admin gating.", "reusability": "medium-high"},
