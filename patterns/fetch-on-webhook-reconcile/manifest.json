@@ -1,0 +1,76 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/fetch-on-webhook-reconcile/pattern.md. This pattern is expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants): the `invariants` array is the load-bearing field.",
+  "id": "fetch-on-webhook-reconcile",
+  "version": 1,
+  "title": "Fetch-on-Webhook Reconcile (non-monotonic external state)",
+  "category": "process-loop",
+  "trust_class": "projection-writer-is-protected-path",
+
+  "applies_when": [
+    "a signed webhook drives local state off an external system of record",
+    "the external state is NON-monotonic (can move backwards: active<->past_due, refunds, disputes)",
+    "stale / out-of-order / redelivered events must not mis-grant or mis-revoke",
+    "getting it wrong leaks revenue or corrupts entitlement (money path)"
+  ],
+
+  "components": [
+    "event-is-trigger-fetch-is-truth: decode payload only for ids, then fetch the live resource and project that; never read mutable state off the payload",
+    "retry-lease-dedupe: claim->processed lease on event id; release the claim on reconcile FAILURE so the provider redelivers; mark processed only on terminal success",
+    "single-writer-projection: exactly one path projects external truth onto the local field (check_single_writer.py enforceable)",
+    "unknown-id-fatal: unrecognized price/plan/sku errors + alerts + writes nothing; never a silent floor fallback",
+    "non-access-projects-to-floor: known-but-non-paying state grants the restrictive tier for enforcement (distinct from unknown-id error)",
+    "resource-mismatch-guard: bind fetched resource only if the record's cached id is empty or equal",
+    "terminal-deletion-latch: once the record is latched terminal, late events are ignored (not errored) so no state re-raises",
+    "rotation-list-signature: verify raw body against any currently-valid secret + bounded timestamp window",
+    "split-non-state-signals: refund/dispute-style events use the same lease but a no-projection audit-only effect"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. Generic ids are the pattern's own; realized_as records the provenance app's app-specific id + code so /architect can pull the cluster with stable ids and the mining stays traceable to real code.",
+    "cluster": [
+      {"id": "INV-FOWR-001", "statement": "Trigger-only: handler never reads mutable state from the payload; state comes from a live fetch.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-001", "code": "services/billing_reconcile.go:82-94,169-171"}},
+      {"id": "INV-FOWR-002", "statement": "Order-immune & idempotent; dedupe is a claim->processed lease that releases on failure for retry, not a silent drop.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-003", "code": "handlers/stripe_webhook.go:158-165"}},
+      {"id": "INV-FOWR-003", "statement": "Single-writer projection of the external-derived state.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-001", "code": "services/billing_reconcile.go"}},
+      {"id": "INV-FOWR-004", "statement": "Unknown external id is fatal: no write, no floor fallback, alert.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-012", "code": "services/billing_reconcile.go:37-40,256-267"}},
+      {"id": "INV-FOWR-005", "statement": "Known-but-non-access states project to the restrictive floor for enforcement.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-005", "code": "services/billing_reconcile.go:250-257"}},
+      {"id": "INV-FOWR-006", "statement": "Signature valid against a rotation list of secrets + bounded timestamp window.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-002"}},
+      {"id": "INV-FOWR-007", "statement": "Resource-mismatch guard: bind only if cached id empty or equal.", "realized_as": {"app": "dogeared-coach", "code": "services/billing_reconcile.go:182-213"}},
+      {"id": "INV-FOWR-008", "statement": "Terminal/deletion latch: late events ignored (not errored) once the record is latched terminal.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-013", "code": "services/billing_reconcile.go:236-248"}}
+    ],
+    "sibling_monotonic_branch": {
+      "$comment": "The FSM model for MONOTONIC state; captured so the selection criterion travels with the pattern.",
+      "cluster": [
+        {"id": "INV-FOWR-M1", "statement": "Terminal states never resurrect; advance-only FSM write, replay is a true no-op (target excluded from source set).", "realized_as": {"app": "dogeared-coach", "code": "db/video_webhook.go:54-84; handlers/webhook.go:301-308"}}
+      ]
+    }
+  },
+
+  "parameters": {
+    "resource": {"type": "string", "required": true, "description": "External resource fetched for truth, e.g. subscription."},
+    "state_shape": {"enum": ["monotonic", "non-monotonic"], "required": true, "description": "Selects the FSM branch vs the fetch branch."},
+    "projected_field": {"type": "string", "required": true, "description": "Local field the reconcile is the single writer of."},
+    "unknown_id_policy": {"enum": ["fatal"], "required": false, "default": "fatal", "description": "Present so a caller cannot silently weaken it."},
+    "signing_secrets": {"type": "array", "required": true, "description": "Rotation list the signature is checked against."},
+    "non_state_events": {"type": "array", "required": false, "description": "Events routed to the no-projection audit-only branch."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "entitlement_drift_incidents", "goal": "down", "desc": "wrong-state grant/revoke from out-of-order or stale events (target 0)"},
+      {"id": "silent_downgrade_incidents", "goal": "down", "desc": "unknown-id -> floor fallback events (target 0; gate-asserted)"},
+      {"id": "reconcile_convergence", "goal": "up", "desc": "% of records whose local state equals a fresh live fetch"}
+    ]
+  },
+
+  "protected_paths": ["the projection/reconcile writer", "the signing-secret list"],
+
+  "depends_on": {
+    "provider-neutral-adapter": "vendor + signed webhook sit behind the neutral seam"
+  },
+
+  "feeds": {
+    "tiered-subscription": "this IS its 'billing webhook is source of truth' component for the subscription resource",
+    "reconciliation-sweep": "the periodic cousin; run both so the sweep catches events that never arrived",
+    "entitlement-overlay": "reconcile recomputes max(payer, overlay) so it can never revert a comp; shared projected_field"
+  }
+}

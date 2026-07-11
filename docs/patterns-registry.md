@@ -143,6 +143,79 @@ test; `engagement-instrumentation` contributes the trusted-denominator +
 monotonic-latch contracts; `improvement-loop` contributes the protected-pathset +
 ratchet-gate + trust-model contracts.
 
+## Patterns as clusters of invariants
+
+The organizing principle underneath everything above: **a pattern *is* a cluster
+of invariants that must hold together, plus the playbook to satisfy them.** The
+prose, the scaffold, and the gates are all in service of keeping that cluster
+true. This is what turns the registry from a snippet library into a way to **not
+re-derive connected requirements every time**.
+
+The failure this prevents is concrete. Someone builds a billing webhook and copies
+the idempotency shape from a video-upload webhook — a terminal-state FSM guard.
+It's silently wrong, because subscription state is non-monotonic: a stale
+redelivery mis-grants entitlement. The fix isn't one line — it's a *cluster* of
+invariants that only make sense together: *event-is-trigger-fetch-is-truth* +
+*unknown-id-is-fatal-never-a-silent-floor* + *retry-lease-not-drop* +
+*terminal-deletion-latch*. Miss any one and the money path leaks. A senior
+engineer carries that whole cluster in their head; a snippet doesn't. The registry
+carries it as [`fetch-on-webhook-reconcile`](../patterns/fetch-on-webhook-reconcile/pattern.md)
+— the worked example of this section.
+
+Mechanically, every pattern (specified or candidate) carries an **`invariants`**
+array. Each entry is:
+
+```json
+{
+  "id": "INV-FOWR-004",
+  "statement": "Unknown external id is fatal: no write, no floor fallback, alert.",
+  "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-012",
+                  "code": "services/billing_reconcile.go:37-40,256-267"}
+}
+```
+
+- **`id`** is the pattern's *own* generic stable id (`INV-<ABBR>-NNN`) — the pattern
+  is vendor- and product-neutral, so it owns neutral invariant ids.
+- **`statement`** is the invariant in one line: the thing that must stay true.
+- **`realized_as`** is **provenance** — the app-specific id (`INV-BIL-012`) and the
+  real code that proves the invariant is buildable, not aspirational. Mining an app
+  is exactly *"which generic invariant did this app-specific `INV-` realize, and
+  where."*
+
+### Why this pays off
+
+1. **`/architect` pulls the cluster by id, doesn't re-derive it.** Binding a
+   pattern into an epic means copying its `invariants` cluster into the epic's
+   `invariants.md` with the stable ids — the [existing threading](#how-patterns-thread-through-the-existing-workflow)
+   already says patterns ship stable-ID invariants; this makes the invariant set
+   the *primary* thing a pattern ships. The connected requirements arrive as a set,
+   so you can't adopt half of them by accident.
+2. **The gates already operate on invariants.** `check_traceability.py`,
+   `check_single_writer.py`, and the ratchet all key off `INV-`/`CTR-` stable ids.
+   A pattern expressed as an invariant cluster drops straight into the machinery
+   that already holds invariants monotonic — no new enforcement layer.
+3. **The playbook travels with the cluster.** The [stack profile](#stack-profiles--the-concrete-layer-the-factory)
+   bindings/skills are *how to satisfy this cluster on a concrete stack*. Cluster =
+   "what must stay true"; binding = "how to make it true here." Selecting a pattern
+   gets you both, so the playbook isn't rediscovered either.
+4. **Mining becomes mechanical.** "Extract patterns from app X" = "group X's
+   `INV-`/`CTR-` ids into clusters, name the generic invariant each realizes, cite
+   the code." An `INV-` that belongs to no pattern cluster is either a candidate for
+   a new pattern or genuinely app-specific.
+
+### Composition
+
+Clusters compose the way patterns do. `entitlement-overlay`'s "reconcile recomputes
+`max(payer, overlay)`" invariant (`INV-EO-004`) only closes because
+`fetch-on-webhook-reconcile`'s single-writer projection (`INV-FOWR-003`) is what
+does the recompute — they share the same `projected_field`. Reading two patterns'
+clusters side by side surfaces these seams, which is precisely the "connected
+requirements" a copy-paste loses.
+
+> A pattern that can't state its invariant cluster isn't specified yet — it's a
+> vibe. Declaring the cluster is the bar for `status: specified`, the same way
+> [declaring a success metric](#success-metrics-make-patterns-improvable) is.
+
 ## Success metrics make patterns improvable
 
 Every pattern **must declare its own success metrics** (`success_metrics` in the
