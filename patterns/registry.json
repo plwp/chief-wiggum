@@ -82,6 +82,18 @@
       "depends_on": "provider-neutral-adapter, multi-tenant-isolation",
       "spec": "patterns/elevated-access-session/pattern.md",
       "manifest": "patterns/elevated-access-session/manifest.json"
+    },
+    {
+      "id": "multi-tenant-isolation",
+      "title": "Multi-Tenant Isolation Stack",
+      "category": "saas-infra",
+      "status": "specified",
+      "trust_class": "tenant-resolver-scoped-repo-and-proof-gate-are-protected-paths",
+      "summary": "The isolation floor: server-only tenant resolution (reject client hints, anti-probe 404) -> fail-closed tenant-scoped repository (no unscoped path, reject-don't-override recursively incl. $rename string values, unexported handles) -> standing cross-tenant proof gate (denial AND no-mutation AND no-foreign-id-leak) -> cancel-latched resumable transactional cascade erasure with a tax-tombstone exception. The operator plane sits OUTSIDE tenancy. Promoted from candidate; INV-MTI-001..006.",
+      "invariants": "INV-MTI-001..006",
+      "feeds": "elevated-access-session, improvement-loop, tiered-subscription",
+      "spec": "patterns/multi-tenant-isolation/pattern.md",
+      "manifest": "patterns/multi-tenant-isolation/manifest.json"
     }
   ],
   "stacks": {
@@ -92,7 +104,6 @@
     ]
   },
   "candidates": [
-    {"id": "multi-tenant-isolation", "title": "Multi-Tenant Isolation Stack", "category": "saas-infra", "status": "candidate", "summary": "Server-only tenant resolution (rejects client hints) -> context-injected, fail-closed tenant-scoped repository (AND-wrapped filters, reject-don't-override, recursive field-scan, unexported handles) -> standing cross-tenant isolation proof as an executable test gate (positive controls + negative matrix + no-foreign-id-in-denial) -> transactional cascade erasure. The operator plane sits OUTSIDE tenancy (admin identity is orthogonal to the tenant graph, not a super-role within it). Composes into one multi-tenancy blueprint; the floor that makes mining per-tenant data safe. Correction from code: erasure is a billing-cancel-latched, resumable, transactional cascade hard-delete with a tax-tombstone exception, NOT quarantine-then-erase.", "reusability": "high", "invariants": [{"id": "INV-MTI-001", "statement": "Fail-closed scoping: every repo method resolves tenant from context first and errors (ErrMissingTenant) if absent; no unscoped fallback exists.", "realized_as": {"app": "dogeared-coach", "code": "db/tenant.go:14-207; db/tenant_repo.go:44-135"}}, {"id": "INV-MTI-002", "statement": "Reject-don't-override: caller-supplied tenant key in any filter/update (incl. $rename values, nested arrays) is rejected (ErrTenantOverride), never silently honored; tenant key auto-injected on insert.", "realized_as": {"app": "dogeared-coach", "code": "db/tenant_repo.go:44-135"}}, {"id": "INV-MTI-003", "statement": "Server-only tenant resolution: client hints/headers are rejected (400), not trusted; anti-probe 404 keeps the wrong actor class off routes.", "realized_as": {"app": "dogeared-coach", "code": "middleware/tenant.go:130-191,278-285"}}, {"id": "INV-MTI-004", "statement": "Operator plane is out-of-band: admin routes register OUTSIDE tenant middleware; a provider token can never reach /admin/* and an admin token can never ride provider routes.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-001/002/020", "code": "handlers/routes.go RegisterAdminRoutes; middleware/admin_only.go"}}, {"id": "INV-MTI-005", "statement": "Standing cross-tenant proof gate: executable test asserts denial AND no-mutation across read/write/token/header vectors.", "realized_as": {"app": "dogeared-coach", "code": "integration/cross_tenant_test.go"}}]},
     {"id": "provider-neutral-adapter", "title": "Provider-Neutral Port/Adapter", "category": "multi-provider", "status": "candidate", "summary": "Vendor-agnostic seam for a swappable external service: neutral DTOs only, concrete vendor types unexported (compile-time swappability), vendor states mapped to internal enums with safe defaults. Behind it: signed-webhook ingestion normalized to idempotent internal events (webhook is source of truth, not the client callback), sign-per-request short-lived access tokens, and direct browser->CDN upload via a one-time server-minted ticket.", "reusability": "high"},
     {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
     {"id": "transactional-email-and-dunning", "title": "Transactional Email & Dunning Lifecycle", "category": "process-loop", "status": "candidate", "summary": "Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge (fires if a signed-up user hasn't hit the activation event), re-engagement, and a failed-payment dunning sequence with bounded retries before degrade. Send-once keys prevent duplicate sends across retries. Recovery outcomes are conversion/retention signal.", "reusability": "high"},
