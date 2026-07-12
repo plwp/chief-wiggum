@@ -1,0 +1,132 @@
+"""Tests for scripts/apply_pattern.py."""
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import apply_pattern  # noqa: E402
+
+FIXED_NOW = "2026-01-01T00:00:00+00:00"
+REAL = "fetch-on-webhook-reconcile"
+
+
+# --- resolution & binding ---------------------------------------------------
+
+def test_build_plan_on_real_pattern_returns_cluster_and_unresolved():
+    plan = apply_pattern.build_plan(REAL, {}, now=FIXED_NOW)
+    ids = plan._adoption["invariants"]
+    assert "INV-FOWR-001" in ids
+    # resource/state_shape/projected_field/signing_secrets are required in the manifest
+    assert set(plan.unresolved) >= {"resource", "state_shape", "projected_field", "signing_secrets"}
+
+
+def test_provided_params_bind_and_reduce_unresolved():
+    plan = apply_pattern.build_plan(
+        REAL,
+        {"resource": "subscription", "state_shape": "non-monotonic",
+         "projected_field": "plan", "signing_secrets": "rotation"},
+        now=FIXED_NOW)
+    assert plan.bound["resource"] == "subscription"
+    assert plan.unresolved == []
+
+
+def test_unknown_pattern_raises():
+    with pytest.raises(apply_pattern.ApplyError, match="unknown pattern"):
+        apply_pattern.build_plan("nope", {}, now=FIXED_NOW)
+
+
+def test_candidate_pattern_raises():
+    with pytest.raises(apply_pattern.ApplyError, match="candidate"):
+        apply_pattern.build_plan("build-test-floor", {}, now=FIXED_NOW)
+
+
+def test_unknown_param_raises():
+    with pytest.raises(apply_pattern.ApplyError, match="unknown parameter"):
+        apply_pattern.build_plan(REAL, {"bogus": "x"}, now=FIXED_NOW)
+
+
+# --- application ------------------------------------------------------------
+
+def test_apply_writes_contract_pack_adoption_and_ratchet(tmp_path):
+    plan = apply_pattern.build_plan(REAL, {"resource": "subscription"}, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+
+    inv = tmp_path / "docs/patterns" / REAL / "invariants.md"
+    assert inv.is_file()
+    text = inv.read_text()
+    assert "INV-FOWR-001" in text
+    # reference-impl lines have balanced backticks (regression: rstrip ate the closer)
+    for line in text.splitlines():
+        if "_reference impl:_" in line and "`" in line:
+            assert line.count("`") % 2 == 0, line
+
+    adopted = json.loads((tmp_path / "docs/patterns/adopted.json").read_text())
+    assert REAL in adopted["patterns"]
+    assert adopted["patterns"][REAL]["applied_at"] == FIXED_NOW
+    assert adopted["patterns"][REAL]["parameters"]["resource"] == "subscription"
+
+    ratchet = json.loads((tmp_path / "docs/quality/ratchet.json").read_text())
+    assert apply_pattern.PATTERN_GLOB in ratchet["protected_paths"]
+
+
+def test_unresolved_required_params_written_as_tbd(tmp_path):
+    plan = apply_pattern.build_plan(REAL, {}, now=FIXED_NOW)  # nothing bound
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    doc = (tmp_path / "docs/patterns" / REAL / "invariants.md").read_text()
+    assert "TBD: bind `resource`" in doc
+
+
+def test_apply_is_idempotent(tmp_path):
+    for _ in range(2):
+        plan = apply_pattern.build_plan(REAL, {"resource": "subscription"}, now=FIXED_NOW)
+        apply_pattern.apply_plan(plan, tmp_path, write=True)
+    adopted = json.loads((tmp_path / "docs/patterns/adopted.json").read_text())
+    assert list(adopted["patterns"].keys()) == [REAL]
+    ratchet = json.loads((tmp_path / "docs/quality/ratchet.json").read_text())
+    assert ratchet["protected_paths"].count(apply_pattern.PATTERN_GLOB) == 1
+
+
+def test_merge_into_existing_ratchet_preserves_and_dedupes(tmp_path):
+    rp = tmp_path / "docs/quality/ratchet.json"
+    rp.parent.mkdir(parents=True)
+    rp.write_text(json.dumps({"suites": [{"name": "x"}], "protected_paths": ["docs/epics/**"]}))
+    plan = apply_pattern.build_plan(REAL, {}, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    cfg = json.loads(rp.read_text())
+    assert "docs/epics/**" in cfg["protected_paths"]          # preserved
+    assert apply_pattern.PATTERN_GLOB in cfg["protected_paths"]  # added
+    assert cfg["suites"] == [{"name": "x"}]                    # untouched
+
+
+def test_dry_run_writes_nothing(tmp_path):
+    plan = apply_pattern.build_plan(REAL, {}, now=FIXED_NOW)
+    actions = apply_pattern.apply_plan(plan, tmp_path, write=False)
+    assert actions  # a plan is produced
+    assert not (tmp_path / "docs/patterns").exists()
+
+
+def test_second_pattern_coexists_in_adopted(tmp_path):
+    for pid in (REAL, "elevated-access-session"):
+        plan = apply_pattern.build_plan(pid, {}, now=FIXED_NOW)
+        apply_pattern.apply_plan(plan, tmp_path, write=True)
+    adopted = json.loads((tmp_path / "docs/patterns/adopted.json").read_text())
+    assert set(adopted["patterns"]) == {REAL, "elevated-access-session"}
+
+
+# --- CLI --------------------------------------------------------------------
+
+def test_cli_dry_run(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "apply_pattern.py"), REAL,
+         "--target-dir", str(tmp_path), "--dry-run", "--format", "json"],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["pattern"] == REAL and out["dry_run"] is True
+    assert not (tmp_path / "docs").exists()
