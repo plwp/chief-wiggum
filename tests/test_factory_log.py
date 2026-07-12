@@ -77,6 +77,52 @@ def test_aggregate_filters_by_repo():
     assert factory_log.aggregate(records, repo="a")["gates"]["g"]["runs"] == 1
 
 
+def test_pricing_table_has_grounded_anthropic_rows():
+    table = factory_log.load_pricing()
+    # authoritative rows (claude-api reference) must be present and priced
+    for m in ("claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"):
+        assert table[m]["verified"] is True
+        assert table[m]["input_per_mtok"] and table[m]["output_per_mtok"]
+
+
+def test_cost_for_computes_from_grounded_pricing():
+    # Opus 4.8 = $5 / $25 per MTok
+    cost = factory_log.cost_for("claude-opus-4-8", 1_000_000, 1_000_000)
+    assert cost == 30.0
+    cost = factory_log.cost_for("claude-haiku-4-5", 2_000_000, 0)  # $1/MTok in
+    assert cost == 2.0
+
+
+def test_cost_for_returns_none_for_unpriced_or_unknown():
+    assert factory_log.cost_for("codex", 1000, 1000) is None  # null price (unmapped model)
+    assert factory_log.cost_for("some-unknown-model", 1000, 1000) is None
+
+
+def test_cost_for_cross_provider_grounded():
+    # each fetched from the vendor's live pricing page
+    assert factory_log.cost_for("gpt-5.4", 1_000_000, 1_000_000) == 17.5      # 2.5 + 15
+    assert factory_log.cost_for("gemini-2.5-flash", 1_000_000, 1_000_000) == 2.8  # 0.3 + 2.5
+    assert factory_log.cost_for("glm-4.6", 1_000_000, 1_000_000) == 2.8       # 0.6 + 2.2
+
+
+def test_emit_consult_records_tokens_and_grounded_cost(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("anthropic", "claude-opus-4-8", 1_000_000, 1_000_000, repo="acme/app")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "consult" and rec["provider"] == "anthropic"
+    assert rec["tokens_in"] == 1_000_000 and rec["cost_usd"] == 30.0
+
+
+def test_emit_consult_omits_cost_when_unpriced(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("openai", "codex", 1000, 500)  # codex model unmapped -> unpriced
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["tokens_in"] == 1000
+    assert "cost_usd" not in rec  # unpriced -> no fabricated dollar figure
+
+
 def test_cli_emit_disabled_returns_1(tmp_path, monkeypatch):
     env = {k: v for k, v in __import__("os").environ.items()
            if k not in ("CW_TELEMETRY", "CW_FACTORY_LOG")}
