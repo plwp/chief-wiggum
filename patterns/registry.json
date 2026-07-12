@@ -124,6 +124,18 @@
       "feeds": "improvement-loop",
       "spec": "patterns/entitlement-overlay/pattern.md",
       "manifest": "patterns/entitlement-overlay/manifest.json"
+    },
+    {
+      "id": "immutable-assignment-snapshot",
+      "title": "Immutable Assignment Snapshot",
+      "category": "data-structure",
+      "status": "specified",
+      "trust_class": "published-version-store-is-protected-path",
+      "summary": "Edit a template without retroactively changing work already assigned from it: publishing snapshots the template into a write-once Version (insert+find only), editing forks a NEW version, and assignments pin a version id by reference (must-not-drift item fields value-copied at publish). Keeps outstanding assignments as-assigned and longitudinal completion drift-free. Nuance mined from code: immutability lives in the write-once version snapshot at publish, not a copy-into-the-assignment. Promoted from candidate; INV-IAS-001..003.",
+      "invariants": "INV-IAS-001..003",
+      "feeds": "engagement-instrumentation",
+      "spec": "patterns/immutable-assignment-snapshot/pattern.md",
+      "manifest": "patterns/immutable-assignment-snapshot/manifest.json"
     }
   ],
   "stacks": {
@@ -139,7 +151,6 @@
     {"id": "referral-invite-loop", "title": "Referral / Invite Growth Loop", "category": "process-loop", "status": "candidate", "summary": "Invite -> signed invite token (server-trusted, single-use, expiring) -> attribution on accept -> reward both sides. Reuses the signed-token discipline; attribution is trust-tagged signal. A self-serve growth loop the improvement loop can optimize (reward size/copy) under admin gating.", "reusability": "medium-high"},
     {"id": "feature-entitlements", "title": "Feature Entitlements Read-Model", "category": "saas-infra", "status": "candidate", "summary": "A single entitlement resolver deriving capability flags from tier + per-account overrides + grandfathering, consumed identically by backend gates and the frontend (one source of 'what can this account do'). Distinct from the tier matrix: it layers overrides and is the read model onboarding + UI both query.", "reusability": "medium-high"},
     {"id": "self-serve-billing-portal", "title": "Self-Serve Billing Portal", "category": "saas-infra", "status": "candidate", "summary": "Let users manage plan, payment method, and seats without support -- provider-hosted portal session minted server-side + a local mirror of plan/seat state kept authoritative via billing webhooks. Removes the #1 support-ticket class for tiered SaaS.", "reusability": "medium"},
-    {"id": "immutable-assignment-snapshot", "title": "Immutable Assignment Snapshot", "category": "data-structure", "status": "candidate", "summary": "Pin the exact version of a composite item at PUBLISH time (edit -> new immutable published version; assignment references a version id, not the live template) so later edits never retroactively mutate outstanding assignments. The version snapshot is the liability boundary: write-once (Insert/Find only, no Update/Delete), item fields value-copied at publish. Keeps longitudinal completion analysis clean (no denominator drift). Nuance mined from code: immutability lives in the write-once version snapshot at publish, not a copy-into-the-assignment.", "reusability": "medium-high", "invariants": [{"id": "INV-IAS-001", "statement": "Published version is write-once: no in-place patch (repo exposes Insert+Find only).", "realized_as": {"app": "dogeared-coach", "code": "db/store.go:95-118; models/course.go:20-40"}}, {"id": "INV-IAS-002", "statement": "Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id.", "realized_as": {"app": "dogeared-coach", "code": "services/course.go:609-629; models/assignment.go:8-23"}}, {"id": "INV-IAS-003", "statement": "Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate.", "realized_as": {"app": "dogeared-coach", "code": "services/assignment_view.go:364-389"}}]},
     {"id": "build-test-floor", "title": "Language-Agnostic Build/Test Floor", "category": "gate", "status": "candidate", "summary": "Auto-detecting build+test+lint gate across a polyglot repo, with a local pre-merge script mirroring CI; optionally zero-cost-until-opt-in (manual-dispatch trigger) for cost-sensitive private repos.", "reusability": "medium"}
   ],
   "meta_disciplines": {

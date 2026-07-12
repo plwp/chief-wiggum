@@ -1,0 +1,53 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/immutable-assignment-snapshot/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; grounded in dogeared-coach course versioning.",
+  "id": "immutable-assignment-snapshot",
+  "version": 1,
+  "title": "Immutable Assignment Snapshot",
+  "category": "data-structure",
+  "trust_class": "published-version-store-is-protected-path",
+
+  "applies_when": [
+    "a template is assigned/issued and then edited over its lifetime",
+    "an outstanding assignment must reflect the template AS IT WAS when assigned",
+    "longitudinal completion analysis must stay drift-free (stable denominator)",
+    "NOT when assignments should always track the latest template (then a live reference is correct — say so explicitly)"
+  ],
+
+  "components": [
+    "write-once-version: publishing snapshots the template into a Version whose store exposes ONLY insert + find (no update/delete); immutable by construction",
+    "edit-forks-new-version: an edit produces a new version id; every prior published version is frozen",
+    "assignment-references-version-id: assignment stores version_id (+ item ids) by reference, not an embedded copy; hydrate reads from the pinned version",
+    "value-copy-at-publish: must-not-drift item fields (titles, durations, ordering, metadata) are value-copied into the version at publish and read from the pin at hydrate",
+    "documented-mutable-exceptions: any field deliberately read live is an explicit documented asymmetry, decided per field, not an accidental live reference"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach course versioning.",
+    "cluster": [
+      {"id": "INV-IAS-001", "statement": "Published version is write-once: no in-place patch (version store exposes insert + find only).", "realized_as": {"app": "dogeared-coach", "code": "db/store.go:95-118; models/course.go:20-40"}},
+      {"id": "INV-IAS-002", "statement": "Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id.", "realized_as": {"app": "dogeared-coach", "code": "services/course.go:609-629; models/assignment.go:8-23"}},
+      {"id": "INV-IAS-003", "statement": "Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate.", "realized_as": {"app": "dogeared-coach", "code": "services/assignment_view.go:364-389"}}
+    ]
+  },
+
+  "parameters": {
+    "composite": {"type": "string", "required": true, "description": "The assignable template (course/checklist/form/plan)."},
+    "version_store": {"type": "string", "required": true, "description": "Write-once store for published versions (insert + find only)."},
+    "pinned_fields": {"type": "array", "required": true, "description": "Item fields value-copied into the version at publish (must-not-drift)."},
+    "live_fields": {"type": "array", "required": false, "description": "Fields deliberately read live at hydrate (documented mutable exceptions)."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "retroactive_mutation_incidents", "goal": "down", "desc": "outstanding assignments whose content changed from a template edit (target 0)"},
+      {"id": "denominator_drift", "goal": "down", "desc": "longitudinal completion measured against a shifted denominator (target 0)"},
+      {"id": "version_store_mutations", "goal": "down", "desc": "in-place updates/deletes on a published version (target 0; store forbids them)"}
+    ]
+  },
+
+  "protected_paths": ["the published-version store (insert+find only)", "the publish-time snapshot copy"],
+
+  "feeds": {
+    "engagement-instrumentation": "the pinned version is the trusted denominator completion is measured against"
+  }
+}
