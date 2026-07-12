@@ -19,6 +19,19 @@
     "dual-scope-audit-log: append-only tenant-scoped + system-global event trails"
   ],
 
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach adherence-tracking (INV-WP-*) + friction emit-only invariants.",
+    "cluster": [
+      {"id": "INV-EIN-001", "statement": "Progress is monotonic — a tracked value never decreases.", "realized_as": {"app": "dogeared-coach", "id": "INV-WP-001"}},
+      {"id": "INV-EIN-002", "statement": "Completion is a one-way latch: once tripped past the threshold it never un-completes.", "realized_as": {"app": "dogeared-coach", "id": "INV-WP-002"}},
+      {"id": "INV-EIN-003", "statement": "pct/denominator is computed only from server-trusted durations; client-supplied duration is advisory.", "realized_as": {"app": "dogeared-coach", "id": "INV-WP-003"}},
+      {"id": "INV-EIN-004", "statement": "Robust to out-of-order / replay / concurrent / clock-drift: one idempotent, collision-free-keyed upsert per (assignment, item).", "realized_as": {"app": "dogeared-coach", "id": "INV-WP-008"}},
+      {"id": "INV-EIN-005", "statement": "Instrumentation never alters the observed outcome: emit-only, no-outcome, no-latency — emitted after the response, gated on the mutation's applied flag.", "realized_as": {"app": "dogeared-coach", "code": "handlers/webhook.go:200-265 (INV-FE emit-only/no-outcome/no-latency)"}},
+      {"id": "INV-EIN-006", "statement": "Anti-probe on the write path; preview/read paths never write progress.", "realized_as": {"app": "dogeared-coach", "id": "INV-WP-005/006"}},
+      {"id": "INV-EIN-007", "statement": "Every captured signal is annotated with its trust class (trusted vs untrusted origin) so the loop can't optimize against a gameable proxy."}
+    ]
+  },
+
   "parameters": {
     "work_item": {"type": "string", "required": true, "description": "The entity whose engagement is tracked."},
     "completion_threshold": {"type": "number", "required": true, "description": "Fraction past which the one-way completed latch trips."},

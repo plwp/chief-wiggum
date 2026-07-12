@@ -12,6 +12,17 @@
     "editable surfaces (prompts/config/code) are separable from goalposts (objective/guardrails/gate)"
   ],
 
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. INV-IMP-002/003 are grounded in chief-wiggum's OWN ratchet (the loop already runs on CW itself); the trust-model invariants are design-derived (see the trust_model block below).",
+    "cluster": [
+      {"id": "INV-IMP-001", "statement": "Every heterogeneous signal is normalized to a uniform, pointer-only, idempotent Finding carrying its source trust class."},
+      {"id": "INV-IMP-002", "statement": "Quality ratchets, never slides: the ever-passed high-water mark may not shrink; enforced by an append-only hash-chained journal that fails closed (tamper-evident).", "realized_as": {"app": "chief-wiggum", "code": "scripts/ratchet.py; docs/ratchet.md"}},
+      {"id": "INV-IMP-003", "statement": "Changes touching a protected path are park-and-notify: goalposts (objective/guardrails/gate) are always human-reviewed, never auto-moved.", "realized_as": {"app": "chief-wiggum", "code": "docs/ratchet.md (workers can't touch contracts/specs/ratchet state)"}},
+      {"id": "INV-IMP-004", "statement": "Any change derived from an untrusted signal is quarantined for BLOCKING admin approval before it can enter the deployable set (an untrusted-derived change can at worst become a proposal in quarantine)."},
+      {"id": "INV-IMP-005", "statement": "Admin approval is verified against a real authority (CODEOWNERS / signed commit / operator allowlist), not self-asserted by the loop, and is appended to the tamper-evident journal."}
+    ]
+  },
+
   "parameters": {
     "signal_sources": {
       "type": "array",
