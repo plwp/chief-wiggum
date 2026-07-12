@@ -192,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     repo_root = argv[0] if argv else str(Path(__file__).resolve().parents[1])
     violations = check_repo(repo_root)
+    try:  # factory telemetry; no-op unless enabled, never breaks the gate
+        from factory_log import emit_gate
+        emit_gate("check_portability", "fail" if violations else "pass",
+                  caught=len(violations), repo="chief-wiggum")
+    except Exception:
+        pass
     if violations:
         print(f"Portability check FAILED ({len(violations)} violation(s)):", file=sys.stderr)
         for v in violations:

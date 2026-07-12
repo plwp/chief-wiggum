@@ -215,6 +215,18 @@ def test_ingest_writes_without_telemetry_enabled(tmp_path, monkeypatch):
     assert factory_log.ingest_claude_code(otel) == 1
 
 
+def test_cw_gates_emit_telemetry_when_enabled(tmp_path):
+    """The CW gate suite emits gate events under telemetry, feeding the verdict."""
+    import os
+    log = tmp_path / "gates.jsonl"
+    env = {**os.environ, "CW_FACTORY_LOG": str(log)}
+    for gate in ("check_patterns.py", "check_portability.py", "check_cw_standards.py"):
+        subprocess.run([sys.executable, str(SCRIPTS / gate)], capture_output=True, text=True, env=env)
+    names = {json.loads(ln)["name"] for ln in log.read_text().splitlines()
+             if json.loads(ln).get("event") == "gate"}
+    assert {"check_patterns", "check_portability", "check_cw_standards"} <= names
+
+
 def test_cli_emit_disabled_returns_1(tmp_path, monkeypatch):
     env = {k: v for k, v in __import__("os").environ.items()
            if k not in ("CW_TELEMETRY", "CW_FACTORY_LOG")}

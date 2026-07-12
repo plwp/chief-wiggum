@@ -93,6 +93,12 @@ def main() -> int:
     args = parser.parse_args()
 
     findings = check()
+    try:  # factory telemetry; no-op unless enabled, never breaks the gate
+        from factory_log import emit_gate
+        emit_gate("check_cw_standards", "fail" if findings else "pass",
+                  caught=len(findings), repo="chief-wiggum")
+    except Exception:
+        pass
     if not findings:
         print("check_cw_standards: CW meets its own standards.")
         return 0
