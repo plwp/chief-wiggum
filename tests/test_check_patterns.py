@@ -32,6 +32,7 @@ def _write(tmp_path, registry, manifests=None):
 
 def _specified(pid, **extra):
     entry = {"id": pid, "status": "specified",
+             "invariants": "INV-XYZ-001",
              "spec": f"patterns/{pid}/pattern.md",
              "manifest": f"patterns/{pid}/manifest.json"}
     entry.update(extra)
@@ -139,6 +140,18 @@ def test_specified_depends_on_candidate_is_warning_not_error(tmp_path):
     findings = check_patterns.validate(path)
     assert _errors(findings) == []
     assert any(f.severity == check_patterns.WARN and "not-yet-specified floor" in f.message for f in findings)
+
+
+def test_specified_missing_index_invariants_summary_is_error(tmp_path):
+    reg = {"patterns": [_specified("foo", invariants="")], "candidates": []}  # index entry lacks the summary
+    path = _write(tmp_path, reg, {"foo": _manifest("foo", cluster=[GOOD_INV])})
+    assert any("index entry missing `invariants` summary" in e.message for e in _errors(check_patterns.validate(path)))
+
+
+def test_specified_with_index_summary_passes(tmp_path):
+    reg = {"patterns": [_specified("foo", invariants="INV-XYZ-001")], "candidates": []}
+    path = _write(tmp_path, reg, {"foo": _manifest("foo", cluster=[GOOD_INV])})
+    assert _errors(check_patterns.validate(path)) == []
 
 
 def test_manifest_id_mismatch_is_error(tmp_path):
