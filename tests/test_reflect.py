@@ -104,6 +104,22 @@ def test_collect_end_to_end(tmp_path):
     assert any("never folded" in f["message"] for f in report["findings"])
 
 
+def test_collect_consumes_factory_telemetry(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
+    _commit(tmp_path, "feat: init")
+    log = tmp_path / "factory-log.jsonl"
+    repo_key = tmp_path.name  # reflect filters telemetry by repo.name
+    log.write_text("\n".join(json.dumps(r) for r in [
+        {"event": "gate", "name": "noisy", "result": "pass", "caught": 0, "duration_ms": 5, "repo": repo_key},
+        {"event": "gate", "name": "noisy", "result": "pass", "caught": 0, "duration_ms": 5, "repo": repo_key},
+        {"event": "gate", "name": "noisy", "result": "pass", "caught": 0, "duration_ms": 5, "repo": repo_key},
+    ]) + "\n")
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    report = reflect.collect(tmp_path)
+    assert report["telemetry"]["gates"]["noisy"]["value"] == "noise-candidate"
+    assert any("candidate noise" in f["message"] for f in report["findings"])
+
+
 def test_cli_json(tmp_path):
     _init_repo(tmp_path)
     _commit(tmp_path, "feat: init")
