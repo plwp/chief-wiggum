@@ -389,6 +389,15 @@ python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view
 
 Flag genuine disagreements for the user in Step 6.
 
+**Record validation telemetry.** The review's cost already flows (its reviewer consults + the worker tokens); record its *value* — emit one gate event with the count of substantive findings the multi-AI validation raised (contradictions, missing transitions, incomplete invariants, uncovered ACs — exclude nits). No-op unless telemetry is enabled, never blocks:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name architect-review \
+  --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
+```
+
+(Convention: `docs/factory-telemetry.md` → "LLM validations report their value". The deterministic soundness gates in 5a — traceability/single-writer — already emit their own.)
+
 ### Step 6: Present artifacts to user
 
 **CHECKPOINT**: Show the user a summary of all artifacts:
