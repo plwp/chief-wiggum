@@ -178,6 +178,18 @@ def main() -> int:
                 for ticket, count in sorted(blocked.items()):
                     print(f"  {ticket}: {count} unresolved marker(s)")
 
+    try:  # factory telemetry; no-op unless enabled, never breaks the gate
+        import os
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from factory_log import emit_gate
+        repo = os.path.basename(os.path.abspath(str(targets[0]))) if targets else None
+        emit_gate("check_unresolved", "fail" if findings else "pass",
+                  caught=len(findings), repo=repo)
+    except Exception:
+        pass
+
     return 1 if findings else 0
 
 
