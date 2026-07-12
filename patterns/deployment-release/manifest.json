@@ -23,6 +23,18 @@
     "secret-containers-out-of-band-values: IaC creates secret containers + grants runtime read; values added out-of-band, never in state or repo"
   ],
 
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach CI/CD (terraform/cicd.tf + workflows).",
+    "cluster": [
+      {"id": "INV-DRL-001", "statement": "Keyless federated CI identity: CI mints a short-lived OIDC token scoped to the exact repo; no long-lived cloud key at rest.", "realized_as": {"app": "dogeared-coach", "code": "terraform/cicd.tf (WIF pool + provider)"}},
+      {"id": "INV-DRL-002", "statement": "Environment split: merge -> staging auto-deploys after the floor; production is a manual, human-gated promotion.", "realized_as": {"app": "dogeared-coach", "code": ".github/workflows/deploy-staging.yml + promote-prod.yml"}},
+      {"id": "INV-DRL-003", "statement": "Prod ships the byte-identical staged artifact (image retag/push, no rebuild); per-env rebuild is a documented fenced exception.", "realized_as": {"app": "dogeared-coach", "code": ".github/workflows/promote-prod.yml"}},
+      {"id": "INV-DRL-004", "statement": "Least-privilege deploy identity: rolls releases but cannot mutate infra or read secret values; infra is a separate human-run privileged path.", "realized_as": {"app": "dogeared-coach", "code": "terraform/cicd.tf (github-deployer SA: run.admin + AR.writer + actAs only)"}},
+      {"id": "INV-DRL-005", "statement": "Config-leak fence: a mechanical, fail-closed assertion that the artifact carries no lower-env config/secrets.", "realized_as": {"app": "dogeared-coach", "code": "ui bundle guard (greps dist/assets for wrong-env config)"}},
+      {"id": "INV-DRL-006", "statement": "Post-deploy smoke asserts liveness + core-dependency health before the release is considered live.", "realized_as": {"app": "dogeared-coach", "code": "/api/v1/healthz db:ok probe"}}
+    ]
+  },
+
   "parameters": {
     "ci_provider": {"type": "string", "required": true, "description": "CI system minting the OIDC identity."},
     "cloud": {"type": "string", "required": true, "description": "Target cloud."},

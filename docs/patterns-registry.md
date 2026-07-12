@@ -216,6 +216,14 @@ requirements" a copy-paste loses.
 > vibe. Declaring the cluster is the bar for `status: specified`, the same way
 > [declaring a success metric](#success-metrics-make-patterns-improvable) is.
 
+This bar is **mechanically enforced**, not trusted: `scripts/check_patterns.py`
+(wired into `make lint`, so it runs in CI) fails the build if any `specified`
+pattern lacks a non-empty invariant cluster, if an invariant id is malformed or
+duplicated within a pattern, if a `realized_as` provenance block is present but
+ill-formed, or if a `depends_on`/`feeds` reference dangles. A specified pattern
+that depends on a not-yet-specified candidate is reported as a *warning* (tracked
+debt), not an error — consistent with the smallest-first rollout.
+
 ## Success metrics make patterns improvable
 
 Every pattern **must declare its own success metrics** (`success_metrics` in the

@@ -21,6 +21,17 @@
     "graceful-degradation: past_due -> dunning grace window; cancel/expire -> free-tier or read-only, never hard-delete; over-cap downgrade -> block-new keep-existing"
   ],
 
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach (services/plan.go + billing).",
+    "cluster": [
+      {"id": "INV-TSB-001", "statement": "Single-source tier matrix: one structure holds every tier's caps/flags; -1 unlimited sentinel; unknown/empty tier -> most-restrictive fallback, never a silent higher grant.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-010", "code": "services/plan.go LimitsFor"}},
+      {"id": "INV-TSB-002", "statement": "Enforced at every mutating action via injected gate seams; limits gate CREATION, never deletion (grandfathered-frozen).", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-011/012/014", "code": "services/plan.go enforcement seams"}},
+      {"id": "INV-TSB-003", "statement": "Billing webhook (not the client redirect) is the authoritative subscription state.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-001/003"}},
+      {"id": "INV-TSB-004", "statement": "Entitlement recomputed per lifecycle transition: upgrade immediate/prorated; downgrade/cancel preserve access until period end.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-004"}},
+      {"id": "INV-TSB-005", "statement": "Non-destructive degradation: past_due -> grace; cancel/expire -> free/read-only, never hard-delete; over-cap downgrade blocks-new keeps-existing.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-005"}}
+    ]
+  },
+
   "parameters": {
     "tiers": {"type": "array", "required": true, "description": "Tier ids in ascending order."},
     "matrix": {"type": "object", "required": true, "description": "Per-tier capability/limit matrix; -1 = unlimited."},

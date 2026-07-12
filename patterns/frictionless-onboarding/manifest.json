@@ -21,6 +21,16 @@
     "recovery-loops: activation nudges + failed-payment dunning via transactional-email-and-dunning"
   ],
 
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. Mostly design-derived (a growth pattern is more policy than mechanism); INV-FON-003 is grounded in dogeared-coach's bounded Free caps.",
+    "cluster": [
+      {"id": "INV-FON-001", "statement": "Value-first free tier: a user reaches a complete unit of value without payment or a credit card."},
+      {"id": "INV-FON-002", "statement": "Upgrade prompts fire at contextual friction points (a limit-hit 409 / locked-capability tap is the trigger), not time-based nags or generic interstitials."},
+      {"id": "INV-FON-003", "statement": "The free tier is a bounded loss-leader: its caps bound per-user cost so free usage can never be unbounded.", "realized_as": {"app": "dogeared-coach", "code": "services/plan.go Free caps (3 videos / 5-min / 10 clients)"}},
+      {"id": "INV-FON-004", "statement": "Conversion changes are end-user-signal-driven and touch pricing/paywall, so they are admin-gated -- never autonomously deployed."}
+    ]
+  },
+
   "parameters": {
     "activation_event": {"type": "string", "required": true, "description": "The instrumented aha moment (funnel success step)."},
     "free_tier_value_unit": {"type": "string", "required": true, "description": "The complete unit of value the free tier delivers."},
