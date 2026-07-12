@@ -81,3 +81,14 @@ gh --repo "$(python3 "$CW_HOME/scripts/repo.py" home >/dev/null; echo plwp/chief
 ```
 
 Report the filed issue URLs and a one-paragraph factory-health summary (what's working, what's slipping, the single highest-leverage improvement).
+
+### Step 6: Record validation telemetry
+
+`/reflect` is itself a validation — record its value (findings) so the cost↔value verdict can judge it. After filing, emit one gate event with the finding count (no-op unless telemetry is enabled; never blocks):
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name reflect \
+  --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
+```
+
+This is the convention every LLM validation should follow (see `docs/factory-telemetry.md`): after producing findings, `factory_log.py emit --event gate --name <validation> --caught <N> --repo <owner/repo>`. Its **cost** already flows (consults + Claude Code OTEL, attributed by skill name); this supplies the **value** side (`caught`) so `aggregate`'s verdict can rate the validation `earning` vs `demote-candidate`. See [chief-wiggum#143](https://github.com/plwp/chief-wiggum/issues/143).
