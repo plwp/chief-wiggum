@@ -38,6 +38,7 @@ GATE = "gate"
 CONSULT = "consult"
 WORKER = "worker"
 SKILL = "skill"
+CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's own OTEL telemetry
 
 
 def log_path() -> Path:
@@ -49,15 +50,8 @@ def telemetry_enabled() -> bool:
     return bool(os.environ.get("CW_TELEMETRY") or os.environ.get("CW_FACTORY_LOG"))
 
 
-def emit(event: str, *, ts: float | None = None, **fields) -> bool:
-    """Append one telemetry record. No-op (returns False) unless telemetry is on.
-
-    Never raises — telemetry must never break the thing it measures.
-    """
-    if not telemetry_enabled():
-        return False
-    record = {"ts": ts if ts is not None else time.time(), "event": event}
-    record.update({k: v for k, v in fields.items() if v is not None})
+def _append(record: dict) -> bool:
+    """Write one record to the log. Never raises."""
     try:
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +60,17 @@ def emit(event: str, *, ts: float | None = None, **fields) -> bool:
         return True
     except OSError:
         return False
+
+
+def emit(event: str, *, ts: float | None = None, **fields) -> bool:
+    """Append one telemetry record. No-op (returns False) unless telemetry is on
+    (passive emission from live gates/consults). Never raises.
+    """
+    if not telemetry_enabled():
+        return False
+    record = {"ts": ts if ts is not None else time.time(), "event": event}
+    record.update({k: v for k, v in fields.items() if v is not None})
+    return _append(record)
 
 
 def emit_gate(name: str, result: str, *, caught: int | None = None,
@@ -99,16 +104,20 @@ def cost_for(model: str, tokens_in: int, tokens_out: int, pricing: dict | None =
     return round((tokens_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
 
 
-def emit_consult(provider: str, model: str, tokens_in: int, tokens_out: int, *,
-                 repo: str | None = None, ticket: str | None = None) -> bool:
-    """Record an AI consultation with its token usage and (grounded) cost.
+def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
+                 tokens_out: int | None = None, *, repo: str | None = None,
+                 ticket: str | None = None) -> bool:
+    """Record an AI consultation, with token usage + grounded cost when known.
 
-    Cost is computed from config/model_pricing.json; omitted when the model is
-    unpriced (rather than logged as $0).
+    When token counts are known, cost is computed from config/model_pricing.json
+    (omitted when the model is unpriced — never logged as $0). When tokens are
+    unknown (a CLI provider that didn't surface a usage summary), the event still
+    records that a consult happened, for whom, in which repo — honest frequency
+    telemetry without a fabricated token count.
     """
+    cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
     return emit(CONSULT, provider=provider, name=model,
-                tokens_in=tokens_in, tokens_out=tokens_out,
-                cost_usd=cost_for(model, tokens_in, tokens_out),
+                tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost,
                 repo=repo, ticket=ticket)
 
 
@@ -140,6 +149,67 @@ class gate_timer:
         return False  # never suppress
 
 
+# ---- Claude Code OTEL ingestion (the end-to-end top layer) -------------------
+
+def _cc_field(event: dict, *names):
+    """Pull a field from a Claude Code OTEL record — flat key or nested attributes."""
+    attrs = event.get("attributes") if isinstance(event.get("attributes"), dict) else {}
+    body = event.get("body") if isinstance(event.get("body"), dict) else {}
+    for n in names:
+        for src in (event, attrs, body):
+            if n in src and src[n] is not None:
+                return src[n]
+    return None
+
+
+def ingest_claude_code(path: Path, repo: str | None = None) -> int:
+    """Fold a Claude Code OTEL export (console-exporter stderr capture, or OTLP file)
+    into the factory log so /reflect sees end-to-end orchestrator+subagent token cost
+    alongside consult/gate telemetry.
+
+    Parses per-request `api_request` events (model, input/output/cache tokens,
+    cost_usd, query_source that separates repl_main_thread vs subagent). Tolerant of
+    both flat-key and OTLP attributes shapes; skips anything that isn't an
+    api_request. Explicit ingest — always writes (does not require CW_TELEMETRY).
+    Returns the number of records ingested. See docs/factory-telemetry.md.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return 0
+    n = 0
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        name = _cc_field(e, "event.name", "name", "event")
+        if name != "api_request":
+            continue
+        rec = {"ts": _cc_field(e, "ts") or 0, "event": CLAUDE_CODE}
+        for key, srcnames in (
+            ("model", ("model",)),
+            ("query_source", ("query_source",)),
+            ("tokens_in", ("input_tokens",)),
+            ("tokens_out", ("output_tokens",)),
+            ("cache_read", ("cache_read_tokens",)),
+            ("cache_creation", ("cache_creation_tokens",)),
+            ("cost_usd", ("cost_usd",)),
+            ("session_id", ("session.id", "session_id")),
+            ("skill", ("skill.name", "agent.name", "skill", "agent")),
+        ):
+            v = _cc_field(e, *srcnames)
+            if v is not None:
+                rec[key] = v
+        if repo:
+            rec["repo"] = repo
+        if _append(rec):
+            n += 1
+    return n
+
+
 # ---- reading / aggregation ---------------------------------------------------
 
 def read_log(path: Path | None = None) -> list[dict]:
@@ -162,7 +232,11 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         records = [r for r in records if r.get("repo") == repo]
     gates: dict[str, dict] = {}
     consults: dict[str, dict] = {}
-    cost_total = 0.0
+    # Claude Code's own token cost, split orchestrator (repl_main_thread) vs subagent,
+    # and (when the OTEL events carry skill.name/agent.name) by loop/validation.
+    claude_code: dict[str, dict] = {}
+    by_loop: dict[str, dict] = {}
+    consult_cost = cc_cost = 0.0
     for r in records:
         if r.get("event") == GATE and r.get("name"):
             g = gates.setdefault(r["name"], {"runs": 0, "passed": 0, "failed": 0,
@@ -180,12 +254,32 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
             c["tokens_in"] += r.get("tokens_in") or 0
             c["tokens_out"] += r.get("tokens_out") or 0
             c["cost_usd"] += r.get("cost_usd") or 0.0
-            cost_total += r.get("cost_usd") or 0.0
+            consult_cost += r.get("cost_usd") or 0.0
+        elif r.get("event") == CLAUDE_CODE:
+            src = r.get("query_source") or "unknown"
+            cc = claude_code.setdefault(src, {"calls": 0, "tokens_in": 0,
+                                              "tokens_out": 0, "cost_usd": 0.0})
+            cc["calls"] += 1
+            cc["tokens_in"] += r.get("tokens_in") or 0
+            cc["tokens_out"] += r.get("tokens_out") or 0
+            cc["cost_usd"] += r.get("cost_usd") or 0.0
+            cc_cost += r.get("cost_usd") or 0.0
+            if r.get("skill"):
+                bl = by_loop.setdefault(r["skill"], {"calls": 0, "cost_usd": 0.0})
+                bl["calls"] += 1
+                bl["cost_usd"] += r.get("cost_usd") or 0.0
     # value/noise hint: a gate with runs but zero caught is a noise candidate
     for g in gates.values():
         g["value"] = "earning" if g["caught"] > 0 else ("noise-candidate" if g["runs"] >= 3 else "unproven")
-    return {"gates": gates, "consults": consults, "records": len(records),
-            "cost_usd_total": round(cost_total, 4)}
+    for cc in claude_code.values():
+        cc["cost_usd"] = round(cc["cost_usd"], 6)
+    for bl in by_loop.values():
+        bl["cost_usd"] = round(bl["cost_usd"], 6)
+    return {"gates": gates, "consults": consults, "claude_code": claude_code,
+            "cost_by_loop": by_loop, "records": len(records),
+            "consult_cost_usd": round(consult_cost, 4),
+            "claude_code_cost_usd": round(cc_cost, 4),
+            "cost_usd_total": round(consult_cost + cc_cost, 4)}
 
 
 def main() -> int:
@@ -205,11 +299,19 @@ def main() -> int:
     a.add_argument("--repo")
     a.add_argument("--format", choices=["text", "json"], default="json")
 
+    ic = sub.add_parser("ingest-claude-code", help="Fold a Claude Code OTEL export into the log")
+    ic.add_argument("otel_file", help="JSONL from `... 2>capture.jsonl` with the console OTEL exporter")
+    ic.add_argument("--repo", help="Tag ingested records with this repo")
+
     sub.add_parser("path", help="Print the log path")
     args = parser.parse_args()
 
     if args.cmd == "path":
         print(log_path())
+        return 0
+    if args.cmd == "ingest-claude-code":
+        n = ingest_claude_code(Path(args.otel_file), repo=args.repo)
+        print(f"factory_log: ingested {n} api_request event(s) from {args.otel_file}")
         return 0
     if args.cmd == "emit":
         fields = {k: getattr(args, k) for k in
