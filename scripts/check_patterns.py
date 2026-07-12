@@ -14,6 +14,9 @@ This linter makes the model's rules mechanical rather than trusted:
   3. Invariant ids are well-formed (`INV-<ABBR>-<SEQ>`) and unique within a pattern.
   4. Cross-references (`depends_on` / `feeds`) resolve to known ids, and no
      specified pattern depends on a mere candidate (a dangling floor).
+  5. Every specified index entry carries an `invariants` summary string, keeping
+     the registry index uniform with the manifests (so you can list clusters
+     without opening each manifest).
 
 Run report-only:   python3 scripts/check_patterns.py
 Errors exit 1 (wired into `make lint`); warnings are reported but do not fail.
@@ -149,6 +152,12 @@ def validate(registry_path: Path = REGISTRY) -> list[Finding]:
             findings.append(Finding(ERROR, where, f"manifest id {manifest.get('id')!r} != registry id {pid!r}"))
         if man_path.parent.name != pid:
             findings.append(Finding(ERROR, where, f"manifest directory {man_path.parent.name!r} != id {pid!r}"))
+
+        if not str(entry.get("invariants", "")).strip():
+            findings.append(Finding(
+                ERROR, where,
+                "registry index entry missing `invariants` summary string "
+                "(keep the index uniform with the manifest cluster)"))
 
         entries = cluster_entries(manifest.get("invariants"))
         if not entries:

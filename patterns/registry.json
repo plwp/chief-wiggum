@@ -10,6 +10,7 @@
       "status": "specified",
       "trust_class": "trust-aware",
       "summary": "Autonomous, signal-driven, ratchet-gated fix-forward refinement installed into the product. Trusted-signal changes deploy autonomously; untrusted-signal (end-user) changes quarantine for blocking admin approval.",
+      "invariants": "INV-IMP-001..005",
       "spec": "patterns/improvement-loop/pattern.md",
       "manifest": "patterns/improvement-loop/manifest.json"
     },
@@ -21,6 +22,7 @@
       "trust_class": "produces-trust-tagged-signal",
       "summary": "Server-trusted, tamper-resistant capture of how far users get through assigned work/content, robust to out-of-order/replay/concurrent/clock-drift. The instrumentation tier that feeds the improvement loop; each signal annotated with its trust class.",
       "feeds": "improvement-loop",
+      "invariants": "INV-EIN-001..007",
       "spec": "patterns/engagement-instrumentation/pattern.md",
       "manifest": "patterns/engagement-instrumentation/manifest.json"
     },
@@ -32,6 +34,7 @@
       "trust_class": "entitlement-changes-are-protected-path",
       "summary": "Subscribe -> enforce -> lifecycle machinery for a plan-tiered SaaS: single-source tier matrix, injected gate seams, stateless quota, billing-webhook as source of truth, and non-destructive graceful degradation on downgrade/lapse. Absorbs the former tiered-saas-enforcement candidate.",
       "feeds": "frictionless-onboarding, improvement-loop",
+      "invariants": "INV-TSB-001..005",
       "spec": "patterns/tiered-subscription/pattern.md",
       "manifest": "patterns/tiered-subscription/manifest.json"
     },
@@ -44,6 +47,7 @@
       "summary": "Minimize time-to-value on a free tier, convert at contextual friction points (limit-hit prompts, optional reverse trial), self-serve. The mini-SaaS pattern most improved by the loop -- and, since its proposals touch pricing/paywall driven by end-user behavior, always admin-gated.",
       "depends_on": "tiered-subscription, engagement-instrumentation",
       "feeds": "improvement-loop",
+      "invariants": "INV-FON-001..004",
       "spec": "patterns/frictionless-onboarding/pattern.md",
       "manifest": "patterns/frictionless-onboarding/manifest.json"
     },
@@ -55,6 +59,7 @@
       "trust_class": "deploy-pipeline-and-promotion-authority-are-protected-path",
       "summary": "build -> stage -> promote machinery that gets a change to prod safely and provably: keyless federated CI identity, environment split with a human-gated prod promotion, promotion of the byte-identical staged artifact, a config-leak fence, a least-privilege deploy identity that can roll releases but not mutate infra/read secrets, and post-deploy smoke verification. Mined from two shipped GCP apps.",
       "feeds": "improvement-loop",
+      "invariants": "INV-DRL-001..006",
       "spec": "patterns/deployment-release/pattern.md",
       "manifest": "patterns/deployment-release/manifest.json"
     },
