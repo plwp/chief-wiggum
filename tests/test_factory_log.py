@@ -269,3 +269,133 @@ def test_cli_emit_and_aggregate(tmp_path):
     proc = subprocess.run([sys.executable, str(SCRIPTS / "factory_log.py"), "aggregate", "--repo", "a"],
                           capture_output=True, text=True, env=env, check=True)
     assert json.loads(proc.stdout)["gates"]["ratchet"]["runs"] == 1
+
+
+# ---- escape events -----------------------------------------------------------
+
+def test_emit_escape_is_noop_when_disabled(monkeypatch):
+    monkeypatch.delenv("CW_TELEMETRY", raising=False)
+    monkeypatch.delenv("CW_FACTORY_LOG", raising=False)
+    assert factory_log.emit_escape(
+        "bug", severity="high", missed_by="ticket-gate", found_in="close-epic-review") is False
+
+
+def test_emit_escape_writes_well_formed_record(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    ok = factory_log.emit_escape(
+        "reset endpoint leaks account existence via timing", severity="high",
+        missed_by="ticket-gate", found_in="close-epic-review", repo="acme/app",
+        ticket="42", invariant="INV-012", fixed=True)
+    assert ok
+    rec = json.loads(log.read_text().splitlines()[0])
+    ts = rec.pop("ts")
+    assert isinstance(ts, float)
+    assert rec == {
+        "event": "escape",
+        "summary": "reset endpoint leaks account existence via timing",
+        "severity": "high", "missed_by": "ticket-gate", "found_in": "close-epic-review",
+        "repo": "acme/app", "ticket": "42", "invariant": "INV-012", "fixed": True,
+    }
+
+
+def test_emit_escape_omits_optional_none_fields(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_escape("bug", severity="low", missed_by="ratchet", found_in="manual", repo="a")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert "ticket" not in rec and "invariant" not in rec and "fixed" not in rec
+
+
+def test_cli_bug_writes_escape_record(tmp_path):
+    import os
+    log = tmp_path / "f.jsonl"
+    env = {**os.environ, "CW_FACTORY_LOG": str(log)}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "factory_log.py"), "bug",
+         "--repo", "acme/app", "--summary", "IDOR on invoice download",
+         "--severity", "critical", "--missed-by", "ticket-gate",
+         "--found-in", "close-epic-review", "--ticket", "42", "--fixed"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "escape"
+    assert rec["summary"] == "IDOR on invoice download"
+    assert rec["severity"] == "critical"
+    assert rec["missed_by"] == "ticket-gate"
+    assert rec["found_in"] == "close-epic-review"
+    assert rec["ticket"] == "42"
+    assert rec["fixed"] is True
+
+
+def test_cli_bug_disabled_returns_1():
+    env = {k: v for k, v in __import__("os").environ.items()
+           if k not in ("CW_TELEMETRY", "CW_FACTORY_LOG")}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "factory_log.py"), "bug",
+         "--repo", "a", "--summary", "x", "--severity", "low",
+         "--missed-by", "ticket-gate", "--found-in", "manual"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 1
+    assert "telemetry disabled" in proc.stderr
+
+
+def test_cli_bug_rejects_invalid_severity():
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "factory_log.py"), "bug",
+         "--repo", "a", "--summary", "x", "--severity", "extreme",
+         "--missed-by", "ticket-gate", "--found-in", "manual"],
+        capture_output=True, text=True)
+    assert proc.returncode != 0
+
+
+def test_aggregate_counts_escapes_per_missed_by_and_computes_recall():
+    records = [
+        {"event": "gate", "name": "ticket-gate", "result": "pass", "caught": 2, "repo": "a"},
+        {"event": "escape", "summary": "bug1", "severity": "high", "missed_by": "ticket-gate",
+         "found_in": "close-epic-review", "fixed": True, "repo": "a"},
+        {"event": "escape", "summary": "bug2", "severity": "critical", "missed_by": "ticket-gate",
+         "found_in": "close-epic-review", "repo": "a"},
+        {"event": "escape", "summary": "bug3", "severity": "low", "missed_by": "saas-gate",
+         "found_in": "manual", "repo": "a"},
+    ]
+    agg = factory_log.aggregate(records)
+    # ticket-gate: caught 2, escaped 2 -> recall 0.5
+    assert agg["escapes"]["ticket-gate"]["escaped"] == 2
+    assert agg["escapes"]["ticket-gate"]["caught"] == 2
+    assert agg["escapes"]["ticket-gate"]["fixed"] == 1
+    assert agg["escapes"]["ticket-gate"]["recall"] == 0.5
+    assert agg["escapes"]["ticket-gate"]["by_severity"] == {"high": 1, "critical": 1}
+    # saas-gate: no gate events at all -> caught 0, escaped 1 -> recall 0.0
+    assert agg["escapes"]["saas-gate"]["caught"] == 0
+    assert agg["escapes"]["saas-gate"]["recall"] == 0.0
+    assert agg["escapes_total"] == 3
+    # existing gate/consult aggregation is untouched
+    assert agg["gates"]["ticket-gate"]["caught"] == 2
+
+
+def test_aggregate_escapes_do_not_break_existing_gate_aggregation():
+    records = [
+        {"event": "gate", "name": "ratchet", "result": "pass", "caught": 0, "duration_ms": 10, "repo": "a"},
+        {"event": "gate", "name": "ratchet", "result": "fail", "caught": 1, "duration_ms": 10, "repo": "a"},
+        {"event": "consult", "provider": "opus", "tokens_in": 100, "tokens_out": 50, "cost_usd": 0.02, "repo": "a"},
+        {"event": "escape", "summary": "unrelated bug", "severity": "medium", "missed_by": "traceability",
+         "found_in": "close-epic-review", "repo": "a"},
+    ]
+    agg = factory_log.aggregate(records)
+    assert agg["gates"]["ratchet"]["caught"] == 1
+    assert agg["gates"]["ratchet"]["value"] == "earning"
+    assert agg["consults"]["opus"]["cost_usd"] == 0.02
+    assert agg["escapes"]["traceability"]["escaped"] == 1
+    assert "ratchet" not in agg["escapes"]
+
+
+def test_render_report_shows_escapes_and_recall():
+    agg = factory_log.aggregate([
+        {"event": "gate", "name": "ticket-gate", "result": "pass", "caught": 2, "repo": "r"},
+        {"event": "escape", "summary": "bug", "severity": "high", "missed_by": "ticket-gate",
+         "found_in": "close-epic-review", "repo": "r"},
+    ], repo="r")
+    report = factory_log.render_report(agg, repo="r")
+    assert "Escapes" in report and "ticket-gate" in report
+    assert "RECALL" in report

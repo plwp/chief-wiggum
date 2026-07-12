@@ -204,6 +204,16 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer "$CW_TMP/security-revie
 
 Triage every finding like the other gates: a confirmed exploitable issue is **blocking** (fix before close); a plausible-but-unproven one is **parked for the human** with the `file:line` and the concrete attack. Never close a user-facing/auth/money epic on an unreviewed security surface. Skip only when the epic is purely internal/back-office with **no new external surface** — and say so explicitly in the close report.
 
+**Log a real finding as an escape.** When this adversarial review (or the cross-surface/UX review in Step 9) confirms a genuine bug that an *earlier* gate should have caught — the ticket's own tests/review, `traceability`, `ratchet`, `check_single_writer` — that's exactly the class of miss `caught` counters can't see: the gate reported clean while a real bug shipped anyway. Log it so `/reflect` can measure gate RECALL, not just catches (no-op unless telemetry is enabled, never blocks):
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
+  --summary "reset endpoint leaks account existence via timing" --severity high \
+  --missed-by ticket-gate --found-in close-epic-review --ticket 42 --fixed
+```
+
+(Convention: `docs/factory-telemetry.md` → "Escapes — measuring gate RECALL, not just catches".)
+
 ### Step 2i: AI-slop signals (report-only)
 
 Two signals the literature converged on for AI-generated code degradation: **elevated 2-week churn** (code reverted/reworked soon after authoring — GitClear; DORA 2024 stability drop) and **rising production duplication** (copy/paste written to be added, not reused). Run them over the target as a standing guardrail on top of the one-off `/code-metrics` audit:

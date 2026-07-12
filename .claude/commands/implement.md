@@ -424,6 +424,16 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 
 If ANY verification fails: fix it directly, or re-launch the coding worker (contract: `docs/worker-contracts.md#implementation-worker`) with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
+**Log a real finding as an escape.** This orchestrator validation is exactly where a bug that the earlier steps (TDD/tests, Step 7's multi-AI code review, static analysis) should have caught but didn't gets found independently — walking the AC, hitting a real endpoint, or reading the code turns up something the automated checks missed. When that happens, log it so gate RECALL (not just catches) is measurable (no-op unless telemetry is enabled, never blocks):
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
+  --summary "..." --severity medium --missed-by code-review \
+  --found-in implement-verify --ticket "$issue_number" --fixed
+```
+
+(Convention: `docs/factory-telemetry.md` → "Escapes — measuring gate RECALL, not just catches".)
+
 ### Step 9: UX sanity + design-fidelity gate
 
 Run the tested gate to do all the mechanical setup — frontend-impact detection (diff paths + labels), ui-spec design-binding check, reference-screenshot discovery, and screenshot-capture planning — and emit a manifest:
