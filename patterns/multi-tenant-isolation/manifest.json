@@ -1,0 +1,62 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/multi-tenant-isolation/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate to specified; the saas-infra isolation floor.",
+  "id": "multi-tenant-isolation",
+  "version": 1,
+  "title": "Multi-Tenant Isolation Stack",
+  "category": "saas-infra",
+  "trust_class": "tenant-resolver-scoped-repo-and-proof-gate-are-protected-paths",
+
+  "applies_when": [
+    "more than one customer/organization shares a datastore",
+    "a single missed scope or an accepted client-supplied tenant key is a full data breach",
+    "you want isolation PROVEN by a standing test, not asserted in review",
+    "stamp it FIRST, before features that depend on the isolation floor"
+  ],
+
+  "components": [
+    "server-only-tenant-resolution: tenant derived from the authenticated principal; client-supplied tenant rejected (400); anti-probe 404 for wrong actor class",
+    "fail-closed-scoped-repo: every read/write resolves tenant from context first, ErrMissingTenant if absent; no unscoped path exists; AND-wrapped filters; auto-inject on insert",
+    "reject-dont-override-recursive: caller-supplied tenant key anywhere (nested arrays, replacement docs, pipeline stages, $rename string VALUES) rejected (ErrTenantOverride), never silently replaced",
+    "unexported-store-handles: raw collection handle unexported so callers cannot bypass the scoped repo",
+    "operator-plane-out-of-band: admin routes register OUTSIDE tenant middleware; system identity orthogonal to the tenant graph, not a super-role in it",
+    "standing-proof-gate: permanent CI test; positive controls + negative matrix (read/write/token/header/id-in-url) each asserting denial AND no-mutation AND no-foreign-id-leak",
+    "cancel-latched-cascade-erasure: settle external obligations (billing) outside+before the datastore wipe; erase all tenant collections in one transaction; resumable/fail-closed; documented tombstone exception for tax/legal retention"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. Generic ids are the pattern's own; realized_as cites the provenance app's app-specific id + code.",
+    "cluster": [
+      {"id": "INV-MTI-001", "statement": "Fail-closed scoping: every repo method resolves tenant from context first, errors if absent; no unscoped path exists.", "realized_as": {"app": "dogeared-coach", "code": "db/tenant.go:16; db/tenant_repo.go:44-135"}},
+      {"id": "INV-MTI-002", "statement": "Reject-don't-override: a caller-supplied tenant key anywhere (incl. $rename string values, nested arrays) is rejected; key auto-injected on insert.", "realized_as": {"app": "dogeared-coach", "code": "db/tenant.go:20,81-142"}},
+      {"id": "INV-MTI-003", "statement": "Server-only resolution: client hints rejected (400); anti-probe 404 for wrong actor class.", "realized_as": {"app": "dogeared-coach", "code": "middleware/tenant.go:130-191,278-285"}},
+      {"id": "INV-MTI-004", "statement": "Operator plane out-of-band: admin routes register OUTSIDE tenant middleware; provider token can't reach /admin/*, admin token can't ride provider routes.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-001/002/020", "code": "handlers/routes.go RegisterAdminRoutes; middleware/admin_only.go"}},
+      {"id": "INV-MTI-005", "statement": "Standing cross-tenant proof gate: asserts denial AND no-mutation AND no-foreign-id-in-denial across every vector.", "realized_as": {"app": "dogeared-coach", "code": "integration/cross_tenant_test.go"}},
+      {"id": "INV-MTI-006", "statement": "Cancel-latched resumable transactional cascade erasure with a documented tombstone exception (billing cancelled outside+before the wipe; tax snapshots survive).", "realized_as": {"app": "dogeared-coach", "code": "db/erasure.go:83; services/admin_offboarding.go:14-21"}}
+    ]
+  },
+
+  "parameters": {
+    "tenant_key": {"type": "string", "required": true, "description": "The scoping field (provider_id / org_id / account_id)."},
+    "resolver": {"enum": ["claim", "membership-lookup"], "required": true, "description": "How the tenant is derived from the authenticated principal."},
+    "store": {"type": "string", "required": true, "description": "Datastore the scoped repo wraps; raw handles kept unexported."},
+    "operator_routes": {"type": "array", "required": true, "description": "Route prefix(es) that register outside tenant middleware."},
+    "erasure_external_obligations": {"type": "array", "required": false, "description": "External systems (billing) settled before the wipe."},
+    "tombstone_collections": {"type": "array", "required": false, "description": "Collections deliberately retained through erasure (tax/legal)."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "cross_tenant_leak_incidents", "goal": "down", "desc": "any read/write reaching another tenant's data (target 0; proof-gate asserted)"},
+      {"id": "unscoped_query_paths", "goal": "down", "desc": "code paths touching the store outside the fail-closed scoped repo (target 0)"},
+      {"id": "isolation_proof_coverage", "goal": "up", "desc": "fraction of tenant-scoped collections/vectors covered by the standing proof gate"}
+    ]
+  },
+
+  "protected_paths": ["the tenant resolver middleware", "the fail-closed scoped repository", "the cross-tenant proof gate", "the cascade-erasure path"],
+
+  "feeds": {
+    "elevated-access-session": "provides the out-of-band operator plane an impersonated session is denied from",
+    "improvement-loop": "the floor that makes mining per-tenant behavioral signal safe (read across tenants only atop fail-closed scoping)",
+    "tiered-subscription": "per-tenant billing state is projected onto the tenant record; erasure settles billing before wipe"
+  }
+}

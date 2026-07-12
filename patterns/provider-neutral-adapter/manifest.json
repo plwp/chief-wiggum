@@ -1,0 +1,62 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/provider-neutral-adapter/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate to specified; realized twice in dogeared-coach (video + billing).",
+  "id": "provider-neutral-adapter",
+  "version": 1,
+  "title": "Provider-Neutral Port/Adapter",
+  "category": "multi-provider",
+  "trust_class": "seam-boundary-is-protected-path",
+
+  "applies_when": [
+    "a dependency on an external service you might swap (billing, video/media, email, sms, storage, search)",
+    "you want the vendor's credentials + failure modes contained behind one boundary",
+    "signed webhooks, per-request tokens, or direct browser->CDN upload are involved",
+    "usually stamped early: it's a dependency of the money/media-path patterns"
+  ],
+
+  "components": [
+    "single-file-vendor-confinement: the vendor SDK is imported in exactly one file (+ tests); import-lint enforceable; no vendor type crosses the seam",
+    "neutral-dtos-unexported-concrete: port interface exposes only vendor-agnostic types; concrete adapter unexported with a compile-time var _ Port = (*concrete)(nil) assertion; a Fake behind the same port for testability",
+    "vendor-state-to-enum-safe-default: external status strings mapped to the app's enum at the seam; unknown state -> safe default, never leaks up raw",
+    "signed-webhook-is-truth: inbound webhooks verified (raw-body signature + replay window) and normalized to a neutral internal event {id,type,livemode,raw}; downstream reads that, never the client redirect",
+    "sign-per-request-token: per-request access token minted at the seam, never persisted, TTL clamped to a hard ceiling",
+    "direct-browser-to-cdn-upload: large uploads go browser->vendor via a one-time server-minted ticket; the API credential never reaches the browser"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. Generic ids are the pattern's own; realized_as cites the provenance app's code. Realized twice (video via Cloudflare, billing via Stripe).",
+    "cluster": [
+      {"id": "INV-PNA-001", "statement": "Single-file vendor confinement: vendor SDK imported in exactly one file (+ tests); no vendor type crosses the seam.", "realized_as": {"app": "dogeared-coach", "code": "billing/stripe.go (only stripe-go importer); video/cloudflare.go (package doc)"}},
+      {"id": "INV-PNA-002", "statement": "Neutral DTOs only; concrete adapter unexported + compile-time var _ Port = (*concrete)(nil); a Fake behind the same port.", "realized_as": {"app": "dogeared-coach", "code": "video/service.go:91-118; video/cloudflare.go:37; billing/client.go:39-83; billing/stripe.go:24; billing/fake.go:52"}},
+      {"id": "INV-PNA-003", "statement": "Vendor status mapped to an internal enum with a safe default for unknown states.", "realized_as": {"app": "dogeared-coach", "code": "billing status->tier + video status mapping at the seam"}},
+      {"id": "INV-PNA-004", "statement": "Signed webhook normalized to a neutral internal event {id,type,livemode,raw}; the webhook, not the client redirect, is source of truth.", "realized_as": {"app": "dogeared-coach", "code": "billing/stripe.go:290-318; video/webhook.go:118-142"}},
+      {"id": "INV-PNA-005", "statement": "Sign-per-request access token: minted per request, never persisted, TTL clamped to a hard ceiling.", "realized_as": {"app": "dogeared-coach", "code": "video/jwt.go:22-24,95-144 (maxTTL=60m, defaultTTL=30m, clampTTL)"}},
+      {"id": "INV-PNA-006", "statement": "Direct browser->CDN upload via a one-time server-minted ticket; the API credential never reaches the browser.", "realized_as": {"app": "dogeared-coach", "code": "video/cloudflare.go:62-114 (CreateDirectUploadURL, tus direct_user=true)"}}
+    ]
+  },
+
+  "parameters": {
+    "vendor": {"type": "string", "required": true, "description": "External service behind the seam (billing / video / email ...)."},
+    "port": {"type": "string", "required": true, "description": "The neutral interface name callers depend on."},
+    "confinement_file": {"type": "string", "required": true, "description": "The single file allowed to import the vendor SDK; import-lint target."},
+    "webhook_events": {"type": "array", "required": false, "description": "Vendor events normalized to neutral internal events."},
+    "token_ttl_ceiling": {"type": "string", "required": false, "description": "Hard cap on sign-per-request token TTL."},
+    "direct_upload": {"type": "boolean", "required": false, "default": false, "description": "Whether large uploads go browser->CDN via a one-time ticket."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "vendor_type_leaks", "goal": "down", "desc": "vendor types outside the confinement file (target 0; import-lint asserted)"},
+      {"id": "swap_blast_radius", "goal": "down", "desc": "files that must change to swap the vendor (target 1)"},
+      {"id": "credential_client_exposure", "goal": "down", "desc": "flows where a long-lived vendor credential reaches the client (target 0)"}
+    ]
+  },
+
+  "protected_paths": ["the confinement file (the one vendor-SDK importer)", "the webhook verify+normalize path", "the per-request token minter"],
+
+  "feeds": {
+    "fetch-on-webhook-reconcile": "its 'webhook is source of truth' ingestion is INV-PNA-004 applied to the billing vendor",
+    "tiered-subscription": "billing vendor + signed webhooks sit behind this seam",
+    "elevated-access-session": "the session signer / identity provider sit behind this seam",
+    "multi-tenant-isolation": "media/CDN per-request tokens are minted after the tenant/authorization guards"
+  }
+}

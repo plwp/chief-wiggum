@@ -1,5 +1,6 @@
 {
   "$comment": "Index of reusable product patterns Chief Wiggum can stamp into the apps it builds. See docs/patterns-registry.md. Each entry points at patterns/<id>/{pattern.md,manifest.json}. Candidates are mined/known but not yet fully specified.",
+  "$model": "A pattern IS a cluster of invariants that must hold together, plus the playbook to satisfy them. See docs/patterns-registry.md#patterns-as-clusters-of-invariants. Each pattern/candidate carries an `invariants` array of generic stable ids (INV-<ABBR>-NNN) with `realized_as` provenance (the mined app's app-specific id + code). /architect pulls the cluster into invariants.md by id so connected requirements are never re-derived; the traceability/single-writer/ratchet gates then hold the whole cluster.",
   "version": 1,
   "patterns": [
     {
@@ -56,6 +57,55 @@
       "feeds": "improvement-loop",
       "spec": "patterns/deployment-release/pattern.md",
       "manifest": "patterns/deployment-release/manifest.json"
+    },
+    {
+      "id": "fetch-on-webhook-reconcile",
+      "title": "Fetch-on-Webhook Reconcile (non-monotonic external state)",
+      "category": "process-loop",
+      "status": "specified",
+      "trust_class": "projection-writer-is-protected-path",
+      "summary": "Correct idempotency for a webhook whose external resource is NON-monotonic (subscriptions, refunds): event = trigger only, live fetch = truth, never copy mutable state off the payload. Order-immune, unknown-id-fatal (never silent-floor), retry-lease dedupe, terminal-deletion latch. Ships its sibling MONOTONIC-FSM branch (video-upload style) so the selection criterion travels with it. Expressed as an invariant cluster (INV-FOWR-*).",
+      "invariants": "INV-FOWR-001..008 (+ sibling INV-FOWR-M1)",
+      "depends_on": "provider-neutral-adapter",
+      "feeds": "tiered-subscription, reconciliation-sweep, entitlement-overlay",
+      "spec": "patterns/fetch-on-webhook-reconcile/pattern.md",
+      "manifest": "patterns/fetch-on-webhook-reconcile/manifest.json"
+    },
+    {
+      "id": "elevated-access-session",
+      "title": "Revocable Elevated-Access Session (support impersonation)",
+      "category": "saas-infra",
+      "status": "specified",
+      "trust_class": "session-mint-guard-and-audit-are-protected-paths",
+      "summary": "Time-boxed, revocable, dual-identity-audited operator act-as. Session TTL enforced against the session's own iat (independent of the IdP token life), future-skew guard, fail-closed revocation, no nested impersonation, boundary-checked deny-list (operator plane + auth-factor + destructive/GDPR), dual-identity audit before every impersonated mutation, un-forgeable at the signing root. Promoted from candidate; realized 1:1 in dogeared-coach as INV-EAS-001..007.",
+      "invariants": "INV-EAS-001..007",
+      "depends_on": "provider-neutral-adapter, multi-tenant-isolation",
+      "spec": "patterns/elevated-access-session/pattern.md",
+      "manifest": "patterns/elevated-access-session/manifest.json"
+    },
+    {
+      "id": "multi-tenant-isolation",
+      "title": "Multi-Tenant Isolation Stack",
+      "category": "saas-infra",
+      "status": "specified",
+      "trust_class": "tenant-resolver-scoped-repo-and-proof-gate-are-protected-paths",
+      "summary": "The isolation floor: server-only tenant resolution (reject client hints, anti-probe 404) -> fail-closed tenant-scoped repository (no unscoped path, reject-don't-override recursively incl. $rename string values, unexported handles) -> standing cross-tenant proof gate (denial AND no-mutation AND no-foreign-id-leak) -> cancel-latched resumable transactional cascade erasure with a tax-tombstone exception. The operator plane sits OUTSIDE tenancy. Promoted from candidate; INV-MTI-001..006.",
+      "invariants": "INV-MTI-001..006",
+      "feeds": "elevated-access-session, improvement-loop, tiered-subscription",
+      "spec": "patterns/multi-tenant-isolation/pattern.md",
+      "manifest": "patterns/multi-tenant-isolation/manifest.json"
+    },
+    {
+      "id": "provider-neutral-adapter",
+      "title": "Provider-Neutral Port/Adapter",
+      "category": "multi-provider",
+      "status": "specified",
+      "trust_class": "seam-boundary-is-protected-path",
+      "summary": "The swappability seam for an external vendor: single-file vendor confinement (SDK imported in exactly one file, import-lint enforceable), neutral DTOs only + unexported concrete adapter with a compile-time var _ Port assertion (+ Fake), vendor-state->enum with safe defaults, signed-webhook-normalized-to-neutral-event (webhook is truth, not the client redirect), sign-per-request TTL-clamped tokens, and direct browser->CDN upload via a one-time ticket (API credential never reaches the browser). Promoted from candidate; realized twice in dogeared-coach (video + billing). INV-PNA-001..006.",
+      "invariants": "INV-PNA-001..006",
+      "feeds": "fetch-on-webhook-reconcile, tiered-subscription, elevated-access-session, multi-tenant-isolation",
+      "spec": "patterns/provider-neutral-adapter/pattern.md",
+      "manifest": "patterns/provider-neutral-adapter/manifest.json"
     }
   ],
   "stacks": {
@@ -66,15 +116,13 @@
     ]
   },
   "candidates": [
-    {"id": "multi-tenant-isolation", "title": "Multi-Tenant Isolation Stack", "category": "saas-infra", "status": "candidate", "summary": "Server-only tenant resolution (rejects client hints) -> context-injected, fail-closed tenant-scoped repository (AND-wrapped filters, reject-don't-override, recursive field-scan, unexported handles) -> standing cross-tenant isolation proof as an executable test gate (positive controls + negative matrix + no-foreign-id-in-denial) -> quarantined transactional cascade erasure. Composes into one multi-tenancy blueprint; the floor that makes mining per-tenant data safe.", "reusability": "high"},
-    {"id": "provider-neutral-adapter", "title": "Provider-Neutral Port/Adapter", "category": "multi-provider", "status": "candidate", "summary": "Vendor-agnostic seam for a swappable external service: neutral DTOs only, concrete vendor types unexported (compile-time swappability), vendor states mapped to internal enums with safe defaults. Behind it: signed-webhook ingestion normalized to idempotent internal events (webhook is source of truth, not the client callback), sign-per-request short-lived access tokens, and direct browser->CDN upload via a one-time server-minted ticket.", "reusability": "high"},
     {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
     {"id": "transactional-email-and-dunning", "title": "Transactional Email & Dunning Lifecycle", "category": "process-loop", "status": "candidate", "summary": "Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge (fires if a signed-up user hasn't hit the activation event), re-engagement, and a failed-payment dunning sequence with bounded retries before degrade. Send-once keys prevent duplicate sends across retries. Recovery outcomes are conversion/retention signal.", "reusability": "high"},
     {"id": "referral-invite-loop", "title": "Referral / Invite Growth Loop", "category": "process-loop", "status": "candidate", "summary": "Invite -> signed invite token (server-trusted, single-use, expiring) -> attribution on accept -> reward both sides. Reuses the signed-token discipline; attribution is trust-tagged signal. A self-serve growth loop the improvement loop can optimize (reward size/copy) under admin gating.", "reusability": "medium-high"},
     {"id": "feature-entitlements", "title": "Feature Entitlements Read-Model", "category": "saas-infra", "status": "candidate", "summary": "A single entitlement resolver deriving capability flags from tier + per-account overrides + grandfathering, consumed identically by backend gates and the frontend (one source of 'what can this account do'). Distinct from the tier matrix: it layers overrides and is the read model onboarding + UI both query.", "reusability": "medium-high"},
+    {"id": "entitlement-overlay", "title": "Floor-Raising Entitlement Overlay (admin comps)", "category": "saas-infra", "status": "candidate", "summary": "An admin-granted plan/limits overlay stored LOCALLY and ORTHOGONALLY to the payer tier; effective limits = per-field max(payer, overlay), grant-only (never lowers a payer), and the billing reconcile recomputes the max so a webhook can never revert a comp. The load-bearing subtlety: the 'unlimited' sentinel (-1) must beat any finite value in BOTH directions or a naive numeric max silently lowers an unlimited plan. Enforcement reads EFFECTIVE limits, not the raw payer tier. Distinct from feature-entitlements: this is the narrower grant-only monotonic-floor invariant that survives an orthogonal source-of-truth reconcile. Chosen over Stripe coupons deliberately so bespoke custom limits (that coupons can't express) stay in-house. Realized in dogeared-coach.", "reusability": "medium-high", "invariants": [{"id": "INV-EO-001", "statement": "Floor-raising: effective(field) = max(base, overlay) per field; overlay only ever raises.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-010", "code": "services/plan.go:257-305"}}, {"id": "INV-EO-002", "statement": "Grant-only writer: overlay path accepts only upward grants (paid tiers, reason required, audited), blocked from impersonated/suspended sessions.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-011", "code": "services/admin_provider.go:222-263"}}, {"id": "INV-EO-003", "statement": "Unlimited (-1 sentinel) beats finite in BOTH directions, or a naive max silently lowers an unlimited plan.", "realized_as": {"app": "dogeared-coach", "code": "services/plan.go:307-320 (maxCap)"}}, {"id": "INV-EO-004", "statement": "Orthogonal source of truth: payer tier persisted separately (StripePlan) from effective; reconcile recomputes max(payer, overlay) so a comp is never reverted.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-009", "code": "services/billing_reconcile.go:271-275"}}, {"id": "INV-EO-005", "statement": "Single enforcement seam reads EFFECTIVE limits, not the raw payer tier.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-010", "code": "services/plan.go EffectiveLimits"}}]},
     {"id": "self-serve-billing-portal", "title": "Self-Serve Billing Portal", "category": "saas-infra", "status": "candidate", "summary": "Let users manage plan, payment method, and seats without support -- provider-hosted portal session minted server-side + a local mirror of plan/seat state kept authoritative via billing webhooks. Removes the #1 support-ticket class for tiered SaaS.", "reusability": "medium"},
-    {"id": "immutable-assignment-snapshot", "title": "Immutable Assignment Snapshot", "category": "data-structure", "status": "candidate", "summary": "Pin the exact version of a composite item at assignment time (draft -> immutable published version -> assignment references a version, not the live template) so later edits never retroactively mutate outstanding assignments. Keeps longitudinal completion analysis clean (no denominator drift).", "reusability": "medium-high"},
-    {"id": "elevated-access-session", "title": "Revocable Elevated-Access Session", "category": "saas-infra", "status": "candidate", "summary": "Time-boxed support impersonation with a short server-enforced TTL independent of the identity token, future-skew guard, per-request self-consistency check, fail-closed revocation lookup, fixed middleware order, and full audit. High value but only for products needing operator act-as.", "reusability": "medium"},
+    {"id": "immutable-assignment-snapshot", "title": "Immutable Assignment Snapshot", "category": "data-structure", "status": "candidate", "summary": "Pin the exact version of a composite item at PUBLISH time (edit -> new immutable published version; assignment references a version id, not the live template) so later edits never retroactively mutate outstanding assignments. The version snapshot is the liability boundary: write-once (Insert/Find only, no Update/Delete), item fields value-copied at publish. Keeps longitudinal completion analysis clean (no denominator drift). Nuance mined from code: immutability lives in the write-once version snapshot at publish, not a copy-into-the-assignment.", "reusability": "medium-high", "invariants": [{"id": "INV-IAS-001", "statement": "Published version is write-once: no in-place patch (repo exposes Insert+Find only).", "realized_as": {"app": "dogeared-coach", "code": "db/store.go:95-118; models/course.go:20-40"}}, {"id": "INV-IAS-002", "statement": "Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id.", "realized_as": {"app": "dogeared-coach", "code": "services/course.go:609-629; models/assignment.go:8-23"}}, {"id": "INV-IAS-003", "statement": "Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate.", "realized_as": {"app": "dogeared-coach", "code": "services/assignment_view.go:364-389"}}]},
     {"id": "build-test-floor", "title": "Language-Agnostic Build/Test Floor", "category": "gate", "status": "candidate", "summary": "Auto-detecting build+test+lint gate across a polyglot repo, with a local pre-merge script mirroring CI; optionally zero-cost-until-opt-in (manual-dispatch trigger) for cost-sensitive private repos.", "reusability": "medium"}
   ],
   "meta_disciplines": {

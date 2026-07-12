@@ -1,0 +1,66 @@
+{
+  "$comment": "Machine-readable surface for a future /apply-pattern installer. Human spec: patterns/elevated-access-session/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate to specified; realized 1:1 in dogeared-coach (invariant ids stamped in the guard's code comments).",
+  "id": "elevated-access-session",
+  "version": 1,
+  "title": "Revocable Elevated-Access Session (support impersonation)",
+  "category": "saas-infra",
+  "trust_class": "session-mint-guard-and-audit-are-protected-paths",
+
+  "applies_when": [
+    "multi-tenant product where support/ops must act AS a tenant user to reproduce issues",
+    "you need time-boxed, revocable, fully-audited operator act-as",
+    "there are actions impersonation must NEVER be able to take (destructive, auth-factor, operator plane)"
+  ],
+
+  "components": [
+    "signer-minted-session: token subject=target, imp claim {actor,target,session_id,iat} set server-side; un-forgeable at the signing root",
+    "independent-ttl: elevated window enforced against imp.iat, NOT the identity-provider token life",
+    "future-skew-guard: imp.iat more than a small tolerance ahead is rejected",
+    "fail-closed-revocation: revoked_at + a revocation lookup that denies when it cannot confirm the session is live",
+    "no-nested-impersonation: an impersonated session cannot mint another",
+    "boundary-checked-deny-list: blocked from /admin/*, auth-factor family (prefix-matched), and destructive/GDPR; rules exported for the banner",
+    "dual-identity-audit: every impersonated mutation writes an actor+target row BEFORE the mutation, fail-closed",
+    "fixed-middleware-order: resolve -> guard -> deny-list -> audit -> handler, asserted",
+    "non-dismissible-banner: the operator always sees they are acting as someone else"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. Generic ids are the pattern's own; realized_as cites the provenance app's app-specific id + code. Note the app has minor doc/code id drift on future-skew (code comment tags it INV-ADM-009); code file:line is the authoritative provenance.",
+    "cluster": [
+      {"id": "INV-EAS-001", "statement": "TTL enforced against the session's own iat, independent of the IdP token life.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-003", "code": "middleware/impersonation_guard.go:31-34,87-89"}},
+      {"id": "INV-EAS-002", "statement": "Revocable per-session; revocation lookup is fail-closed.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-004", "code": "middleware/impersonation_guard.go:140-182"}},
+      {"id": "INV-EAS-003", "statement": "No nested impersonation.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-005", "code": "middleware/impersonation_guard.go"}},
+      {"id": "INV-EAS-004", "statement": "Future-skew guard: imp.iat more than tolerance ahead is rejected.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-009", "code": "middleware/impersonation_guard.go:36-38,98-108"}},
+      {"id": "INV-EAS-005", "statement": "Deny-listed from operator plane + auth-factor + destructive/GDPR, boundary-checked prefix; rules exported for the banner.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-006/007", "code": "middleware/impersonation_deny_list.go:32-156"}},
+      {"id": "INV-EAS-006", "statement": "Every impersonated write is dual-identity audited, fail-closed, before the mutation.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-008", "code": "middleware/impersonation_audit.go:82-110"}},
+      {"id": "INV-EAS-007", "statement": "Un-forgeable at the signing root: minted by the trusted signer with an actor claim the caller cannot self-assert.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-009", "code": "handlers/admin_impersonate.go:146-214"}}
+    ]
+  },
+
+  "parameters": {
+    "ttl": {"type": "string", "required": false, "default": "15m", "description": "Server-enforced elevated window, measured from imp.iat."},
+    "future_skew_tolerance": {"type": "string", "required": false, "default": "30s", "description": "Max tolerated forward clock drift on imp.iat."},
+    "signer": {"type": "string", "required": true, "description": "What mints the session token; behind provider-neutral-adapter."},
+    "deny_prefixes": {"type": "array", "required": true, "description": "Route families an impersonated session may never reach."},
+    "audit_sink": {"type": "string", "required": true, "description": "Where dual-identity audit rows are written; must fail closed."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "unaudited_impersonated_mutations", "goal": "down", "desc": "impersonated writes with no dual-identity audit row (target 0; gate-asserted)"},
+      {"id": "expired_session_acceptances", "goal": "down", "desc": "requests accepted past TTL or after revocation (target 0)"},
+      {"id": "deny_list_escapes", "goal": "down", "desc": "impersonated requests that reached a denied family (target 0)"}
+    ]
+  },
+
+  "protected_paths": ["the session mint handler", "the impersonation guard", "the dual-identity audit middleware", "the deny-list rules"],
+
+  "depends_on": {
+    "provider-neutral-adapter": "signer + identity provider sit behind the neutral seam",
+    "multi-tenant-isolation": "the /admin/* operator plane the session is denied from is that pattern's out-of-band admin plane"
+  },
+
+  "feeds": {
+    "improvement-loop": "the dual-identity audit stream is trusted-origin operational signal"
+  }
+}
