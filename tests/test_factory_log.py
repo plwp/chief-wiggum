@@ -103,6 +103,7 @@ def test_cost_for_cross_provider_grounded():
     assert factory_log.cost_for("gpt-5.4", 1_000_000, 1_000_000) == 17.5      # 2.5 + 15
     assert factory_log.cost_for("gemini-2.5-flash", 1_000_000, 1_000_000) == 2.8  # 0.3 + 2.5
     assert factory_log.cost_for("glm-4.6", 1_000_000, 1_000_000) == 2.8       # 0.6 + 2.2
+    assert factory_log.cost_for("claude-sonnet-5", 1_000_000, 1_000_000) == 12.0  # 2 + 10 (intro)
 
 
 def test_emit_consult_records_tokens_and_grounded_cost(tmp_path, monkeypatch):
