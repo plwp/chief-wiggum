@@ -9,6 +9,7 @@ lint:
 	python3 -m py_compile scripts/*.py scripts/extractors/*.py scripts/chief_wiggum/*.py
 	python3 scripts/check_portability.py
 	python3 scripts/check_patterns.py
+	python3 scripts/check_cw_standards.py --gate
 
 test:
 	python3 -m pytest
