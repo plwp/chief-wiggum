@@ -35,9 +35,16 @@ One JSON object per line. Each call site fills what it **knows** and omits the r
 | `worker` | a sub-agent run | `name`/role, tokens/cost if the harness surfaces them |
 | `skill` | a workflow step | `name`, `result` |
 
-Token/cost fields are only present where the call site can measure them (e.g. an
-SDK response with usage). CLI-provider consults that don't expose usage simply omit
-them — better an honest gap than a fabricated number.
+Token counts come from the provider's own usage summary — every consult provider
+surfaces one (the CLIs via their `--output-format json` mode, the SDKs via the
+response `usage`), so a `consult` event should carry `tokens_in`/`tokens_out`.
+**Cost is computed, not logged raw:** `emit_consult(provider, model, tokens_in,
+tokens_out)` multiplies the tokens by the grounded per-model rate in
+[`config/model_pricing.json`](../config/model_pricing.json) (`factory_log.cost_for`).
+That table is fetched from each vendor's live pricing page and refreshed by
+`/update` — never keyed from memory. `cost_usd` is omitted (not `0`) when a model
+has no price in the table, so an un-priced call still records its tokens without a
+fabricated dollar figure.
 
 ## Emitting
 

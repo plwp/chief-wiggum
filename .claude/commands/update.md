@@ -57,20 +57,32 @@ Read the current `$CW_HOME/models.md` and update it with the new information:
 - Keep the same format and structure
 - Add notes about breaking changes if any model IDs changed
 
+### Step 3.5: Refresh model pricing (`config/model_pricing.json`)
+
+`config/model_pricing.json` is the grounded per-model token-cost table `factory_log.cost_for` uses (and `/reflect` reports consult cost from). Prices drift — re-fetch each provider's **live pricing page** (never key prices from memory) and update the `input_per_mtok` / `output_per_mtok` for every model, plus the row's `as_of` and the top-level `as_of`:
+
+- Anthropic — via the `claude-api` skill reference / `platform.claude.com/docs/en/pricing`
+- OpenAI — `developers.openai.com/api/docs/pricing`
+- Google — `ai.google.dev/gemini-api/docs/pricing`
+- Zhipu (GLM) — `docs.z.ai/guides/overview/pricing`
+
+For tiered models, record the base (≤200k-context) rate. Leave a row `null` + `verified: false` if a price genuinely can't be confirmed (don't fabricate). `python3 -c "import json;json.load(open('config/model_pricing.json'))"` must stay valid.
+
 ### Step 4: Review changes
 
-Show the user a diff of what changed in `models.md`:
+Show the user a diff of what changed in `models.md` and `config/model_pricing.json`:
 - Highlight new models
 - Highlight deprecated models
 - Highlight version bumps
+- Highlight price changes
 - Ask if the changes look correct
 
 ### Step 5: Commit and push
 
 ```bash
 cd "$CW_HOME"
-git add models.md
-git commit -m "docs: update models and library versions — $(date +%Y-%m-%d)"
+git add models.md config/model_pricing.json
+git commit -m "docs: update models, pricing, and library versions — $(date +%Y-%m-%d)"
 git push
 ```
 

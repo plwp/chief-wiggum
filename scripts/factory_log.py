@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 DEFAULT_LOG = Path.home() / ".chief-wiggum" / "factory-log.jsonl"
+PRICING_PATH = Path(__file__).resolve().parent.parent / "config" / "model_pricing.json"
 
 GATE = "gate"
 CONSULT = "consult"
@@ -72,6 +73,43 @@ def emit_gate(name: str, result: str, *, caught: int | None = None,
               ticket: str | None = None) -> bool:
     return emit(GATE, name=name, result=result, caught=caught,
                 duration_ms=duration_ms, repo=repo, ticket=ticket)
+
+
+def load_pricing(path: Path = PRICING_PATH) -> dict:
+    """Load the grounded per-model pricing table (config/model_pricing.json)."""
+    try:
+        return json.loads(path.read_text()).get("models", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def cost_for(model: str, tokens_in: int, tokens_out: int, pricing: dict | None = None) -> float | None:
+    """USD cost of a call from the grounded pricing table, or None if unpriced.
+
+    Returns None (not 0) when the model is unknown or its price is null — an
+    un-priced consult records its tokens without a fabricated dollar figure.
+    """
+    table = pricing if pricing is not None else load_pricing()
+    row = table.get(model)
+    if not row:
+        return None
+    pin, pout = row.get("input_per_mtok"), row.get("output_per_mtok")
+    if pin is None or pout is None:
+        return None
+    return round((tokens_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
+
+
+def emit_consult(provider: str, model: str, tokens_in: int, tokens_out: int, *,
+                 repo: str | None = None, ticket: str | None = None) -> bool:
+    """Record an AI consultation with its token usage and (grounded) cost.
+
+    Cost is computed from config/model_pricing.json; omitted when the model is
+    unpriced (rather than logged as $0).
+    """
+    return emit(CONSULT, provider=provider, name=model,
+                tokens_in=tokens_in, tokens_out=tokens_out,
+                cost_usd=cost_for(model, tokens_in, tokens_out),
+                repo=repo, ticket=ticket)
 
 
 class gate_timer:
