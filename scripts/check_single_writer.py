@@ -680,6 +680,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(render_text(report))
 
+    try:  # factory telemetry; no-op unless enabled, never breaks the gate
+        import os
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from factory_log import emit_gate
+        caught = len(report.violations) + len(report.malformed)
+        parts = os.path.abspath(args.epic_dir).split(os.sep)
+        repo = parts[parts.index("docs") - 1] if "docs" in parts and parts.index("docs") > 0 \
+            else os.path.basename(os.path.abspath(args.epic_dir))
+        emit_gate("check_single_writer", "fail" if caught else "pass", caught=caught, repo=repo)
+    except Exception:
+        pass
+
     if args.gate == "soundness" and not report.soundness_ok:
         return 1
     if args.gate == "coverage" and not report.coverage_ok:
