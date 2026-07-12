@@ -35,6 +35,7 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 import check_unresolved  # noqa: E402
+import factory_log  # noqa: E402
 
 # Known CW gates and the tokens that betray them in commit/PR text.
 GATE_TOKENS = {
@@ -219,6 +220,13 @@ def collect(repo: Path, commits_limit: int = 400, prs: list[dict] | None = None)
     coverage = pattern_coverage(read_adopted(repo), read_epic_invariants(repo))
     retros = read_retrospectives(repo)
 
+    # Production-time telemetry, when the factory logged it — authoritative for
+    # gate value/noise + token cost (things git archaeology can't recover).
+    repo_key = repo.name
+    telemetry = factory_log.aggregate(factory_log.read_log(), repo=repo_key)
+    if not telemetry["records"]:
+        telemetry = factory_log.aggregate(factory_log.read_log())  # fall back to unfiltered
+
     findings: list[Finding] = []
     mentions = gate_mentions(subjects + pr_texts)
     for gate, n in mentions.items():
@@ -252,6 +260,13 @@ def collect(repo: Path, commits_limit: int = 400, prs: list[dict] | None = None)
     if journal["forced_merges"]:
         findings.append(Finding("factory-logs", "warn",
             f"{journal['forced_merges']} forced ratchet merge(s) — quality bar was lowered under override"))
+    for gname, g in (telemetry.get("gates") or {}).items():
+        if g.get("value") == "noise-candidate":
+            findings.append(Finding("gates", "warn",
+                f"telemetry: gate '{gname}' ran {g['runs']}x but caught 0 findings ({round(g['total_ms'])}ms total) — value unproven, candidate noise"))
+    if telemetry.get("cost_usd_total"):
+        findings.append(Finding("factory-logs", "info",
+            f"telemetry: ${telemetry['cost_usd_total']} in logged AI-consult cost across {telemetry['records']} events"))
 
     return {
         "repo": str(repo),
@@ -265,6 +280,7 @@ def collect(repo: Path, commits_limit: int = 400, prs: list[dict] | None = None)
         "ratchet": journal,
         "pattern_coverage": coverage,
         "retrospectives": retros,
+        "telemetry": telemetry,
         "pr_count": len(prs or []),
         "findings": [asdict(f) for f in findings],
     }

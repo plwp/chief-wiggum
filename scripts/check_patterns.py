@@ -196,6 +196,13 @@ def main() -> int:
     errors = [f for f in findings if f.severity == ERROR]
     warns = [f for f in findings if f.severity == WARN]
 
+    # Factory telemetry (opt-in; no-op unless CW_TELEMETRY/CW_FACTORY_LOG set).
+    try:
+        from factory_log import emit_gate
+        emit_gate("check_patterns", "fail" if errors else "pass", caught=len(errors), repo="chief-wiggum")
+    except Exception:  # telemetry must never break the gate
+        pass
+
     if args.format == "json":
         print(json.dumps([f.__dict__ for f in findings], indent=2))
     else:
