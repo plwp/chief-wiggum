@@ -338,6 +338,15 @@ The worker should:
 
    Also return the **checklist scorecard**: pass/fail for each item in the structured checklist, with one-line justification for any failures.
 
+6. **Record validation telemetry.** The review's cost already flows (its reviewer consults + the Claude Code sub-agent tokens); record its *value* so the cost↔value verdict can rate it. Emit one gate event with the count of substantive findings (high + medium + low real defects; exclude style-only) — no-op unless telemetry is enabled, never blocks:
+
+   ```bash
+   python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name code-review \
+     --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
+   ```
+
+   (Convention: `docs/factory-telemetry.md` → "LLM validations report their value". A `code-review` that keeps costing tokens across tickets but catches nothing becomes a measured `demote-candidate`.)
+
 ### Step 8: Apply review fixes and verify
 
 Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then **the orchestrator independently verifies the final state** — this is not delegatable.
