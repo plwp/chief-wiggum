@@ -119,6 +119,35 @@ def test_second_pattern_coexists_in_adopted(tmp_path):
     assert set(adopted["patterns"]) == {REAL, "elevated-access-session"}
 
 
+# --- list-adopted (the /architect fold-in seam) -----------------------------
+
+def test_list_adopted_empty_when_no_adoption(tmp_path):
+    assert apply_pattern.list_adopted(tmp_path) == []
+
+
+def test_list_adopted_returns_fresh_clusters(tmp_path):
+    for pid in (REAL, "elevated-access-session"):
+        apply_pattern.apply_plan(apply_pattern.build_plan(pid, {}, now=FIXED_NOW), tmp_path, write=True)
+    adopted = {a["id"]: a for a in apply_pattern.list_adopted(tmp_path)}
+    assert set(adopted) == {REAL, "elevated-access-session"}
+    fowr_ids = [i["id"] for i in adopted[REAL]["invariants"]]
+    assert "INV-FOWR-001" in fowr_ids
+    # statements come fresh from the registry manifest, not the stamped copy
+    assert all(i["statement"] for i in adopted[REAL]["invariants"])
+    assert adopted[REAL]["contract_pack"] == f"docs/patterns/{REAL}/invariants.md"
+
+
+def test_cli_list_adopted(tmp_path):
+    apply_pattern.apply_plan(apply_pattern.build_plan(REAL, {}, now=FIXED_NOW), tmp_path, write=True)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "apply_pattern.py"),
+         "--target-dir", str(tmp_path), "--list-adopted", "--format", "json"],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = json.loads(proc.stdout)
+    assert out[0]["id"] == REAL and any(i["id"] == "INV-FOWR-001" for i in out[0]["invariants"])
+
+
 # --- CLI --------------------------------------------------------------------
 
 def test_cli_dry_run(tmp_path):
