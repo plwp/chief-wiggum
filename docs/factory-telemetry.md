@@ -71,7 +71,29 @@ python3 "$CW_HOME/scripts/factory_log.py" emit --event consult --repo "$owner_re
 ```
 
 `check_patterns.py` is the wired exemplar (guarded so it's a no-op when telemetry is
-off). Other gates and skills adopt the same one-liner as telemetry proves its worth.
+off). All six deterministic gates (`check_patterns`, `check_portability`,
+`check_cw_standards`, `check_unresolved`, `check_traceability`, `check_single_writer`)
+emit their `caught` count this way.
+
+### LLM validations report their value
+
+A deterministic gate knows its finding count in Python. An **LLM validation**
+(multi-AI code review, `/architect` soundness, `/reflect`, browser-use/design
+fidelity) reconciles findings *model-side*, so it must report the count itself.
+Its **cost** already flows (the consults it runs + the Claude Code sub-agent tokens,
+attributed by `skill.name`); the missing half is **value**. Convention — after
+producing findings, emit one gate event keyed by the same name its cost is
+attributed under:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name code-review \
+  --result "$([ "$n" -gt 0 ] && echo fail || echo pass)" --caught "$n" --repo "$owner_repo"
+```
+
+Then `aggregate`'s verdict joins `cost_by_loop[name]` (what it spent) with
+`gates[name].caught` (what it found) → `cost_per_catch` + `earning`/`demote-candidate`.
+`/reflect` is the wired exemplar; `/implement`'s review, `/architect`, and
+`/close-epic` adopt the same line (tracked in chief-wiggum#143).
 
 ## End-to-end token cost (Claude Code's own telemetry)
 
