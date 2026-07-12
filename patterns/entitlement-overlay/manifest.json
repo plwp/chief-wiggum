@@ -1,0 +1,62 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/entitlement-overlay/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; realized in dogeared-coach admin comps.",
+  "id": "entitlement-overlay",
+  "version": 1,
+  "title": "Floor-Raising Entitlement Overlay (admin comps)",
+  "category": "saas-infra",
+  "trust_class": "overlay-writer-and-effective-limits-seam-are-protected-paths",
+
+  "applies_when": [
+    "a plan-tiered SaaS where support/sales must grant an account MORE than its tier pays for",
+    "the grant must NOT mutate the billing subscription (comped-and-still-billing is normal)",
+    "you need bespoke per-field limits a billing-vendor coupon can't express",
+    "sits on tiered-subscription"
+  ],
+
+  "components": [
+    "overlay-stored-orthogonally: raw payer tier persisted separately from effective; overlay_plan + per-field overlay_limits + reason/granted_by/at",
+    "floor-raising-max: EffectiveLimits computes each cap as max(base, overlay); overlay can only raise, never lower",
+    "unlimited-beats-finite: the -1 unlimited sentinel must compare greater than any finite value in BOTH directions (maxCap), or a naive max silently lowers an unlimited plan",
+    "grant-only-writer: only upward grants (paid tiers, non-negative caps), reason required, audited, blocked from impersonated/suspended sessions",
+    "reconcile-preserves-comp: billing reconcile writes effective = max(payer, overlay) every webhook, so a routine sync can't revert a comp (no comp-immunity flag needed)",
+    "single-effective-seam: every gate/quota reads EffectiveLimits(account), never the raw payer tier"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach admin comps (services/plan.go + billing_reconcile.go + admin_provider.go).",
+    "cluster": [
+      {"id": "INV-EO-001", "statement": "Floor-raising: effective(field) = max(base, overlay) per field; overlay only ever raises.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-010", "code": "services/plan.go:257-305"}},
+      {"id": "INV-EO-002", "statement": "Grant-only writer: only upward grants (paid tiers, reason required, audited), blocked from impersonated/suspended sessions.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-011", "code": "services/admin_provider.go:222-263"}},
+      {"id": "INV-EO-003", "statement": "Unlimited (-1 sentinel) beats finite in BOTH directions, or a naive max silently lowers an unlimited plan.", "realized_as": {"app": "dogeared-coach", "code": "services/plan.go:307-320 (maxCap)"}},
+      {"id": "INV-EO-004", "statement": "Orthogonal source of truth: payer tier persisted separately; reconcile recomputes max(payer, overlay) so a comp is never reverted.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-009", "code": "services/billing_reconcile.go:271-275"}},
+      {"id": "INV-EO-005", "statement": "Single enforcement seam reads EFFECTIVE limits, not the raw payer tier.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-010", "code": "services/plan.go EffectiveLimits"}}
+    ]
+  },
+
+  "parameters": {
+    "payer_tier_field": {"type": "string", "required": true, "description": "Where the raw billed tier is persisted, distinct from effective."},
+    "overlay_fields": {"type": "array", "required": true, "description": "Per-field caps the overlay can raise."},
+    "unlimited_sentinel": {"type": "number", "required": false, "default": -1, "description": "Value that must compare as greater than any finite cap."},
+    "grant_authority": {"type": "string", "required": true, "description": "Who may grant; writer blocked from impersonated/suspended sessions."},
+    "enforcement_seam": {"type": "string", "required": true, "description": "The single function all gates call for effective limits."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "comp_reverts", "goal": "down", "desc": "comps silently dropped by a billing sync (target 0; INV-EO-004)"},
+      {"id": "overlay_downgrade_incidents", "goal": "down", "desc": "an overlay that lowered a payer's cap (target 0; -1-beats-finite guard)"},
+      {"id": "unaudited_grants", "goal": "down", "desc": "overlay grants with no reason/audit row (target 0)"}
+    ]
+  },
+
+  "protected_paths": ["the overlay-grant writer", "the EffectiveLimits seam", "the maxCap sentinel comparison"],
+
+  "depends_on": {
+    "tiered-subscription": "the overlay raises the floor above the plan matrix; effective seam is its enforcement seam reading max(payer, overlay)",
+    "fetch-on-webhook-reconcile": "the reconcile recomputes max so a webhook can't revert a comp"
+  },
+
+  "feeds": {
+    "improvement-loop": "comp grants are trusted operator signal; entitlement is a protected path so loop changes are admin-gated"
+  }
+}
