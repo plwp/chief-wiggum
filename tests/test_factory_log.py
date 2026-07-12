@@ -124,6 +124,78 @@ def test_emit_consult_omits_cost_when_unpriced(tmp_path, monkeypatch):
     assert "cost_usd" not in rec  # unpriced -> no fabricated dollar figure
 
 
+def test_emit_consult_without_tokens_records_frequency(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("codex", None, repo="dogeared-coach")  # CLI provider, usage not surfaced
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "consult" and rec["provider"] == "codex" and rec["repo"] == "dogeared-coach"
+    assert "tokens_in" not in rec and "cost_usd" not in rec  # no fabricated count/cost
+
+
+def test_ingest_claude_code_folds_api_requests(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    otel = tmp_path / "otel.jsonl"
+    otel.write_text("\n".join([
+        json.dumps({"event.name": "api_request", "model": "claude-opus-4-8",
+                    "input_tokens": 1000, "output_tokens": 500, "cost_usd": 0.0175,
+                    "query_source": "repl_main_thread", "session.id": "s1"}),
+        json.dumps({"event.name": "api_request", "model": "claude-haiku-4-5",
+                    "input_tokens": 2000, "output_tokens": 100, "cost_usd": 0.0025,
+                    "query_source": "subagent", "session.id": "s1"}),
+        json.dumps({"event.name": "tool_decision", "tool_name": "Bash"}),  # ignored
+        "not json",  # skipped
+    ]) + "\n")
+    n = factory_log.ingest_claude_code(otel, repo="dogeared-coach")
+    assert n == 2
+    agg = factory_log.aggregate(factory_log.read_log())
+    assert agg["claude_code"]["repl_main_thread"]["cost_usd"] == 0.0175
+    assert agg["claude_code"]["subagent"]["tokens_in"] == 2000
+    assert agg["claude_code_cost_usd"] == 0.02  # 0.0175 + 0.0025
+    assert agg["cost_usd_total"] == 0.02  # end-to-end (no consults here)
+
+
+def test_cost_attributed_per_loop_via_skill(tmp_path, monkeypatch):
+    """The end state: every loop/validation is costed (via skill.name/agent.name)."""
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    otel = tmp_path / "otel.jsonl"
+    otel.write_text("\n".join(json.dumps(x) for x in [
+        {"event.name": "api_request", "cost_usd": 0.42, "query_source": "subagent", "skill.name": "code-review"},
+        {"event.name": "api_request", "cost_usd": 0.05, "query_source": "subagent", "skill.name": "code-review"},
+        {"event.name": "api_request", "cost_usd": 0.31, "query_source": "subagent", "agent.name": "architect"},
+    ]) + "\n")
+    factory_log.ingest_claude_code(otel)
+    loops = factory_log.aggregate(factory_log.read_log())["cost_by_loop"]
+    assert loops["code-review"] == {"calls": 2, "cost_usd": 0.47}
+    assert loops["architect"] == {"calls": 1, "cost_usd": 0.31}
+
+
+def test_ingest_tolerates_otlp_attributes_shape(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    otel = tmp_path / "otel.jsonl"
+    # OTLP-style: fields under an `attributes` dict, event name under `name`
+    otel.write_text(json.dumps({
+        "name": "api_request",
+        "attributes": {"model": "claude-sonnet-5", "input_tokens": 10,
+                       "output_tokens": 5, "cost_usd": 0.0001, "query_source": "subagent"}}) + "\n")
+    assert factory_log.ingest_claude_code(otel) == 1
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "claude_code" and rec["model"] == "claude-sonnet-5"
+
+
+def test_ingest_writes_without_telemetry_enabled(tmp_path, monkeypatch):
+    # explicit ingest always writes (unlike passive emit)
+    monkeypatch.delenv("CW_TELEMETRY", raising=False)
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))  # sets the path (also enables, but ingest doesn't depend on it)
+    otel = tmp_path / "o.jsonl"
+    otel.write_text(json.dumps({"event.name": "api_request", "model": "m", "cost_usd": 0.01}) + "\n")
+    assert factory_log.ingest_claude_code(otel) == 1
+
+
 def test_cli_emit_disabled_returns_1(tmp_path, monkeypatch):
     env = {k: v for k, v in __import__("os").environ.items()
            if k not in ("CW_TELEMETRY", "CW_FACTORY_LOG")}

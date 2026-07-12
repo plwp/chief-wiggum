@@ -265,8 +265,11 @@ def collect(repo: Path, commits_limit: int = 400, prs: list[dict] | None = None)
             findings.append(Finding("gates", "warn",
                 f"telemetry: gate '{gname}' ran {g['runs']}x but caught 0 findings ({round(g['total_ms'])}ms total) — value unproven, candidate noise"))
     if telemetry.get("cost_usd_total"):
+        cc = telemetry.get("claude_code_cost_usd") or 0.0
+        cons = telemetry.get("consult_cost_usd") or 0.0
         findings.append(Finding("factory-logs", "info",
-            f"telemetry: ${telemetry['cost_usd_total']} in logged AI-consult cost across {telemetry['records']} events"))
+            f"telemetry: ${telemetry['cost_usd_total']} end-to-end logged AI cost "
+            f"(Claude Code ${cc} + consults ${cons}) across {telemetry['records']} events"))
 
     return {
         "repo": str(repo),

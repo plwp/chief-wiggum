@@ -242,15 +242,37 @@ TOOLS = {
 }
 
 
+def _emit_consult_telemetry(provider_label: str, model: str | None, cwd: str | None) -> None:
+    """Best-effort factory telemetry for a consult. No-op unless telemetry is enabled
+    (CW_TELEMETRY / CW_FACTORY_LOG); never breaks the consult. Records provider +
+    model + repo now; per-provider token/cost capture is tracked in chief-wiggum#134.
+    """
+    try:
+        import os
+        import sys as _sys
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        import factory_log
+        repo = os.path.basename(os.path.abspath(cwd)) if cwd else None
+        factory_log.emit_consult(provider_label, model, repo=repo)
+    except Exception:
+        pass
+
+
 def consult_provider(provider: Provider, prompt: str, model: str | None, cwd: str | None) -> str:
     if provider.type == "tool":
         if not provider.tool or provider.tool not in TOOLS:
             raise ValueError(f"unsupported tool provider: {provider.name}")
-        return TOOLS[provider.tool](prompt, model=model, cwd=cwd)
+        result = TOOLS[provider.tool](prompt, model=model, cwd=cwd)
+        _emit_consult_telemetry(provider.tool, model, cwd)
+        return result
     if provider.type == "delegate":
         if provider.delegate != "claude-interactive":
             raise ValueError(f"unsupported delegate provider: {provider.name}")
-        return consult_claude_interactive(prompt, model=model, cwd=cwd)
+        result = consult_claude_interactive(prompt, model=model, cwd=cwd)
+        _emit_consult_telemetry("claude-interactive", model, cwd)
+        return result
     raise ValueError(f"unsupported provider type: {provider.type}")
 
 

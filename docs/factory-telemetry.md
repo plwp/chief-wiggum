@@ -73,6 +73,49 @@ python3 "$CW_HOME/scripts/factory_log.py" emit --event consult --repo "$owner_re
 `check_patterns.py` is the wired exemplar (guarded so it's a no-op when telemetry is
 off). Other gates and skills adopt the same one-liner as telemetry proves its worth.
 
+## End-to-end token cost (Claude Code's own telemetry)
+
+`factory_log` captures the pieces CW *runs* — gate outcomes and **consults**
+(`consult_ai` emits a `consult` event per provider call: provider · model · repo,
+with token/cost where a provider surfaces usage). But the biggest cost is the
+**Claude Code session itself** — the orchestrator plus every sub-agent it spawns.
+Claude Code emits that natively via OpenTelemetry, and CW folds it into the same
+log so `/reflect` reports one end-to-end number.
+
+**Capture it with the console exporter (no collector needed):**
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=console
+export OTEL_LOGS_EXPORTER=console
+export OTEL_METRIC_EXPORT_INTERVAL=10000
+# run the factory session, capturing the telemetry stream:
+claude <args> 2> "$CW_TMP/claude-otel.jsonl"
+```
+
+Claude Code emits per-request `api_request` events carrying `model`,
+`input_tokens`/`output_tokens` (+ `cache_read_tokens`/`cache_creation_tokens`),
+`cost_usd`, and **`query_source`** — which separates `repl_main_thread` (the
+orchestrator) from `subagent` (delegated work). Fold them in:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-code "$CW_TMP/claude-otel.jsonl" --repo acme/app
+```
+
+`ingest-claude-code` parses the `api_request` events (tolerant of the flat console
+shape and OTLP `attributes` shape; skips everything else) and writes `claude_code`
+records. It's an **explicit** ingest — it always writes, unlike passive emit. Then:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app
+# → { consults, claude_code: {repl_main_thread, subagent}, consult_cost_usd,
+#     claude_code_cost_usd, cost_usd_total }   ← end-to-end
+```
+
+`aggregate` splits Claude Code cost by `query_source` (orchestrator vs subagent)
+and reports `cost_usd_total = consult_cost + claude_code_cost` — the nominal cost
+of a factory run end to end. `/reflect` surfaces it as a factory-log finding.
+
 ## Reading
 
 ```bash
