@@ -269,17 +269,72 @@ def list_adopted(target_dir: Path, registry_path: Path = REGISTRY, base: Path = 
     return out
 
 
+def catalog(registry_path: Path = REGISTRY, base: Path = ROOT) -> list[dict]:
+    """The selectable menu for `/seed`: every pattern with its `applies_when`.
+
+    Specified patterns carry their manifest `applies_when` (the selection criteria
+    a human/model reasons over); candidates are listed with `status: candidate` so
+    `/seed` can flag them as available-but-not-yet-installable.
+    """
+    reg = load_registry(registry_path)
+    out: list[dict] = []
+    for entry in reg.get("patterns", []):
+        try:
+            manifest = load_manifest(entry, base)
+            applies = manifest.get("applies_when", [])
+        except ApplyError:
+            applies = []
+        out.append({
+            "id": entry.get("id"),
+            "title": entry.get("title"),
+            "category": entry.get("category"),
+            "status": "specified",
+            "applies_when": applies,
+            "invariants": entry.get("invariants", ""),
+            "depends_on": entry.get("depends_on"),
+            "summary": entry.get("summary", ""),
+        })
+    for c in reg.get("candidates", []):
+        out.append({
+            "id": c.get("id"),
+            "title": c.get("title"),
+            "category": c.get("category"),
+            "status": "candidate",
+            "applies_when": [],
+            "summary": c.get("summary", ""),
+        })
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install a registry pattern's contract pack into a target repo.")
     parser.add_argument("pattern_id", nargs="?", help="Specified pattern id from patterns/registry.json")
-    parser.add_argument("--target-dir", required=True, type=Path, help="Local path to the target repo")
+    parser.add_argument("--target-dir", type=Path, help="Local path to the target repo")
     parser.add_argument("--param", action="append", default=[], metavar="k=v", help="Bind a pattern parameter")
+    parser.add_argument("--catalog", action="store_true",
+                        help="Print the selectable pattern menu (for /seed) and exit")
     parser.add_argument("--list-adopted", action="store_true",
                         help="List the target's adopted patterns + clusters (for /architect) and exit")
     parser.add_argument("--now", help="ISO timestamp for the adoption record (testing)")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without writing")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args()
+
+    if args.catalog:
+        items = catalog()
+        if args.format == "json":
+            print(json.dumps(items, indent=2))
+        else:
+            for c in items:
+                mark = "" if c["status"] == "specified" else "  [candidate]"
+                print(f"{c['id']} ({c['category']}){mark}")
+                for w in c.get("applies_when", []):
+                    print(f"    · {w}")
+        return 0
+
+    if not args.target_dir:
+        print("apply_pattern: --target-dir is required (except with --catalog)", file=sys.stderr)
+        return 2
 
     if args.list_adopted:
         adopted = list_adopted(args.target_dir)

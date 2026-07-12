@@ -148,6 +148,34 @@ def test_cli_list_adopted(tmp_path):
     assert out[0]["id"] == REAL and any(i["id"] == "INV-FOWR-001" for i in out[0]["invariants"])
 
 
+# --- catalog (the /seed selection seam) -------------------------------------
+
+def test_catalog_lists_specified_with_applies_when():
+    items = {c["id"]: c for c in apply_pattern.catalog()}
+    assert REAL in items
+    assert items[REAL]["status"] == "specified"
+    assert items[REAL]["applies_when"]  # non-empty selection criteria from the manifest
+    # candidates are listed too, flagged
+    assert any(c["status"] == "candidate" for c in apply_pattern.catalog())
+
+
+def test_cli_catalog_needs_no_target(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "apply_pattern.py"), "--catalog", "--format", "json"],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    ids = {c["id"] for c in json.loads(proc.stdout)}
+    assert {"multi-tenant-isolation", "tiered-subscription"} <= ids
+
+
+def test_cli_apply_requires_target_dir():
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "apply_pattern.py"), REAL],
+        capture_output=True, text=True)
+    assert proc.returncode == 2
+    assert "target-dir" in proc.stderr
+
+
 # --- CLI --------------------------------------------------------------------
 
 def test_cli_dry_run(tmp_path):
