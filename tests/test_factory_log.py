@@ -156,6 +156,28 @@ def test_ingest_claude_code_folds_api_requests(tmp_path, monkeypatch):
     assert agg["cost_usd_total"] == 0.02  # end-to-end (no consults here)
 
 
+def test_verdict_excludes_pure_cost_build_loops():
+    # `implement` has cost but no gate events -> it's build cost, not a validation
+    v = factory_log.cost_value_verdict(
+        {"code-review": {"runs": 2, "caught": 3}},
+        {"code-review": {"calls": 2, "cost_usd": 0.6}, "implement": {"calls": 5, "cost_usd": 3.0}})
+    assert "implement" not in v and "code-review" in v
+
+
+def test_render_report_shows_verdict_and_cost():
+    agg = factory_log.aggregate([
+        {"event": "gate", "name": "browser-validate", "result": "pass", "caught": 0, "repo": "r"},
+        {"event": "gate", "name": "browser-validate", "result": "pass", "caught": 0, "repo": "r"},
+        {"event": "gate", "name": "browser-validate", "result": "pass", "caught": 0, "repo": "r"},
+        {"event": "claude_code", "cost_usd": 0.15, "query_source": "subagent", "skill": "browser-validate", "repo": "r"},
+        {"event": "gate", "name": "code-review", "result": "fail", "caught": 4, "repo": "r"},
+    ], repo="r")
+    report = factory_log.render_report(agg, repo="r")
+    assert "Factory cost/value report — r" in report
+    assert "demote-candidate" in report and "browser-validate" in report
+    assert "VALIDATION" in report and "$/CATCH" in report
+
+
 def test_cost_value_verdict():
     """Every validation costed + its value quantified into a keep/demote verdict."""
     gates = {

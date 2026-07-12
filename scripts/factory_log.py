@@ -295,8 +295,11 @@ def cost_value_verdict(gates: dict, by_loop: dict) -> dict:
       - noise-candidate  — ran >=3 times, caught nothing, ~free (noisy but cheap)
       - unproven         — too few runs to judge
     """
+    # Only validations get a verdict — a name must have emitted gate events. A loop
+    # with cost but no gate events (e.g. `implement`, the build loop / orchestrator)
+    # is build cost, not a validation, and belongs in cost_by_loop, not the verdict.
     out: dict[str, dict] = {}
-    for name in set(gates) | set(by_loop):
+    for name in gates:
         g, loop = gates.get(name, {}), by_loop.get(name, {})
         cost = round(loop.get("cost_usd", 0.0), 6)
         caught = g.get("caught", 0)
@@ -313,6 +316,41 @@ def cost_value_verdict(gates: dict, by_loop: dict) -> dict:
                      "cost_per_catch": round(cost / caught, 6) if caught else None,
                      "verdict": v}
     return out
+
+
+_VERDICT_ORDER = {"demote-candidate": 0, "noise-candidate": 1, "unproven": 2, "earning": 3}
+
+
+def render_report(agg: dict, repo: str | None = None) -> str:
+    """Human-readable cost/value report from an aggregate() result."""
+    L: list[str] = []
+    scope = f" — {repo}" if repo else ""
+    total, cc, cons = agg["cost_usd_total"], agg["claude_code_cost_usd"], agg["consult_cost_usd"]
+    L.append(f"Factory cost/value report{scope}")
+    L.append(f"  {agg['records']} telemetry events · end-to-end cost ${total}"
+             f"  (Claude Code ${cc} + consults ${cons})")
+
+    if agg.get("claude_code"):
+        L.append("\n  Claude Code tokens by source:")
+        for src, d in sorted(agg["claude_code"].items(), key=lambda kv: -kv[1]["cost_usd"]):
+            L.append(f"    {src:<18} {d['calls']:>4} calls   ${d['cost_usd']}")
+    if agg.get("cost_by_loop"):
+        L.append("\n  Cost by loop:")
+        for name, d in sorted(agg["cost_by_loop"].items(), key=lambda kv: -kv[1]["cost_usd"]):
+            L.append(f"    {name:<20} ${d['cost_usd']}  ({d['calls']} calls)")
+
+    verdict = agg.get("verdict") or {}
+    if verdict:
+        L.append("\n  Validation verdicts (worst first — demote-candidates need action):")
+        L.append(f"    {'VALIDATION':<22}{'RUNS':>5}{'CAUGHT':>7}{'COST':>10}{'$/CATCH':>10}   VERDICT")
+        L.append("    " + "─" * 70)
+        rows = sorted(verdict.items(),
+                      key=lambda kv: (_VERDICT_ORDER.get(kv[1]["verdict"], 9), -kv[1]["cost_usd"]))
+        for name, v in rows:
+            cost = f"${v['cost_usd']:.2f}"
+            cpc = f"${v['cost_per_catch']:.3f}" if v["cost_per_catch"] is not None else "—"
+            L.append(f"    {name:<22}{v['runs']:>5}{v['caught']:>7}{cost:>10}{cpc:>10}   {v['verdict']}")
+    return "\n".join(L)
 
 
 def main() -> int:
@@ -359,7 +397,8 @@ def main() -> int:
         return 0
     if args.cmd == "aggregate":
         agg = aggregate(read_log(), repo=args.repo)
-        print(json.dumps(agg, indent=2))
+        print(render_report(agg, repo=args.repo) if args.format == "text"
+              else json.dumps(agg, indent=2))
         return 0
     return 2
 
