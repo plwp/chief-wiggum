@@ -467,6 +467,15 @@ Write the retrospective to `$EPIC_DIR/retrospective.md` and commit.
 
 ### Step 11: Final report
 
+**Record validation telemetry.** `/close-epic` is the epic-level validation — record its value. The deterministic audits (traceability, unresolved, single-writer, ratchet) already emit their own gate events; this captures the epic-level LLM analysis (Step 9) + cross-surface/UX findings. Emit one gate event with the total count of substantive findings surfaced across the close (exclude nits) — no-op unless telemetry is enabled, never blocks:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name close-epic \
+  --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
+```
+
+(Convention: `docs/factory-telemetry.md` → "LLM validations report their value".)
+
 Present the full epic close report:
 
 ```markdown
