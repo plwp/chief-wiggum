@@ -88,32 +88,36 @@ filter patterns without opening each manifest. It also carries **candidates**
 (patterns mined but not yet fully specified) and **meta-disciplines** (recurring
 cross-pattern rules — fail-closed, idempotency, injected seams, documented TOCTOU).
 
-## How a pattern gets applied (proposed `/apply-pattern`)
+## How a pattern gets applied (`/apply-pattern`)
 
-A pattern is installed into a target repo by a new thin workflow (or a mode of
-`/architect`):
+A pattern is installed into a target repo by a thin workflow
+(`.claude/commands/apply-pattern.md` → `scripts/apply_pattern.py`):
 
 ```
-/apply-pattern owner/repo --pattern improvement-loop
+/apply-pattern owner/repo --pattern fetch-on-webhook-reconcile --param resource=subscription
 ```
 
-Mechanically:
+Mechanically — the **contract-pack** steps (1, 2, 4, 5) are **built**; scaffold
+stamping (3) is deferred until patterns ship a `scaffold/`:
 
-1. **Resolve** the target repo (`scripts/repo.py`, as every workflow does).
+1. **Resolve** the target repo (`scripts/repo.py`, as every workflow does). ✅
 2. **Bind parameters** — read `manifest.json`'s parameter schema and resolve each
    from the target app's context (its signal sources, its build/test commands,
-   its model family, its protected paths). Unresolved facts become `TBD:`
-   markers, gated exactly like every other CW artifact
-   (`scripts/check_unresolved.py`).
-3. **Stamp** the scaffold into the target repo with parameters bound.
-4. **Register protected paths** — add the pattern's `protected_paths` to the
-   product's `docs/quality/ratchet.json`, so the pattern's own guards/objective
-   become goalposts the app's autonomous machinery cannot move
-   (reuses the existing [ratchet](ratchet.md)).
+   its model family, its protected paths). Unresolved **required** params become
+   `TBD:` markers in the installed contract pack, gated exactly like every other
+   CW artifact (`scripts/check_unresolved.py`). ✅
+3. **Stamp** the scaffold into the target repo with parameters bound. ⏳ *(deferred
+   — no pattern ships a `scaffold/` yet.)*
+4. **Register protected paths** — add `docs/patterns/**` (the installed contract
+   pack) to the product's `docs/quality/ratchet.json`, so the adopted cluster
+   becomes a goalpost the app's autonomous machinery cannot move (reuses the
+   existing [ratchet](ratchet.md)). The manifest's prose `protected_paths` are
+   recorded in the adoption record as *intents* for a human to map to real code
+   paths. ✅
 5. **Record adoption** — write `docs/patterns/adopted.json` in the target repo
-   with the pattern id, version, bound parameters, and provenance. This is the
-   product's manifest of "which CW patterns am I running, and how were they
-   configured".
+   with the pattern id, version, bound parameters, cluster ids, and provenance,
+   plus `docs/patterns/<id>/invariants.md` — the invariant cluster as a stable-id
+   contract pack `/architect` folds into the epic's `invariants.md`. ✅
 
 Patterns are **project-agnostic** and installed by *value* into the target — the
 same principle as every other CW skill. CW never hardcodes the target's
@@ -516,18 +520,19 @@ frictionless autonomous mode with no quarantine gate.
 
 ## Rollout
 
-Proposed, smallest-first:
+Smallest-first. Progress so far:
 
-1. **This PR** — the registry structure + pattern #1 captured as a spec
-   (`pattern.md` + `manifest.json`) + this design doc. No workflow wiring yet.
-2. **`/apply-pattern` skill** — the thin installer described above, plus the
-   `scaffold/` for pattern #1 (the generic loop skill + scripts, with the
-   trust/quarantine gate added).
-3. **`/seed` + `/architect` integration** — pattern *selection* becomes part of
-   product design: the architecture stage proposes applicable patterns and
-   records the choice, the way `/design` records a chosen design direction.
-4. **Fill the backlog** — capture the standalone candidate patterns above as
-   their own entries.
-
-Steps 2–4 are deliberately out of scope here — this PR is about *starting to
-capture*, with one real, fully-specified entry to prove the shape.
+1. ✅ **Registry structure** + the invariant-cluster model, with 9 specified
+   patterns (`pattern.md` + `manifest.json` each) mined + grounded, and
+   `check_patterns.py` enforcing the model in CI.
+2. 🟡 **`/apply-pattern` skill** — the thin **contract-pack** installer is built
+   (`scripts/apply_pattern.py` + `.claude/commands/apply-pattern.md`): binds
+   params, stamps the invariant cluster + adoption record, registers protected
+   paths. The pattern `scaffold/` (stamping code, not just contracts) is still to
+   come.
+3. ⏳ **`/seed` + `/architect` integration** — pattern *selection* becomes part of
+   product design: the architecture stage proposes applicable patterns and records
+   the choice, the way `/design` records a chosen design direction; `/architect`
+   folds an adopted cluster into the epic's `invariants.md` by stable id.
+4. ⏳ **Fill the backlog** — capture the remaining candidate patterns as their own
+   entries.

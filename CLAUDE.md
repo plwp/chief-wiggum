@@ -208,6 +208,7 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /create-issue owner/repo        # Create a GitHub issue
 /seed owner/repo                # Architecture brainstorm & issue seeding
 /design owner/repo              # Product design: mockups → human choice → docs/design/
+/apply-pattern owner/repo --pattern <id>  # Install a registry pattern's invariant-cluster contract pack
 
 # Epic flow (the core loop)
 /plan-epic owner/repo           # Group issues into epic with dependency graph
