@@ -529,7 +529,7 @@ Smallest-first. Progress so far:
    (`scripts/apply_pattern.py` + `.claude/commands/apply-pattern.md`): binds
    params, stamps the invariant cluster + adoption record, registers protected
    paths. The pattern `scaffold/` (stamping code, not just contracts) is still to
-   come.
+   come — tracked in [chief-wiggum#135](https://github.com/plwp/chief-wiggum/issues/135).
 3. ✅ **`/seed` + `/architect` integration** — the full select → install → fold →
    hold loop is wired:
    - **`/seed` Step 4.5** *selects* — proposes applicable patterns from the catalog

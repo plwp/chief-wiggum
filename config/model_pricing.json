@@ -41,6 +41,6 @@
     "glm-4.7-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
     "glm-4.5-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
 
-    "codex": {"input_per_mtok": null, "output_per_mtok": null, "provider": "openai", "verified": false, "note": "TBD: identify the exact GPT model `codex exec` bills as, then map to its gpt-* row"}
+    "codex": {"input_per_mtok": null, "output_per_mtok": null, "provider": "openai", "verified": false, "note": "TBD (chief-wiggum#134): identify the exact GPT model `codex exec` bills as, then map to its gpt-* row"}
   }
 }
