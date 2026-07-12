@@ -12,13 +12,21 @@ exists.
 
 Event schema (one JSON object per line):
     {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
-     provider?, tokens_in?, tokens_out?, cost_usd?, details?}
+     provider?, tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
+     missed_by?, found_in?, invariant?, fixed?, details?}
 
-  event: "gate" | "consult" | "worker" | "skill"
+  event: "gate" | "consult" | "worker" | "skill" | "escape"
   A gate records name/result/duration_ms/caught; a consult records
-  provider/tokens/cost; each call site fills what it KNOWS and omits the rest.
+  provider/tokens/cost; an **escape** records a manually-found bug — especially
+  one that slipped PAST a gate and was caught later (`missed_by` the gate/stage
+  that should have caught it, `found_in` the review/verification step that
+  actually caught it) — so `aggregate()` can compute gate RECALL
+  (caught / (caught + escaped)), not just catches. Each call site fills what it
+  KNOWS and omits the rest.
 
     factory_log.py emit --event gate --repo acme/app --name ratchet --result pass --caught 0
+    factory_log.py bug --repo acme/app --summary "reset endpoint leaks account existence" \
+      --severity high --missed-by ticket-gate --found-in close-epic-review
     factory_log.py aggregate [--repo acme/app]
 """
 
@@ -38,7 +46,11 @@ GATE = "gate"
 CONSULT = "consult"
 WORKER = "worker"
 SKILL = "skill"
+ESCAPE = "escape"  # a manually-found bug, especially one a gate missed
 CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's own OTEL telemetry
+
+ESCAPE_SEVERITIES = ("low", "medium", "high", "critical")
+ESCAPE_FOUND_IN = ("implement-verify", "close-epic-review", "saas-gate", "manual", "prod")
 
 
 def log_path() -> Path:
@@ -78,6 +90,27 @@ def emit_gate(name: str, result: str, *, caught: int | None = None,
               ticket: str | None = None) -> bool:
     return emit(GATE, name=name, result=result, caught=caught,
                 duration_ms=duration_ms, repo=repo, ticket=ticket)
+
+
+def emit_escape(summary: str, *, severity: str, missed_by: str, found_in: str,
+                repo: str | None = None, ticket: str | None = None,
+                invariant: str | None = None, fixed: bool | None = None) -> bool:
+    """Record a manually-found bug — especially an ESCAPE that slipped PAST a gate
+    and was only caught later (e.g. close-epic's adversarial review catching a bug
+    the ticket's own gates missed).
+
+    A `gate` event's `caught` count is only ever what THAT gate caught at THAT
+    time — it has no way to see what it missed. `escape` is the other half: a
+    human/agent records `missed_by` (the gate/stage that SHOULD have caught this,
+    e.g. `ticket-gate`, `traceability`, `ratchet`, `close-epic-review`,
+    `saas-gate`) and `found_in` (where it actually surfaced). `aggregate()` joins
+    the two into gate RECALL — caught / (caught + escaped) — which `caught` alone
+    can never show: a gate can report 100% catches on everything it looked at and
+    still have terrible recall if real bugs keep slipping past it unnoticed.
+    """
+    return emit(ESCAPE, summary=summary, severity=severity, missed_by=missed_by,
+                found_in=found_in, repo=repo, ticket=ticket, invariant=invariant,
+                fixed=fixed)
 
 
 def load_pricing(path: Path = PRICING_PATH) -> dict:
@@ -232,6 +265,7 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         records = [r for r in records if r.get("repo") == repo]
     gates: dict[str, dict] = {}
     consults: dict[str, dict] = {}
+    escapes: dict[str, dict] = {}
     # Claude Code's own token cost, split orchestrator (repl_main_thread) vs subagent,
     # and (when the OTEL events carry skill.name/agent.name) by loop/validation.
     claude_code: dict[str, dict] = {}
@@ -268,6 +302,14 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
                 bl = by_loop.setdefault(r["skill"], {"calls": 0, "cost_usd": 0.0})
                 bl["calls"] += 1
                 bl["cost_usd"] += r.get("cost_usd") or 0.0
+        elif r.get("event") == ESCAPE:
+            key = r.get("missed_by") or "unknown"
+            es = escapes.setdefault(key, {"escaped": 0, "fixed": 0, "by_severity": {}})
+            es["escaped"] += 1
+            if r.get("fixed"):
+                es["fixed"] += 1
+            sev = r.get("severity") or "unknown"
+            es["by_severity"][sev] = es["by_severity"].get(sev, 0) + 1
     # value/noise hint: a gate with runs but zero caught is a noise candidate
     for g in gates.values():
         g["value"] = "earning" if g["caught"] > 0 else ("noise-candidate" if g["runs"] >= 3 else "unproven")
@@ -275,8 +317,17 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         cc["cost_usd"] = round(cc["cost_usd"], 6)
     for bl in by_loop.values():
         bl["cost_usd"] = round(bl["cost_usd"], 6)
+    # recall = caught / (caught + escaped) — joins the gate's own catches (what it
+    # saw) with escapes attributed to it (what it missed). None when we have
+    # neither a catch count nor an escape count to reason from.
+    for name, es in escapes.items():
+        caught = gates.get(name, {}).get("caught", 0)
+        escaped = es["escaped"]
+        es["caught"] = caught
+        es["recall"] = round(caught / (caught + escaped), 4) if (caught + escaped) > 0 else None
     return {"gates": gates, "consults": consults, "claude_code": claude_code,
             "cost_by_loop": by_loop, "verdict": cost_value_verdict(gates, by_loop),
+            "escapes": escapes, "escapes_total": sum(es["escaped"] for es in escapes.values()),
             "records": len(records),
             "consult_cost_usd": round(consult_cost, 4),
             "claude_code_cost_usd": round(cc_cost, 4),
@@ -350,6 +401,16 @@ def render_report(agg: dict, repo: str | None = None) -> str:
             cost = f"${v['cost_usd']:.2f}"
             cpc = f"${v['cost_per_catch']:.3f}" if v["cost_per_catch"] is not None else "—"
             L.append(f"    {name:<22}{v['runs']:>5}{v['caught']:>7}{cost:>10}{cpc:>10}   {v['verdict']}")
+
+    escapes = agg.get("escapes") or {}
+    if escapes:
+        L.append(f"\n  Escapes — bugs a gate missed ({agg.get('escapes_total', 0)} total). "
+                  "Recall = caught / (caught + escaped):")
+        L.append(f"    {'MISSED BY':<22}{'CAUGHT':>7}{'ESCAPED':>9}{'FIXED':>7}   RECALL")
+        L.append("    " + "─" * 55)
+        for name, e in sorted(escapes.items(), key=lambda kv: -kv[1]["escaped"]):
+            recall = f"{e['recall']:.0%}" if e["recall"] is not None else "—"
+            L.append(f"    {name:<22}{e['caught']:>7}{e['escaped']:>9}{e['fixed']:>7}   {recall}")
     return "\n".join(L)
 
 
@@ -365,6 +426,18 @@ def main() -> int:
         e.add_argument(f"--{opt}", type=int)
     e.add_argument("--duration-ms", type=float)
     e.add_argument("--cost-usd", type=float)
+
+    b = sub.add_parser("bug", help="Log a manually-found bug — especially an escape a gate missed")
+    b.add_argument("--repo", required=True)
+    b.add_argument("--summary", required=True, help="What the bug was")
+    b.add_argument("--severity", required=True, choices=ESCAPE_SEVERITIES)
+    b.add_argument("--missed-by", required=True,
+                   help="The gate/stage that SHOULD have caught it, e.g. ticket-gate|traceability|ratchet|close-epic-review|saas-gate")
+    b.add_argument("--found-in", required=True, choices=ESCAPE_FOUND_IN,
+                   help="Where it was actually caught")
+    b.add_argument("--ticket", help="Issue/ticket number, e.g. 42")
+    b.add_argument("--invariant", help="Related invariant ID, e.g. INV-012")
+    b.add_argument("--fixed", action="store_true", help="Set if already fixed at log time")
 
     a = sub.add_parser("aggregate", help="Summarize the log")
     a.add_argument("--repo")
@@ -391,6 +464,14 @@ def main() -> int:
         fields["tokens_in"] = args.tokens_in
         fields["tokens_out"] = args.tokens_out
         ok = emit(args.event, **fields)
+        if not ok:
+            print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)", file=sys.stderr)
+            return 1
+        return 0
+    if args.cmd == "bug":
+        ok = emit_escape(args.summary, severity=args.severity, missed_by=args.missed_by,
+                          found_in=args.found_in, repo=args.repo, ticket=args.ticket,
+                          invariant=args.invariant, fixed=True if args.fixed else None)
         if not ok:
             print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)", file=sys.stderr)
             return 1

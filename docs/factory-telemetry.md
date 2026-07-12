@@ -25,7 +25,8 @@ One JSON object per line. Each call site fills what it **knows** and omits the r
 
 ```
 {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
- provider?, tokens_in?, tokens_out?, cost_usd?, details?}
+ provider?, tokens_in?, tokens_out?, cost_usd?,
+ summary?, severity?, missed_by?, found_in?, invariant?, fixed?, details?}
 ```
 
 | event | who emits | key fields |
@@ -34,6 +35,40 @@ One JSON object per line. Each call site fills what it **knows** and omits the r
 | `consult` | an AI consultation | `provider`, `tokens_in`, `tokens_out`, `cost_usd` |
 | `worker` | a sub-agent run | `name`/role, tokens/cost if the harness surfaces them |
 | `skill` | a workflow step | `name`, `result` |
+| `escape` | an agent that manually found a bug | `summary`, `severity`, `missed_by`, `found_in`, `ticket?`, `invariant?`, `fixed?` |
+
+## Escapes — measuring gate RECALL, not just catches
+
+A `gate` event's `caught` count is only ever what that gate saw *at the time it
+ran* — it has no way to record what it missed. That leaves a blind spot: a gate
+can report a perfect catch rate on everything it inspected and still have poor
+**recall** if real bugs keep slipping past it and are only found later (an
+adversarial review in `/close-epic`, orchestrator verification in `/implement`,
+a `/saas-gate` run, a manual find, or a production incident).
+
+`escape` closes that gap. When a review or verification step finds a **real
+bug that an earlier gate/stage should have caught**, log it:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo acme/app \
+  --summary "reset endpoint leaks account existence via timing" \
+  --severity high --missed-by ticket-gate --found-in close-epic-review \
+  --ticket 42 --invariant INV-012 --fixed
+```
+
+- `--missed-by` names the gate/stage that **should** have caught it (free text —
+  common values: `ticket-gate`, `traceability`, `ratchet`, `close-epic-review`,
+  `saas-gate`).
+- `--found-in` is a closed set naming where it **actually** surfaced:
+  `implement-verify` | `close-epic-review` | `saas-gate` | `manual` | `prod`.
+- `--severity` is `low` | `medium` | `high` | `critical`.
+- `--ticket`, `--invariant`, and `--fixed` are optional context.
+
+`aggregate()` joins each `missed_by` gate's own `caught` count with its escaped
+count into **recall**: `caught / (caught + escaped)`. A gate with `caught: 10,
+escaped: 0` has 100% recall; one with `caught: 2, escaped: 2` only actually
+catches half of what it should — a signal `caught` alone can never show. See
+`aggregate()["escapes"]` / the "Escapes" section of `render_report`.
 
 Token counts come from the provider's own usage summary — every consult provider
 surfaces one (the CLIs via their `--output-format json` mode, the SDKs via the
@@ -148,3 +183,8 @@ python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app   # per-gate
 caught), or `unproven` (too few runs to judge) — the input to the gate-rollout
 question in `docs/gate-rollout.md`: a gate that never catches anything on real code
 is a candidate to demote or delete before it trains operators to `--force` past it.
+
+It also reports `escapes` — per `missed_by` gate, `caught`/`escaped`/`fixed` counts
+and `recall` (`caught / (caught + escaped)`), plus `escapes_total`. A gate that
+looks `earning` on catches alone but has low recall is quietly letting real bugs
+through; that's the case `caught` by itself can't show.
