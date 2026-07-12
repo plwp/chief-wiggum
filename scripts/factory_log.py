@@ -276,10 +276,43 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
     for bl in by_loop.values():
         bl["cost_usd"] = round(bl["cost_usd"], 6)
     return {"gates": gates, "consults": consults, "claude_code": claude_code,
-            "cost_by_loop": by_loop, "records": len(records),
+            "cost_by_loop": by_loop, "verdict": cost_value_verdict(gates, by_loop),
+            "records": len(records),
             "consult_cost_usd": round(consult_cost, 4),
             "claude_code_cost_usd": round(cc_cost, 4),
             "cost_usd_total": round(consult_cost + cc_cost, 4)}
+
+
+def cost_value_verdict(gates: dict, by_loop: dict) -> dict:
+    """Join cost (per loop/validation) with value (findings caught) into a keep/demote
+    verdict per validation — the "every loop is costed and its value quantified" view.
+
+    A gate's value is its `caught` count; its cost is what its loop spent (LLM
+    validations via cost_by_loop; deterministic gates are ~$0). cost_per_catch is the
+    dollars spent per finding surfaced. The verdict:
+      - earning         — caught > 0 (deterministic gates: free value; LLM loops: paid but productive)
+      - demote-candidate — spent real $ over >=3 runs and caught nothing (noise you're paying for)
+      - noise-candidate  — ran >=3 times, caught nothing, ~free (noisy but cheap)
+      - unproven         — too few runs to judge
+    """
+    out: dict[str, dict] = {}
+    for name in set(gates) | set(by_loop):
+        g, loop = gates.get(name, {}), by_loop.get(name, {})
+        cost = round(loop.get("cost_usd", 0.0), 6)
+        caught = g.get("caught", 0)
+        runs = g.get("runs", 0) or loop.get("calls", 0)
+        if caught > 0:
+            v = "earning"
+        elif runs >= 3 and cost > 0:
+            v = "demote-candidate"
+        elif runs >= 3:
+            v = "noise-candidate"
+        else:
+            v = "unproven"
+        out[name] = {"cost_usd": cost, "caught": caught, "runs": runs,
+                     "cost_per_catch": round(cost / caught, 6) if caught else None,
+                     "verdict": v}
+    return out
 
 
 def main() -> int:

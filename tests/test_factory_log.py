@@ -156,6 +156,25 @@ def test_ingest_claude_code_folds_api_requests(tmp_path, monkeypatch):
     assert agg["cost_usd_total"] == 0.02  # end-to-end (no consults here)
 
 
+def test_cost_value_verdict():
+    """Every validation costed + its value quantified into a keep/demote verdict."""
+    gates = {
+        "check_patterns": {"runs": 5, "caught": 2, "total_ms": 40},   # free, catches -> earning
+        "expensive_noise": {"runs": 4, "caught": 0, "total_ms": 0},   # runs but nothing; paid via loop
+        "cheap_noise": {"runs": 4, "caught": 0, "total_ms": 5},       # runs, nothing, ~free
+    }
+    by_loop = {"expensive_noise": {"calls": 4, "cost_usd": 1.20}}
+    v = factory_log.cost_value_verdict(gates, by_loop)
+    assert v["check_patterns"]["verdict"] == "earning" and v["check_patterns"]["cost_per_catch"] == 0.0
+    assert v["expensive_noise"]["verdict"] == "demote-candidate"  # $1.20 over 4 runs, 0 catches
+    assert v["cheap_noise"]["verdict"] == "noise-candidate"       # noisy but free
+    # an LLM validation that caught something -> cost_per_catch
+    v2 = factory_log.cost_value_verdict(
+        {"code-review": {"runs": 2, "caught": 4}}, {"code-review": {"calls": 2, "cost_usd": 0.80}})
+    assert v2["code-review"]["verdict"] == "earning"
+    assert v2["code-review"]["cost_per_catch"] == 0.2  # $0.80 / 4 findings
+
+
 def test_cost_attributed_per_loop_via_skill(tmp_path, monkeypatch):
     """The end state: every loop/validation is costed (via skill.name/agent.name)."""
     log = tmp_path / "f.jsonl"
