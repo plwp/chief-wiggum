@@ -268,6 +268,21 @@ def test_cli_coverage_gate_fails_on_violation(tmp_path, capsys):
     assert data["violations"][0]["symbol"] == "ChangePlan"
 
 
+def test_cli_emits_telemetry_with_caught_count(tmp_path, capsys, monkeypatch):
+    """The gate emits a real gate event with the finding count (feeds the verdict)."""
+    log = tmp_path / "tel.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "admin").mkdir(parents=True)
+    (src / "internal" / "admin" / "h.go").write_text("func ChangePlan(p *Provider) {\n\tp.StripePlan = \"x\"\n}\n")
+    sw.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    capsys.readouterr()
+    events = [json.loads(ln) for ln in log.read_text().splitlines()]
+    gate = next(e for e in events if e.get("event") == "gate" and e["name"] == "check_single_writer")
+    assert gate["caught"] == 1 and gate["result"] == "fail"
+
+
 def test_cli_soundness_gate_fails_on_malformed(tmp_path, capsys):
     epic = tmp_path / "epic"
     epic.mkdir()

@@ -355,11 +355,34 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(render_markdown(report))
 
+    try:  # factory telemetry; no-op unless enabled, never breaks the gate
+        import os
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from factory_log import emit_gate
+        caught = (len(report.orphan_business_rules) + len(report.uncovered_contracts)
+                  + len(report.untested_contracts) + len(report.dangling)
+                  + len(report.invalid_links))
+        emit_gate("check_traceability", "fail" if caught else "pass",
+                  caught=caught, repo=_repo_from_epic_dir(args.epic_dir))
+    except Exception:
+        pass
+
     if args.gate == "soundness" and not report.soundness_ok:
         return 1
     if args.gate == "coverage" and not report.coverage_ok:
         return 1
     return 0
+
+
+def _repo_from_epic_dir(epic_dir: str) -> str:
+    """Best-effort repo name from an epic dir (<repo>/docs/epics/<slug>)."""
+    import os
+    parts = os.path.abspath(epic_dir).split(os.sep)
+    if "docs" in parts and parts.index("docs") > 0:
+        return parts[parts.index("docs") - 1]
+    return os.path.basename(os.path.abspath(epic_dir))
 
 
 if __name__ == "__main__":
