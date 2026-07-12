@@ -1,0 +1,54 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/build-test-floor/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; realized by the factory on itself (chief-wiggum Makefile + ci.yml).",
+  "id": "build-test-floor",
+  "version": 1,
+  "title": "Language-Agnostic Build/Test Floor",
+  "category": "gate",
+  "trust_class": "floor-definition-is-protected-path",
+
+  "applies_when": [
+    "every repo — it is the pre-condition gate deploy + the improvement loop stand on",
+    "the local mirror is non-negotiable; only the CI trigger policy varies",
+    "polyglot repos need every language gated, not just one"
+  ],
+
+  "components": [
+    "one-command-local-and-ci: a single entrypoint (make lint && make test / pre-merge-check) is the whole gate; CI runs THAT command, not a re-specification, so green-locally predicts green-in-CI",
+    "polyglot-auto-detect: set up + gate every language present (build + lint + test each)",
+    "fail-closed-no-skip: any failing step or missing required tool fails the floor; never degrades to skipped-therefore-green",
+    "pre-condition-for-merge-and-deploy: CI runs the floor on every PR; no deploy proceeds without it; the floor is a protected path workers can't weaken",
+    "zero-cost-until-opt-in(optional): manual-dispatch CI trigger for cost-sensitive private repos; the local mirror still gives the full gate for free"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees; grounded in chief-wiggum's OWN floor (the factory held to this pattern) + dogeared-coach's zero-cost trigger.",
+    "cluster": [
+      {"id": "INV-BTF-001", "statement": "One entrypoint is the whole gate, and CI runs that same command, so green-locally predicts green-in-CI.", "realized_as": {"app": "chief-wiggum", "code": "Makefile (lint/test) == .github/workflows/ci.yml (run: make lint / make test)"}},
+      {"id": "INV-BTF-002", "statement": "Polyglot: every language in the repo is set up and gated (build + lint + test), not just one.", "realized_as": {"app": "chief-wiggum", "code": ".github/workflows/ci.yml (Python + Node setup; make lint = ruff + py_compile + CW gates)"}},
+      {"id": "INV-BTF-003", "statement": "Fail-closed: any step failing or a required tool missing fails the floor; never a silent skip.", "realized_as": {"app": "chief-wiggum", "code": "make step-failure semantics; each gate exits non-zero on violation"}},
+      {"id": "INV-BTF-004", "statement": "Pre-condition for merge/deploy: CI runs the floor on every PR; no deploy proceeds without it.", "realized_as": {"app": "chief-wiggum", "code": ".github/workflows/ci.yml (on: pull_request); deployment-release INV-DRL floor-gated"}},
+      {"id": "INV-BTF-005", "statement": "(optional) Zero-cost-until-opt-in: manual-dispatch CI for cost-sensitive private repos; the local mirror still gives the full gate for free.", "realized_as": {"app": "dogeared-coach", "code": ".github/workflows/ci.yml (workflow_dispatch-only to save private-repo Actions minutes)"}}
+    ]
+  },
+
+  "parameters": {
+    "floor_cmd": {"type": "string", "required": true, "description": "The single local entrypoint CI also runs (make lint && make test, pre-merge-check)."},
+    "languages": {"type": "array", "required": true, "description": "Toolchains set up + gated (each gets build + lint + test)."},
+    "ci_trigger": {"enum": ["on-push-and-pr", "manual-dispatch"], "required": false, "default": "on-push-and-pr", "description": "Trigger policy; manual-dispatch is zero-cost-until-opt-in."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "local_ci_divergence", "goal": "down", "desc": "changes green locally but red in CI or vice versa (target 0 — same command)"},
+      {"id": "silent_skip_incidents", "goal": "down", "desc": "floor steps that no-op'd instead of failing (target 0)"},
+      {"id": "unfloored_merges", "goal": "down", "desc": "merges/deploys that bypassed the floor (target 0)"}
+    ]
+  },
+
+  "protected_paths": ["the floor entrypoint (Makefile / pre-merge-check)", "the CI workflow that runs it"],
+
+  "feeds": {
+    "deployment-release": "the floor is deployment-release's explicit pre-condition (floor_cmd); no stage/promote runs without it",
+    "improvement-loop": "the floor is the deterministic pass/fail the ratchet high-water mark is built on"
+  }
+}

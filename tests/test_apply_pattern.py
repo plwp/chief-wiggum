@@ -43,7 +43,7 @@ def test_unknown_pattern_raises():
 
 def test_candidate_pattern_raises():
     with pytest.raises(apply_pattern.ApplyError, match="candidate"):
-        apply_pattern.build_plan("build-test-floor", {}, now=FIXED_NOW)
+        apply_pattern.build_plan("reconciliation-sweep", {}, now=FIXED_NOW)  # still a candidate
 
 
 def test_unknown_param_raises():
