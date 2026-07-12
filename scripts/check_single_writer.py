@@ -592,7 +592,22 @@ def check(
         return report
 
     if source_root:
-        writers = scan_writers(source_root, invariants, exclude=exclude)
+        # The epic's OWN artifacts (invariants.md, rendered models/*.py, contract
+        # assertions) DESCRIBE the controlled field; they never write the production
+        # row. When the epic dir lives under the scanned source_root (the common case:
+        # source is the repo root, epic is docs/epics/<slug>), exclude that subtree so a
+        # field token appearing in a rendered `@deal.post` message or a guard template
+        # (e.g. `{active_owner_count:-1}` inside a spec string) is not mis-read as a
+        # second writer. Writers must be found in the implementation, not the spec.
+        scan_exclude = list(exclude or [])
+        try:
+            epic_rel = Path(epic_dir).resolve().relative_to(Path(source_root).resolve())
+            rel_str = str(epic_rel)
+            if rel_str and rel_str != ".":
+                scan_exclude.append(rel_str)
+        except ValueError:
+            pass  # epic_dir is outside source_root (e.g. CW_TMP at architect time)
+        writers = scan_writers(source_root, invariants, exclude=scan_exclude)
         report.writers = [w.to_dict() for w in writers]
         report.violations = [w.to_dict() for w in writers if not w.sanctioned]
         # Surface any invariant whose controlled field has NO writer at all — the

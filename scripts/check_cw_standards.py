@@ -30,6 +30,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 SCRIPT_REF_RE = re.compile(r"scripts/([A-Za-z0-9_./-]+\.py)")
 
+# A `scripts/<x>.py` reference prefixed with a TARGET-repo path variable points at the
+# *target* repo's own script (e.g. `"$TARGET_REPO/scripts/maintain_tutorials.py"` — the
+# repo's own tutorial maintainer), NOT a chief-wiggum script. Those must not be flagged
+# as dangling chief-wiggum refs. Match the path-variable segment immediately before the
+# `scripts/` token.
+TARGET_REPO_PREFIX_RE = re.compile(
+    r"(?:TARGET_REPO|TARGET_DIR|repo_dir|REPO_DIR|target_repo|target_dir)/$"
+)
+
 
 @dataclass
 class Finding:
@@ -62,7 +71,15 @@ def check(root: Path = ROOT) -> list[Finding]:
     # 2. no dangling skill -> script references
     if commands.is_dir():
         for md in sorted(commands.glob("*.md")):
-            refs = set(SCRIPT_REF_RE.findall(md.read_text(errors="ignore")))
+            text = md.read_text(errors="ignore")
+            refs: set[str] = set()
+            for m in SCRIPT_REF_RE.finditer(text):
+                # Skip target-repo-scoped refs (`$TARGET_REPO/scripts/...`) — those are the
+                # target repo's own scripts, not chief-wiggum's, so their absence here is
+                # expected, not a dangling ref.
+                if TARGET_REPO_PREFIX_RE.search(text[max(0, m.start() - 16):m.start()]):
+                    continue
+                refs.add(m.group(1))
             for ref in sorted(refs):
                 if not _script_exists(ref, scripts):
                     findings.append(Finding("dangling-script-ref",

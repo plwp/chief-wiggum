@@ -230,6 +230,50 @@ def test_incident_clean_when_only_sanctioned_writer(tmp_path):
     assert report.coverage_ok is True
 
 
+def test_epic_own_generated_artifacts_are_not_scanned_as_writers(tmp_path):
+    """When the epic dir lives UNDER the scanned source_root (the real layout:
+    source is the repo root, epic is docs/epics/<slug>), the epic's OWN rendered
+    model artifacts DESCRIBE the controlled field — they must not be mis-read as a
+    second writer. Regression: a rendered `@deal.post` message carrying the literal
+    bson update `{active_owner_count:-1}` was flagged as an unsanctioned writer."""
+    repo = tmp_path
+    epic = repo / "docs" / "epics" / "team-seats"
+    (epic / "models").mkdir(parents=True)
+    (epic / "invariants.md").write_text(
+        "# Invariants\n\n"
+        "**INV-seat-001**: single write path for the owner counter\n"
+        "<!-- @cw-writes INV-seat-001 controls_field=provider.active_owner_count "
+        "sanctioned_writers=RemoveStaff,internal/db/provider_owner_count.go -->\n"
+    )
+    # A rendered spec artifact: the field token appears inside a message STRING that
+    # documents the physical update — it is not itself a write.
+    (epic / "models" / "contracts_deal.py").write_text(
+        "@deal.post(lambda r: provider.active_owner_count_after "
+        "== provider.active_owner_count_before - 1, "
+        'message="runs {$inc:{active_owner_count:-1}}; MatchedCount==0 -> ErrLastOwner")\n'
+    )
+    # The real, sanctioned physical writer, in the implementation tree.
+    (repo / "internal" / "db").mkdir(parents=True)
+    (repo / "internal" / "db" / "provider_owner_count.go").write_text(
+        "package db\n\n"
+        "func (r *providerRepo) DecrementActiveOwnerCountIfMultiple(id ID) {\n"
+        '\tr.c.UpdateOne(ctx, bson.M{"_id": id},\n'
+        '\t\tbson.M{"$inc": bson.M{"active_owner_count": -1}})\n'
+        "}\n"
+    )
+
+    report = sw.check(epic, repo)
+
+    # The generated spec artifact under the epic dir is NOT a violation.
+    assert [v for v in report.violations if "contracts_deal.py" in v["file"]] == []
+    assert report.violations == []
+    assert report.coverage_ok is True
+    # The real implementation writer is still found (scanning wasn't over-excluded).
+    assert any(
+        w["file"].endswith("provider_owner_count.go") for w in report.writers
+    ), "the real db-layer writer must still be detected"
+
+
 # --- graceful degradation + gates -------------------------------------------
 
 
