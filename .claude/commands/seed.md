@@ -108,6 +108,31 @@ Once the key decisions are made, write them to `$CW_TMP/architecture-decisions.m
 
 Show the user a summary and confirm the decisions look right before proceeding.
 
+### Step 4.5: Select applicable registry patterns
+
+Registry patterns are proven, opinionated architecture + process shapes CW can stamp into the product (see `docs/patterns-registry.md`). Selecting them here means `/architect` folds their invariant clusters into epic contracts by stable id instead of re-deriving them — the connected requirements and their gates arrive as a set.
+
+Load the selectable catalog:
+
+```bash
+python3 "$CW_HOME/scripts/apply_pattern.py" --catalog --format json
+```
+
+Each entry has an `id`, `category`, and `applies_when` (the selection criteria). **Reason over `applies_when` against this product's shape** and propose the patterns that fit — think in groups: the **saas-infra floor** (`multi-tenant-isolation` for any multi-tenant product; `provider-neutral-adapter` for any swappable external vendor), the **monetization surface** you're actually charging for (`tiered-subscription`, `frictionless-onboarding`), and always the **monitoring group** underneath (`engagement-instrumentation`) so the rest are measurable. Note `depends_on` — selecting a pattern pulls its floor.
+
+**This is a "chosen, not converged" human checkpoint** — like `/design`. Present the proposed set with one-line rationale each, and get the user's confirmation. Two bindings are the user's call, not a default:
+- **Which patterns** actually apply (don't over-stamp — a pattern is real attack surface + maintenance).
+- **The per-app trust bindings.** For every pattern with signal sources (`improvement-loop`, `engagement-instrumentation`), bind each source `trusted` (internal/authenticated) or `untrusted` (end-user-supplied). A public app's user-feedback source is `untrusted` and auto-gets the quarantine gate; an internal tool binds everything `trusted`. Same pattern, trust-appropriate behavior.
+
+For each confirmed pattern, install its contract pack into the target repo (binding what you can from the architecture decisions; leave required params you can't confirm as `TBD:`):
+
+```bash
+python3 "$CW_HOME/scripts/apply_pattern.py" <id> --target-dir "$TARGET_REPO" \
+  --param <k>=<v> ...   # e.g. --param billing_provider=stripe --param tenant_key=provider_id
+```
+
+Record the chosen set + trust bindings in `$CW_TMP/architecture-decisions.md` (they're part of the product's design record). The written `docs/patterns/` artifacts are committed with the architecture at Step 7; `/architect` reads them via `--list-adopted`. If no pattern fits (rare for a SaaS), say so and move on — don't force it.
+
 ### Step 5: Multi-AI consultation
 
 Write a consultation prompt to `$CW_TMP/consultation-prompt.md` asking for a critical review of the architecture decisions. The prompt should ask:
@@ -137,13 +162,15 @@ When both reviews are back:
 
 Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. If Step 2.5 produced domain context, copy it to `docs/domain-context.md` — `/architect` loads it before writing data contracts. If Step 2.5 produced a compliance-requirements doc (regulated-data products), copy it to `docs/compliance-requirements.md` — `/architect` folds it into security/privacy contracts and `/saas-gate` verifies it. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
 
+If Step 4.5 selected patterns, the installer already wrote `docs/patterns/` (adoption record + contract packs) and registered protected paths in `docs/quality/ratchet.json` — commit those too.
+
 Commit and push:
 ```bash
 cd "$TARGET_DIR"
 mkdir -p docs
 cp "$CW_TMP/domain-context.md" docs/domain-context.md 2>/dev/null || true
 cp "$CW_TMP/compliance-requirements.md" docs/compliance-requirements.md 2>/dev/null || true
-git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md docs/compliance-requirements.md
+git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md docs/compliance-requirements.md docs/patterns docs/quality/ratchet.json
 git commit -m "Add architecture decisions from seed session"
 git push
 ```
@@ -177,7 +204,8 @@ Run issue creation in an **issue-authoring worker** (contract: `docs/worker-cont
 Present the user with:
 1. Link to the ARCHITECTURE.md commit
 2. Summary of issues created (count by group, with issue numbers/URLs)
-3. Suggested next steps:
+3. **Selected patterns** (if any) — the chosen set with their trust bindings; note that `/architect` will fold their invariant clusters into the relevant epics
+4. Suggested next steps:
    - `/design owner/repo` to produce the product design (mockups → human choice → `docs/design/`) — for any product with a UI, run this before architecting epics
    - `/plan-epic owner/repo` to group issues into an epic with dependency ordering
    - `/architect owner/repo --epic "Epic: [Name]"` to define contracts and invariants

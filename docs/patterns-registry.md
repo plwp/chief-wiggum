@@ -530,13 +530,17 @@ Smallest-first. Progress so far:
    params, stamps the invariant cluster + adoption record, registers protected
    paths. The pattern `scaffold/` (stamping code, not just contracts) is still to
    come.
-3. 🟡 **`/seed` + `/architect` integration** — `/architect` now **consumes**
-   adopted patterns: Step 1 loads them (`apply_pattern.py --list-adopted`), Step 4e
-   folds each realized cluster into the epic's `invariants.md` by its existing
-   stable id (not re-derived), and Step 4g threads the pattern's integration
-   tests. The uppercase-id gap that made the ratchet skip these ids is fixed, so
-   the folded cluster is genuinely held. Still to come: `/seed` pattern *selection*
-   (proposing applicable patterns and recording the choice, the way `/design`
-   records a chosen direction).
+3. ✅ **`/seed` + `/architect` integration** — the full select → install → fold →
+   hold loop is wired:
+   - **`/seed` Step 4.5** *selects* — proposes applicable patterns from the catalog
+     (`apply_pattern.py --catalog`, reasoning over each pattern's `applies_when`),
+     takes the "chosen, not converged" human checkpoint incl. the per-app trust
+     bindings, and installs each confirmed pattern's contract pack.
+   - **`/architect`** *binds* — Step 1 loads adopted patterns
+     (`apply_pattern.py --list-adopted`), Step 4e folds each realized cluster into
+     `invariants.md` by its existing stable id (not re-derived), Step 4g threads
+     the pattern's integration tests.
+   - The uppercase-id gap that made the ratchet skip these ids is fixed, so the
+     folded cluster is genuinely held.
 4. ⏳ **Fill the backlog** — capture the remaining candidate patterns as their own
    entries.
