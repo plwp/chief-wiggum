@@ -50,6 +50,14 @@ ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 
 `docs/domain-context.md` (written by `/seed` Step 2.5) is the **ground truth for data contracts**: canonical metric definitions, real schema names, source caveats, and mined use cases — each with citations. If the epic touches an existing data source and this file doesn't exist, run the `/seed` Step 2.5 ingestion now (semantic layer, schema introspection, transformation-repo history) before writing any data contract. Contracts authored from guessed table/column names are how query layers get built against names that don't exist.
 
+**Adopted patterns.** If the product has adopted registry patterns (via `/apply-pattern`), load their invariant clusters now — they are **pre-derived contracts** this epic must not re-invent:
+
+```bash
+python3 "$CW_HOME/scripts/apply_pattern.py" --target-dir "$TARGET_REPO" --list-adopted --format json
+```
+
+Each adopted pattern reports its `id`, its invariant cluster (stable `INV-<ABBR>-NNN` ids + statements), its `contract_pack` doc (`docs/patterns/<id>/invariants.md`), and any `unresolved` (unbound required) parameters. Note which of these patterns **this epic realizes** — you'll fold their clusters into `invariants.md` (Step 4e) by their existing stable ids, thread their integration tests (Step 4g), and any `unresolved` parameter is a hard blocker to resolve before contracts depend on it (`check_unresolved.py` already gates the stamped `TBD:` markers).
+
 ### Step 2: Explore the codebase
 
 Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) to understand the current state of the areas this epic will touch. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough". The worker should report:
@@ -215,6 +223,17 @@ Write `invariants.md` by extracting and consolidating all invariants from both `
 
 Each invariant MUST have a unique ID (e.g., INV-001) that matches its ID in the JSON models. This enables traceability from prose → model → test → code.
 
+**Fold in adopted-pattern clusters (do not re-derive).** For each adopted pattern this epic realizes (from Step 1's `--list-adopted`), add its invariant cluster under a dedicated subsection, **keeping the pattern's own stable ids verbatim** (`INV-<ABBR>-NNN` — e.g. `INV-FOWR-004`, `INV-EAS-003`). These are the pattern's contract; re-numbering them or paraphrasing away their meaning breaks the link back to the contract pack and the ratchet. Cite the source so the provenance is legible:
+
+```markdown
+### Adopted pattern: fetch-on-webhook-reconcile
+*(installed by /apply-pattern — cluster from docs/patterns/fetch-on-webhook-reconcile/invariants.md)*
+- **INV-FOWR-001** — Trigger-only: the webhook handler never reads mutable state from the payload; state comes from a live fetch.
+- **INV-FOWR-004** — Unknown external id is fatal: no write, no floor fallback, alert.
+```
+
+The connected requirements arrive as a set — adopt the **whole** cluster for a realized pattern, not a subset. Any `unresolved` parameter reported for that pattern must be resolved (or explicitly re-marked `TBD:`) before an invariant depends on it.
+
 #### 4f. ADR (`adr.md`)
 
 Architectural Decision Record capturing the key decisions for this epic:
@@ -271,6 +290,8 @@ Tests that validate cross-ticket behaviour. These are NOT run per-ticket — the
 - **Assert**: Email-dependent operations return an error, UI disables the action
 - **Why**: Catches false-success pattern
 ```
+
+**Adopted-pattern tests.** For each adopted pattern this epic realizes, thread the executable proof its cluster implies — e.g. `multi-tenant-isolation` contributes a standing cross-tenant isolation test (denial AND no-mutation across vectors); `fetch-on-webhook-reconcile` contributes an out-of-order/stale-event convergence test; `elevated-access-session` contributes a TTL-expiry + revocation + deny-list test. Reference the folded `INV-<ABBR>-NNN` ids in the **Why** so `/close-epic` can confirm the pattern's cluster held.
 
 #### 4h. Requirements Traceability Matrix (`traceability.md`)
 

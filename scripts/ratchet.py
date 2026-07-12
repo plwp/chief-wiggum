@@ -91,10 +91,13 @@ DEFAULT_QUALITY_TOLERANCE = {
 }
 
 # Same stable-ID grammar as check_traceability.py: the ID ends at the 3-digit
-# suffix and must not run into more id chars.
-ID_RE = re.compile(r"\b(?:BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
+# suffix and must not run into more id chars. Case-insensitive body: uppercase
+# ids (INV-BIL-001, adopted-pattern INV-FOWR-001) must be hashed too — a
+# lowercase-only grammar silently skipped them, leaving weakening-detection
+# vacuous for uppercase-id repos (same class as chief-wiggum#86).
+ID_RE = re.compile(r"\b(?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
 DEFINE_RE = re.compile(
-    r"(?:^#{1,6}\s+|\*\*\s*)((?:BR|CTR|INV)-[a-z0-9][a-z0-9-]*-[0-9]{3})(?![A-Za-z0-9-])"
+    r"(?:^#{1,6}\s+|\*\*\s*)((?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})(?![A-Za-z0-9-])"
 )
 
 DEFAULT_PROTECTED = [

@@ -38,6 +38,23 @@ def make_repo(tmp_path, contracts_md=None, suites=None):
     return ratchet.load_config(tmp_path)
 
 
+def test_uppercase_stable_ids_are_hashed(tmp_path):
+    """Regression (chief-wiggum#86 class): uppercase INV-/CTR- ids must be detected
+    for weakening-hashing, not silently skipped by a lowercase-only grammar."""
+    cfg = make_repo(
+        tmp_path,
+        contracts_md=(
+            "### CTR-BIL-001 — customer uniqueness\n"
+            "REQUIRES: one customer per provider\n"
+            "\n"
+            "- **INV-FOWR-004** — unknown price id is fatal, no floor fallback\n"
+        ),
+    )
+    hashes = ratchet.load_contract_hashes(cfg)
+    assert "CTR-BIL-001" in hashes
+    assert "INV-FOWR-004" in hashes
+
+
 def scorecard_from(cfg, pass_set):
     return {
         "passed": len(pass_set),

@@ -240,15 +240,64 @@ def apply_plan(plan: Plan, target: Path, write: bool = True) -> list[str]:
     return actions
 
 
+def list_adopted(target_dir: Path, registry_path: Path = REGISTRY, base: Path = ROOT) -> list[dict]:
+    """Read a target repo's adopted.json and return each pattern's fresh cluster.
+
+    Statements are re-read from the registry manifest (source of truth), so
+    `/architect` folds current invariant text — not whatever was stamped earlier.
+    """
+    path = Path(target_dir) / ADOPTED_REL
+    if not path.is_file():
+        return []
+    doc = json.loads(path.read_text())
+    registry = load_registry(registry_path)
+    out: list[dict] = []
+    for pid, rec in doc.get("patterns", {}).items():
+        try:
+            manifest = load_manifest(find_specified(registry, pid), base)
+            cluster = [e for e in cluster_entries(manifest.get("invariants")) if isinstance(e, dict)]
+        except ApplyError:
+            cluster = []
+        out.append({
+            "id": pid,
+            "version": rec.get("version"),
+            "contract_pack": f"docs/patterns/{pid}/invariants.md",
+            "invariants": [{"id": e.get("id"), "statement": e.get("statement", "")}
+                           for e in cluster if e.get("id")],
+            "unresolved": rec.get("unresolved", []),
+        })
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install a registry pattern's contract pack into a target repo.")
-    parser.add_argument("pattern_id", help="Specified pattern id from patterns/registry.json")
+    parser.add_argument("pattern_id", nargs="?", help="Specified pattern id from patterns/registry.json")
     parser.add_argument("--target-dir", required=True, type=Path, help="Local path to the target repo")
     parser.add_argument("--param", action="append", default=[], metavar="k=v", help="Bind a pattern parameter")
+    parser.add_argument("--list-adopted", action="store_true",
+                        help="List the target's adopted patterns + clusters (for /architect) and exit")
     parser.add_argument("--now", help="ISO timestamp for the adoption record (testing)")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without writing")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args()
+
+    if args.list_adopted:
+        adopted = list_adopted(args.target_dir)
+        if args.format == "json":
+            print(json.dumps(adopted, indent=2))
+        elif not adopted:
+            print(f"apply_pattern: no adopted patterns in {args.target_dir}")
+        else:
+            for a in adopted:
+                tbd = f"  (unbound: {', '.join(a['unresolved'])})" if a["unresolved"] else ""
+                print(f"{a['id']} v{a['version']} — {len(a['invariants'])} invariants{tbd}")
+                for inv in a["invariants"]:
+                    print(f"  {inv['id']}: {inv['statement']}")
+        return 0
+
+    if not args.pattern_id:
+        print("apply_pattern: a pattern id is required (or use --list-adopted)", file=sys.stderr)
+        return 2
 
     provided: dict[str, str] = {}
     for kv in args.param:
