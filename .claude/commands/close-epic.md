@@ -214,6 +214,31 @@ python3 "$CW_HOME/scripts/quality_slop_gate.py" --repo "$TARGET_REPO" --report
 
 This is **report-only** (per `docs/gate-rollout.md`): it computes code survival (% of added lines surviving 14/30 days via git-of-theseus) and production-only duplication (% clones, tests excluded, via jscpd), prints each against GitClear's `[VENDOR]` reference bands (survival: pre-AI ~96.9% / AI-assisted ~94.3%; duplication: pre-AI 8.3% / AI 12.3%), and **always exits 0** — it never blocks the close. Surface its output verbatim in the final report under `### AI-slop signals`. It degrades gracefully: if git-of-theseus / jscpd / node are absent it prints `skipped (tool not found)`, and survival self-skips when the repo has < 14 days of history (too young to measure 2-week survival) — report that caveat honestly rather than treating a young repo as a pass. A future blocking mode is behind `--gate` (off by default, and even then only a regression *past* the AI band counts — the bands are directional).
 
+### Step 2j: Tutorial drift & coverage (report-only)
+
+An epic that changes the UI silently invalidates the product's tutorial videos — the flows still work but the recordings now show the old chrome, and a new user-facing journey the epic added (a new nav destination, a new settings/billing surface) has no tutorial at all. "Build + tests green" never catches this; only comparing the shipped UI against the tutorial library does. This step makes that review part of the close, so a UI-touching epic can't quietly leave a stale tutorial library behind (it did, once — a UX-hardening epic drifted every provider tutorial's visuals and added billing/settings journeys with no tutorial, and nothing flagged it until a human noticed).
+
+**Only runs when the target repo has a tutorial system.** Detect it:
+
+```bash
+TUT_STATUS_SCRIPT="$TARGET_REPO/scripts/maintain_tutorials.py"   # the repo's own tutorial maintainer
+if [ -d "$TARGET_REPO/docs/tutorials" ] && [ -f "$TUT_STATUS_SCRIPT" ]; then
+  # The maintainer's status scan reports per-tutorial drift (content-hash +
+  # product-drift) AND coverage gaps — including a nav-vs-storyboard scan that
+  # surfaces a shipped journey with no tutorial even when it has no e2e spec.
+  # --json is machine-parseable and exits non-zero when anything needs work.
+  python3 "$TUT_STATUS_SCRIPT" status --json > "$CW_TMP/tutorial-status.json" || true
+fi
+```
+
+If the repo has no `docs/tutorials/` (or no maintainer script), **skip and say so** — most products won't have a tutorial library. When it does run, parse `$CW_TMP/tutorial-status.json` and surface, in the final report under `### Tutorial coverage`:
+
+- **DRIFTED / PRODUCT-DRIFT** tutorials whose mapped surfaces this epic touched — their visuals/flow are stale and should be re-produced (`/tutorial-videos`). Cross-reference the epic's changed files: a tutorial is *epic-relevant* if it demonstrates a page this epic modified.
+- **NAV-GAP** entries (`nav_gaps` in the JSON) — user-facing journeys the epic shipped with no tutorial (a new nav destination, a new settings/billing screen). Each is a candidate new tutorial.
+- **UNCOVERED** spec-audit gaps, as before.
+
+This is **report-only** — it never blocks the close (a stale tutorial is a follow-up, not a broken seam). Recommend `/tutorial-videos` to re-produce drifted ones and author the gaps, and **ticket the new-tutorial gaps** so they aren't lost. Do not attempt to record videos inside `/close-epic` — production needs a running instance and is its own workflow.
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.
@@ -523,6 +548,11 @@ Present the full epic close report:
 - Code survival (14d/30d): X% / Y% — [beats pre-AI baseline / between bands / past AI band] (or skipped: too young / tool absent)
 - Production duplication: Z% — [beats pre-AI baseline / between bands / past AI band] (or skipped: tool absent)
 - _[VENDOR] GitClear bands; directional. Informational — does not block the close._
+
+### Tutorial coverage (report-only)
+- Drifted tutorials this epic touched: [slugs] — re-produce with `/tutorial-videos` (or "none" / "no tutorial system")
+- New-tutorial gaps (nav destinations the epic shipped with no tutorial): [slugs/routes] — ticketed as [#N]
+- _Report-only; a stale tutorial is a follow-up, not a broken seam._
 
 ### Multi-AI Analysis
 - Consensus risks: [areas both AIs flagged]
