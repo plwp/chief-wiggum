@@ -496,6 +496,55 @@ def test_single_tool_consult_accepts_prompt_at_the_floor(tmp_path, monkeypatch):
     consult_ai.main()  # must not raise
 
 
+def test_short_prompt_with_substantive_context_is_accepted(tmp_path, monkeypatch):
+    # The guard applies to the FINAL assembled prompt (prompt file + --context),
+    # so a legitimately small prompt file paired with substantive context must
+    # not be rejected.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("Review the attached context.")
+    context = tmp_path / "context.md"
+    context.write_text(PROMPT_TEXT)
+
+    sent = {}
+
+    def fake_tool(prompt, model=None, cwd=None):
+        sent["prompt"] = prompt
+        return "ok response"
+
+    monkeypatch.setitem(consult_ai.TOOLS, "codex", fake_tool)
+    monkeypatch.setattr(
+        sys, "argv", ["consult_ai.py", "codex", str(prompt), "--context", str(context)]
+    )
+
+    consult_ai.main()  # must not raise
+
+    assert "Review the attached context." in sent["prompt"]
+    assert PROMPT_TEXT in sent["prompt"]
+
+
+def test_short_prompt_with_short_context_is_still_refused(tmp_path, monkeypatch):
+    # Context counts toward the size check, but if prompt + context together
+    # are still under the floor, the refusal must still fire before any call.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("tiny")
+    context = tmp_path / "context.md"
+    context.write_text("also tiny")
+    called: list[str] = []
+
+    monkeypatch.setitem(
+        consult_ai.TOOLS, "codex", lambda prompt, model=None, cwd=None: called.append("codex") or "x"
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["consult_ai.py", "codex", str(prompt), "--context", str(context)]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+
+    assert exc.value.code == 1
+    assert called == []
+
+
 # --- robustness: -o creates missing parent directories (chief-wiggum#163) --
 
 

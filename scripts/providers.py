@@ -221,26 +221,33 @@ def validate_config(
     return errors
 
 
-def validate_lenses(config: dict[str, Any], lenses: dict[str, Any]) -> list[str]:
-    """Validate role -> lens assignments before any provider is called.
+def validate_role_lenses(role: Role, lenses: dict[str, Any]) -> list[str]:
+    """Validate one role's lens assignments before any provider is called.
 
-    Catches two mistakes that would otherwise surface mid-quorum: a lens
-    assigned to a provider that isn't actually in the role, and a lens name
-    with no matching charter in ``config/lenses.json``.
+    Catches two mistakes that would otherwise surface mid-quorum (or worse,
+    silently no-op): a lens assigned to a provider that isn't actually in the
+    role, and a lens name with no matching charter in ``config/lenses.json``.
     """
     errors: list[str] = []
-    for role_name, role in roles_from_config(config).items():
-        members = set(role.required) | set(role.optional)
-        for provider_name, lens_name in role.lenses.items():
-            if provider_name not in members:
-                errors.append(
-                    f"role {role_name} assigns a lens to {provider_name!r}, "
-                    "which is not a required or optional provider of that role"
-                )
-            if lens_name not in lenses:
-                errors.append(
-                    f"role {role_name} references unknown lens {lens_name!r}"
-                )
+    members = set(role.required) | set(role.optional)
+    for provider_name, lens_name in role.lenses.items():
+        if provider_name not in members:
+            errors.append(
+                f"role {role.name} assigns a lens to {provider_name!r}, "
+                "which is not a required or optional provider of that role"
+            )
+        if lens_name not in lenses:
+            errors.append(
+                f"role {role.name} references unknown lens {lens_name!r}"
+            )
+    return errors
+
+
+def validate_lenses(config: dict[str, Any], lenses: dict[str, Any]) -> list[str]:
+    """Validate every role's lens assignments in ``config``."""
+    errors: list[str] = []
+    for role in roles_from_config(config).values():
+        errors.extend(validate_role_lenses(role, lenses))
     return errors
 
 

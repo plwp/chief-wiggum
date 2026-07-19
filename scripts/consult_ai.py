@@ -333,21 +333,24 @@ def main():
 
     prompt = prompt_path.read_text()
 
-    prompt_bytes = len(prompt.strip().encode("utf-8"))
-    if prompt_bytes < MIN_PROMPT_BYTES:
-        print(
-            f"Error: prompt file {prompt_path} is only {prompt_bytes} bytes "
-            f"(minimum {MIN_PROMPT_BYTES}) — refusing to consult. This is the "
-            "signature of a truncated or empty prompt; fix the prompt before "
-            "spending a provider call on it.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     if args.context:
         ctx_path = Path(args.context)
         if ctx_path.exists():
             prompt += f"\n\n---\nContext:\n{ctx_path.read_text()}"
+
+    # Guard the FINAL assembled prompt (prompt file + any --context), so a
+    # legitimately small prompt file paired with substantive context is
+    # accepted — but always BEFORE any provider is called.
+    prompt_bytes = len(prompt.strip().encode("utf-8"))
+    if prompt_bytes < MIN_PROMPT_BYTES:
+        print(
+            f"Error: assembled prompt from {prompt_path} is only {prompt_bytes} "
+            f"bytes (minimum {MIN_PROMPT_BYTES}) — refusing to consult. This is "
+            "the signature of a truncated or empty prompt; fix the prompt before "
+            "spending a provider call on it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.role:
         config = load_config(Path(args.config))
