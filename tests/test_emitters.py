@@ -144,3 +144,66 @@ def test_is_recognized_unsupported():
     # A totally arbitrary/unknown extension is not "recognized" — no
     # coverage-warning noise for e.g. lockfiles or data files.
     assert emitters.is_recognized_unsupported(".lock") is False
+
+
+# --- matrix <-> registry parity (#162 review) ---------------------------------
+
+
+def test_registry_matches_declared_matrix():
+    """Mechanical parity: the declared matrix (config/languages.json) and the
+    actual emitter registry may never drift — every built language has a
+    registered emitter of the same name covering exactly its declared
+    extensions, no strays in either direction, and the generic module covers
+    exactly the matrix's generic tier."""
+    assert emitters.validate_registry_matches_matrix() == []
+
+
+def test_registered_language_extensions_equal_matrix_mapping():
+    from chief_wiggum import languages as cw_languages
+
+    assert emitters.registered_language_extensions() == cw_languages.extension_to_language()
+
+
+def test_validator_reports_matrix_extension_with_no_emitter(monkeypatch):
+    # Matrix declares a built language extension the registry doesn't cover.
+    monkeypatch.setattr(
+        emitters.cw_languages,
+        "extension_to_language",
+        lambda path=None: {**emitters.registered_language_extensions(), ".zig": "zig"},
+    )
+    problems = emitters.validate_registry_matches_matrix()
+    assert any(".zig" in p and "no emitter module is registered" in p for p in problems)
+
+
+def test_validator_reports_registered_extension_not_in_matrix(monkeypatch):
+    # Registry covers an extension the matrix doesn't declare for a built language.
+    declared = {
+        ext: lang
+        for ext, lang in emitters.registered_language_extensions().items()
+        if ext != ".go"
+    }
+    monkeypatch.setattr(
+        emitters.cw_languages, "extension_to_language", lambda path=None: declared
+    )
+    problems = emitters.validate_registry_matches_matrix()
+    assert any(".go" in p and "does not" in p and "declare" in p for p in problems)
+
+
+def test_validator_reports_language_name_mismatch(monkeypatch):
+    declared = dict(emitters.registered_language_extensions())
+    declared[".go"] = "golang"  # matrix name diverges from the module's name
+    monkeypatch.setattr(
+        emitters.cw_languages, "extension_to_language", lambda path=None: declared
+    )
+    problems = emitters.validate_registry_matches_matrix()
+    assert any("golang" in p and ".go" in p for p in problems)
+
+
+def test_validator_reports_generic_tier_drift(monkeypatch):
+    monkeypatch.setattr(
+        emitters.cw_languages,
+        "generic_tier_extensions",
+        lambda path=None: frozenset({".java", ".rb", ".rs", ".kt"}),
+    )
+    problems = emitters.validate_registry_matches_matrix()
+    assert any("generic" in p for p in problems)

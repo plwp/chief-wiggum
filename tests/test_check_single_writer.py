@@ -342,6 +342,58 @@ def test_unsupported_extension_counts_respects_exclude(tmp_path):
     assert sw.unsupported_extension_counts(tmp_path, exclude=["vendor"]) == {}
 
 
+def test_scan_writers_routes_through_emitter_registry(tmp_path, monkeypatch):
+    """The gate consumes scripts/emitters' dispatch path — not a private direct
+    call to emit_write_sites — so a per-language emitter can't drift from what
+    the gate actually scans. Regression: fails if scan_writers reverts to
+    calling emit_write_sites directly."""
+    calls: list[str] = []
+    real_emit = sw.emitters.emit
+
+    def spy(path, content):
+        calls.append(path)
+        return real_emit(path, content)
+
+    monkeypatch.setattr(sw.emitters, "emit", spy)
+    (tmp_path / "admin.go").write_text(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert calls == ["admin.go"]
+    assert writers and writers[0].symbol == "ChangePlan"
+
+
+def test_changed_since_scoped_scan_still_warns_on_unsupported_extension(tmp_path, capsys):
+    """A changed .php file must trigger the coverage warning even in
+    --changed-since scoped mode — scoping must never make a coverage gap
+    silent (the changed-path predicate is widened beyond SOURCE_EXTS)."""
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.go").write_text("func A() {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    epic = _write_billing_epic(tmp_path)
+    # Added AFTER base: an unsupported-language file (and nothing else changed).
+    (tmp_path / "legacy.php").write_text("<?php $plan = 'pro';\n")
+
+    rc = sw.main([
+        str(epic), "--source", str(tmp_path), "--changed-since", base, "--format", "json",
+    ])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert any("no emitter coverage" in w and ".php" in w for w in data["warnings"])
+
+
 # --- CLI --------------------------------------------------------------------
 
 

@@ -200,6 +200,61 @@ def test_unsupported_extension_counts_ignores_arbitrary_non_source_files(tmp_pat
     assert ct.unsupported_extension_counts(tmp_path) == {}
 
 
+def test_scan_source_routes_language_files_through_emitter_registry(tmp_path, monkeypatch):
+    """The gate consumes scripts/emitters' dispatch path for language files —
+    not a private direct call to emit_source_annotations — so a per-language
+    emitter can't drift from what the gate actually scans. Verification
+    artifacts (.rego/.yaml/.yml — not a language in the matrix) keep the
+    direct path. Regression: fails if scan_source reverts to calling
+    emit_source_annotations directly for language files."""
+    calls: list[str] = []
+    real_emit = ct.emitters.emit
+
+    def spy(path, content):
+        calls.append(path)
+        return real_emit(path, content)
+
+    monkeypatch.setattr(ct.emitters, "emit", spy)
+    (tmp_path / "order.py").write_text("# @cw-trace guards CTR-order-001\n")
+    (tmp_path / "policy.rego").write_text("# @cw-trace verifies CTR-order-001\n")
+    anns = ct.scan_source(tmp_path)
+    assert calls == ["order.py"]  # language file via registry; .rego direct
+    kinds = {(a.file, a.source_kind) for a in anns}
+    assert ("order.py", "code") in kinds
+    assert ("policy.rego", "policy") in kinds  # direct path still scanned
+
+
+def test_changed_since_scoped_scan_still_warns_on_unsupported_extension(tmp_path, capsys):
+    """A changed .php file must trigger the coverage warning even in
+    --changed-since scoped mode — scoping must never make a coverage gap
+    silent (the changed-path predicate is widened beyond SOURCE_EXTS)."""
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.py").write_text("# @cw-trace guards CTR-x-001\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("### CTR-x-001 — x\n")
+    # Added AFTER base: an unsupported-language file (and nothing else changed).
+    (tmp_path / "legacy.php").write_text("<?php $x = 1;\n")
+
+    rc = ct.main([str(epic), "--source", str(tmp_path), "--changed-since", base, "--format", "json"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert any("no emitter coverage" in w and ".php" in w for w in data["warnings"])
+
+
 def test_cli_missing_epic_dir_is_usage_error(tmp_path, capsys):
     rc = ct.main([str(tmp_path / "nope")])
     assert rc == 2

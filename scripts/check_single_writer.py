@@ -500,7 +500,15 @@ def scan_writers(
             text = path.read_text()
         except OSError:
             continue
-        sites = emit_write_sites(rel, text)
+        # Route through the per-language emitter registry (#162) — the gate
+        # consumes the SAME dispatch path scripts/emitters exposes, so a
+        # per-language emitter can never drift from what the gate actually
+        # scans. Every SOURCE_EXTS extension has an emitter (a tier-1 language
+        # module or the generic regex tier), so tier is never "unsupported"
+        # here; genuinely unsupported extensions are counted separately by
+        # unsupported_extension_counts.
+        facts, _tier = emitters.emit(rel, text)
+        sites = emitters.facts_of_kind(facts, "write_site")
         if not sites:
             continue
         # Claim per invariant, then merge preserving the ORIGINAL ordering: line
@@ -543,14 +551,26 @@ def _is_sanctioned(inv: SingleWriterInvariant, rel: str, symbol: str | None) -> 
 def _file_predicate(rel: str) -> bool:
     """The scanner's EXACT file-selection rule (extension allow-list + skipped
     directories) — the same predicate `scan_writers` applies during its own
-    walk, reused to build a manifest whose keys are exactly the files that walk
-    would visit (see ``chief_wiggum.manifest``)."""
+    walk (see ``chief_wiggum.manifest``)."""
     p = Path(rel)
     if p.suffix not in SOURCE_EXTS:
         return False
     if any(part in SKIP_PARTS for part in p.parts):
         return False
     return True
+
+
+def _changed_since_predicate(rel: str) -> bool:
+    """Manifest predicate for ``--changed-since``: the scanner's own rule
+    WIDENED with the recognized-but-unsupported extensions (#162), so a changed
+    ``.php``/``.cpp`` file still reaches ``unsupported_extension_counts`` and
+    triggers the coverage warning in scoped mode — scoping must never make a
+    coverage gap silent. ``scan_writers`` itself still filters candidates to
+    ``SOURCE_EXTS``, so the extra paths never affect the writer scan."""
+    p = Path(rel)
+    if any(part in SKIP_PARTS for part in p.parts):
+        return False
+    return p.suffix in SOURCE_EXTS or p.suffix in emitters.unsupported_extensions()
 
 
 def _scanner_version() -> str:
@@ -642,8 +662,11 @@ def check(
         only_files = None
         if changed_since:
             # Ticket-scoped speed-up ONLY — never used by /close-epic's coverage
-            # gate, which must see the whole repo to be authoritative.
-            only_files = changed_paths(source_root, changed_since, predicate=_file_predicate)
+            # gate, which must see the whole repo to be authoritative. The
+            # predicate is widened with unsupported extensions so a changed
+            # .php/.cpp still triggers the coverage warning (scan_writers
+            # filters back down to SOURCE_EXTS itself).
+            only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
         writers = scan_writers(source_root, invariants, exclude=scan_exclude, only_files=only_files)
         report.writers = [w.to_dict() for w in writers]
         report.violations = [w.to_dict() for w in writers if not w.sanctioned]
