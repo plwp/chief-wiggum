@@ -664,6 +664,129 @@ def test_measured_recurses_into_children_and_residual():
     assert ids["BUD-meas-008"] == "unbound"  # residual has no telemetry_ref
 
 
+# --- measured mode: --emits-report integration (#170) --------------------------
+#
+# Optional, additive refinement: when an `emitted` set (the `emitted_bindings`
+# from a check_instrumentation.py report) is supplied, a no_observations
+# binding with NO @cw-emits site anywhere in source is reclassified to
+# not_emitted. Omitting `emitted` (None, the default) must leave every status
+# exactly as it was before this integration existed.
+
+
+def test_no_emits_report_leaves_status_unchanged():
+    doc = {"trees": [{"root": _leaf("BUD-emit-001", 300, telemetry_ref="asr_latency")}]}
+    report = cbt.check_measured(doc, {}, source="k6-summary.json")  # emitted defaults to None
+    assert report.measured[0].status == "no_observations"
+    assert report.measured[0].emitter_bound is None
+
+
+def test_no_observations_becomes_not_emitted_when_no_emitter_found():
+    doc = {"trees": [{"root": _leaf("BUD-emit-002", 300, telemetry_ref="asr_latency")}]}
+    report = cbt.check_measured(doc, {}, source="k6-summary.json", emitted=set())
+    assert report.measured[0].status == "not_emitted"
+    assert report.measured[0].emitter_bound is False
+
+
+def test_no_observations_stays_no_observations_when_emitter_exists():
+    # A real @cw-emits site exists for this binding — the metric just wasn't
+    # observed THIS run (a measurement window, not a structural gap).
+    doc = {"trees": [{"root": _leaf("BUD-emit-003", 300, telemetry_ref="asr_latency")}]}
+    report = cbt.check_measured(doc, {}, source="k6-summary.json", emitted={"asr_latency"})
+    assert report.measured[0].status == "no_observations"
+    assert report.measured[0].emitter_bound is True
+
+
+def test_unbound_is_not_reclassified_by_emits_report():
+    # unbound (no telemetry_ref declared at all) is a stronger/different gap
+    # than not_emitted (bound but nothing emits it) — emits-report must never
+    # turn an unbound node into not_emitted.
+    doc = {"trees": [{"root": _leaf("BUD-emit-004", 300)}]}  # no telemetry_ref
+    report = cbt.check_measured(doc, {}, source="k6-summary.json", emitted=set())
+    assert report.measured[0].status == "unbound"
+    assert report.measured[0].emitter_bound is None
+
+
+def test_held_and_breached_are_not_reclassified_by_emits_report():
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-emit-005",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    "children": [_leaf("BUD-emit-006", 300, telemetry_ref="m_held")],
+                    "residual": _leaf("BUD-emit-007", 100, telemetry_ref="m_breached"),
+                }
+            }
+        ]
+    }
+    measured = {
+        "m_held": {"p95": 250, "count": 100},
+        "m_breached": {"p95": 999, "count": 100},
+    }
+    # Neither binding has an emitter in this (deliberately empty) emitted set —
+    # but both have real observations, so status must stay held/breached.
+    report = cbt.check_measured(doc, measured, source="k6-summary.json", emitted=set())
+    statuses = {m.id: m.status for m in report.measured}
+    assert statuses["BUD-emit-006"] == "held"
+    assert statuses["BUD-emit-007"] == "breached"
+
+
+def test_measured_not_emitted_count():
+    doc = {"trees": [{"root": _leaf("BUD-emit-008", 300, telemetry_ref="ghost_metric")}]}
+    report = cbt.check_measured(doc, {}, source="k6-summary.json", emitted=set())
+    assert report.counts["measured_not_emitted"] == 1
+    assert report.ok  # still evidence-only, never gates
+
+
+def test_load_emits_report_reads_emitted_bindings(tmp_path):
+    p = tmp_path / "emits.json"
+    p.write_text(json.dumps({"emitted_bindings": ["asr_latency", "llm_ttft"], "ok": True}))
+    assert cbt.load_emits_report(p) == {"asr_latency", "llm_ttft"}
+
+
+def test_load_emits_report_empty_list_is_valid(tmp_path):
+    p = tmp_path / "emits.json"
+    p.write_text(json.dumps({"emitted_bindings": [], "ok": True}))
+    assert cbt.load_emits_report(p) == set()
+
+
+def test_load_emits_report_rejects_missing_key(tmp_path):
+    # Codex review of PR #180: a wrong/old JSON (e.g. a k6 summary passed by
+    # mistake) must NOT be read as "empty emitted set" — that would reclassify
+    # every quiet binding as not_emitted, a wrong claim.
+    p = tmp_path / "emits.json"
+    p.write_text(json.dumps({"ok": True}))
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for missing emitted_bindings")
+    except ValueError as exc:
+        assert "emitted_bindings" in str(exc)
+
+
+def test_load_emits_report_rejects_non_list_and_non_string_items(tmp_path):
+    p = tmp_path / "emits.json"
+    p.write_text(json.dumps({"emitted_bindings": "asr_latency"}))  # string, not list
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for non-list emitted_bindings")
+    except ValueError:
+        pass
+    p.write_text(json.dumps({"emitted_bindings": ["asr_latency", 42]}))  # non-string item
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for non-string binding")
+    except ValueError:
+        pass
+    p.write_text(json.dumps(["asr_latency"]))  # not even a dict
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for non-dict report")
+    except ValueError:
+        pass
+
+
 # --- load_measured: k6 summary + flat export shapes ---------------------------
 
 
@@ -811,6 +934,41 @@ def test_cli_measured_with_schema_findings_still_exits_zero_even_with_gate(tmp_p
     measured_path = _write(tmp_path, "measured.json", {"m1": {"p95": 50, "count": 5}})
     rc = cbt.main([str(budget_path), "--measured", str(measured_path), "--gate"])
     assert rc == 0
+
+
+def test_cli_measured_with_emits_report_flag(tmp_path, capsys):
+    doc = {"trees": [{"root": _leaf("BUD-cli-009", 300, telemetry_ref="ghost_metric")}]}
+    budget_path = _write(tmp_path, "budget.json", doc)
+    measured_path = _write(tmp_path, "measured.json", {})
+    emits_path = _write(tmp_path, "emits.json", {"emitted_bindings": []})
+    rc = cbt.main([str(budget_path), "--measured", str(measured_path), "--emits-report", str(emits_path)])
+    assert rc == 0  # measured mode never gates
+    out = capsys.readouterr().out
+    assert "not_emitted" in out
+    assert "emitter MISSING" in out
+
+
+def test_cli_measured_with_invalid_emits_report_is_usage_error(tmp_path, capsys):
+    # A wrong-shaped emits report (missing emitted_bindings) must exit 2, not
+    # silently reclassify every quiet binding as not_emitted.
+    doc = {"trees": [{"root": _leaf("BUD-cli-011", 300, telemetry_ref="asr_latency")}]}
+    budget_path = _write(tmp_path, "budget.json", doc)
+    measured_path = _write(tmp_path, "measured.json", {})
+    bad_emits = _write(tmp_path, "emits.json", {"metrics": {"asr_latency": {"p95": 1}}})  # a k6 file, not a report
+    rc = cbt.main([str(budget_path), "--measured", str(measured_path), "--emits-report", str(bad_emits)])
+    assert rc == 2
+    assert "cannot load emits report" in capsys.readouterr().err
+
+
+def test_cli_measured_without_emits_report_flag_is_unchanged(tmp_path, capsys):
+    doc = {"trees": [{"root": _leaf("BUD-cli-010", 300, telemetry_ref="asr_latency")}]}
+    budget_path = _write(tmp_path, "budget.json", doc)
+    measured_path = _write(tmp_path, "measured.json", {})
+    rc = cbt.main([str(budget_path), "--measured", str(measured_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no_observations" in out
+    assert "not_emitted" not in out
 
 
 def test_cli_json_format_includes_authority_and_counts(tmp_path, capsys):

@@ -77,6 +77,14 @@ invalid evidence is a finding.
   regardless of ``--gate`` (environment variance means a measured latency claim
   should never hard-block CI — see docs/gate-rollout.md).
 
+  **Optional refinement (#170):** pass ``--emits-report <check_instrumentation
+  JSON>`` to distinguish, within ``no_observations``, a binding with a real
+  ``@cw-emits`` site that simply wasn't triggered this run from one with NO
+  emitter anywhere in source — the latter is reclassified to a new status,
+  ``not_emitted`` (a structural gap, not a measurement window). Omitting the
+  flag leaves ``unbound``/``no_observations``/``held``/``breached`` exactly as
+  they were — this integration is additive and optional, never required.
+
 Every report (text and JSON) carries an ``authority`` line stating exactly what
 was proven:
 
@@ -156,7 +164,10 @@ class MeasuredResult:
     telemetry_ref: str | None
     bound: float | None
     observed: float | None
-    status: str  # "held" | "breached" | "no_observations" | "unbound"
+    status: str  # "held" | "breached" | "no_observations" | "not_emitted" | "unbound"
+    # None unless an --emits-report was supplied (#170): then True/False records
+    # whether ANY @cw-emits site was found for this telemetry_ref, repo-wide.
+    emitter_bound: bool | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -183,6 +194,7 @@ class BudgetTreeReport:
             "measured_held": sum(1 for m in self.measured if m.status == "held"),
             "measured_breached": sum(1 for m in self.measured if m.status == "breached"),
             "measured_no_observations": sum(1 for m in self.measured if m.status == "no_observations"),
+            "measured_not_emitted": sum(1 for m in self.measured if m.status == "not_emitted"),
             "measured_unbound": sum(1 for m in self.measured if m.status == "unbound"),
         }
 
@@ -505,17 +517,53 @@ def _check_chains(chains: list[dict], report: BudgetTreeReport) -> None:
 # --- measured mode --------------------------------------------------------------
 
 
-def check_measured(doc: dict, measured: dict[str, dict], source: str, schema: dict | None = None) -> BudgetTreeReport:
+def load_emits_report(path: str | Path) -> set[str]:
+    """Load a ``check_instrumentation.py`` JSON report and return its
+    ``emitted_bindings`` set (#170) — every binding name with at least one
+    ``@cw-emits`` site found, repo-wide.
+
+    The shape is VALIDATED, not assumed: ``emitted_bindings`` must exist and be
+    a list of strings, else ``ValueError``. Accepting a wrong/old JSON file
+    here would silently treat every binding as unemitted and reclassify every
+    quiet metric to ``not_emitted`` — a wrong claim, worse than no refinement
+    (Codex review of PR #180).
+    """
+    raw = json.loads(Path(path).read_text())
+    emitted = raw.get("emitted_bindings") if isinstance(raw, dict) else None
+    if not isinstance(emitted, list) or not all(isinstance(x, str) for x in emitted):
+        raise ValueError(
+            "not a check_instrumentation report: 'emitted_bindings' must be present "
+            "and a list of strings"
+        )
+    return set(emitted)
+
+
+def check_measured(
+    doc: dict,
+    measured: dict[str, dict],
+    source: str,
+    schema: dict | None = None,
+    emitted: set[str] | None = None,
+) -> BudgetTreeReport:
+    """``emitted``, if given, is the ``emitted_bindings`` set from a
+    ``check_instrumentation.py`` report (#170) — optional and additive. When
+    omitted, statuses are computed exactly as before this integration existed.
+    """
     report = BudgetTreeReport(mode="measured", source=source)
     report.findings.extend(validate_doc(doc, schema if schema is not None else load_schema()))
     for idx, tree in enumerate(doc.get("trees") or []):
         root = tree.get("root") or {}
         report.trees.append(root.get("id", f"tree[{idx}]"))
-        _measure_node(root, measured, report)
+        _measure_node(root, measured, report, emitted)
     return report
 
 
-def _measure_node(node: dict, measured: dict[str, dict], report: BudgetTreeReport) -> None:
+def _measure_node(
+    node: dict,
+    measured: dict[str, dict],
+    report: BudgetTreeReport,
+    emitted: set[str] | None = None,
+) -> None:
     node_id = node.get("id", "<node>")
     telemetry_ref = node.get("telemetry_ref")
     bound = node.get("bound")
@@ -536,12 +584,25 @@ def _measure_node(node: dict, measured: dict[str, dict], report: BudgetTreeRepor
     else:
         status = "held"
 
-    report.measured.append(MeasuredResult(node_id, telemetry_ref, bound, observed, status))
+    # Optional refinement (#170): when an emits-report was supplied, a
+    # no_observations binding with NO @cw-emits site anywhere in source is
+    # reclassified as not_emitted — a structural gap (nothing ever emits it),
+    # not a quiet measurement window (a real emitter that just didn't fire
+    # this run). unbound/held/breached are untouched: unbound already means
+    # "no binding at all" (stronger than not_emitted), and held/breached have
+    # actual observations regardless of what the static scan found.
+    emitter_bound: bool | None = None
+    if emitted is not None and telemetry_ref:
+        emitter_bound = telemetry_ref in emitted
+        if status == "no_observations" and not emitter_bound:
+            status = "not_emitted"
+
+    report.measured.append(MeasuredResult(node_id, telemetry_ref, bound, observed, status, emitter_bound))
 
     for child in node.get("children") or []:
-        _measure_node(child, measured, report)
+        _measure_node(child, measured, report, emitted)
     if node.get("residual"):
-        _measure_node(node["residual"], measured, report)
+        _measure_node(node["residual"], measured, report, emitted)
 
 
 # --- rendering ------------------------------------------------------------------
@@ -572,8 +633,10 @@ def render_text(report: BudgetTreeReport) -> str:
             lines += ["", "## Measured bindings"]
             for m in report.measured:
                 obs = m.observed if m.observed is not None else "—"
+                emit_note = "" if m.emitter_bound is None else f" (emitter {'found' if m.emitter_bound else 'MISSING'})"
                 lines.append(
-                    f"- {m.id} ref={m.telemetry_ref or '(none)'} bound={m.bound} observed={obs} -> {m.status}"
+                    f"- {m.id} ref={m.telemetry_ref or '(none)'} bound={m.bound} observed={obs} "
+                    f"-> {m.status}{emit_note}"
                 )
 
     return "\n".join(lines) + "\n"
@@ -592,6 +655,12 @@ def main(argv: list[str] | None = None) -> int:
         "--measured",
         help="k6 summary JSON or flat {metric: {p95: ...}} export; switches to measured mode "
         "(evidence-only, never gates)",
+    )
+    parser.add_argument(
+        "--emits-report",
+        help="Optional check_instrumentation.py JSON report (#170); when given with --measured, "
+        "refines no_observations to not_emitted for bindings with no @cw-emits site anywhere "
+        "in source. Omit for today's three-way status unchanged.",
     )
     parser.add_argument(
         "--gate",
@@ -619,7 +688,14 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"Error: cannot load measured data: {exc}", file=sys.stderr)
             return 2
-        report = check_measured(doc, measured_data, source=args.measured, schema=schema)
+        emitted = None
+        if args.emits_report:
+            try:
+                emitted = load_emits_report(args.emits_report)
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                print(f"Error: cannot load emits report: {exc}", file=sys.stderr)
+                return 2
+        report = check_measured(doc, measured_data, source=args.measured, schema=schema, emitted=emitted)
     else:
         report = check_static(doc, schema=schema)
 
