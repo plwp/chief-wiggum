@@ -183,6 +183,54 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     assert "- AC one" in captured["prompt"]
 
 
+def test_run_review_applies_lens_charter_per_provider(tmp_path, monkeypatch):
+    # reviewer.lenses maps codex -> refute-soundness; gemini is unmapped.
+    role = Role(
+        name="reviewer",
+        required=("codex",),
+        optional=("gemini",),
+        lenses={"codex": "refute-soundness"},
+    )
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex"),),
+        optional=(Provider("gemini", "tool", True, tool="gemini"),),
+        missing_required=(),
+        skipped_optional=(),
+    )
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    captured = {}
+
+    def execute(provider, prompt):
+        captured[provider.name] = prompt
+        return "A substantive review with findings to report here."
+
+    out = tmp_path / "reviews"
+    lenses = {"refute-soundness": {"goal": "Break the reasoning.", "exclusions": ["Do NOT nitpick style."]}}
+
+    review.run_review(
+        _ticket(), tmp_path, "main", out,
+        template=TEMPLATE, checklist="# Checklist\n- item",
+        config={}, lenses=lenses, execute=execute, runner=runner,
+    )
+
+    assert "## Your charter" in captured["codex"]
+    assert "Break the reasoning." in captured["codex"]
+    assert "## Your charter" not in captured["gemini"]
+    # The shared body reaching every provider is identical — codex's prompt is
+    # the unlensed gemini prompt plus the delimiter and charter, nothing else.
+    shared_codex = captured["codex"].split("## Your charter")[0]
+    assert shared_codex == f"{captured['gemini']}\n\n---\n\n"
+
+
 def test_run_review_refuses_without_execute(tmp_path, monkeypatch):
     runner = _runner(
         {"rev-parse --show-toplevel": (0, str(tmp_path)), "rev-parse --verify": (0, "abc"), "diff": (0, "d")}

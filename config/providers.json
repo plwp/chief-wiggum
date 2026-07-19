@@ -38,11 +38,21 @@
     },
     "reviewer": {
       "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"]
+      "optional": ["claude-interactive"],
+      "lenses": {
+        "codex": "refute-soundness",
+        "gemini": "completeness",
+        "claude-interactive": "adoption-cost"
+      }
     },
     "architecture_critic": {
       "required": ["codex"],
-      "optional": ["gemini", "claude-interactive"]
+      "optional": ["gemini", "claude-interactive"],
+      "lenses": {
+        "codex": "refute-soundness",
+        "gemini": "completeness",
+        "claude-interactive": "adoption-cost"
+      }
     },
     "design_critic": {
       "required": ["gemini"],

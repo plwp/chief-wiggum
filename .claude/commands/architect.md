@@ -84,7 +84,7 @@ Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
   5. Where are the integration risks and how should we test them?
   6. What could go wrong between tickets? (dual sources of truth, race conditions, inconsistent reads)
 
-Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation):
+Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation). Every provider gets the **identical** prompt above — the value is in natural divergence, not roleplay — but `config/providers.json` may additionally assign each provider a bounded **review lens** (`role.lenses`, e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters live in `config/lenses.json`). When a lens is assigned, `consult_ai.py` appends that provider's charter as a clearly-delimited `## Your charter` section — the shared prompt itself never changes. This decorrelates the reviewers on purpose: a soundness-refuter and a completeness-checker reading the *same* context reliably surface disjoint findings instead of converging on the same top issue three times:
 
 ```bash
 python3 "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/architect-prompt.md \
@@ -98,6 +98,8 @@ Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` 
 ### Step 4: Synthesise into architectural artifacts
 
 Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile all three consultations into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
+
+**Reconciliation expects disjoint findings, not convergence.** When the quorum is lensed (Step 3), agreement across providers is the exception, not the confirmation signal — each reviewer was scoped to look for something different. Reconcile by **union, then cross-verify contested items**: fold in every finding from every provider (a soundness issue the refuter caught is not weaker for being unique to it), and only for items where providers actively *disagree* on a fact (not merely "only one mentioned it") should the synthesis worker re-check against the codebase before deciding which side is right. Do not discard a lensed provider's finding for lacking a second vote — that would defeat the reason lenses were assigned.
 
 **The worker MUST produce structured JSON models first.** The prose markdown is then generated mechanically from the JSON — never the other way around. This ensures the machine-readable and human-readable artifacts stay in sync.
 
@@ -372,7 +374,7 @@ Prepare a validation prompt at `$CW_TMP/validate-artifacts-prompt.md` containing
   6. Does every precondition have a corresponding error case? (REQUIRES without an ERROR CASE means a silent failure)
   7. Are the `expression` fields in preconditions/postconditions/invariants reasonable and implementable?
 
-Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
+Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation). As in Step 3, `reviewer` may carry a lens assignment in `config/providers.json` — check its `lenses` map before assuming two providers scoped alike:
 
 ```bash
 python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifacts-prompt.md \
@@ -381,7 +383,7 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifa
 
 Responses land at `$CW_TMP/validate-artifacts/reviewer-<provider>.md` (status in `reviewer-manifest.json`).
 
-Review both responses. Apply clear improvements to the JSON models. Regenerate prose if models changed:
+Review both responses. **Union the findings rather than looking for agreement** — a lensed quorum is expected to produce disjoint findings; only cross-verify against the models when two providers make contested/contradictory claims about the same fact. Apply clear improvements to the JSON models. Regenerate prose if models changed:
 ```bash
 python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
 python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"

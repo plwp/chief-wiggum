@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "lenses": {
+    "refute-soundness": {
+      "goal": "Your goal is to find the strongest reason this proposal is WRONG. Actively try to break the core reasoning: identify any assumption that does not hold, any edge case the logic silently mishandles, any place where a stated invariant does not actually follow from the design. If you cannot find a soundness problem after genuinely trying, say so plainly rather than manufacturing a weak one to have something to report.",
+      "exclusions": [
+        "Do NOT evaluate adoption cost, migration effort, or how disruptive the change is to existing users.",
+        "Do NOT evaluate completeness (whether every case is covered) except where an omitted case would itself make the core reasoning unsound.",
+        "Do NOT comment on naming, style, or documentation quality."
+      ]
+    },
+    "adoption-cost": {
+      "goal": "Your goal is to assess how expensive and risky this proposal is to adopt: migration effort, backward compatibility, operational burden, rollout/rollback risk, and the cost of getting it wrong in production. Assume the core design is sound — you are pricing the change, not refuting the reasoning behind it.",
+      "exclusions": [
+        "Do NOT re-litigate whether the underlying design is logically correct — assume it is.",
+        "Do NOT evaluate whether every edge case or actor is enumerated.",
+        "Do NOT comment on code style or naming."
+      ]
+    },
+    "completeness": {
+      "goal": "Your goal is to check coverage: does the proposal address every case, actor, and failure mode implied by the stated goal? List anything missing — an unhandled state, an unaddressed error path, a class of user or input the design does not mention — without arguing about whether the covered cases are handled correctly.",
+      "exclusions": [
+        "Do NOT evaluate whether the reasoning for the cases that ARE covered is sound — assume it is.",
+        "Do NOT evaluate adoption cost or migration effort.",
+        "Do NOT comment on code style or naming."
+      ]
+    },
+    "security": {
+      "goal": "Your goal is to find security and data-exposure problems: authentication/authorization gaps, injection or deserialization risks, secrets handling, tenant/data isolation failures, and any place untrusted input reaches a sensitive sink. Treat functional correctness outside the security surface as someone else's job.",
+      "exclusions": [
+        "Do NOT evaluate general code quality, style, or naming.",
+        "Do NOT evaluate adoption cost or migration effort.",
+        "Do NOT evaluate completeness of non-security functionality."
+      ]
+    }
+  }
+}

@@ -312,7 +312,7 @@ The worker should:
    git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
    ```
 
-2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Pass a `ticket.json` with the title/body/acceptance criteria, and optionally epic artifacts:
+2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass a `ticket.json` with the title/body/acceptance criteria, and optionally epic artifacts:
    ```bash
    python3 "$CW_HOME/scripts/run_review.py" \
      --ticket-context "$TICKET_TMP/ticket.json" \
@@ -329,6 +329,7 @@ The worker should:
    ```bash
    python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/reviews/reviewer-codex.md $TICKET_TMP/reviews/reviewer-gemini.md
    ```
+   **When `reviewer` is lensed, expect disjoint findings, not convergence** — each provider was scoped to a different concern over the same diff, so agreement across reviewers is the exception, not the confirmation signal. `synthesize_reviews.py` reconciles by **union, then cross-verifies only contested items**: every concrete finding is retained regardless of whether one reviewer raised it or several (a soundness issue only the refuter caught is not weaker for being unique to it), and cross-verification against the diff is reserved for cases where two reviewers make genuinely *contradictory* claims about the same fact — not merely where one mentions something the other didn't. Do not fall back to majority-vote reasoning when reconciling a lensed quorum; it defeats the reason the lenses were assigned.
 
 5. Return a concise summary categorising each piece of feedback:
    - **High-confidence fixes**: Concrete bugs/regressions with clear failure scenarios. Apply automatically.

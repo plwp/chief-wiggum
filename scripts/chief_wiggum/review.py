@@ -177,6 +177,7 @@ def run_review(
     epic_sections: Iterable[tuple[str, str]] = (),
     role: str = "reviewer",
     config: dict | None = None,
+    lenses: dict | None = None,
     execute: Callable[[providers.Provider, str], str] | None = None,
     runner: Runner = subprocess.run,
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
@@ -185,6 +186,11 @@ def run_review(
 
     Refuses to run outside a git repo or when ``base`` cannot be resolved.
     ``execute`` (the provider call) is injected so the pipeline is testable.
+
+    Every provider gets the identical assembled prompt. If ``role`` maps a
+    provider to a lens (``config/providers.json`` role.lenses), that provider's
+    charter (``config/lenses.json``, or ``lenses`` if supplied) is appended —
+    the shared prompt itself is never altered (chief-wiggum#163).
     """
     assert_git_repo(worktree, runner=runner)
     out = Path(output_dir)
@@ -210,8 +216,17 @@ def run_review(
     if execute is None:
         raise ReviewError("an execute callable is required to run the reviewer quorum")
 
-    # The quorum calls execute(provider); bind the assembled prompt here.
-    quorum = providers.run_role_quorum(plan, lambda p: execute(p, prompt), out)
+    if lenses is None:
+        lenses = providers.load_lenses()
+
+    # The quorum calls execute(provider); bind the assembled prompt here. A
+    # provider mapped to a lens on this role gets its charter appended; the
+    # shared prompt every provider starts from is identical either way.
+    quorum = providers.run_role_quorum(
+        plan,
+        lambda p: execute(p, providers.prompt_for_provider(plan.role, p.name, prompt, lenses)),
+        out,
+    )
     response_paths = [r.path for r in quorum.results if r.path]
 
     synthesis = build_synthesis_prompt(response_paths)
