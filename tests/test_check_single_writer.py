@@ -295,6 +295,53 @@ def test_no_writer_found_warns(tmp_path):
     assert report.coverage_ok  # no writer means no violation
 
 
+# --- language coverage metadata (#162) ---------------------------------------
+
+
+def test_unsupported_extension_file_is_not_silently_skipped(tmp_path):
+    """A recognized-but-unsupported-language file (no emitter at all) must
+    surface an explicit coverage warning — never just vanish from the scan."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    (src / "legacy.php").write_text("<?php $plan = 'pro';\n")
+    report = sw.check(epic, src)
+    assert any("no emitter coverage" in w and ".php" in w for w in report.warnings)
+    assert report.coverage_ok  # unrelated to the actual single-writer verdict
+
+
+def test_unsupported_extension_counts_are_aggregated_per_extension(tmp_path):
+    (tmp_path / "a.php").write_text("<?php\n")
+    (tmp_path / "b.php").write_text("<?php\n")
+    (tmp_path / "c.cpp").write_text("int main() {}\n")
+    counts = sw.unsupported_extension_counts(tmp_path)
+    assert counts == {".php": 2, ".cpp": 1}
+
+
+def test_unsupported_extension_counts_empty_when_all_supported(tmp_path):
+    (tmp_path / "a.go").write_text("func f() {}\n")
+    (tmp_path / "b.py").write_text("def f(): pass\n")
+    assert sw.unsupported_extension_counts(tmp_path) == {}
+
+
+def test_unsupported_extension_counts_ignores_arbitrary_non_source_files(tmp_path):
+    """Markdown/lockfiles/etc. are not in the curated unsupported list — no
+    coverage-warning noise for ordinary non-source repo content."""
+    (tmp_path / "README.md").write_text("# hi\n")
+    (tmp_path / "package-lock.json").write_text("{}\n")
+    assert sw.unsupported_extension_counts(tmp_path) == {}
+
+
+def test_unsupported_extension_counts_respects_exclude(tmp_path):
+    d = tmp_path / "vendor"
+    d.mkdir()
+    (d / "legacy.php").write_text("<?php\n")
+    assert sw.unsupported_extension_counts(tmp_path, exclude=["vendor"]) == {}
+
+
 # --- CLI --------------------------------------------------------------------
 
 

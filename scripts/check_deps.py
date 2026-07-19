@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from chief_wiggum import languages as cw_languages
 from keychain import has_secret
 
 GREEN = "\033[0;32m"
@@ -116,6 +117,23 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": set(),
         "secrets": set(),
     },
+}
+
+# A profile per BUILT language tier (#162), derived from config/languages.json's
+# `dep_profile` field rather than hand-listed — a language added to the matrix
+# with a dep_profile is automatically covered here, no second place to update.
+# Only tier-1 (built) languages contribute; a designed-but-unbuilt slot (Rust)
+# has no toolchain to check yet.
+_LANGUAGE_TIER1_DEP_PROFILES = {
+    lang.dep_profile
+    for lang in cw_languages.languages().values()
+    if lang.built and lang.dep_profile
+}
+WORKFLOW_REQUIREMENTS["language-tier-1"] = {
+    "extends": _LANGUAGE_TIER1_DEP_PROFILES,
+    "cmds": set(),
+    "pkgs": set(),
+    "secrets": set(),
 }
 
 
@@ -300,11 +318,29 @@ def main():
         help="Provider role to recommend profiles for. Repeatable.",
     )
     parser.add_argument("--list-profiles", action="store_true", help="List all dependency profiles.")
+    parser.add_argument(
+        "--list-languages",
+        action="store_true",
+        help="Print the declared language support matrix (config/languages.json): "
+        "tier, status, and dependency profile per language.",
+    )
     args = parser.parse_args()
 
     if args.list_profiles:
         for profile in sorted(WORKFLOW_REQUIREMENTS):
             print(profile)
+        return
+
+    if args.list_languages:
+        print("=== Language Support Matrix (config/languages.json) ===\n")
+        for name, lang in cw_languages.languages().items():
+            print(f"{name:<12s} tier={lang.tier:<10s} status={lang.status}")
+            print(f"{'':<12s} extensions={', '.join(lang.extensions)}")
+            print(f"{'':<12s} dep_profile={lang.dep_profile or '(none)'}  lsp={lang.lsp or '(none)'}")
+            if not lang.built and lang.trigger:
+                print(f"{'':<12s} trigger={lang.trigger}")
+            print()
+        print("See docs/languages.md for the full rendered matrix.")
         return
 
     if args.recommend:

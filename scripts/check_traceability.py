@@ -36,22 +36,59 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# The ID grammar and verb set are shared with ratchet.py and the TIM schema —
-# a kind added in one place but not the others is silently dropped, so all
-# three build from chief_wiggum.trace_ids (cross-checked in tests).
+# The per-language emitter registry (#162): language-specific emitter -> generic
+# regex tier -> skip-with-warning. Used by scan_source/unsupported_extension_counts
+# below to surface files with NO emitter coverage instead of dropping them silently.
+import emitters  # noqa: E402
+
+# The declared language support matrix (#162) — SOURCE_EXTS below is derived
+# from it (tier-1 + generic-tier extensions) plus this checker's own
+# verification-artifact extensions. The emitter fallback chain (scripts/emitters/)
+# reports files with no coverage at all as an explicit warning rather than a
+# silent skip. See config/languages.json + docs/languages.md.
+from chief_wiggum import languages as cw_languages  # noqa: E402
+
 # Shared with check_single_writer.py: the hash-derived --scanner-version and
 # the git-native manifest helper behind --changed-since (#160). walk_source_files
 # prunes submodules/nested git checkouts from the FULL scan so both scan modes
 # agree on the file universe (the manifest never surfaces submodule blobs).
+# hash_epic_definitions (#169) is the same contract-block hashing ratchet.py
+# uses for weakening detection — one implementation, not a parallel copy.
 from chief_wiggum.hashing import hash_epic_definitions, scanner_version  # noqa: E402
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
-from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE, canonical_id  # noqa: E402
+
+# The @cw-trace annotation emission family (Annotation, classify_source_kind,
+# canonical_id, kind_of, parse_annotations, emit_source_annotations) moved to
+# chief_wiggum.trace_emission (#162) so scripts/emitters/*.py can sit BEHIND
+# the same per-file emission logic this checker uses — re-exported here
+# unchanged so every existing `check_traceability.X` reference keeps working
+# (golden parity; see tests/test_traceability_golden.py). canonical_id's HOME
+# is chief_wiggum.trace_ids (#181: definition-hash keys and annotation targets
+# must join on the same canonical form); trace_emission re-exports it.
+from chief_wiggum.trace_emission import (  # noqa: E402, F401
+    PROBE_DIR_PARTS,
+    Annotation,
+    canonical_id,
+    classify_source_kind,
+    emit_source_annotations,
+    kind_of,
+    parse_annotations,
+)
+
+# The ID grammar and verb set are shared with ratchet.py and the TIM schema —
+# a kind added in one place but not the others is silently dropped, so all
+# three build from chief_wiggum.trace_ids (cross-checked in tests). TRACE_RE
+# isn't called directly by every function here anymore (parse_annotations
+# moved to chief_wiggum.trace_emission, which imports it itself) but stays
+# re-exported as `check_traceability.TRACE_RE` for backward compatibility
+# (see tests/test_trace_ids.py's identity checks).
+from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402, F401
 
 # Suspect-link propagation (#169): a link is SUSPECT when the ID it was
 # verified against has a definition hash that no longer matches the hash
@@ -75,25 +112,12 @@ DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-mod
 # Code/test annotations live in code/test files — not markdown. Prose docs
 # (including this checker's own examples and the epic's realizes lines) are
 # handled only by scan_epic_annotations, so they aren't double-counted.
-# .rego/.yaml/.yml are verification artifacts (policy/probe/telemetry — #166).
-SOURCE_EXTS = {".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs", ".rego", ".yaml", ".yml"}
-
-# Directory names whose files are verification probes (k6 scenarios, chaos
-# experiments) rather than product code — see classify_source_kind.
-PROBE_DIR_PARTS = {"k6", "chaos", "probe", "probes", "load", "loadtest"}
-
-
-@dataclass
-class Annotation:
-    verb: str
-    target: str
-    file: str
-    line: int
-    source_kind: str  # "code" | "test" | "probe" | "policy" | "telemetry" | a declared ID kind (CTR, INV, BUD, ...)
-    source_id: str | None = None  # for realizes: the declaring contract/invariant ID
-
-    def to_dict(self) -> dict:
-        return asdict(self)
+# .rego/.yaml/.yml are verification artifacts (policy/probe/telemetry — #166),
+# not a programming language in config/languages.json, so they're appended here
+# rather than folded into the shared matrix. Backward-compatible: identical to
+# the pre-#162 hardcoded set.
+VERIFICATION_EXTS = {".rego", ".yaml", ".yml"}
+SOURCE_EXTS = cw_languages.all_known_extensions() | VERIFICATION_EXTS
 
 
 @dataclass
@@ -165,27 +189,6 @@ class TraceReport:
 
 def load_schema(path: Path = DEFAULT_SCHEMA) -> dict:
     return json.loads(Path(path).read_text())
-
-
-def kind_of(node_id: str) -> str:
-    return node_id.split("-", 1)[0].upper()
-
-
-# canonical_id's home is chief_wiggum.trace_ids (shared with the hashing
-# module, so definition-hash keys and annotation targets join on the same
-# canonical form — PR #181 review); imported above, re-exported here for
-# existing callers.
-
-
-def parse_annotations(text: str) -> list[tuple[str, list[str]]]:
-    """Parse ``@cw-trace`` tags from text into (verb, [ids]) pairs."""
-    out: list[tuple[str, list[str]]] = []
-    for m in TRACE_RE.finditer(text):
-        verb = m.group("verb").lower()
-        ids = [canonical_id(i.group(0)) for i in ID_RE.finditer(m.group("ids"))]
-        if ids:
-            out.append((verb, ids))
-    return out
 
 
 def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
@@ -309,40 +312,13 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
     return annotations
 
 
-def classify_source_kind(rel: str, suffix: str) -> str:
-    """Classify a scanned file into a TIM artifact kind.
-
-    ``probe`` (k6/chaos/load scenarios), ``policy`` (rego), and ``telemetry``
-    (SLO/alert/metric YAML) are verification artifacts a ``verifies`` edge may
-    originate from (#166); everything else keeps the original test/code
-    path heuristic.
-    """
-    rel_lower = rel.lower()
-    parts = set(Path(rel_lower).parts)
-    if suffix == ".rego":
-        return "policy"
-    if parts & PROBE_DIR_PARTS:
-        return "probe"
-    if suffix in (".yaml", ".yml"):
-        return "telemetry"
-    # e2e directories are test infrastructure (setup/fixtures/helpers) even when
-    # the filename itself carries no test/spec marker (e.g. ui/e2e/global-setup.ts).
-    is_test = (
-        "test" in rel_lower
-        or "spec" in rel_lower
-        or "e2e" in parts
-    )
-    return "test" if is_test else "code"
-
-
 SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv"}
 
 
 def _file_predicate(rel: str) -> bool:
     """The scanner's EXACT file-selection rule (extension allow-list + skipped
     directories) — the same predicate ``scan_source`` applies during its own
-    walk, reused to build a manifest whose keys are exactly the files that walk
-    would visit (see ``chief_wiggum.manifest``)."""
+    walk (see ``chief_wiggum.manifest``)."""
     p = Path(rel)
     if p.suffix not in SOURCE_EXTS:
         return False
@@ -351,25 +327,54 @@ def _file_predicate(rel: str) -> bool:
     return True
 
 
-def emit_source_annotations(rel: str, text: str, suffix: str) -> list[Annotation]:
-    """Per-file EMISSION: every ``@cw-trace`` annotation in one source/test/
-    verification file's ``text``, classified by this file's source kind. Pure
-    function of file content — no knowledge of the defined-ID set (that join
-    happens in ``build_report``, at query/report time)."""
-    source_kind = classify_source_kind(rel, suffix)
-    annotations: list[Annotation] = []
-    for i, line in enumerate(text.splitlines(), start=1):
-        for verb, ids in parse_annotations(line):
-            for target in ids:
-                annotations.append(Annotation(verb, target, rel, i, source_kind))
-    return annotations
+def _changed_since_predicate(rel: str) -> bool:
+    """Manifest predicate for ``--changed-since``: the scanner's own rule
+    WIDENED with the recognized-but-unsupported extensions (#162), so a changed
+    ``.php``/``.cpp`` file still reaches ``unsupported_extension_counts`` and
+    triggers the coverage warning in scoped mode — scoping must never make a
+    coverage gap silent. ``scan_source`` itself still filters candidates
+    through ``_file_predicate``, so the extra paths never affect the
+    annotation scan."""
+    p = Path(rel)
+    if any(part in SKIP_PARTS for part in p.parts):
+        return False
+    return p.suffix in SOURCE_EXTS or p.suffix in emitters.unsupported_extensions()
+
+
+def unsupported_extension_counts(
+    source_root: str | Path, only_files: set[str] | None = None
+) -> dict[str, int]:
+    """Count files with a RECOGNIZED-but-unsupported extension (#162) — one
+    ``scripts/emitters`` has no emitter for at all (language-specific or
+    generic tier) — among the same candidate set ``scan_source`` would walk.
+    Never silent: this feeds a ``coverage`` warning in ``check()`` instead of
+    the file simply disappearing from the scan with no trace."""
+    root = Path(source_root)
+    counts: dict[str, int] = {}
+    if not root.exists():
+        return counts
+    candidates = sorted(only_files) if only_files is not None else walk_source_files(root)
+    unsupported = emitters.unsupported_extensions()
+    for rel in candidates:
+        suffix = Path(rel).suffix
+        if suffix not in unsupported:
+            continue
+        if any(part in SKIP_PARTS for part in Path(rel).parts):
+            continue
+        counts[suffix] = counts.get(suffix, 0) + 1
+    return counts
 
 
 def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> list[Annotation]:
     """Walk source/test/verification files, emitting ``@cw-trace`` annotations
-    per file via ``emit_source_annotations``. ``only_files`` (repo-relative
-    paths), when given, restricts the walk to that set instead of the whole
-    tree — used by ``--changed-since``."""
+    per file. Language files route through the per-language emitter registry
+    (``scripts/emitters`` — the gate consumes the SAME dispatch path the
+    emitters expose, so a per-language emitter can never drift from what the
+    gate actually scans); verification artifacts (``.rego``/``.yaml``/``.yml``
+    — not a programming language in the matrix) keep the direct
+    ``emit_source_annotations`` path. ``only_files`` (repo-relative paths),
+    when given, restricts the walk to that set instead of the whole tree —
+    used by ``--changed-since``."""
     root = Path(source_root)
     annotations: list[Annotation] = []
     if not root.exists():
@@ -388,7 +393,11 @@ def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> 
             text = path.read_text()
         except OSError:
             continue
-        annotations.extend(emit_source_annotations(rel, text, path.suffix))
+        if path.suffix in VERIFICATION_EXTS:
+            annotations.extend(emit_source_annotations(rel, text, path.suffix))
+        else:
+            facts, _tier = emitters.emit(rel, text)
+            annotations.extend(emitters.facts_of_kind(facts, "trace_annotation"))
     return annotations
 
 
@@ -397,7 +406,14 @@ def _scanner_version() -> str:
     ``chief_wiggum`` dependencies. No hand-bumped constant to forget."""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
-    return scanner_version(here, cw_dir / "trace_ids.py", cw_dir / "manifest.py", cw_dir / "hashing.py")
+    return scanner_version(
+        here,
+        cw_dir / "trace_ids.py",
+        cw_dir / "trace_emission.py",
+        cw_dir / "manifest.py",
+        cw_dir / "hashing.py",
+        cw_dir / "languages.py",
+    )
 
 
 def build_report(
@@ -538,14 +554,29 @@ def check(
     coverage_requirements = extract_coverage_requirements(epic_dir)
     # Contract->BR realizes links live in the epic docs; code/test links in source.
     annotations = scan_epic_annotations(epic_dir)
+    unsupported: dict[str, int] = {}
     if source_root:
         only_files = None
         if changed_since:
             # Ticket-scoped speed-up ONLY — never used by /close-epic's coverage
-            # gate, which must see the whole repo to be authoritative.
-            only_files = changed_paths(source_root, changed_since, predicate=_file_predicate)
+            # gate, which must see the whole repo to be authoritative. The
+            # predicate is widened with unsupported extensions so a changed
+            # .php/.cpp still triggers the coverage warning (scan_source
+            # filters back down through _file_predicate itself).
+            only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
         annotations += scan_source(source_root, only_files=only_files)
+        unsupported = unsupported_extension_counts(source_root, only_files=only_files)
     report = build_report(defined, annotations, schema, coverage_requirements=coverage_requirements)
+    if unsupported:
+        # Coverage metadata (#162): a recognized-but-unsupported-language file is
+        # NEVER silently dropped — surfaced as an explicit warning, same as any
+        # other coverage gap this checker reports.
+        total = sum(unsupported.values())
+        detail = ", ".join(f"{ext} ({n})" for ext, n in sorted(unsupported.items()))
+        report.warnings.append(
+            f"{total} file(s) skipped: no emitter coverage for recognized-but-unsupported "
+            f"extension(s) {detail} — see config/languages.json"
+        )
 
     if links_path is not None:
         current_hashes = hash_epic_definitions(Path(epic_dir))

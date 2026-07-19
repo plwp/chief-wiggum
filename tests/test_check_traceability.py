@@ -166,6 +166,40 @@ def test_markdown_docs_not_scanned_as_source(tmp_path):
     assert ct.scan_source(src) == []
 
 
+# --- language coverage metadata (#162) ---------------------------------------
+
+
+def test_unsupported_extension_file_is_not_silently_skipped(tmp_path):
+    epic = _write_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "order.py").write_text("# @cw-trace guards CTR-order-001\n")
+    (src / "test_order.py").write_text("# @cw-trace verifies CTR-order-001\n")
+    (src / "legacy.php").write_text("<?php $x = 1;\n")
+    report = ct.check(epic, src)
+    assert any("no emitter coverage" in w and ".php" in w for w in report.warnings)
+
+
+def test_unsupported_extension_counts_are_aggregated_per_extension(tmp_path):
+    (tmp_path / "a.php").write_text("<?php\n")
+    (tmp_path / "b.php").write_text("<?php\n")
+    (tmp_path / "c.cpp").write_text("int main() {}\n")
+    counts = ct.unsupported_extension_counts(tmp_path)
+    assert counts == {".php": 2, ".cpp": 1}
+
+
+def test_unsupported_extension_counts_empty_when_all_supported(tmp_path):
+    (tmp_path / "a.go").write_text("func f() {}\n")
+    (tmp_path / "b.py").write_text("def f(): pass\n")
+    assert ct.unsupported_extension_counts(tmp_path) == {}
+
+
+def test_unsupported_extension_counts_ignores_arbitrary_non_source_files(tmp_path):
+    (tmp_path / "README.md").write_text("# hi\n")
+    (tmp_path / "package-lock.json").write_text("{}\n")
+    assert ct.unsupported_extension_counts(tmp_path) == {}
+
+
 def test_cli_missing_epic_dir_is_usage_error(tmp_path, capsys):
     rc = ct.main([str(tmp_path / "nope")])
     assert rc == 2

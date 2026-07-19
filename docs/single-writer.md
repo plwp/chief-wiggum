@@ -323,3 +323,25 @@ sandbox workspace) before wiring `--gate` into `/close-epic` for repos that
 declare infra invariants.
 
 Exit codes: `0` ok / report-only, `1` gate violation, `2` usage error.
+
+## Per-language emitter seam + coverage metadata (#162)
+
+`emit_write_sites` moved to `chief_wiggum.write_emission` (re-exported here
+unchanged) so it can sit BEHIND `scripts/emitters/` — a per-language
+`emit(path, content) -> [Fact]` interface with one module per Go/Python/
+TypeScript, delegating to the same emission function every language shares,
+plus a `generic` module for extensions with no dedicated language module
+(Java, Ruby, Rust today). The declared support matrix lives in
+`config/languages.json`, rendered to `docs/languages.md` by
+`scripts/render_languages_doc.py` — see that doc for Rust's designed-but-
+unbuilt tier-1 slot.
+
+`SOURCE_EXTS` is now derived from the matrix
+(`chief_wiggum.languages.all_known_extensions()`) — identical set to the
+pre-#162 hardcoded list. A file whose extension the matrix doesn't recognize
+at all (neither a tier-1 emitter nor the generic regex tier) is **never
+silently dropped**: a full `--source` scan counts every such file
+(`unsupported_extension_counts`) and surfaces one aggregated `warnings` entry
+in both `--gate` and plain (query) output — e.g. `"3 file(s) skipped: no
+emitter coverage for recognized-but-unsupported extension(s) .php (2), .cpp
+(1) — see config/languages.json"`.

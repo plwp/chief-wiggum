@@ -241,3 +241,23 @@ matches ONE of the declared alternatives — a `telemetry`-only signal, for
 example, would no longer count if only `["unit-test", "integration-spec"]` are
 declared acceptable. Omitting `coverage_requires` for an ID preserves the
 original "any verifying kind counts" behavior.
+
+## Per-language emitter seam + coverage metadata (#162)
+
+`emit_source_annotations` moved to `chief_wiggum.trace_emission` (re-exported
+here unchanged) so it can sit BEHIND `scripts/emitters/` — a per-language
+`emit(path, content) -> [Fact]` interface with one module per Go/Python/
+TypeScript, delegating to the same emission function every language shares.
+The declared support matrix (which language has which capability, and its
+maturity tier) lives in `config/languages.json`, rendered to
+`docs/languages.md` by `scripts/render_languages_doc.py`.
+
+`SOURCE_EXTS` is now derived from that matrix (`chief_wiggum.languages.
+all_known_extensions()`) plus this checker's own verification-artifact
+extensions (`.rego`/`.yaml`/`.yml`) — identical set to the pre-#162 hardcoded
+list. A file whose extension the matrix doesn't recognize at all (neither a
+tier-1 emitter nor the generic regex tier) is **never silently dropped**: a
+full `--source` scan counts every such file (`unsupported_extension_counts`)
+and surfaces one aggregated `warnings` entry, e.g. `"3 file(s) skipped: no
+emitter coverage for recognized-but-unsupported extension(s) .php (2), .cpp
+(1) — see config/languages.json"` — in both `--gate` and plain (query) output.

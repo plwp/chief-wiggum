@@ -94,6 +94,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# The per-language emitter registry (#162): language-specific emitter -> generic
+# regex tier -> skip-with-warning. Used by scan_writers/unsupported_extension_counts
+# below to surface files with NO emitter coverage instead of dropping them silently.
+import emitters  # noqa: E402
+
+# The declared language support matrix (#162) — SOURCE_EXTS below is derived
+# from it (tier-1 + generic-tier extensions), and the emitter fallback chain
+# (scripts/emitters/) reports files with no coverage at all as an explicit
+# warning rather than a silent skip. See config/languages.json + docs/languages.md.
+from chief_wiggum import languages as cw_languages  # noqa: E402
+
 # The @cw-writes tag grammar is shared (#170: a third @cw-* tag, @cw-emits,
 # joins it) — see chief_wiggum/annotations.py. Re-exported under these names
 # for backward compatibility with any existing `check_single_writer.WRITES_TAG_RE`
@@ -107,6 +118,33 @@ from chief_wiggum.annotations import ATTR_RE, WRITES_TAG_RE  # noqa: E402, F401
 from chief_wiggum.hashing import scanner_version  # noqa: E402
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 
+# The write-site emission family (regexes, WriteSite, emit_write_sites) moved to
+# chief_wiggum.write_emission (#162) so scripts/emitters/*.py can sit BEHIND the
+# same per-file emission logic this checker uses — re-exported here unchanged
+# so every existing `check_single_writer.X` reference keeps working (golden
+# parity; see tests/test_single_writer_golden.py).
+from chief_wiggum.write_emission import (  # noqa: E402, F401
+    ASSIGN_RE,
+    FILTER_OPERATOR_RE,
+    GO_FUNC_RE,
+    KIND_ASSIGN,
+    KIND_QUOTED,
+    KIND_SQL,
+    KIND_STRUCT,
+    MUTATION_CONTEXT_RE,
+    PY_FUNC_RE,
+    QUOTED_RE,
+    SQL_FIELD_RE,
+    SQL_SET_KEYWORD_RE,
+    STRUCT_RE,
+    TS_FUNC_RE,
+    WriteSite,
+    _enclosing_symbol,
+    _is_test_path,
+    _strip_line_comment,
+    emit_write_sites,
+)
+
 # Same INV- shape as check_traceability.py (case-insensitive slug segment).
 INV_ID_RE = re.compile(r"\bINV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])", re.IGNORECASE)
 
@@ -114,15 +152,12 @@ INV_ID_RE = re.compile(r"\bINV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])
 # but scoped to INV- and capturing the description for reporting.
 INV_DEFINE_RE = re.compile(r"\*\*\s*(INV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})\s*\*\*\s*:?\s*(.*)")
 
-SOURCE_EXTS = {".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs"}
+# The set of extensions this checker scans — every tier-1 (Go/Python/TypeScript)
+# and generic-tier (Java/Ruby/Rust today) extension declared in
+# config/languages.json. Backward-compatible: identical to the pre-#162
+# hardcoded set. See chief_wiggum.languages + docs/languages.md.
+SOURCE_EXTS = cw_languages.all_known_extensions()
 SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv", "vendor", "dist", "build"}
-
-# A file is test infrastructure (not a sanctioned/unsanctioned production writer)
-# — same heuristic as check_traceability.py. Test writes of a controlled field
-# are fixtures, not a competing production write path, so they don't violate.
-def _is_test_path(rel: str) -> bool:
-    low = rel.lower()
-    return "test" in low or "spec" in low or any(p == "e2e" for p in Path(low).parts)
 
 
 def canonical_id(node_id: str) -> str:
@@ -373,109 +408,6 @@ def collect_invariants(epic_dir: str | Path) -> tuple[list[SingleWriterInvariant
 # --- scanning the repo for writers ------------------------------------------
 
 
-# Generic (field-agnostic) write-site detectors. Each captures a candidate
-# identifier token; whether that token belongs to any particular invariant's
-# controlled field is a QUERY-TIME decision (match_writers), not baked into the
-# regex. Kind indices (0-3) mirror the four write shapes documented in the
-# module docstring and drive `persistence_only` filtering in match_writers.
-KIND_ASSIGN, KIND_STRUCT, KIND_QUOTED, KIND_SQL = range(4)
-
-# The token classes are wider than `\w+` on purpose: the pre-split scanner
-# built its regexes from `re.escape(leaf_token)`, so a controlled field whose
-# leaf contains a hyphen (e.g. a Mongo key `plan-tier`) DID match. Emission
-# must cover at least that same token surface or a full scan could silently
-# miss an unsanctioned writer of such a field; over-wide captures are harmless
-# (a token that matches no invariant's field is dropped at claim time).
-# 0. Assignment: `something.Plan =` / `.stripe_plan =` (not ==; `:=` — Go's
-#    declare+assign — IS a write, so it's allowed).
-ASSIGN_RE = re.compile(r"\.([\w-]+)\s*:?=[^=]")
-# 1. Struct-literal / map set: `Plan: value` or `"plan": value` or `Key: "plan"`.
-#    `:(?!=)` so Go's short-var-decl `plan := expr` is NOT read as a field set
-#    (the captured token would be the local var name, and `:` the `:` of `:=`).
-STRUCT_RE = re.compile(r"""(^|[\s,{(])['"]?([\w.-]+)['"]?\s*:(?!=)\s*""")
-# 2. bson/Mongo update key referenced literally in a set expression. `.` is in
-#    the class so a dotted key (`"provider.plan"`) is captured whole — leaf
-#    tokens never contain dots, so it can't claim-match a leaf field, exactly
-#    like the old quote-delimited exact-token match behaved.
-QUOTED_RE = re.compile(r"""['"]([\w.-]+)['"]""")
-# 3. SQL UPDATE ... SET <field> = ...  (multiple fields may be set on one line).
-SQL_SET_KEYWORD_RE = re.compile(r"\bSET\b", re.IGNORECASE)
-SQL_FIELD_RE = re.compile(r"\b([\w-]+)\s*=")
-
-# A bson $set / Mongo update / SQL UPDATE context marker — a bare `"plan":` in a
-# non-mutating context (e.g. a JSON response DTO field) shouldn't count. We only
-# treat KIND_QUOTED (quoted-literal) as a write when the surrounding lines look
-# like a mutation. KIND_ASSIGN and KIND_STRUCT are writes on their own.
-MUTATION_CONTEXT_RE = re.compile(
-    r"\$set|UpdateOne|UpdateMany|UpdateByID|FindOneAndUpdate|bson\.[ME]|SET\b|UPDATE\b",
-    re.IGNORECASE,
-)
-
-# A bson/Mongo QUERY operator on the same line means the `"field":` there is a FILTER
-# clause (which document to match), not a `$set` value (what to write). e.g.
-# `bson.M{"plan": bson.M{"$exists": false}}` selects rows, it doesn't write plan. Skip it.
-FILTER_OPERATOR_RE = re.compile(
-    r"\$(?:exists|in|nin|ne|eq|gt|gte|lt|lte|regex|or|and|not|nor|type|all|elemMatch|size)\b"
-)
-
-# Line-comment markers per language. Used to strip trailing comments before matching,
-# so a field name mentioned in a comment (e.g. `// Free plan: …`) is not read as a write.
-_COMMENT_MARKERS = {
-    ".go": ("//",), ".ts": ("//",), ".tsx": ("//",), ".js": ("//",), ".jsx": ("//",),
-    ".java": ("//",), ".rs": ("//",), ".py": ("#",), ".rb": ("#",),
-}
-
-
-def _strip_line_comment(line: str, suffix: str) -> str:
-    """Drop a trailing line comment, respecting string/char literals so an in-string
-    marker (a URL's `//`, a TS `#private`, a `#` inside a Python string) is preserved.
-    Multi-line strings aren't tracked (per-line scan) — acceptable: at worst a comment
-    marker inside a rare multi-line literal truncates a line we only search for writes."""
-    markers = _COMMENT_MARKERS.get(suffix)
-    if not markers:
-        return line
-    quote: str | None = None
-    i, n = 0, len(line)
-    while i < n:
-        ch = line[i]
-        if quote is not None:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in ("'", '"', "`"):
-            quote = ch
-            i += 1
-            continue
-        for m in markers:
-            if line.startswith(m, i):
-                return line[:i]
-        i += 1
-    return line
-
-
-GO_FUNC_RE = re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)")
-PY_FUNC_RE = re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)")
-TS_FUNC_RE = re.compile(r"(?:function\s+([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s*)?\()")
-
-
-def _enclosing_symbol(lines: list[str], idx: int) -> str | None:
-    """Nearest function/method name declared at or above line index ``idx``."""
-    for j in range(idx, -1, -1):
-        line = lines[j]
-        for pat in (GO_FUNC_RE, PY_FUNC_RE):
-            m = pat.match(line)
-            if m:
-                return m.group(1)
-        m = TS_FUNC_RE.search(line)
-        if m:
-            return m.group(1) or m.group(2)
-    return None
-
-
 def _distinct_field_forms(inv: SingleWriterInvariant) -> list[tuple[str, str]]:
     """(original controlled-field path, leaf-token) pairs, both snake and compact."""
     forms: list[tuple[str, str]] = []
@@ -487,74 +419,6 @@ def _distinct_field_forms(inv: SingleWriterInvariant) -> list[tuple[str, str]]:
                 seen.add(tok)
                 forms.append((fpath, tok))
     return forms
-
-
-@dataclass
-class WriteSite:
-    """A FIELD-AGNOSTIC candidate write site: emission time knows nothing about
-    any invariant's controlled field — just "this line assigns/sets/matches an
-    identifier token, in this file, in this enclosing symbol". Whether ``token``
-    belongs to a controlled field is a query-time decision (``match_writers``).
-    """
-
-    file: str
-    line: int  # 1-indexed
-    text: str  # raw (comment-un-stripped) line, stripped + truncated for display
-    symbol: str | None
-    is_test: bool
-    kind: int  # KIND_ASSIGN | KIND_STRUCT | KIND_QUOTED | KIND_SQL
-    token: str  # the identifier exactly as it appears in source (case preserved)
-
-
-def emit_write_sites(path: str, text: str) -> list[WriteSite]:
-    """Emission: every candidate write site in a single file's ``text``, with NO
-    knowledge of any specific invariant or controlled field (see module + class
-    docstrings). ``path`` is a repo-relative label used only for ``.suffix``
-    (comment-marker lookup) and the ``file`` attribute — the file is never
-    re-read from disk, so this is safe to call on manifest-sourced content.
-    """
-    suffix = Path(path).suffix
-    raw_lines = text.splitlines()
-    code_lines = [_strip_line_comment(rl, suffix) for rl in raw_lines]
-    is_test = _is_test_path(path)
-    sites: list[WriteSite] = []
-    for i, line in enumerate(code_lines):
-        candidates: list[tuple[int, str]] = []  # (kind, token)
-        for m in ASSIGN_RE.finditer(line):
-            candidates.append((KIND_ASSIGN, m.group(1)))
-        for m in STRUCT_RE.finditer(line):
-            candidates.append((KIND_STRUCT, m.group(2)))
-        for m in QUOTED_RE.finditer(line):
-            # A bare quoted literal only counts as a write in a mutation context
-            # (this line or either of the two lines above) and NOT when the same
-            # line carries a query operator (a filter clause, not a $set value).
-            # Both checks are invariant-independent, so resolved once here.
-            if not (
-                MUTATION_CONTEXT_RE.search(line)
-                or (i > 0 and MUTATION_CONTEXT_RE.search(code_lines[i - 1]))
-                or (i > 1 and MUTATION_CONTEXT_RE.search(code_lines[i - 2]))
-            ):
-                continue
-            if FILTER_OPERATOR_RE.search(line):
-                continue
-            candidates.append((KIND_QUOTED, m.group(1)))
-        for set_m in SQL_SET_KEYWORD_RE.finditer(line):
-            tail = line[set_m.end():]
-            semi = tail.find(";")
-            if semi != -1:
-                tail = tail[:semi]
-            for fm in SQL_FIELD_RE.finditer(tail):
-                candidates.append((KIND_SQL, fm.group(1)))
-        if not candidates:
-            continue
-        symbol = _enclosing_symbol(code_lines, i)
-        snippet = raw_lines[i].strip()[:200]
-        for kind, token in candidates:
-            sites.append(WriteSite(
-                file=path, line=i + 1, text=snippet, symbol=symbol,
-                is_test=is_test, kind=kind, token=token,
-            ))
-    return sites
 
 
 def match_writers(sites: list[WriteSite], invariant: SingleWriterInvariant) -> list[Writer]:
@@ -696,8 +560,46 @@ def _scanner_version() -> str:
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(
-        here, cw_dir / "annotations.py", cw_dir / "manifest.py", cw_dir / "hashing.py"
+        here,
+        cw_dir / "annotations.py",
+        cw_dir / "manifest.py",
+        cw_dir / "hashing.py",
+        cw_dir / "write_emission.py",
+        cw_dir / "languages.py",
     )
+
+
+def unsupported_extension_counts(
+    source_root: str | Path,
+    exclude: list[str] | None = None,
+    only_files: set[str] | None = None,
+) -> dict[str, int]:
+    """Count files with a RECOGNIZED-but-unsupported extension (#162) — one
+    ``scripts/emitters`` has no emitter for at all (language-specific or
+    generic tier) — among the same candidate set ``scan_writers`` would walk.
+    Never silent: this feeds a ``coverage`` warning in ``check()`` instead of
+    the file simply disappearing from the scan with no trace. Extensions
+    outside the curated ``config/languages.json`` unsupported list (arbitrary
+    non-source files: markdown, images, lockfiles, ...) are not counted —
+    only extensions this repo explicitly recognizes as "a real language we
+    don't scan yet" are worth flagging."""
+    root = Path(source_root)
+    exclude = exclude or []
+    counts: dict[str, int] = {}
+    if not root.exists():
+        return counts
+    candidates = sorted(only_files) if only_files is not None else walk_source_files(root)
+    unsupported = emitters.unsupported_extensions()
+    for rel in candidates:
+        suffix = Path(rel).suffix
+        if suffix not in unsupported:
+            continue
+        if any(part in SKIP_PARTS for part in Path(rel).parts):
+            continue
+        if _excluded(rel, exclude):
+            continue
+        counts[suffix] = counts.get(suffix, 0) + 1
+    return counts
 
 
 # --- top-level check --------------------------------------------------------
@@ -757,6 +659,17 @@ def check(
                         f"{inv.id}: no writer found for {inv.controls_field} — "
                         f"sanctioned writer(s) {inv.sanctioned_writers} may be missing or misnamed"
                     )
+        # Coverage metadata (#162): a recognized-but-unsupported-language file is
+        # NEVER silently dropped — surfaced as an explicit warning, same as any
+        # other coverage gap this checker reports.
+        unsupported = unsupported_extension_counts(source_root, exclude=scan_exclude, only_files=only_files)
+        if unsupported:
+            total = sum(unsupported.values())
+            detail = ", ".join(f"{ext} ({n})" for ext, n in sorted(unsupported.items()))
+            report.warnings.append(
+                f"{total} file(s) skipped: no emitter coverage for recognized-but-unsupported "
+                f"extension(s) {detail} — see config/languages.json"
+            )
     else:
         report.warnings.append("no --source given; parsed invariant metadata only (no repo scan)")
 

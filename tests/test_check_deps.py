@@ -120,3 +120,27 @@ def test_go_lsp_profile_requires_gopls():
 
 def test_python_lsp_profile_requires_pyright():
     assert check_deps.is_required("cmds", "pyright-langserver", ["python-lsp"])
+
+
+# --- language support matrix consumption (#162) -----------------------------
+
+
+def test_language_tier1_profile_expands_to_built_languages_dep_profiles():
+    """config/languages.json is the source of truth: go/python contribute
+    go-lsp/python-lsp; language-tier-1 requires exactly their tools."""
+    assert check_deps.is_required("cmds", "gopls", ["language-tier-1"])
+    assert check_deps.is_required("cmds", "go", ["language-tier-1"])
+    assert check_deps.is_required("cmds", "pyright-langserver", ["language-tier-1"])
+
+
+def test_language_tier1_profile_is_listed():
+    assert "language-tier-1" in check_deps.WORKFLOW_REQUIREMENTS
+
+
+def test_list_languages_cli_prints_matrix(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["check_deps.py", "--list-languages"])
+    check_deps.main()
+    out = capsys.readouterr().out
+    assert "go" in out and "python" in out and "typescript" in out and "rust" in out
+    assert "designed" in out  # rust's tier/status shows up
+    assert "docs/languages.md" in out
