@@ -156,8 +156,13 @@ def on_endpoint_detected(ts):
     span.set_attribute("endpointing_latency_ms", ts - start)
 ```
 
-A tag may list more than one binding name (space- or comma-separated) when a
-single site fires several bindings.
+A tag may list more than one binding name when a single site fires several
+bindings — multiple names must be **comma-separated**
+(`@cw-emits asr_latency, endpointing_latency_ms`). A space-separated list is
+deliberately not a multi-binding: the first token is the binding and any
+prose after it is ignored (`# @cw-emits asr_latency records ASR latency`
+emits exactly one binding), so a trailing comment can never mint phantom
+bindings that accidentally satisfy the missing-binding check.
 
 **`scripts/check_instrumentation.py`** reads every `telemetry_ref` out of one
 or more `system-contracts.json` budget docs (the walk is schema-agnostic — it

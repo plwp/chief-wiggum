@@ -520,9 +520,22 @@ def _check_chains(chains: list[dict], report: BudgetTreeReport) -> None:
 def load_emits_report(path: str | Path) -> set[str]:
     """Load a ``check_instrumentation.py`` JSON report and return its
     ``emitted_bindings`` set (#170) — every binding name with at least one
-    ``@cw-emits`` site found, repo-wide."""
+    ``@cw-emits`` site found, repo-wide.
+
+    The shape is VALIDATED, not assumed: ``emitted_bindings`` must exist and be
+    a list of strings, else ``ValueError``. Accepting a wrong/old JSON file
+    here would silently treat every binding as unemitted and reclassify every
+    quiet metric to ``not_emitted`` — a wrong claim, worse than no refinement
+    (Codex review of PR #180).
+    """
     raw = json.loads(Path(path).read_text())
-    return set(raw.get("emitted_bindings") or [])
+    emitted = raw.get("emitted_bindings") if isinstance(raw, dict) else None
+    if not isinstance(emitted, list) or not all(isinstance(x, str) for x in emitted):
+        raise ValueError(
+            "not a check_instrumentation report: 'emitted_bindings' must be present "
+            "and a list of strings"
+        )
+    return set(emitted)
 
 
 def check_measured(
@@ -679,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.emits_report:
             try:
                 emitted = load_emits_report(args.emits_report)
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
                 print(f"Error: cannot load emits report: {exc}", file=sys.stderr)
                 return 2
         report = check_measured(doc, measured_data, source=args.measured, schema=schema, emitted=emitted)

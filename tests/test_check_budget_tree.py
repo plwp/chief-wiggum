@@ -746,10 +746,45 @@ def test_load_emits_report_reads_emitted_bindings(tmp_path):
     assert cbt.load_emits_report(p) == {"asr_latency", "llm_ttft"}
 
 
-def test_load_emits_report_missing_key_is_empty_set(tmp_path):
+def test_load_emits_report_empty_list_is_valid(tmp_path):
+    p = tmp_path / "emits.json"
+    p.write_text(json.dumps({"emitted_bindings": [], "ok": True}))
+    assert cbt.load_emits_report(p) == set()
+
+
+def test_load_emits_report_rejects_missing_key(tmp_path):
+    # Codex review of PR #180: a wrong/old JSON (e.g. a k6 summary passed by
+    # mistake) must NOT be read as "empty emitted set" — that would reclassify
+    # every quiet binding as not_emitted, a wrong claim.
     p = tmp_path / "emits.json"
     p.write_text(json.dumps({"ok": True}))
-    assert cbt.load_emits_report(p) == set()
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for missing emitted_bindings")
+    except ValueError as exc:
+        assert "emitted_bindings" in str(exc)
+
+
+def test_load_emits_report_rejects_non_list_and_non_string_items(tmp_path):
+    p = tmp_path / "emits.json"
+    p.write_text(json.dumps({"emitted_bindings": "asr_latency"}))  # string, not list
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for non-list emitted_bindings")
+    except ValueError:
+        pass
+    p.write_text(json.dumps({"emitted_bindings": ["asr_latency", 42]}))  # non-string item
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for non-string binding")
+    except ValueError:
+        pass
+    p.write_text(json.dumps(["asr_latency"]))  # not even a dict
+    try:
+        cbt.load_emits_report(p)
+        raise AssertionError("expected ValueError for non-dict report")
+    except ValueError:
+        pass
 
 
 # --- load_measured: k6 summary + flat export shapes ---------------------------
@@ -911,6 +946,18 @@ def test_cli_measured_with_emits_report_flag(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "not_emitted" in out
     assert "emitter MISSING" in out
+
+
+def test_cli_measured_with_invalid_emits_report_is_usage_error(tmp_path, capsys):
+    # A wrong-shaped emits report (missing emitted_bindings) must exit 2, not
+    # silently reclassify every quiet binding as not_emitted.
+    doc = {"trees": [{"root": _leaf("BUD-cli-011", 300, telemetry_ref="asr_latency")}]}
+    budget_path = _write(tmp_path, "budget.json", doc)
+    measured_path = _write(tmp_path, "measured.json", {})
+    bad_emits = _write(tmp_path, "emits.json", {"metrics": {"asr_latency": {"p95": 1}}})  # a k6 file, not a report
+    rc = cbt.main([str(budget_path), "--measured", str(measured_path), "--emits-report", str(bad_emits)])
+    assert rc == 2
+    assert "cannot load emits report" in capsys.readouterr().err
 
 
 def test_cli_measured_without_emits_report_flag_is_unchanged(tmp_path, capsys):

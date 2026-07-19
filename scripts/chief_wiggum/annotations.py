@@ -38,17 +38,30 @@ ATTR_RE = re.compile(r"(\w+)=([^\s]+)")
 # `@cw-emits <binding-name>` where binding-name is an OTel span/event name or
 # a k6/metrics-exporter metric name — e.g. `endpointing_latency_ms`,
 # `llm.ttft`, `tts/ttfb`. Not a stable ID (no KIND-slug-NNN shape), so it does
-# not reuse chief_wiggum.trace_ids.ID_BODY. Multiple names may be listed on one
-# tag (space- or comma-separated), mirroring @cw-trace's multi-id capture, for
-# a single emit site that fires more than one binding (e.g. a span that also
-# bumps a counter).
+# not reuse chief_wiggum.trace_ids.ID_BODY.
+#
+# Multiple names on one tag (a single emit site that fires more than one
+# binding, e.g. a span that also bumps a counter) must be COMMA-separated:
+#
+#     # @cw-emits asr_latency, endpointing_latency_ms
+#
+# A bare space-separated token list is deliberately NOT accepted: the first
+# token is the binding, and any space-separated prose after it is ignored
+# ("# @cw-emits asr_latency records ASR latency" emits exactly one binding).
+# Otherwise trailing prose words would become phantom bindings that could
+# accidentally satisfy check_instrumentation's missing-binding check.
 _BINDING_TOKEN = r"[A-Za-z0-9_][A-Za-z0-9_./:-]*"
 EMITS_TAG_RE = re.compile(
-    rf"@cw-emits\s+(?P<names>{_BINDING_TOKEN}(?:[\s,]+{_BINDING_TOKEN})*)",
+    rf"@cw-emits\s+(?P<names>{_BINDING_TOKEN}(?:\s*,\s*{_BINDING_TOKEN})*)",
     re.IGNORECASE,
 )
 
 
 def split_binding_names(raw: str) -> list[str]:
-    """Split an ``EMITS_TAG_RE`` ``names`` capture into individual binding names."""
-    return [n for n in re.split(r"[\s,]+", raw.strip()) if n]
+    """Split an ``EMITS_TAG_RE`` ``names`` capture into individual binding names.
+
+    Commas are the ONLY multi-binding separator (see grammar note above);
+    whitespace around each comma is tolerated. A space-separated list is one
+    binding plus ignored prose — the regex never captures it as multiple names.
+    """
+    return [n for n in (part.strip() for part in raw.split(",")) if n]

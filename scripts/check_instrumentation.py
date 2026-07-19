@@ -20,7 +20,11 @@ the source tree marking the code site that emits it. A binding with no
 Annotation grammar (``chief_wiggum.annotations.EMITS_TAG_RE`` — same regex
 tier and grammar family as ``@cw-writes``, see ``docs/single-writer.md``):
 
-    @cw-emits <binding-name> [<binding-name> ...]
+    @cw-emits <binding-name>[, <binding-name> ...]
+
+Multiple bindings on one tag must be COMMA-separated; after the first
+binding, space-separated tokens are treated as prose and ignored (so a
+trailing comment cannot mint phantom bindings).
 
 Place it in a comment at the code site that emits the span/event/metric:
 
@@ -352,9 +356,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
+    # A corrupt/unreadable budget doc must be a USAGE ERROR (exit 2), never a
+    # silent degrade to "nothing to check" — that would let a broken contract
+    # file disable the gate while appearing green (Codex review of PR #180).
     for bf in args.budget_files:
-        if not Path(bf).exists():
+        path = Path(bf)
+        if not path.exists():
             print(f"Error: budget file not found: {bf}", file=sys.stderr)
+            return 2
+        try:
+            json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Error: cannot load budget file {bf}: {exc}", file=sys.stderr)
             return 2
 
     report = check(args.budget_files, args.source, exclude=args.exclude)

@@ -36,11 +36,41 @@ def test_emits_tag_matches_dotted_and_slashed_names():
     assert EMITS_TAG_RE.search("# @cw-emits transport-rtt-ms")
 
 
-def test_emits_tag_supports_multiple_names():
+def test_emits_tag_supports_multiple_names_comma_separated():
     from chief_wiggum.annotations import EMITS_TAG_RE, split_binding_names
 
     m = EMITS_TAG_RE.search("# @cw-emits asr_latency, endpointing_latency_ms")
     assert split_binding_names(m.group("names")) == ["asr_latency", "endpointing_latency_ms"]
+    # whitespace around the comma is tolerated
+    m = EMITS_TAG_RE.search("# @cw-emits asr_latency ,endpointing_latency_ms")
+    assert split_binding_names(m.group("names")) == ["asr_latency", "endpointing_latency_ms"]
+
+
+def test_emits_tag_ignores_trailing_prose():
+    # Codex review of PR #180: a space-separated token list is NOT a multi-
+    # binding — the first token is the binding, prose after it is ignored.
+    # Otherwise "records", "ASR", and "latency" would become phantom bindings
+    # that could accidentally satisfy a missing-binding check.
+    from chief_wiggum.annotations import EMITS_TAG_RE, split_binding_names
+
+    m = EMITS_TAG_RE.search("# @cw-emits asr_latency records ASR latency")
+    assert m
+    assert split_binding_names(m.group("names")) == ["asr_latency"]
+
+
+def test_prose_word_cannot_satisfy_a_missing_binding(tmp_path):
+    # End-to-end: the budget doc binds "records"; a comment whose PROSE contains
+    # the word "records" after an @cw-emits tag must NOT count as an emitter.
+    budget = _write(
+        tmp_path, "system-contracts.json", {"trees": [{"root": _bud_node("BUD-prose-001", "records")}]}
+    )
+    src = tmp_path / "repo"
+    (src / "app").mkdir(parents=True)
+    (src / "app" / "handler.py").write_text("# @cw-emits asr_latency records ASR latency\n")
+    report = ci.check([budget], src)
+    assert not report.ok
+    assert report.findings[0].id == "records"
+    assert report.emitted_bindings == ["asr_latency"]
 
 
 def test_writes_and_emits_regex_do_not_cross_match():
@@ -302,6 +332,30 @@ def test_cli_missing_budget_file_is_usage_error(tmp_path, capsys):
     rc = ci.main([str(tmp_path / "nope.json")])
     assert rc == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_cli_malformed_budget_json_is_usage_error(tmp_path, capsys):
+    # Codex review of PR #180: a corrupt contract file must NOT silently
+    # degrade to "nothing to check" (exit 0) — that disables the gate while
+    # appearing green. Unreadable/malformed budget docs are a usage error.
+    bad = _write(tmp_path, "system-contracts.json", "{not json")
+    rc = ci.main([str(bad), "--source", str(tmp_path)])
+    assert rc == 2
+    assert "cannot load budget file" in capsys.readouterr().err
+
+
+def test_cli_malformed_budget_json_is_usage_error_even_with_gate(tmp_path, capsys):
+    bad = _write(tmp_path, "system-contracts.json", "{not json")
+    rc = ci.main([str(bad), "--source", str(tmp_path), "--gate"])
+    assert rc == 2
+    assert "cannot load budget file" in capsys.readouterr().err
+
+
+def test_cli_one_malformed_file_among_many_is_usage_error(tmp_path):
+    good = _write(tmp_path, "good.json", {"trees": [{"root": _bud_node("BUD-mix-001", "m1")}]})
+    bad = _write(tmp_path, "bad.json", "{not json")
+    rc = ci.main([str(good), str(bad), "--source", str(tmp_path)])
+    assert rc == 2
 
 
 def test_cli_json_format_includes_authority_and_counts(tmp_path, capsys):
