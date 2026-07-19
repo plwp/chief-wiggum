@@ -83,16 +83,16 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# The @cw-writes tag grammar is shared (#170: a third @cw-* tag, @cw-emits,
+# joins it) — see chief_wiggum/annotations.py. Re-exported under these names
+# for backward compatibility with any existing `check_single_writer.WRITES_TAG_RE`
+# references.
+from chief_wiggum.annotations import ATTR_RE, WRITES_TAG_RE  # noqa: E402, F401
+
 # Same INV- shape as check_traceability.py (case-insensitive slug segment).
 INV_ID_RE = re.compile(r"\bINV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])", re.IGNORECASE)
-
-# Prose metadata tag, mirroring the @cw-trace LOBSTER-style namespaced tag.
-# `@cw-writes <INV-ID> controls_field=a,b sanctioned_writers=x,y`  (order-free).
-WRITES_TAG_RE = re.compile(
-    r"@cw-writes\s+(?P<id>INV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})(?P<attrs>(?:\s+\w+=[^\s]+)+)",
-    re.IGNORECASE,
-)
-ATTR_RE = re.compile(r"(\w+)=([^\s]+)")
 
 # Prose invariant declaration (bold label), same as check_traceability's DEFINE_RE
 # but scoped to INV- and capturing the description for reporting.

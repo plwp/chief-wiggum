@@ -136,3 +136,81 @@ Exit codes: `0` ok/report-only, `1` `--gate` violation (static mode only), `2`
 usage error. Ships **report-only** per the gate-rollout doctrine
 (`docs/gate-rollout.md`) — not yet wired as a blocker into `/architect` or
 `/close-epic`.
+
+## Instrumentation coverage: telemetry bindings must be provable (#170)
+
+A budget tree bound to a `telemetry_ref` nobody emits (or a future trace-
+conformance check over an empty history) reports **zero violations** — not
+because the system is healthy, but because it never looked at anything. That
+is a vacuous pass, and it is the completeness-lens failure mode this section
+closes.
+
+**`@cw-emits <binding-name>`** marks the code site that emits a declared
+telemetry span/event/metric — same regex tier and grammar family as
+`@cw-writes` (`docs/single-writer.md`), both defined in
+`scripts/chief_wiggum/annotations.py`:
+
+```python
+# @cw-emits endpointing_latency_ms
+def on_endpoint_detected(ts):
+    span.set_attribute("endpointing_latency_ms", ts - start)
+```
+
+A tag may list more than one binding name (space- or comma-separated) when a
+single site fires several bindings.
+
+**`scripts/check_instrumentation.py`** reads every `telemetry_ref` out of one
+or more `system-contracts.json` budget docs (the walk is schema-agnostic — it
+looks for the field name, not a `BUD-` node specifically, so a future `SLO-`
+or trace-conformance doc that reuses `telemetry_ref` is covered without a
+checker update) and verifies **statically** that an `@cw-emits` site exists
+somewhere in `--source` for each one. A binding with no site is reported
+**missing**:
+
+```bash
+python3 scripts/check_instrumentation.py docs/system/system-contracts.json --source .
+python3 scripts/check_instrumentation.py docs/system/system-contracts.json --source . --gate  # hard-fail on missing
+```
+
+Report-only by default; `--gate` exits 1 on any missing binding. Without
+`--source`, the checker parses bindings but cannot claim anything is
+missing — it degrades gracefully (a warning, not a false-positive finding),
+mirroring `check_single_writer.py`.
+
+**What this proves, and what it doesn't.** Static presence of an `@cw-emits`
+site proves the binding is wired to *some* code path — it does NOT prove that
+line executes, executes on the path the budget assumes, or is ever actually
+observed at runtime. That's what measured mode above (an observed-at-least-
+once check against a real export) is for. The two are complementary: this
+checker answers "does an emitter exist"; measured mode answers "did it fire".
+Deleting the `@cw-emits` line while the runtime code is untouched flips the
+binding straight to missing — the "instrumentation deleted" seed class the
+issue calls out, exercised in
+`tests/test_check_instrumentation.py::test_deleting_emits_site_flips_binding_to_missing`.
+
+### Sharper measured-mode statuses: `--emits-report`
+
+Measured mode's `no_observations` conflates two different situations: a real
+emitter that simply didn't fire during this run (a measurement window), and a
+binding with no emitter anywhere in the codebase (a structural gap that no
+amount of waiting will fix). Passing `check_instrumentation.py`'s JSON report
+back into `check_budget_tree.py --measured` distinguishes them:
+
+```bash
+python3 scripts/check_instrumentation.py docs/system/system-contracts.json --source . --format json \
+    > /tmp/emits-report.json
+python3 scripts/check_budget_tree.py docs/system/system-contracts.json \
+    --measured k6-summary.json --emits-report /tmp/emits-report.json
+```
+
+With `--emits-report`, a `no_observations` binding with **no** `@cw-emits`
+site anywhere in source (per the instrumentation report's `emitted_bindings`)
+is reclassified to a new status, **`not_emitted`**. `unbound` (no
+`telemetry_ref` declared at all — a stronger, different gap) and
+`held`/`breached` (an actual observation exists) are never touched.
+
+This integration is **minimal and optional**: `--emits-report` is a single
+flag, and omitting it leaves `unbound`/`no_observations`/`held`/`breached`
+exactly as they were before #170 — the default behavior is unchanged.
+Measured mode remains evidence-only, permanently: none of this ever makes
+`--gate` exit non-zero.
