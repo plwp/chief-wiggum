@@ -88,6 +88,12 @@ python3 scripts/check_single_writer.py docs/epics/<slug> --source . --gate cover
 
 # report only (no gate), JSON or text
 python3 scripts/check_single_writer.py docs/epics/<slug> --source . --format json
+
+# ticket-scoped speed-up (/implement, /implement-wave): scan only what changed
+python3 scripts/check_single_writer.py docs/epics/<slug> --source . --changed-since main
+
+# hash-derived version (source of the scanner + its chief_wiggum deps)
+python3 scripts/check_single_writer.py --scanner-version
 ```
 
 Gates (mirroring `check_traceability.py`):
@@ -98,7 +104,44 @@ Gates (mirroring `check_traceability.py`):
 - `--gate coverage` — hard-fails on any **unsanctioned writer** (and on malformed
   metadata).
 
-Exit codes: `0` ok, `1` gate violation, `2` usage error.
+`--changed-since <ref>` scopes the `--source` scan to files that differ from
+`<ref>` (committed diff + dirty tracked + untracked, via
+`chief_wiggum.manifest`) instead of walking the whole tree — a fast per-ticket
+signal for `/implement`/`/implement-wave` (report-only there; see those
+skills). **Whole-repo scanning remains the default, and `/close-epic --gate
+coverage` NEVER passes `--changed-since`** — the coverage gate must see every
+writer in the repo to be authoritative; a scoped scan can only ever report a
+false "no writer found"/"uncovered" for code outside its window, never prove
+absence of a violation.
+
+`--scanner-version` prints a hash of the scanner's own source plus its
+`chief_wiggum` dependencies (`chief_wiggum/manifest.py`, `chief_wiggum/hashing.py`)
+— the version IS the content hash, so there's no hand-bumped constant to forget
+to update when the detection logic changes.
+
+**Submodules / nested git checkouts are excluded from BOTH scan modes.** A
+directory under `--source` that contains a `.git` entry (a submodule's gitlink
+file, or a vendored/nested repo) is pruned from the full-tree walk, and the
+manifest behind `--changed-since` never surfaces a submodule's files either
+(git records a submodule as a single gitlink entry, not blobs). Submodule
+contents belong to the submodule's own repo and its own gates — this keeps the
+two scan modes agreeing on the file universe instead of one seeing files the
+other can't.
+
+Exit codes: `0` ok, `1` gate violation, `2` usage error (including a bad
+`--changed-since` ref or a non-git `--source` with `--changed-since`).
+
+### Emission/claim seam (internal)
+
+`scan_writers` is implemented as two pure phases (#160): `emit_write_sites(path,
+text) -> list[WriteSite]` finds every FIELD-AGNOSTIC candidate write site in one
+file's content — an assignment/struct-literal/quoted-literal/SQL-SET token, its
+line, and its enclosing symbol — with no knowledge of any invariant.
+`match_writers(sites, invariant) -> list[Writer]` is the query-time join: does
+any site's token belong to THIS invariant's controlled field, honoring
+`persistence_only`? This is the seam a future content-addressed cache would key
+off (`chief_wiggum.manifest.build_manifest`) — a file's emitted sites are valid
+cache entries as long as its content hash is unchanged.
 
 ## Worked example (the incident)
 

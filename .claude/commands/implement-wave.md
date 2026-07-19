@@ -328,6 +328,14 @@ Run the integration check **on the staging branch, before promoting to main**:
    python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO"
    ```
    A violation is a hard blocker exactly like a test failure: fix it on the staging branch (or drop the offending ticket's merge from the wave) before promoting. Never resolve a violation by editing the contract or the journal.
+6. **Single-writer / traceability quick check** (report-only, wave-scoped) — if the epic has `docs/epics/<slug>/`, scope both checkers to what THIS wave changed with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`):
+   ```bash
+   python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" \
+     --changed-since "$DEFAULT_BRANCH" --format text
+   python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" \
+     --changed-since "$DEFAULT_BRANCH" --format text
+   ```
+   Report-only: this is a fast wave-scoped signal, not the authoritative gate — `--changed-since` cannot see a stale writer/annotation outside this wave's diff. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic. Surface findings for the fixer; don't hard-block the wave on them here.
 
 If the integration check fails:
 - **Test failure caused by merge**: Fix it on the staging branch. Launch an implementation worker (contract: `docs/worker-contracts.md#implementation-worker`) to diagnose and fix.

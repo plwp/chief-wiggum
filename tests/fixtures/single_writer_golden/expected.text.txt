@@ -1,0 +1,15 @@
+# Single-Writer Audit
+
+Single-write-path invariants: 4
+Writers found: 7  |  Violations: 2  |  Malformed metadata: 0
+
+- Soundness (metadata well-formed): OK
+- Coverage (no unsanctioned writer): FINDINGS
+
+## Unsanctioned writers (single-write-path violations)
+
+- INV-bil-001 field `provider.plan` written at internal/admin/handlers.go:6 in ChangePlan()
+    c.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"plan": newPlan}})
+- INV-tier-004 field `provider.plan-tier` written at internal/tier/store.go:13 in LegacyTier()
+    c.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"plan-tier": v}})
+

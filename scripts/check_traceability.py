@@ -21,6 +21,14 @@ gracefully: a repo/epic with no annotations reports absence rather than crashing
 Mirrors ``check_unresolved.py``. Gates:
     --gate soundness  -> fail on orphan BRs + dangling refs + invalid links (/architect)
     --gate coverage   -> fail on uncovered + untested contracts (/close-epic)
+
+Internally, scanning is split into per-file EMISSION (``emit_epic_annotations``,
+``emit_source_annotations``: every ``@cw-trace`` annotation in one file) and
+report-time joins against the defined-ID set (``build_report``) — see
+``docs/traceability.md``. ``--changed-since <ref>`` scopes the ``--source`` scan
+to files changed since ``ref`` (never used by /close-epic's coverage gate, which
+must see the whole repo). ``--scanner-version`` prints a hash of this module's
+source plus its ``chief_wiggum`` deps.
 """
 
 from __future__ import annotations
@@ -36,6 +44,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The ID grammar and verb set are shared with ratchet.py and the TIM schema —
 # a kind added in one place but not the others is silently dropped, so all
 # three build from chief_wiggum.trace_ids (cross-checked in tests).
+# Shared with check_single_writer.py: the hash-derived --scanner-version and
+# the git-native manifest helper behind --changed-since (#160). walk_source_files
+# prunes submodules/nested git checkouts from the FULL scan so both scan modes
+# agree on the file universe (the manifest never surfaces submodule blobs).
+from chief_wiggum.hashing import scanner_version  # noqa: E402
+from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402
 
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
@@ -157,8 +171,40 @@ def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
     return defined
 
 
+def emit_epic_annotations(rel: str, text: str) -> list[Annotation]:
+    """Per-file EMISSION: every ``@cw-trace`` annotation declared in one epic doc's
+    ``text``, attributed to the nearest stable ID declared above it. Pure function
+    of file content — no knowledge of the full defined-ID set (that join is
+    query-time, in ``build_report``).
+
+    A realizes/derive annotation is attributed to the nearest stable ID
+    *declared above it* in the same file, so it is tied to a real source.
+    Any kind that can be a link SOURCE qualifies (BUD-/EDG-/... declare
+    derive links the same way CTR-/INV- declare realizes — #166). BR is
+    only ever a link target, so a BR declaration RESETS attribution: an
+    annotation under a BR heading must not inherit an earlier contract
+    (that would let a stray realizes clear the BR's own orphan status).
+    """
+    annotations: list[Annotation] = []
+    nearest_contract: str | None = None
+    for i, line in enumerate(text.splitlines(), start=1):
+        for dm in DEFINE_RE.finditer(line):
+            if kind_of(dm.group(1)) == "BR":
+                nearest_contract = None
+            else:
+                nearest_contract = canonical_id(dm.group(1))
+        for verb, ids in parse_annotations(line):
+            src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
+            for target in ids:
+                annotations.append(
+                    Annotation(verb, target, rel, i, src_kind, source_id=nearest_contract)
+                )
+    return annotations
+
+
 def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
-    """Scan the epic docs for ``@cw-trace realizes`` (and other) annotations.
+    """Walk the epic docs, emitting ``@cw-trace realizes`` (and other)
+    annotations per file via ``emit_epic_annotations``.
 
     Annotations authored in the contract/invariant docs originate from a contract
     (source kind ``CTR``) — this is how a contract declares which business
@@ -172,30 +218,11 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
         if path.suffix not in (".md", ".json") or not path.is_file():
             continue
         try:
-            lines = path.read_text().splitlines()
+            text = path.read_text()
         except OSError:
             continue
         rel = str(path.relative_to(root))
-        # A realizes/derive annotation is attributed to the nearest stable ID
-        # *declared above it* in the same file, so it is tied to a real source.
-        # Any kind that can be a link SOURCE qualifies (BUD-/EDG-/... declare
-        # derive links the same way CTR-/INV- declare realizes — #166). BR is
-        # only ever a link target, so a BR declaration RESETS attribution: an
-        # annotation under a BR heading must not inherit an earlier contract
-        # (that would let a stray realizes clear the BR's own orphan status).
-        nearest_contract: str | None = None
-        for i, line in enumerate(lines, start=1):
-            for dm in DEFINE_RE.finditer(line):
-                if kind_of(dm.group(1)) == "BR":
-                    nearest_contract = None
-                else:
-                    nearest_contract = canonical_id(dm.group(1))
-            for verb, ids in parse_annotations(line):
-                src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
-                for target in ids:
-                    annotations.append(
-                        Annotation(verb, target, rel, i, src_kind, source_id=nearest_contract)
-                    )
+        annotations.extend(emit_epic_annotations(rel, text))
     return annotations
 
 
@@ -225,28 +252,69 @@ def classify_source_kind(rel: str, suffix: str) -> str:
     return "test" if is_test else "code"
 
 
-def scan_source(source_root: str | Path) -> list[Annotation]:
-    """Scan source/test/verification files for ``@cw-trace`` annotations."""
+SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv"}
+
+
+def _file_predicate(rel: str) -> bool:
+    """The scanner's EXACT file-selection rule (extension allow-list + skipped
+    directories) — the same predicate ``scan_source`` applies during its own
+    walk, reused to build a manifest whose keys are exactly the files that walk
+    would visit (see ``chief_wiggum.manifest``)."""
+    p = Path(rel)
+    if p.suffix not in SOURCE_EXTS:
+        return False
+    if any(part in SKIP_PARTS for part in p.parts):
+        return False
+    return True
+
+
+def emit_source_annotations(rel: str, text: str, suffix: str) -> list[Annotation]:
+    """Per-file EMISSION: every ``@cw-trace`` annotation in one source/test/
+    verification file's ``text``, classified by this file's source kind. Pure
+    function of file content — no knowledge of the defined-ID set (that join
+    happens in ``build_report``, at query/report time)."""
+    source_kind = classify_source_kind(rel, suffix)
+    annotations: list[Annotation] = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        for verb, ids in parse_annotations(line):
+            for target in ids:
+                annotations.append(Annotation(verb, target, rel, i, source_kind))
+    return annotations
+
+
+def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> list[Annotation]:
+    """Walk source/test/verification files, emitting ``@cw-trace`` annotations
+    per file via ``emit_source_annotations``. ``only_files`` (repo-relative
+    paths), when given, restricts the walk to that set instead of the whole
+    tree — used by ``--changed-since``."""
     root = Path(source_root)
     annotations: list[Annotation] = []
     if not root.exists():
         return annotations
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix not in SOURCE_EXTS:
+    if only_files is not None:
+        candidates = sorted(only_files)
+    else:
+        # walk_source_files prunes submodules/nested git checkouts, keeping the
+        # full scan's file universe identical to the manifest's (--changed-since).
+        candidates = walk_source_files(root)
+    for rel in candidates:
+        if not _file_predicate(rel):
             continue
-        if any(part in {".git", "node_modules", "__pycache__", ".venv"} for part in path.parts):
-            continue
+        path = root / rel
         try:
-            lines = path.read_text().splitlines()
+            text = path.read_text()
         except OSError:
             continue
-        rel = str(path.relative_to(root))
-        source_kind = classify_source_kind(rel, path.suffix)
-        for i, line in enumerate(lines, start=1):
-            for verb, ids in parse_annotations(line):
-                for target in ids:
-                    annotations.append(Annotation(verb, target, rel, i, source_kind))
+        annotations.extend(emit_source_annotations(rel, text, path.suffix))
     return annotations
+
+
+def _scanner_version() -> str:
+    """Hash-derived ``--scanner-version``: the source of this module plus its
+    ``chief_wiggum`` dependencies. No hand-bumped constant to forget."""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    return scanner_version(here, cw_dir / "trace_ids.py", cw_dir / "manifest.py", cw_dir / "hashing.py")
 
 
 def build_report(
@@ -314,13 +382,19 @@ def check(
     source_root: str | Path | None = None,
     *,
     schema: dict | None = None,
+    changed_since: str | None = None,
 ) -> TraceReport:
     schema = schema or load_schema()
     defined = extract_defined_ids(epic_dir)
     # Contract->BR realizes links live in the epic docs; code/test links in source.
     annotations = scan_epic_annotations(epic_dir)
     if source_root:
-        annotations += scan_source(source_root)
+        only_files = None
+        if changed_since:
+            # Ticket-scoped speed-up ONLY — never used by /close-epic's coverage
+            # gate, which must see the whole repo to be authoritative.
+            only_files = changed_paths(source_root, changed_since, predicate=_file_predicate)
+        annotations += scan_source(source_root, only_files=only_files)
     return build_report(defined, annotations, schema)
 
 
@@ -348,12 +422,36 @@ def render_markdown(report: TraceReport) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Traceability graph checker (TIM/DbC)")
-    parser.add_argument("epic_dir", help="docs/epics/<slug> directory with contract/invariant IDs")
+    parser.add_argument(
+        "epic_dir", nargs="?", default=None,
+        help="docs/epics/<slug> directory with contract/invariant IDs; not required with --scanner-version",
+    )
     parser.add_argument("--source", help="Repo root to scan for @cw-trace annotations")
     parser.add_argument("--schema", default=str(DEFAULT_SCHEMA))
     parser.add_argument("--gate", choices=["soundness", "coverage"], help="Fail (exit 1) on this gate's findings")
+    parser.add_argument(
+        "--changed-since",
+        metavar="REF",
+        help="Scope the --source scan to files changed since REF (via git diff + the "
+        "content-addressed manifest) instead of the whole tree. Ticket-scoped speed-up "
+        "ONLY — /close-epic's coverage gate NEVER uses this; whole-repo remains the default.",
+    )
+    parser.add_argument(
+        "--scanner-version",
+        action="store_true",
+        help="Print the hash-derived scanner version (source hash of this module + its "
+        "chief_wiggum deps) and exit",
+    )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
+
+    if args.scanner_version:
+        print(_scanner_version())
+        return 0
+
+    if not args.epic_dir:
+        print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
+        return 2
 
     try:
         schema = load_schema(Path(args.schema))
@@ -366,7 +464,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    report = check(args.epic_dir, args.source, schema=schema)
+    try:
+        report = check(args.epic_dir, args.source, schema=schema, changed_since=args.changed_since)
+    except ManifestError as exc:
+        # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
+        # a usage error, reported concisely — never a traceback.
+        print(f"Error: --changed-since manifest failed: {exc}", file=sys.stderr)
+        return 2
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))

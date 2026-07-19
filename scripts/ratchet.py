@@ -60,7 +60,6 @@ Exit codes: 0 = ok, 1 = gate violation, 2 = usage/config error,
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import subprocess
@@ -76,6 +75,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # dropped by another (#166; uppercase-id vacuity was the same class of bug,
 # chief-wiggum#86). Ratchet's DEFINE_RE is the markdown-only form: JSON "id"
 # nodes are hashed structurally by _walk_json_ids.
+# stable_hash's home is chief_wiggum.hashing (#160) — check_single_writer.py and
+# check_traceability.py import the same function for their --scanner-version,
+# so there is exactly one implementation, not a copy per module.
+from chief_wiggum.hashing import stable_hash  # noqa: E402,F401
 from chief_wiggum.trace_ids import ID_RE  # noqa: E402
 from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE
 
@@ -116,14 +119,6 @@ class RatchetError(Exception):
 
 class TamperError(Exception):
     """Journal hash chain broken. Maps to exit 4 — fail closed."""
-
-
-def stable_hash(*parts: str) -> str:
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p.encode("utf-8"))
-        h.update(b"\x00")
-    return h.hexdigest()
 
 
 # ---- config ------------------------------------------------------------------

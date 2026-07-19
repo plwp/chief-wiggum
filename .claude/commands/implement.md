@@ -371,6 +371,14 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    python3 "$CW_HOME/scripts/ratchet.py" check --repo "$(git rev-parse --show-toplevel)"
    ```
    A violation is a hard blocker, same as a failing test: a `missing_tests` entry means a previously-passing case regressed; `weakened_contracts`/`removed_contracts` means the branch edited a contract definition to make the implementation pass. Fix the code — never the contract. If a contract genuinely needs revising, that is a human decision: surface it to the user and journal it with `record --amend`/`--retire`, don't edit around the gate. Skip this item only when the repo has no ratchet config (not yet adopted).
+4c. **Single-writer / traceability quick check** (report-only, ticket-scoped) — if `$EPIC_DIR` exists, run both checkers scoped to just this ticket's changed files with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`). This is a fast early signal, NOT the authoritative gate — `--changed-since` scans only what this branch touched, so it cannot see a stale writer/annotation elsewhere in the repo. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic:
+   ```bash
+   python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
+     --changed-since "$DEFAULT_BRANCH" --format text
+   python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
+     --changed-since "$DEFAULT_BRANCH" --format text
+   ```
+   Surface any findings to the fixer as early feedback (a new unsanctioned writer, a missing `@cw-trace guards`/`verifies` on the code this ticket just wrote); don't hard-block on them here. Skip this item if the ticket has no epic context.
 5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
