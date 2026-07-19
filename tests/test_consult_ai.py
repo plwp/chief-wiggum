@@ -7,6 +7,17 @@ import sys
 import consult_ai
 import pytest
 
+# A realistic-length prompt (>= consult_ai.MIN_PROMPT_BYTES) so tests that
+# exercise the role-quorum machinery don't trip the short-prompt guard
+# (chief-wiggum#163) — that guard has its own dedicated tests below.
+PROMPT_TEXT = (
+    "Review this change for correctness, safety, and completeness before "
+    "merging. Consider edge cases, error handling, and how it interacts "
+    "with existing code paths in the surrounding module. Call out anything "
+    "that looks unsound or incomplete."
+)
+assert len(PROMPT_TEXT.encode("utf-8")) >= consult_ai.MIN_PROMPT_BYTES
+
 
 def write_config(path, *, optional_enabled=True):
     path.write_text(
@@ -22,9 +33,54 @@ def write_config(path, *, optional_enabled=True):
     )
 
 
+def write_config_with_lenses(path, *, lenses=None):
+    path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "codex": {"type": "tool", "tool": "codex", "enabled": True},
+                    "gemini": {"type": "tool", "tool": "gemini", "enabled": True},
+                },
+                "roles": {
+                    "reviewer": {
+                        "required": ["codex", "gemini"],
+                        "optional": [],
+                        "lenses": lenses
+                        if lenses is not None
+                        else {"codex": "refute-soundness", "gemini": "completeness"},
+                    }
+                },
+            }
+        )
+    )
+
+
+def write_lenses(path):
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "lenses": {
+                    "refute-soundness": {
+                        "goal": "Find the strongest reason this proposal is wrong.",
+                        "exclusions": [
+                            "Do NOT evaluate adoption cost.",
+                            "Do NOT evaluate style or naming.",
+                        ],
+                    },
+                    "completeness": {
+                        "goal": "Check whether every case and actor is covered.",
+                        "exclusions": ["Do NOT evaluate whether covered cases are correct."],
+                    },
+                },
+            }
+        )
+    )
+
+
 def test_role_consult_writes_required_and_optional_outputs(tmp_path, monkeypatch):
     prompt = tmp_path / "prompt.md"
-    prompt.write_text("Review this.")
+    prompt.write_text(PROMPT_TEXT)
     config = tmp_path / "providers.json"
     output_dir = tmp_path / "out"
     write_config(config)
@@ -52,13 +108,13 @@ def test_role_consult_writes_required_and_optional_outputs(tmp_path, monkeypatch
 
     consult_ai.main()
 
-    assert (output_dir / "reviewer-codex.md").read_text() == "codex: Review this."
-    assert (output_dir / "reviewer-gemini.md").read_text() == "gemini: Review this."
+    assert (output_dir / "reviewer-codex.md").read_text() == f"codex: {PROMPT_TEXT}"
+    assert (output_dir / "reviewer-gemini.md").read_text() == f"gemini: {PROMPT_TEXT}"
 
 
 def test_role_consult_does_not_fail_when_optional_provider_is_disabled(tmp_path, monkeypatch):
     prompt = tmp_path / "prompt.md"
-    prompt.write_text("Review this.")
+    prompt.write_text(PROMPT_TEXT)
     config = tmp_path / "providers.json"
     output_dir = tmp_path / "out"
     write_config(config, optional_enabled=False)
@@ -95,7 +151,7 @@ def test_role_consult_does_not_fail_when_optional_provider_is_disabled(tmp_path,
 
 def test_role_consult_fails_when_required_provider_is_disabled(tmp_path, monkeypatch):
     prompt = tmp_path / "prompt.md"
-    prompt.write_text("Review this.")
+    prompt.write_text(PROMPT_TEXT)
     config = tmp_path / "providers.json"
     output_dir = tmp_path / "out"
     write_config(config)
@@ -124,7 +180,7 @@ def test_role_consult_fails_when_required_provider_is_disabled(tmp_path, monkeyp
 
 def test_role_consult_fails_cleanly_for_unknown_role(tmp_path, monkeypatch):
     prompt = tmp_path / "prompt.md"
-    prompt.write_text("Review this.")
+    prompt.write_text(PROMPT_TEXT)
     config = tmp_path / "providers.json"
     output_dir = tmp_path / "out"
     write_config(config)
@@ -235,3 +291,295 @@ def test_run_capture_timeout_does_not_hang_on_surviving_grandchild():
         )
     elapsed = _time.monotonic() - start
     assert elapsed < 15, f"timeout did not return promptly ({elapsed:.1f}s) — pipe hang not fixed"
+
+
+# --- review lenses: bounded charters per provider (chief-wiggum#163) --------
+
+
+def test_role_consult_appends_lens_charter_with_byte_identical_shared_body(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    lenses = tmp_path / "lenses.json"
+    output_dir = tmp_path / "out"
+    write_config_with_lenses(config)
+    write_lenses(lenses)
+
+    captured: dict[str, str] = {}
+
+    def fake_consult_provider(provider, prompt_text, model, cwd):
+        captured[provider.name] = prompt_text
+        return f"{provider.name} response: {prompt_text}"
+
+    monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--lenses-config",
+            str(lenses),
+            "--output-dir",
+            str(output_dir),
+            "--min-bytes",
+            "1",
+        ],
+    )
+
+    consult_ai.main()
+
+    codex_prompt = captured["codex"]
+    gemini_prompt = captured["gemini"]
+
+    # Both charters are appended, clearly delimited.
+    assert "## Your charter" in codex_prompt
+    assert "## Your charter" in gemini_prompt
+    assert "Find the strongest reason this proposal is wrong." in codex_prompt
+    assert "Check whether every case and actor is covered." in gemini_prompt
+    # Each provider's own charter, not the other's.
+    assert "Find the strongest reason" not in gemini_prompt
+    assert "Check whether every case" not in codex_prompt
+
+    # The shared body (everything before the charter section) is
+    # byte-identical across every provider in the role.
+    shared_codex = codex_prompt.split("## Your charter")[0]
+    shared_gemini = gemini_prompt.split("## Your charter")[0]
+    assert shared_codex == shared_gemini
+    assert shared_codex == f"{PROMPT_TEXT}\n\n---\n\n"
+
+
+def test_role_consult_leaves_unlensed_provider_prompt_unchanged(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    lenses = tmp_path / "lenses.json"
+    output_dir = tmp_path / "out"
+    # Only codex is mapped to a lens; gemini is unmapped and must be untouched.
+    write_config_with_lenses(config, lenses={"codex": "refute-soundness"})
+    write_lenses(lenses)
+
+    captured: dict[str, str] = {}
+
+    def fake_consult_provider(provider, prompt_text, model, cwd):
+        captured[provider.name] = prompt_text
+        return f"{provider.name} response: {prompt_text}"
+
+    monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--lenses-config",
+            str(lenses),
+            "--output-dir",
+            str(output_dir),
+            "--min-bytes",
+            "1",
+        ],
+    )
+
+    consult_ai.main()
+
+    assert captured["gemini"] == PROMPT_TEXT
+    assert captured["codex"] != PROMPT_TEXT
+    assert "## Your charter" in captured["codex"]
+
+
+def test_role_consult_fails_cleanly_for_unknown_lens(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    lenses = tmp_path / "lenses.json"
+    output_dir = tmp_path / "out"
+    write_config_with_lenses(config, lenses={"codex": "no-such-lens"})
+    write_lenses(lenses)
+    called: list[str] = []
+
+    def fake_consult_provider(provider, prompt_text, model, cwd):
+        called.append(provider.name)
+        return "should never run"
+
+    monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--lenses-config",
+            str(lenses),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+
+    assert exc.value.code == 1
+    assert called == []
+
+
+# --- robustness: short-prompt refusal (chief-wiggum#163) --------------------
+
+
+def test_role_consult_refuses_short_prompt_before_any_provider_call(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("too short")
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config(config)
+    called: list[str] = []
+
+    def fake_consult_provider(provider, prompt_text, model, cwd):
+        called.append(provider.name)
+        return "should never run"
+
+    monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+
+    assert exc.value.code == 1
+    assert called == []
+    assert not output_dir.exists()
+
+
+def test_single_tool_consult_refuses_empty_prompt(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("")
+    monkeypatch.setattr(sys, "argv", ["consult_ai.py", "codex", str(prompt)])
+
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+
+    assert exc.value.code == 1
+
+
+def test_single_tool_consult_accepts_prompt_at_the_floor(tmp_path, monkeypatch):
+    # A prompt exactly at MIN_PROMPT_BYTES must be accepted, not rejected.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("x" * consult_ai.MIN_PROMPT_BYTES)
+
+    monkeypatch.setitem(consult_ai.TOOLS, "codex", lambda prompt, model=None, cwd=None: "ok response")
+    monkeypatch.setattr(sys, "argv", ["consult_ai.py", "codex", str(prompt)])
+
+    consult_ai.main()  # must not raise
+
+
+def test_short_prompt_with_substantive_context_is_accepted(tmp_path, monkeypatch):
+    # The guard applies to the FINAL assembled prompt (prompt file + --context),
+    # so a legitimately small prompt file paired with substantive context must
+    # not be rejected.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("Review the attached context.")
+    context = tmp_path / "context.md"
+    context.write_text(PROMPT_TEXT)
+
+    sent = {}
+
+    def fake_tool(prompt, model=None, cwd=None):
+        sent["prompt"] = prompt
+        return "ok response"
+
+    monkeypatch.setitem(consult_ai.TOOLS, "codex", fake_tool)
+    monkeypatch.setattr(
+        sys, "argv", ["consult_ai.py", "codex", str(prompt), "--context", str(context)]
+    )
+
+    consult_ai.main()  # must not raise
+
+    assert "Review the attached context." in sent["prompt"]
+    assert PROMPT_TEXT in sent["prompt"]
+
+
+def test_short_prompt_with_short_context_is_still_refused(tmp_path, monkeypatch):
+    # Context counts toward the size check, but if prompt + context together
+    # are still under the floor, the refusal must still fire before any call.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("tiny")
+    context = tmp_path / "context.md"
+    context.write_text("also tiny")
+    called: list[str] = []
+
+    monkeypatch.setitem(
+        consult_ai.TOOLS, "codex", lambda prompt, model=None, cwd=None: called.append("codex") or "x"
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["consult_ai.py", "codex", str(prompt), "--context", str(context)]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+
+    assert exc.value.code == 1
+    assert called == []
+
+
+# --- robustness: -o creates missing parent directories (chief-wiggum#163) --
+
+
+def test_output_flag_creates_missing_parent_directories_on_success(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    out_path = tmp_path / "nested" / "deep" / "response.md"
+
+    monkeypatch.setitem(
+        consult_ai.TOOLS, "codex", lambda prompt, model=None, cwd=None: "a substantive response"
+    )
+    monkeypatch.setattr(sys, "argv", ["consult_ai.py", "codex", str(prompt), "-o", str(out_path)])
+
+    consult_ai.main()
+
+    assert out_path.read_text() == "a substantive response"
+
+
+def test_output_flag_creates_missing_parent_directories_on_provider_error(tmp_path, monkeypatch):
+    # This is the actual bug (chief-wiggum#163): previously the parent directory
+    # was only created on the success path, so a provider failure with a missing
+    # -o parent crashed with an unhandled FileNotFoundError instead of exiting
+    # cleanly with the error message written to the requested path.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    out_path = tmp_path / "nested" / "response.md"
+
+    def failing_tool(prompt, model=None, cwd=None):
+        raise subprocess.CalledProcessError(1, ["codex"], stderr="boom")
+
+    monkeypatch.setitem(consult_ai.TOOLS, "codex", failing_tool)
+    monkeypatch.setattr(sys, "argv", ["consult_ai.py", "codex", str(prompt), "-o", str(out_path)])
+
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+
+    assert exc.value.code == 1
+    assert "boom" in out_path.read_text()

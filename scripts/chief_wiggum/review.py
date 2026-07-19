@@ -108,7 +108,12 @@ def build_synthesis_prompt(response_paths: list[str]) -> str:
     return (
         "Synthesize the independent code reviews below into one actionable report.\n"
         "Categorize each finding as high-confidence (apply), medium (verify first), "
-        "or low/architectural (flag for user). Note consensus vs single-reviewer findings.\n\n"
+        "or low/architectural (flag for user).\n"
+        "Reviewers may have been assigned disjoint review lenses over the same "
+        "diff, so expect disjoint findings, not convergence. Combine by union: a "
+        "finding raised by a single reviewer is not weaker for lacking consensus "
+        "— do not downgrade it. Cross-verify against the diff only where "
+        "reviewers make contradictory claims about the same fact.\n\n"
         f"Reviewer responses:\n{listing}\n"
     )
 
@@ -177,6 +182,7 @@ def run_review(
     epic_sections: Iterable[tuple[str, str]] = (),
     role: str = "reviewer",
     config: dict | None = None,
+    lenses: dict | None = None,
     execute: Callable[[providers.Provider, str], str] | None = None,
     runner: Runner = subprocess.run,
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
@@ -185,6 +191,11 @@ def run_review(
 
     Refuses to run outside a git repo or when ``base`` cannot be resolved.
     ``execute`` (the provider call) is injected so the pipeline is testable.
+
+    Every provider gets the identical assembled prompt. If ``role`` maps a
+    provider to a lens (``config/providers.json`` role.lenses), that provider's
+    charter (``config/lenses.json``, or ``lenses`` if supplied) is appended —
+    the shared prompt itself is never altered (chief-wiggum#163).
     """
     assert_git_repo(worktree, runner=runner)
     out = Path(output_dir)
@@ -210,8 +221,25 @@ def run_review(
     if execute is None:
         raise ReviewError("an execute callable is required to run the reviewer quorum")
 
-    # The quorum calls execute(provider); bind the assembled prompt here.
-    quorum = providers.run_role_quorum(plan, lambda p: execute(p, prompt), out)
+    if lenses is None:
+        lenses = providers.load_lenses()
+
+    # Fail fast on a malformed lens map — a lens assigned to a provider not in
+    # the role would otherwise silently no-op, and an unknown lens on an
+    # optional provider would degrade to a provider "failure" while the run
+    # still reported success. Matches consult_ai --role behavior.
+    lens_errors = providers.validate_role_lenses(plan.role, lenses)
+    if lens_errors:
+        raise ReviewError("; ".join(lens_errors))
+
+    # The quorum calls execute(provider); bind the assembled prompt here. A
+    # provider mapped to a lens on this role gets its charter appended; the
+    # shared prompt every provider starts from is identical either way.
+    quorum = providers.run_role_quorum(
+        plan,
+        lambda p: execute(p, providers.prompt_for_provider(plan.role, p.name, prompt, lenses)),
+        out,
+    )
     response_paths = [r.path for r in quorum.results if r.path]
 
     synthesis = build_synthesis_prompt(response_paths)

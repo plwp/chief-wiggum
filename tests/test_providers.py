@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import providers
+import pytest
 
 
 def test_default_provider_config_is_valid():
@@ -95,3 +96,79 @@ def test_config_round_trips_from_json_file(tmp_path):
     )
 
     assert providers.load_config(path)["roles"]["reviewer"]["required"] == ["codex"]
+
+
+# --- review lenses (chief-wiggum#163) ---------------------------------------
+
+
+def test_default_lenses_config_is_valid():
+    lenses = providers.load_lenses()
+    assert {"refute-soundness", "adoption-cost", "completeness", "security"} <= set(lenses)
+    for name, lens in lenses.items():
+        assert lens.get("goal"), f"lens {name} has no goal"
+        assert lens.get("exclusions"), f"lens {name} has no exclusions"
+
+
+def test_load_lenses_missing_file_returns_empty_mapping(tmp_path):
+    assert providers.load_lenses(tmp_path / "does-not-exist.json") == {}
+
+
+def test_render_charter_includes_goal_and_exclusions():
+    charter = providers.render_charter(
+        {"goal": "Break the reasoning.", "exclusions": ["Do NOT evaluate style."]}
+    )
+    assert charter.startswith("## Your charter")
+    assert "Break the reasoning." in charter
+    assert "- Do NOT evaluate style." in charter
+
+
+def test_prompt_for_provider_returns_shared_prompt_unchanged_when_unmapped():
+    role = providers.Role(name="reviewer", required=("codex",), optional=())
+    assert providers.prompt_for_provider(role, "codex", "shared body", {}) == "shared body"
+
+
+def test_prompt_for_provider_appends_charter_for_mapped_provider():
+    role = providers.Role(
+        name="reviewer", required=("codex",), optional=(), lenses={"codex": "refute-soundness"}
+    )
+    lenses = {"refute-soundness": {"goal": "Break it.", "exclusions": ["Do NOT nitpick style."]}}
+
+    result = providers.prompt_for_provider(role, "codex", "shared body", lenses)
+
+    assert result.startswith("shared body")
+    assert "## Your charter" in result
+    assert "Break it." in result
+
+
+def test_prompt_for_provider_raises_for_unknown_lens():
+    role = providers.Role(
+        name="reviewer", required=("codex",), optional=(), lenses={"codex": "no-such-lens"}
+    )
+    with pytest.raises(KeyError):
+        providers.prompt_for_provider(role, "codex", "shared body", {})
+
+
+def test_validate_lenses_flags_unknown_lens_name():
+    config = {
+        "providers": {"codex": {"type": "tool", "tool": "codex"}},
+        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "missing-lens"}}},
+    }
+    errors = providers.validate_lenses(config, {"refute-soundness": {}})
+    assert any("unknown lens" in e for e in errors)
+
+
+def test_validate_lenses_flags_provider_not_in_role():
+    config = {
+        "providers": {"codex": {"type": "tool", "tool": "codex"}},
+        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"gemini": "refute-soundness"}}},
+    }
+    errors = providers.validate_lenses(config, {"refute-soundness": {}})
+    assert any("not a required or optional provider" in e for e in errors)
+
+
+def test_validate_lenses_passes_for_well_formed_role():
+    config = {
+        "providers": {"codex": {"type": "tool", "tool": "codex"}},
+        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "refute-soundness"}}},
+    }
+    assert providers.validate_lenses(config, {"refute-soundness": {}}) == []

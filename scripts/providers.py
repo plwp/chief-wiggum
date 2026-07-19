@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "providers.json"
+DEFAULT_LENSES = Path(__file__).resolve().parents[1] / "config" / "lenses.json"
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,10 @@ class Role:
     name: str
     required: tuple[str, ...]
     optional: tuple[str, ...]
+    # Optional provider -> lens name mapping (chief-wiggum#163). When a provider
+    # is mapped, its charter (from config/lenses.json) is appended to the shared
+    # prompt for that provider only — the shared prompt itself never changes.
+    lenses: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,54 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     return json.loads(path.expanduser().read_text())
 
 
+def load_lenses(path: Path = DEFAULT_LENSES) -> dict[str, Any]:
+    """Load named review-lens charters from ``config/lenses.json``.
+
+    Returns an empty mapping if the file does not exist — lenses are an
+    opt-in review-quorum feature (chief-wiggum#163), not a hard dependency.
+    """
+    path = path.expanduser()
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text()).get("lenses", {})
+
+
+def render_charter(lens: dict[str, Any]) -> str:
+    """Render a lens as the markdown section appended to a provider's prompt."""
+    goal = str(lens.get("goal", "")).strip()
+    exclusions = lens.get("exclusions") or []
+    lines = ["## Your charter", "", goal]
+    if exclusions:
+        lines.append("")
+        lines.append("Do NOT evaluate:")
+        for item in exclusions:
+            lines.append(f"- {item}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def prompt_for_provider(
+    role: Role,
+    provider_name: str,
+    shared_prompt: str,
+    lenses: dict[str, Any] | None,
+) -> str:
+    """Return the prompt to send ``provider_name`` for ``role``.
+
+    Every provider in a role quorum gets identical context — the value is in
+    natural divergence, not roleplay. When ``role`` maps ``provider_name`` to a
+    lens, that lens's charter is appended after a clearly delimited section so
+    the shared body stays byte-identical across every provider in the role;
+    an unmapped provider's prompt is returned completely unchanged.
+    """
+    lens_name = role.lenses.get(provider_name)
+    if not lens_name:
+        return shared_prompt
+    lenses = lenses or {}
+    if lens_name not in lenses:
+        raise KeyError(f"role {role.name!r} references unknown lens {lens_name!r}")
+    return f"{shared_prompt}\n\n---\n\n{render_charter(lenses[lens_name])}"
+
+
 def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
     providers: dict[str, Provider] = {}
     for name, raw in config.get("providers", {}).items():
@@ -70,6 +123,7 @@ def roles_from_config(config: dict[str, Any]) -> dict[str, Role]:
             name=name,
             required=tuple(raw.get("required", [])),
             optional=tuple(raw.get("optional", [])),
+            lenses=dict(raw.get("lenses", {})),
         )
     return roles
 
@@ -164,6 +218,36 @@ def validate_config(
             )
         if provider.type not in {"tool", "delegate"}:
             errors.append(f"provider {provider.name} has unsupported type {provider.type}")
+    return errors
+
+
+def validate_role_lenses(role: Role, lenses: dict[str, Any]) -> list[str]:
+    """Validate one role's lens assignments before any provider is called.
+
+    Catches two mistakes that would otherwise surface mid-quorum (or worse,
+    silently no-op): a lens assigned to a provider that isn't actually in the
+    role, and a lens name with no matching charter in ``config/lenses.json``.
+    """
+    errors: list[str] = []
+    members = set(role.required) | set(role.optional)
+    for provider_name, lens_name in role.lenses.items():
+        if provider_name not in members:
+            errors.append(
+                f"role {role.name} assigns a lens to {provider_name!r}, "
+                "which is not a required or optional provider of that role"
+            )
+        if lens_name not in lenses:
+            errors.append(
+                f"role {role.name} references unknown lens {lens_name!r}"
+            )
+    return errors
+
+
+def validate_lenses(config: dict[str, Any], lenses: dict[str, Any]) -> list[str]:
+    """Validate every role's lens assignments in ``config``."""
+    errors: list[str] = []
+    for role in roles_from_config(config).values():
+        errors.extend(validate_role_lenses(role, lenses))
     return errors
 
 

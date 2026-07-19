@@ -29,11 +29,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from keychain import get_secret
 from providers import (
     DEFAULT_CONFIG,
+    DEFAULT_LENSES,
     Provider,
     load_config,
+    load_lenses,
     plan_role,
+    prompt_for_provider,
     run_role_quorum,
     validate_config,
+    validate_lenses,
 )
 
 # Per-tool timeouts (seconds). These are generous — better to wait than to
@@ -54,6 +58,14 @@ HEARTBEAT_INTERVAL = 30
 
 # Default model for Vertex AI path (override with --model)
 DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
+
+# A prompt file smaller than this is almost never intentional — it's the
+# signature of a truncated write (a template substitution that silently
+# produced nothing, an interrupted heredoc, etc). Live use burned a codex
+# call and an opus agent run on exactly this (chief-wiggum#163); refuse
+# before any provider is called rather than spend a slow, expensive
+# consultation on a prompt that was never meant to be submitted.
+MIN_PROMPT_BYTES = 200
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -289,6 +301,10 @@ def main():
     parser.add_argument("--cwd", help="Working directory for the AI tool (e.g., target repo path)")
     parser.add_argument("--role", help="Provider role to consult from config/providers.json")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Provider config path")
+    parser.add_argument(
+        "--lenses-config", default=str(DEFAULT_LENSES),
+        help="Review-lens charter config path (config/lenses.json)",
+    )
     parser.add_argument("--enable-provider", action="append", default=[], help="Force-enable provider by name")
     parser.add_argument("--disable-provider", action="append", default=[], help="Disable provider by name")
     parser.add_argument("--max-attempts", type=int, default=2, help="Total attempts for required providers in --role mode (incl. first try)")
@@ -322,6 +338,20 @@ def main():
         if ctx_path.exists():
             prompt += f"\n\n---\nContext:\n{ctx_path.read_text()}"
 
+    # Guard the FINAL assembled prompt (prompt file + any --context), so a
+    # legitimately small prompt file paired with substantive context is
+    # accepted — but always BEFORE any provider is called.
+    prompt_bytes = len(prompt.strip().encode("utf-8"))
+    if prompt_bytes < MIN_PROMPT_BYTES:
+        print(
+            f"Error: assembled prompt from {prompt_path} is only {prompt_bytes} "
+            f"bytes (minimum {MIN_PROMPT_BYTES}) — refusing to consult. This is "
+            "the signature of a truncated or empty prompt; fix the prompt before "
+            "spending a provider call on it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.role:
         config = load_config(Path(args.config))
         errors = validate_config(
@@ -331,6 +361,12 @@ def main():
         )
         if errors:
             for error in errors:
+                print(f"Config error: {error}", file=sys.stderr)
+            sys.exit(1)
+        lenses = load_lenses(Path(args.lenses_config))
+        lens_errors = validate_lenses(config, lenses)
+        if lens_errors:
+            for error in lens_errors:
                 print(f"Config error: {error}", file=sys.stderr)
             sys.exit(1)
         try:
@@ -350,10 +386,17 @@ def main():
             )
             sys.exit(1)
         # Run the quorum in parallel with retries + output validation, and write
-        # a manifest. Required providers must produce substantive output.
+        # a manifest. Required providers must produce substantive output. Every
+        # provider gets the identical shared prompt; a provider mapped to a lens
+        # (config/providers.json role.lenses) additionally gets its charter
+        # appended (chief-wiggum#163) — the shared body itself never changes.
+        def execute(provider: Provider) -> str:
+            provider_prompt = prompt_for_provider(plan.role, provider.name, prompt, lenses)
+            return consult_provider(provider, provider_prompt, args.model, args.cwd)
+
         manifest = run_role_quorum(
             plan,
-            lambda provider: consult_provider(provider, prompt, args.model, args.cwd),
+            execute,
             args.output_dir,
             max_attempts=args.max_attempts,
             min_bytes=args.min_bytes,
@@ -376,31 +419,34 @@ def main():
     assert target is not None
     fn = TOOLS[target]
     tool_timeout = TOOL_TIMEOUTS.get(target, TIMEOUT)
+    out_path = Path(args.output) if args.output else None
+    if out_path:
+        # Create missing parent directories up front so writing the response —
+        # success OR failure message — never fails with FileNotFoundError.
+        out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         output = fn(prompt, model=args.model, cwd=args.cwd)
-        if args.output:
-            out_path = Path(args.output)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path:
             out_path.write_text(output)
             print(f"OK: {target} response written to {args.output}")
         else:
             print(output)
     except subprocess.TimeoutExpired:
         msg = f"Timeout: {target} did not respond within {tool_timeout}s"
-        if args.output:
-            Path(args.output).write_text(msg)
+        if out_path:
+            out_path.write_text(msg)
         print(msg, file=sys.stderr)
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         msg = f"Error calling {target}: {e.stderr or e}"
-        if args.output:
-            Path(args.output).write_text(msg)
+        if out_path:
+            out_path.write_text(msg)
         print(msg, file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         msg = f"Error: {e}"
-        if args.output:
-            Path(args.output).write_text(msg)
+        if out_path:
+            out_path.write_text(msg)
         print(msg, file=sys.stderr)
         sys.exit(1)
 

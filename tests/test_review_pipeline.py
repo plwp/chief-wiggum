@@ -131,6 +131,17 @@ def test_synthesis_prompt_lists_responses():
     assert "reviewer-codex.md" in p and "reviewer-gemini.md" in p
 
 
+def test_synthesis_prompt_instructs_union_not_consensus():
+    # Reconciliation of a (possibly lensed) quorum is union + cross-verify
+    # contested items — a unique finding must not be downgraded for lacking
+    # consensus (chief-wiggum#163).
+    p = review.build_synthesis_prompt(["a/reviewer-codex.md"])
+    assert "Combine by union" in p
+    assert "not weaker for lacking consensus" in p
+    assert "contradictory claims" in p
+    assert "consensus vs single-reviewer" not in p
+
+
 # --- full run (mocked git + provider) ---------------------------------------
 
 
@@ -181,6 +192,129 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     # The assembled prompt (with diff + AC) reached the provider.
     assert "added line" in captured["prompt"]
     assert "- AC one" in captured["prompt"]
+
+
+def test_run_review_applies_lens_charter_per_provider(tmp_path, monkeypatch):
+    # reviewer.lenses maps codex -> refute-soundness; gemini is unmapped.
+    role = Role(
+        name="reviewer",
+        required=("codex",),
+        optional=("gemini",),
+        lenses={"codex": "refute-soundness"},
+    )
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex"),),
+        optional=(Provider("gemini", "tool", True, tool="gemini"),),
+        missing_required=(),
+        skipped_optional=(),
+    )
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    captured = {}
+
+    def execute(provider, prompt):
+        captured[provider.name] = prompt
+        return "A substantive review with findings to report here."
+
+    out = tmp_path / "reviews"
+    lenses = {"refute-soundness": {"goal": "Break the reasoning.", "exclusions": ["Do NOT nitpick style."]}}
+
+    review.run_review(
+        _ticket(), tmp_path, "main", out,
+        template=TEMPLATE, checklist="# Checklist\n- item",
+        config={}, lenses=lenses, execute=execute, runner=runner,
+    )
+
+    assert "## Your charter" in captured["codex"]
+    assert "Break the reasoning." in captured["codex"]
+    assert "## Your charter" not in captured["gemini"]
+    # The shared body reaching every provider is identical — codex's prompt is
+    # the unlensed gemini prompt plus the delimiter and charter, nothing else.
+    shared_codex = captured["codex"].split("## Your charter")[0]
+    assert shared_codex == f"{captured['gemini']}\n\n---\n\n"
+
+
+def _lens_runner(tmp_path):
+    return _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+
+def test_run_review_fails_fast_on_lens_for_provider_not_in_role(tmp_path, monkeypatch):
+    # A lens assigned to a provider that is not in the role must be a hard,
+    # pre-quorum error — not a silent no-op.
+    role = Role(
+        name="reviewer",
+        required=("codex",),
+        optional=(),
+        lenses={"gemini": "refute-soundness"},
+    )
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex"),),
+        optional=(),
+        missing_required=(),
+        skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+    called: list[str] = []
+
+    def execute(provider, prompt):
+        called.append(provider.name)
+        return "A substantive review with findings to report here."
+
+    lenses = {"refute-soundness": {"goal": "Break it.", "exclusions": []}}
+    with pytest.raises(review.ReviewError, match="not a required or optional provider"):
+        review.run_review(
+            _ticket(), tmp_path, "main", tmp_path / "o",
+            template=TEMPLATE, config={}, lenses=lenses, execute=execute,
+            runner=_lens_runner(tmp_path),
+        )
+    assert called == []
+
+
+def test_run_review_fails_fast_on_unknown_lens_even_for_optional_provider(tmp_path, monkeypatch):
+    # Previously an unknown lens on an OPTIONAL provider degraded to a provider
+    # "failure" while the run still reported success. It must fail fast instead.
+    role = Role(
+        name="reviewer",
+        required=("codex",),
+        optional=("gemini",),
+        lenses={"gemini": "no-such-lens"},
+    )
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex"),),
+        optional=(Provider("gemini", "tool", True, tool="gemini"),),
+        missing_required=(),
+        skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+    called: list[str] = []
+
+    def execute(provider, prompt):
+        called.append(provider.name)
+        return "A substantive review with findings to report here."
+
+    with pytest.raises(review.ReviewError, match="unknown lens"):
+        review.run_review(
+            _ticket(), tmp_path, "main", tmp_path / "o",
+            template=TEMPLATE, config={}, lenses={}, execute=execute,
+            runner=_lens_runner(tmp_path),
+        )
+    assert called == []
 
 
 def test_run_review_refuses_without_execute(tmp_path, monkeypatch):
