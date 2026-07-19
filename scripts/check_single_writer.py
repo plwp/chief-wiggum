@@ -101,9 +101,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chief_wiggum.annotations import ATTR_RE, WRITES_TAG_RE  # noqa: E402, F401
 
 # Shared with check_traceability.py: the hash-derived --scanner-version and the
-# git-native manifest helper behind --changed-since (#160).
+# git-native manifest helper behind --changed-since (#160). walk_source_files
+# prunes submodules/nested git checkouts from the FULL scan so both scan modes
+# agree on the file universe (the manifest never surfaces submodule blobs).
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from chief_wiggum.manifest import changed_paths  # noqa: E402
+from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 
 # Same INV- shape as check_traceability.py (case-insensitive slug segment).
 INV_ID_RE = re.compile(r"\bINV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])", re.IGNORECASE)
@@ -378,18 +380,27 @@ def collect_invariants(epic_dir: str | Path) -> tuple[list[SingleWriterInvariant
 # module docstring and drive `persistence_only` filtering in match_writers.
 KIND_ASSIGN, KIND_STRUCT, KIND_QUOTED, KIND_SQL = range(4)
 
+# The token classes are wider than `\w+` on purpose: the pre-split scanner
+# built its regexes from `re.escape(leaf_token)`, so a controlled field whose
+# leaf contains a hyphen (e.g. a Mongo key `plan-tier`) DID match. Emission
+# must cover at least that same token surface or a full scan could silently
+# miss an unsanctioned writer of such a field; over-wide captures are harmless
+# (a token that matches no invariant's field is dropped at claim time).
 # 0. Assignment: `something.Plan =` / `.stripe_plan =` (not ==; `:=` — Go's
 #    declare+assign — IS a write, so it's allowed).
-ASSIGN_RE = re.compile(r"\.(\w+)\s*:?=[^=]")
+ASSIGN_RE = re.compile(r"\.([\w-]+)\s*:?=[^=]")
 # 1. Struct-literal / map set: `Plan: value` or `"plan": value` or `Key: "plan"`.
 #    `:(?!=)` so Go's short-var-decl `plan := expr` is NOT read as a field set
 #    (the captured token would be the local var name, and `:` the `:` of `:=`).
-STRUCT_RE = re.compile(r"""(^|[\s,{(])['"]?(\w+)['"]?\s*:(?!=)\s*""")
-# 2. bson/Mongo update key referenced literally in a set expression.
-QUOTED_RE = re.compile(r"""['"](\w+)['"]""")
+STRUCT_RE = re.compile(r"""(^|[\s,{(])['"]?([\w.-]+)['"]?\s*:(?!=)\s*""")
+# 2. bson/Mongo update key referenced literally in a set expression. `.` is in
+#    the class so a dotted key (`"provider.plan"`) is captured whole — leaf
+#    tokens never contain dots, so it can't claim-match a leaf field, exactly
+#    like the old quote-delimited exact-token match behaved.
+QUOTED_RE = re.compile(r"""['"]([\w.-]+)['"]""")
 # 3. SQL UPDATE ... SET <field> = ...  (multiple fields may be set on one line).
 SQL_SET_KEYWORD_RE = re.compile(r"\bSET\b", re.IGNORECASE)
-SQL_FIELD_RE = re.compile(r"\b(\w+)\s*=")
+SQL_FIELD_RE = re.compile(r"\b([\w-]+)\s*=")
 
 # A bson $set / Mongo update / SQL UPDATE context marker — a bare `"plan":` in a
 # non-mutating context (e.g. a JSON response DTO field) shouldn't count. We only
@@ -609,9 +620,9 @@ def scan_writers(
     if only_files is not None:
         candidates = sorted(only_files)
     else:
-        candidates = sorted(
-            str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()
-        )
+        # walk_source_files prunes submodules/nested git checkouts, keeping the
+        # full scan's file universe identical to the manifest's (--changed-since).
+        candidates = walk_source_files(root)
 
     for rel in candidates:
         if Path(rel).suffix not in SOURCE_EXTS:
@@ -836,7 +847,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    report = check(args.epic_dir, args.source, exclude=args.exclude, changed_since=args.changed_since)
+    try:
+        report = check(args.epic_dir, args.source, exclude=args.exclude, changed_since=args.changed_since)
+    except ManifestError as exc:
+        # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
+        # a usage error, reported concisely — never a traceback.
+        print(f"Error: --changed-since manifest failed: {exc}", file=sys.stderr)
+        return 2
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))

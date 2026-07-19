@@ -33,6 +33,7 @@ set of files that scanner would otherwise walk, no more and no less.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -40,15 +41,52 @@ from pathlib import Path
 Predicate = Callable[[str], bool]
 
 
+class ManifestError(RuntimeError):
+    """A git invocation underlying the manifest failed — bad ref, ``repo_root``
+    is not a git repository, unborn/missing HEAD, or git itself is absent.
+    Callers (the checker CLIs) turn this into a concise usage error (exit 2)
+    instead of a traceback."""
+
+
 def _run_git(args: list[str], cwd: Path) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+        )
+    except FileNotFoundError as exc:
+        raise ManifestError("git executable not found") from exc
+    except subprocess.CalledProcessError as exc:
+        detail_lines = (exc.stderr or "").strip().splitlines()
+        detail = detail_lines[0] if detail_lines else f"exit status {exc.returncode}"
+        raise ManifestError(f"git {args[0]} failed in {cwd}: {detail}") from exc
     return result.stdout
 
 
+def walk_source_files(root: str | Path) -> list[str]:
+    """Sorted repo-relative paths of every file under ``root``, pruning nested
+    git checkouts: any directory below the root that contains a ``.git`` entry
+    (a submodule's gitlink file, or a vendored/nested repo's ``.git`` dir) is
+    skipped entirely. The scanners use this for their FULL-tree walk so it stays
+    consistent with the manifest/``--changed-since`` view, which is built from
+    the parent repo's git index and therefore never surfaces a submodule's
+    files — a submodule is a single non-blob gitlink entry there, not blobs
+    (see ``_ls_tree``/``build_manifest``). Submodule contents belong to the
+    submodule's own repo and its own gates; they are excluded from BOTH scan
+    modes rather than visible to one and invisible to the other."""
+    root_path = Path(root)
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dpath = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if not (dpath / d / ".git").exists()]
+        for name in filenames:
+            out.append(str((dpath / name).relative_to(root_path)))
+    return sorted(out)
+
+
 def _ls_tree(repo_root: Path, ref: str) -> dict[str, str]:
-    """path -> blob sha for every tracked blob at ``ref``."""
+    """path -> blob sha for every tracked blob at ``ref``. Non-blob entries —
+    notably submodule gitlinks (``commit`` objects) — are skipped: a submodule
+    is not part of this repo's scannable content."""
     out = _run_git(["ls-tree", "-r", "-z", ref], repo_root)
     manifest: dict[str, str] = {}
     for entry in out.split("\0"):
@@ -105,8 +143,13 @@ def build_manifest(repo_root: str | Path, predicate: Predicate | None = None) ->
     for path in present:
         full = root / path
         if not full.is_file():
-            # Raced out from under us (deleted/replaced by a dir) between the
-            # git status read and the hash-object call — drop rather than stale.
+            # Not a regular file: a submodule whose pointer changed shows up in
+            # `git diff` as its gitlink PATH (a directory on disk), and a file
+            # can be raced out from under us (deleted/replaced by a dir) between
+            # the git status read and the hash-object call. Drop rather than
+            # surface a stale or non-blob entry — submodule contents are
+            # excluded from the manifest just as `_ls_tree` skips their
+            # gitlinks, matching `walk_source_files`' full-scan pruning.
             manifest.pop(path, None)
             continue
         manifest[path] = _hash_object(root, full)

@@ -1,8 +1,8 @@
 {
   "counts": {
-    "invariants": 3,
-    "writers": 5,
-    "violations": 1,
+    "invariants": 4,
+    "writers": 7,
+    "violations": 2,
     "malformed": 0
   },
   "soundness_ok": true,
@@ -32,6 +32,18 @@
         "internal/legacy/store.go"
       ],
       "source": "invariants.md:7",
+      "persistence_only": true
+    },
+    {
+      "id": "INV-tier-004",
+      "description": "single write path for the hyphenated Mongo key plan-tier",
+      "controls_field": [
+        "provider.plan-tier"
+      ],
+      "sanctioned_writers": [
+        "SetPlanTier"
+      ],
+      "source": "invariants.md:10",
       "persistence_only": true
     },
     {
@@ -98,6 +110,26 @@
       "symbol": "UpdateQuotaOverride",
       "sanctioned": true,
       "is_test": false
+    },
+    {
+      "invariant_id": "INV-tier-004",
+      "field": "provider.plan-tier",
+      "file": "internal/tier/store.go",
+      "line": 6,
+      "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"plan-tier\": v}})",
+      "symbol": "SetPlanTier",
+      "sanctioned": true,
+      "is_test": false
+    },
+    {
+      "invariant_id": "INV-tier-004",
+      "field": "provider.plan-tier",
+      "file": "internal/tier/store.go",
+      "line": 13,
+      "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"plan-tier\": v}})",
+      "symbol": "LegacyTier",
+      "sanctioned": false,
+      "is_test": false
     }
   ],
   "violations": [
@@ -108,6 +140,16 @@
       "line": 6,
       "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"plan\": newPlan}})",
       "symbol": "ChangePlan",
+      "sanctioned": false,
+      "is_test": false
+    },
+    {
+      "invariant_id": "INV-tier-004",
+      "field": "provider.plan-tier",
+      "file": "internal/tier/store.go",
+      "line": 13,
+      "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"plan-tier\": v}})",
+      "symbol": "LegacyTier",
       "sanctioned": false,
       "is_test": false
     }

@@ -119,7 +119,17 @@ absence of a violation.
 — the version IS the content hash, so there's no hand-bumped constant to forget
 to update when the detection logic changes.
 
-Exit codes: `0` ok, `1` gate violation, `2` usage error.
+**Submodules / nested git checkouts are excluded from BOTH scan modes.** A
+directory under `--source` that contains a `.git` entry (a submodule's gitlink
+file, or a vendored/nested repo) is pruned from the full-tree walk, and the
+manifest behind `--changed-since` never surfaces a submodule's files either
+(git records a submodule as a single gitlink entry, not blobs). Submodule
+contents belong to the submodule's own repo and its own gates — this keeps the
+two scan modes agreeing on the file universe instead of one seeing files the
+other can't.
+
+Exit codes: `0` ok, `1` gate violation, `2` usage error (including a bad
+`--changed-since` ref or a non-git `--source` with `--changed-since`).
 
 ### Emission/claim seam (internal)
 

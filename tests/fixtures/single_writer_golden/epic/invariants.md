@@ -5,3 +5,6 @@
 
 **INV-leg-002**: single write path for the legacy quota override
 <!-- @cw-writes INV-leg-002 controls_field=provider.quota_minutes sanctioned_writers=internal/legacy/store.go sink=db -->
+
+**INV-tier-004**: single write path for the hyphenated Mongo key plan-tier
+<!-- @cw-writes INV-tier-004 controls_field=provider.plan-tier sanctioned_writers=SetPlanTier sink=db -->

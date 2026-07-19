@@ -45,9 +45,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # a kind added in one place but not the others is silently dropped, so all
 # three build from chief_wiggum.trace_ids (cross-checked in tests).
 # Shared with check_single_writer.py: the hash-derived --scanner-version and
-# the git-native manifest helper behind --changed-since (#160).
+# the git-native manifest helper behind --changed-since (#160). walk_source_files
+# prunes submodules/nested git checkouts from the FULL scan so both scan modes
+# agree on the file universe (the manifest never surfaces submodule blobs).
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from chief_wiggum.manifest import changed_paths  # noqa: E402
+from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402
 
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
@@ -292,7 +294,9 @@ def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> 
     if only_files is not None:
         candidates = sorted(only_files)
     else:
-        candidates = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+        # walk_source_files prunes submodules/nested git checkouts, keeping the
+        # full scan's file universe identical to the manifest's (--changed-since).
+        candidates = walk_source_files(root)
     for rel in candidates:
         if not _file_predicate(rel):
             continue
@@ -460,7 +464,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    report = check(args.epic_dir, args.source, schema=schema, changed_since=args.changed_since)
+    try:
+        report = check(args.epic_dir, args.source, schema=schema, changed_since=args.changed_since)
+    except ManifestError as exc:
+        # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
+        # a usage error, reported concisely — never a traceback.
+        print(f"Error: --changed-since manifest failed: {exc}", file=sys.stderr)
+        return 2
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))

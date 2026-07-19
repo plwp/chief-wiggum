@@ -305,3 +305,47 @@ def test_changed_since_whole_repo_default_is_unaffected(tmp_path, capsys):
     epic = _write_epic(tmp_path)
     rc = ct.main([str(epic), "--gate", "coverage"])
     assert rc == 1
+
+
+def test_changed_since_non_git_source_is_usage_error(tmp_path, capsys):
+    """--changed-since against a non-git --source must exit 2 with a concise
+    message, never a traceback (#179 review)."""
+    epic = _write_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = ct.main([str(epic), "--source", str(src), "--changed-since", "main"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Error" in err and "Traceback" not in err
+
+
+def test_changed_since_bad_ref_is_usage_error(tmp_path, capsys):
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.py").write_text("pass\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    epic = _write_epic(tmp_path)
+    rc = ct.main([str(epic), "--source", str(tmp_path), "--changed-since", "no-such-ref"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Error" in err and "Traceback" not in err
+
+
+def test_full_scan_skips_nested_git_checkout(tmp_path):
+    """Submodules / vendored repos (a dir containing a .git entry) are excluded
+    from the FULL scan, matching --changed-since (whose manifest never surfaces
+    a submodule's files — a submodule is a single gitlink entry there)."""
+    (tmp_path / "a.py").write_text("# @cw-trace guards CTR-a-001\n")
+    sub = tmp_path / "vendor-app"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: ../.git/modules/vendor-app\n")
+    (sub / "b.py").write_text("# @cw-trace guards CTR-b-001\n")
+    anns = ct.scan_source(tmp_path)
+    assert {a.target for a in anns} == {"CTR-a-001"}

@@ -596,6 +596,69 @@ def test_scan_writers_preserves_line_major_ordering_across_invariants(tmp_path):
     ]
 
 
+def test_emission_captures_hyphenated_quoted_key(tmp_path):
+    """Regression (#179 review): the pre-split scanner built regexes from the
+    escaped field token, so a hyphenated Mongo key (`"plan-tier"`) matched. The
+    field-agnostic emission must cover the same token surface — a `\\w+`-only
+    capture would silently MISS this unsanctioned writer on a full scan.
+    (Old-vs-new agreement on this case is also pinned by the golden fixture's
+    INV-tier-004, whose expected outputs were generated with the pre-split
+    scanner.)"""
+    inv = sw.SingleWriterInvariant(
+        id="INV-tier-001", description="", controls_field=["provider.plan-tier"],
+        sanctioned_writers=["SetPlanTier"], source="s", persistence_only=True,
+    )
+    (tmp_path / "legacy.go").write_text(
+        "func LegacyTier(c *mongo.Collection, v string) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"plan-tier\": v}})\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [inv])
+    assert len(writers) == 1
+    assert writers[0].symbol == "LegacyTier" and writers[0].sanctioned is False
+    # And the raw emission carries the full hyphenated token, not a fragment.
+    sites = sw.emit_write_sites("legacy.go", (tmp_path / "legacy.go").read_text())
+    assert any(s.token == "plan-tier" and s.kind == sw.KIND_QUOTED for s in sites)
+
+
+def test_emission_captures_hyphenated_sql_field(tmp_path):
+    inv = sw.SingleWriterInvariant(
+        id="INV-tier-001", description="", controls_field=["provider.plan-tier"],
+        sanctioned_writers=["Nobody"], source="s", persistence_only=True,
+    )
+    (tmp_path / "store.go").write_text(
+        "func UpdateTier(db *sql.DB) {\n"
+        "\tdb.Exec(`UPDATE providers SET \"plan-tier\" = $1 WHERE id = $2`, v, id)\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [inv])
+    assert writers and writers[0].sanctioned is False
+
+
+def test_dotted_quoted_key_does_not_claim_leaf_field():
+    """`"provider.plan"` is captured as ONE token (`provider.plan`) — it must
+    not claim-match the leaf `plan`, mirroring the old quote-delimited
+    exact-token behavior."""
+    sites = sw.emit_write_sites(
+        "repo.go",
+        "func f(c *mongo.Collection) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"provider.plan\": v}})\n}\n",
+    )
+    assert any(s.token == "provider.plan" for s in sites)
+    assert not any(s.token == "plan" and s.kind == sw.KIND_QUOTED for s in sites)
+
+
+def test_full_scan_skips_nested_git_checkout(tmp_path):
+    """Submodules / vendored repos (a dir containing a .git entry) are excluded
+    from the FULL scan, matching --changed-since (whose manifest never surfaces
+    a submodule's files — a submodule is a single gitlink entry there)."""
+    (tmp_path / "admin.go").write_text("func Bad(p *Provider) {\n\tp.Plan = x\n}\n")
+    sub = tmp_path / "vendor-app"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: ../.git/modules/vendor-app\n")  # gitlink file
+    (sub / "other.go").write_text("func AlsoBad(p *Provider) {\n\tp.Plan = y\n}\n")
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert {w.file for w in writers} == {"admin.go"}
+
+
 # --- --scanner-version / --changed-since (#160) ------------------------------
 
 
@@ -664,3 +727,34 @@ def test_changed_since_whole_repo_default_is_unaffected(tmp_path, capsys):
     )
     rc = sw.main([str(epic), "--source", str(src), "--gate", "coverage"])
     assert rc == 0
+
+
+def test_changed_since_non_git_source_is_usage_error(tmp_path, capsys):
+    """--changed-since against a non-git --source must exit 2 with a concise
+    message, never a traceback (#179 review)."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = sw.main([str(epic), "--source", str(src), "--changed-since", "main"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Error" in err and "Traceback" not in err
+
+
+def test_changed_since_bad_ref_is_usage_error(tmp_path, capsys):
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.go").write_text("func A() {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    epic = _write_billing_epic(tmp_path)
+    rc = sw.main([str(epic), "--source", str(tmp_path), "--changed-since", "no-such-ref"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Error" in err and "Traceback" not in err
