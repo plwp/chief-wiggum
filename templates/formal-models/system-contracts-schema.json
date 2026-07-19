@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/system-contracts.json",
+  "title": "System Budget Trees",
+  "description": "Typed NFR (latency/throughput/spend) budget trees, checked by scripts/check_budget_tree.py (#164). A tree decomposes a top-level budget (e.g. ~800ms mouth-to-ear for a voice agent) into child allocations that must be consistent with their parent under UNION-BOUND tail arithmetic (percentiles do not sum — see docs/budget-trees.md). Every non-leaf node must declare an explicit 'residual' child accounting for unallocated budget. Optional 'chains' declare cross-service timeout hops for monotonicity checking (caller timeout must exceed nested callee timeout).",
+  "type": "object",
+  "required": ["trees"],
+  "additionalProperties": false,
+  "properties": {
+    "trees": {
+      "type": "array",
+      "description": "One or more independent budget trees (e.g. one per user-facing flow)",
+      "items": { "$ref": "#/$defs/tree" },
+      "minItems": 1
+    },
+    "chains": {
+      "type": "array",
+      "description": "Optional cross-service timeout chains, checked for monotonicity (caller > callee per hop)",
+      "items": { "$ref": "#/$defs/chain" }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/provenance" }
+    }
+  },
+  "$defs": {
+    "tree": {
+      "type": "object",
+      "required": ["root"],
+      "additionalProperties": false,
+      "properties": {
+        "root": { "$ref": "#/$defs/node" },
+        "arithmetic": {
+          "type": "string",
+          "enum": ["union-bound", "naive"],
+          "default": "union-bound",
+          "description": "'union-bound' (default) is the sound, gateable check: sum(child.alpha) <= parent.alpha AND sum(child.bound) + headroom <= parent.bound — coherent without assuming independence. 'naive' (sum-of-bounds only, ignoring alpha) is UNSOUND for tail percentiles and is WARN-only — it can never gate a workflow, regardless of --gate."
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "kind", "unit", "bound"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^BUD-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$",
+          "description": "Stable ID, e.g. BUD-voice-agent-001"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["latency", "throughput", "spend"],
+          "description": "Budget type. Union-bound tree arithmetic is identical across all three kinds."
+        },
+        "unit": {
+          "type": "string",
+          "description": "e.g. 'ms', 'req/s', 'usd/day'"
+        },
+        "bound": {
+          "type": "number",
+          "description": "The allocated budget value (e.g. a p95 latency bound in ms)"
+        },
+        "alpha": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Tail probability: P(this node's observed value > bound) <= alpha. Required to run the union-bound consistency check meaningfully; a node without alpha is skipped in the alpha half of that check."
+        },
+        "headroom": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Explicit slack this node reserves beyond what it allocates to children+residual. Counted on the PARENT side of the union-bound bound check: sum(child.bound) + headroom <= parent.bound."
+        },
+        "telemetry_ref": {
+          "type": "string",
+          "description": "OTel span name / k6 metric name this node's observed value is measured from (used only in --measured mode)"
+        },
+        "children": {
+          "type": "array",
+          "description": "Sub-allocations of this node's budget. If non-empty, 'residual' is REQUIRED on this node.",
+          "items": { "$ref": "#/$defs/node" }
+        },
+        "residual": {
+          "description": "Explicit unaccounted-budget bucket. REQUIRED on any node that declares children (a non-leaf node) — makes coverage accounting exhaustive instead of silently dropping unallocated budget.",
+          "$ref": "#/$defs/node"
+        },
+        "asm_refs": {
+          "type": "array",
+          "description": "Assumptions this node's bound rests on (e.g. a vendor SLA claim)",
+          "items": { "$ref": "#/$defs/asm_ref" }
+        }
+      }
+    },
+    "asm_ref": {
+      "type": "object",
+      "required": ["id", "evidence", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ASM-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$",
+          "description": "Stable ID, e.g. ASM-elevenlabs-ttfb-001"
+        },
+        "evidence": {
+          "type": "string",
+          "enum": ["sla-doc", "live-probe", "justified"],
+          "description": "How this assumption is backed. 'sla-doc'/'live-probe' render as covered; 'justified' renders as a DOCUMENTED WAIVER (a distinct status, not silently equal to covered). Missing/invalid evidence is a finding."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Pointer to the evidence (doc URL, probe script/run, or waiver rationale)"
+        }
+      }
+    },
+    "chain": {
+      "type": "object",
+      "required": ["id", "hops"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "hops": {
+          "type": "array",
+          "description": "Ordered outermost-to-innermost. Monotonicity requires hop[i].timeout_ms > hop[i+1].timeout_ms (an outer caller's timeout must exceed its nested callee's timeout, else the callee can still be in flight when the caller has already given up).",
+          "items": { "$ref": "#/$defs/hop" },
+          "minItems": 1
+        }
+      }
+    },
+    "hop": {
+      "type": "object",
+      "required": ["caller", "callee", "timeout_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "caller": { "type": "string" },
+        "callee": { "type": "string" },
+        "timeout_ms": { "type": "number" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"]
+        },
+        "ref": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}
