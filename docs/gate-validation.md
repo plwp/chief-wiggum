@@ -31,11 +31,14 @@ recall numbers) tells you how a gate performs **after** it ships. This
 protocol is the **pre-flight** check: proving the gate deserves live traffic
 in blocking mode at all.
 
-## The record: `validation/<gate>.json`
+## The record: `docs/quality/validation/<gate>.json`
 
-One JSON record per gate, conventionally at `docs/quality/validation/<gate>.json`
-in the target repo (sibling to the ratchet's own state dir, `docs/quality/` —
-see `docs/ratchet.md`). Schema:
+One JSON record per gate, at `docs/quality/validation/<gate>.json` — sibling to
+the ratchet's own state (`docs/quality/ratchet-journal.jsonl` corroborates the
+record; see "Recording results"). The record lives **in the repo that ships the
+gate**: CW's own gate suite (`check_single_writer`, `check_traceability`, ...)
+carries its records in the chief-wiggum repo; a target repo hosting gates of
+its own keeps theirs at the same relative path. Schema:
 `templates/gate-validation-record-schema.json`.
 
 ```json
@@ -61,7 +64,7 @@ see `docs/ratchet.md`). Schema:
       "seed_class": "direct",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "<chief-wiggum HEAD sha at authoring time>",
+      "sha": "sha256:<content digest of the corpus — check_gate_validation.corpus_digest>",
       "injected": "re-add ChangePlan: an unsanctioned second writer of provider.stripe_plan",
       "expected": "fire",
       "result": "fired",
@@ -71,7 +74,7 @@ see `docs/ratchet.md`). Schema:
   "clean_corpus_runs": [
     {
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "<chief-wiggum HEAD sha at authoring time>",
+      "sha": "sha256:<content digest of the corpus — check_gate_validation.corpus_digest>",
       "findings": 0,
       "coverage": {"writers_found": 4, "invariants_checked": 4},
       "passed": true
@@ -165,20 +168,24 @@ protocol reuses it rather than inventing a second one. **No signing or DSSE**
 beyond an append-only hash chain inside the repo's own trust boundary.
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
+python3 "$CW_HOME/scripts/ratchet.py" record --repo "$REPO_HOSTING_THE_GATE" \
   --event gate-validation --ref check_single_writer --merged \
   --notes "seeded-defect + clean-corpus trials passed; see docs/quality/validation/check_single_writer.json"
 ```
 
-The record's own `ratchet_record_id` field cross-references the resulting
-journal entry (`rec-NNNNN`), so the JSON record and the hash chain corroborate
-each other without duplicating the chain's tamper-evidence logic.
+The journal lives beside the validation dir
+(`docs/quality/ratchet-journal.jsonl`, sibling of `docs/quality/validation/`).
+The record's `ratchet_record_id` field names the resulting journal entry
+(`rec-NNNNN`), and `check_gate_validation.py` **verifies** the cross-reference:
+the id must exist in a hash-chain-verified journal, in a `gate-validation`
+event whose `ref` names this gate. A record without that corroboration — or a
+journal whose chain doesn't verify — has no provenance and fails.
 
 ## The gate-of-gates: `scripts/check_gate_validation.py`
 
 ```bash
 python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer \
-  --validation-dir "$TARGET_REPO/docs/quality/validation"
+  --validation-dir "$CW_HOME/docs/quality/validation"
 ```
 
 Report-only by default (prints the record's status and exits 0). `--gate`
@@ -186,16 +193,26 @@ makes it block:
 
 ```bash
 python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer \
-  --validation-dir "$TARGET_REPO/docs/quality/validation" --gate
+  --validation-dir "$CW_HOME/docs/quality/validation" --gate
 ```
 
 Exits 1 when:
 - no `<gate>.json` record exists at all,
 - the record is malformed against `templates/gate-validation-record-schema.json`,
+- **provenance fails** — the record's `gate` field doesn't name the gate being
+  checked (a copied record grants nothing); its `scanner_version` differs from
+  the gate's live `--scanner-version` output (stale — re-run the trials); or
+  its `ratchet_record_id` isn't corroborated by the chain-verified ratchet
+  journal beside the validation dir (see "Recording results"),
 - `status != "passed"`,
-- any seeded-defect trial has `passed: false`,
-- any clean-corpus run has `passed: false` or empty/all-zero `coverage`,
-- a mandatory seed class is missing (`evasion-omission`, `evasion-config-indirection`,
+- any seeded-defect trial fails **as derived**: a trial only counts when
+  `result` matches `expected` (`fire`→`fired`, `no-fire`→`not-fired`) AND its
+  `passed` flag agrees — a forged `passed: true` with a contradicting `result`
+  fails,
+- any clean-corpus run fails as derived: it needs `passed: true` AND
+  `findings: 0` AND non-empty, not-all-zero `coverage`,
+- a mandatory seed class lacks a genuinely-passing trial (`direct` always —
+  the sanity check; `evasion-omission`, `evasion-config-indirection`,
   `evasion-sampling-gap` always; `evasion-concurrency` unless
   `concurrency_applicable: false`; `instrumentation-deleted` when
   `telemetry_dependent: true`).
@@ -235,9 +252,14 @@ python3 "$CW_HOME/scripts/factory_log.py" bug --repo acme/app \
 ```
 
 When `--seed-class` matches a class the named gate's validation record
-(`--validation-dir`, default `docs/quality/validation`) recorded as `passed:
-true`, `factory_log.py` prints a **DEMOTION** instruction to stderr and emits a
-`demotion` telemetry event:
+(`--validation-dir`, default: chief-wiggum's own `docs/quality/validation/`)
+certified as **caught** — a trial with `expected: "fire"`, `result: "fired"`,
+`passed: true` — `factory_log.py` prints a **DEMOTION** instruction to stderr,
+writes the `seed_class` into the escape event, and emits a `demotion`
+telemetry event. A passing `expected: "no-fire"` trial certifies a documented
+NON-coverage boundary (e.g. a sampling-gap seed proving `vendor/` is out of
+scope); an escape through that boundary is consistent with the record's
+authority statement and does **not** demote:
 
 1. **Revert the gate to report-only** — drop `--gate`/`--gate coverage` from
    its workflow wiring (`/architect`, `/close-epic`) until re-validated.
@@ -257,6 +279,12 @@ they were wired as blockers under the older, prose-only `gate-rollout.md` rule.
 #168 completed retroactive validation records for both (seeded-defect trials
 including all mandatory evasion classes, clean-corpus runs with coverage
 evidence, authority boundary statements) against the fixture corpora under
-`tests/fixtures/gate_validation/`, exercised live in `tests/test_check_gate_validation.py`.
-The resulting records ship at `docs/gate-validation/records/check_single_writer.json`
-and `docs/gate-validation/records/check_traceability.json` as the evidence.
+`tests/fixtures/gate_validation/`. The records ship at
+`docs/quality/validation/check_single_writer.json` and
+`docs/quality/validation/check_traceability.json`, journaled as `rec-00001` /
+`rec-00002` in `docs/quality/ratchet-journal.jsonl`; each trial's `sha` is a
+content digest of its fixture corpus (`check_gate_validation.corpus_digest`).
+`tests/test_gate_validation_retroactive.py` re-executes every trial by
+`seed_id` and re-derives the digests and scanner versions, so any drift
+between the shipped records and the gates' live behavior — a renamed trial, a
+changed corpus, a changed scanner — fails the suite.

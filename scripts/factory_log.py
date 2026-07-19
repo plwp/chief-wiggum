@@ -61,7 +61,9 @@ CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's
 ESCAPE_SEVERITIES = ("low", "medium", "high", "critical")
 ESCAPE_FOUND_IN = ("implement-verify", "close-epic-review", "saas-gate", "manual", "prod")
 
-DEFAULT_VALIDATION_DIR = "docs/quality/validation"
+# CW's own gates ship their validation records with chief-wiggum (see
+# docs/gate-validation.md); default to that so demotion works out of the box.
+DEFAULT_VALIDATION_DIR = str(Path(__file__).resolve().parent.parent / "docs" / "quality" / "validation")
 
 
 def log_path() -> Path:
@@ -105,7 +107,8 @@ def emit_gate(name: str, result: str, *, caught: int | None = None,
 
 def emit_escape(summary: str, *, severity: str, missed_by: str, found_in: str,
                 repo: str | None = None, ticket: str | None = None,
-                invariant: str | None = None, fixed: bool | None = None) -> bool:
+                invariant: str | None = None, fixed: bool | None = None,
+                seed_class: str | None = None) -> bool:
     """Record a manually-found bug — especially an ESCAPE that slipped PAST a gate
     and was only caught later (e.g. close-epic's adversarial review catching a bug
     the ticket's own gates missed).
@@ -121,7 +124,7 @@ def emit_escape(summary: str, *, severity: str, missed_by: str, found_in: str,
     """
     return emit(ESCAPE, summary=summary, severity=severity, missed_by=missed_by,
                 found_in=found_in, repo=repo, ticket=ticket, invariant=invariant,
-                fixed=fixed)
+                fixed=fixed, seed_class=seed_class)
 
 
 def emit_demotion(gate: str, seed_class: str, *, repo: str | None = None,
@@ -159,6 +162,13 @@ def demotion_check(missed_by: str, seed_class: str | None,
     validation itself was insufficient. Returns None (nothing to demote) when no
     `seed_class` was given, no record exists, or the class wasn't one the record
     claims to have validated.
+
+    Only classes certified as CAUGHT ground a demotion: the trial must have
+    `expected: "fire"` with `result: "fired"` and `passed: true`. A passing
+    `expected: "no-fire"` trial certifies a documented NON-coverage boundary
+    (e.g. an evasion-sampling-gap seed proving vendor/ is out of scope) — an
+    escape through that boundary is consistent with the record's authority
+    statement, not a refutation of it, so it must not demote the gate.
     """
     if not seed_class:
         return None
@@ -167,7 +177,7 @@ def demotion_check(missed_by: str, seed_class: str | None,
         return None
     validated_classes = {
         t.get("seed_class") for t in record.get("seeded_defect_trials", []) or []
-        if t.get("passed")
+        if t.get("passed") is True and t.get("expected") == "fire" and t.get("result") == "fired"
     }
     if seed_class not in validated_classes:
         return None
@@ -554,7 +564,8 @@ def main() -> int:
             print(f"factory_log: DEMOTION — {demotion['instruction']}", file=sys.stderr)
         ok = emit_escape(args.summary, severity=args.severity, missed_by=args.missed_by,
                           found_in=args.found_in, repo=args.repo, ticket=args.ticket,
-                          invariant=args.invariant, fixed=True if args.fixed else None)
+                          invariant=args.invariant, fixed=True if args.fixed else None,
+                          seed_class=args.seed_class)
         if not ok:
             print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)", file=sys.stderr)
             return 1

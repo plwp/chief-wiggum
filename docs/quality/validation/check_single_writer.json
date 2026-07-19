@@ -21,7 +21,7 @@
       "seed_class": "direct",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
       "injected": "internal/admin/handlers.go: ChangePlan writes provider.plan via bson $set, outside INV-bil-001's sanctioned_writers",
       "expected": "fire",
       "result": "fired",
@@ -32,7 +32,7 @@
       "seed_class": "evasion-omission",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
       "injected": "internal/db/leak.go: an unsanctioned write of provider.active_owner_count hidden inside a nested anonymous closure with no directly-enclosing named function at the write site",
       "expected": "fire",
       "result": "fired",
@@ -43,7 +43,7 @@
       "seed_class": "evasion-config-indirection",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
       "injected": "internal/wrappers/generic.go: a generically-named SetField helper writes provider.stripe_plan via bson $set — indirection through a wrapper function, not the sanctioned symbol name",
       "expected": "fire",
       "result": "fired",
@@ -54,7 +54,7 @@
       "seed_class": "evasion-sampling-gap",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
       "injected": "vendor/thirdparty/patch.go: an unsanctioned write of provider.stripe_plan placed inside the vendor/ subtree, which SKIP_PARTS excludes by design",
       "expected": "no-fire",
       "result": "not-fired",
@@ -64,14 +64,17 @@
   "clean_corpus_runs": [
     {
       "repo": "tests/fixtures/gate_validation/single_writer_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
       "findings": 0,
-      "coverage": {"invariants_checked": 3, "writers_found": 3},
+      "coverage": {
+        "invariants_checked": 3,
+        "writers_found": 3
+      },
       "passed": true
     }
   ],
   "status": "passed",
   "validated_at": "2026-07-19T00:00:00Z",
   "validated_by": "chief-wiggum#168",
-  "ratchet_record_id": "N/A — chief-wiggum has no docs/quality/ratchet.json of its own; see tests/test_gate_validation_retroactive.py for the live trials that back this record"
+  "ratchet_record_id": "rec-00001"
 }

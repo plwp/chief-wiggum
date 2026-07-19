@@ -20,7 +20,7 @@
       "seed_class": "direct",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/traceability_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
       "injected": "order.py: removed the `@cw-trace guards CTR-order-001 INV-order-003` annotation entirely",
       "expected": "fire",
       "result": "fired",
@@ -31,7 +31,7 @@
       "seed_class": "evasion-omission",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/traceability_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
       "injected": "test_create_order.py: guards annotation left intact, but the verifies annotation silently dropped INV-order-003 (kept only CTR-order-001)",
       "expected": "fire",
       "result": "fired",
@@ -42,7 +42,7 @@
       "seed_class": "evasion-config-indirection",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/traceability_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
       "injected": "order.py: the real create_order lost its guards annotation, but a decoy `@cw-trace guards CTR-order-001 INV-order-003` was placed on an unrelated no-op function that does not implement the guard",
       "expected": "no-fire",
       "result": "not-fired",
@@ -53,7 +53,7 @@
       "seed_class": "evasion-sampling-gap",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/traceability_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
       "injected": "test_create_order.py lost its real verifies annotation; a decoy verifies annotation for both IDs was placed in notes.txt, an extension outside SOURCE_EXTS",
       "expected": "fire",
       "result": "fired",
@@ -63,14 +63,17 @@
   "clean_corpus_runs": [
     {
       "repo": "tests/fixtures/gate_validation/traceability_clean",
-      "sha": "a67c9da829598aa2d99a97aaa16fec55d5800f7a",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
       "findings": 0,
-      "coverage": {"defined_ids": 3, "annotations_scanned": 3},
+      "coverage": {
+        "annotations_scanned": 5,
+        "defined_ids": 3
+      },
       "passed": true
     }
   ],
   "status": "passed",
   "validated_at": "2026-07-19T00:00:00Z",
   "validated_by": "chief-wiggum#168",
-  "ratchet_record_id": "N/A — chief-wiggum has no docs/quality/ratchet.json of its own; see tests/test_gate_validation_retroactive.py for the live trials that back this record"
+  "ratchet_record_id": "rec-00002"
 }

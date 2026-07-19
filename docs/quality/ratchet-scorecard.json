@@ -1,0 +1,9 @@
+{
+  "contract_hashes": {},
+  "pass_set": [],
+  "passed": 0,
+  "quality": {
+    "skipped": "quality metrics disabled (--no-quality)"
+  },
+  "tests_run": false
+}

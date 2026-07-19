@@ -35,7 +35,7 @@ One JSON object per line. Each call site fills what it **knows** and omits the r
 | `consult` | an AI consultation | `provider`, `tokens_in`, `tokens_out`, `cost_usd` |
 | `worker` | a sub-agent run | `name`/role, tokens/cost if the harness surfaces them |
 | `skill` | a workflow step | `name`, `result` |
-| `escape` | an agent that manually found a bug | `summary`, `severity`, `missed_by`, `found_in`, `ticket?`, `invariant?`, `fixed?` |
+| `escape` | an agent that manually found a bug | `summary`, `severity`, `missed_by`, `found_in`, `ticket?`, `invariant?`, `fixed?`, `seed_class?` |
 | `demotion` | `factory_log.py bug --seed-class` | `name` (the demoted gate), `details` (`seed_class=...`) |
 
 ## Escapes — measuring gate RECALL, not just catches
@@ -83,13 +83,16 @@ python3 "$CW_HOME/scripts/factory_log.py" bug --repo acme/app \
   --seed-class evasion-omission --found-in close-epic-review
 ```
 
-If `check_single_writer`'s validation record (`--validation-dir`, default
-`docs/quality/validation`) certified it PASSED a trial of exactly that seed
-class, `factory_log.py` prints a **DEMOTION** instruction and emits a
-`demotion` event: revert the gate to report-only and file a ticket to
-re-derive that seed class. The record's claim of catching that class was
-proven wrong by production, not just missed once — see
-`factory_log.demotion_check` and `docs/gate-validation.md`.
+If `check_single_writer`'s validation record (`--validation-dir`, default:
+chief-wiggum's own `docs/quality/validation/`) certified that seed class as
+**caught** (a trial with `expected: "fire"`, `result: "fired"`, `passed:
+true`), `factory_log.py` prints a **DEMOTION** instruction, writes the
+`seed_class` into the escape event, and emits a `demotion` event: revert the
+gate to report-only and file a ticket to re-derive that seed class. The
+record's claim of catching that class was proven wrong by production, not
+just missed once. A passing `expected: "no-fire"` trial (a certified
+non-coverage boundary, e.g. `vendor/` exclusion) never grounds a demotion —
+see `factory_log.demotion_check` and `docs/gate-validation.md`.
 
 Token counts come from the provider's own usage summary — every consult provider
 surfaces one (the CLIs via their `--output-format json` mode, the SDKs via the

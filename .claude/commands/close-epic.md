@@ -126,14 +126,16 @@ Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the
 
 ### Step 2c2: Gate-validation check (docs/gate-validation.md)
 
-Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger:
+Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e keep their existing `--gate coverage` enforcement unchanged:
 
 ```bash
-python3 "$CW_HOME/scripts/check_gate_validation.py" check_traceability --validation-dir "$TARGET_REPO/docs/quality/validation" --gate
-python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --validation-dir "$TARGET_REPO/docs/quality/validation" --gate
+python3 "$CW_HOME/scripts/check_gate_validation.py" check_traceability --validation-dir "$CW_HOME/docs/quality/validation" --gate
+python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --validation-dir "$CW_HOME/docs/quality/validation" --gate
 ```
 
-**If either exits non-zero (no record, or a failing one), do not pass `--gate coverage` to that checker in the corresponding step below** — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
+(A target repo that hosts gates of its own keeps their records at the same relative path in that repo — `docs/quality/validation/<gate>.json`, sibling to its ratchet journal — and this step checks them the same way.)
+
+**If either exits non-zero (no record, a stale/forged one, or a failing one), do not pass `--gate coverage` to that checker in the corresponding step below** — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
 
 ### Step 2d: Traceability coverage gate
 

@@ -1,5 +1,12 @@
 """Tests for scripts/check_gate_validation.py — the gate-of-gates enforcing the
-gate-validation protocol (docs/gate-validation.md, #168)."""
+gate-validation protocol (docs/gate-validation.md, #168).
+
+The threat model these tests exercise is "the validation record can be fooled":
+copied records (wrong gate name), stale records (scanner_version drift), forged
+records (passed flags contradicting results, non-zero findings marked clean),
+and unjournaled records (no chain-verified ratchet provenance). None of those
+may grant blocking authority.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +16,7 @@ import sys
 from pathlib import Path
 
 import check_gate_validation as gv
+from chief_wiggum.hashing import stable_hash
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
@@ -40,20 +48,43 @@ def _minimal_valid_record(**overrides) -> dict:
              "coverage": {"writers_found": 3}, "passed": True},
         ],
         "status": "passed",
+        "ratchet_record_id": "rec-00001",
     }
     record.update(overrides)
     return record
 
 
-def _write_record(tmp_path, gate: str, record: dict) -> Path:
-    d = tmp_path / "validation"
-    d.mkdir(parents=True, exist_ok=True)
-    path = d / f"{gate}.json"
-    path.write_text(json.dumps(record))
-    return d
+def _write_journal(state_dir: Path, entries: list[dict]) -> None:
+    """Write a hash-chained ratchet journal, exactly as ratchet.py chains it."""
+    prev = "genesis"
+    lines = []
+    for body in entries:
+        body = dict(body)
+        body.pop("record_hash", None)
+        body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+        prev = body["record_hash"]
+        lines.append(json.dumps(body, sort_keys=True))
+    (state_dir / "ratchet-journal.jsonl").write_text("\n".join(lines) + "\n")
 
 
-# --- check() ------------------------------------------------------------------
+def _write_record(tmp_path: Path, gate: str, record: dict, journal: bool = True,
+                  journal_ref: str | None = None, journal_event: str = "gate-validation") -> Path:
+    """Write <gate>.json under <tmp>/quality/validation and, by default, a
+    chain-valid journal entry corroborating its ratchet_record_id beside it."""
+    state = tmp_path / "quality"
+    vdir = state / "validation"
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / f"{gate}.json").write_text(json.dumps(record))
+    if journal:
+        _write_journal(state, [{
+            "record_id": record.get("ratchet_record_id", "rec-00001"),
+            "event": journal_event,
+            "ref": journal_ref if journal_ref is not None else gate,
+        }])
+    return vdir
+
+
+# --- check(): the happy path --------------------------------------------------
 
 
 def test_missing_record_is_not_passing(tmp_path):
@@ -67,6 +98,7 @@ def test_full_valid_record_passes(tmp_path):
     report = gv.check("example_gate", vdir)
     assert report.record_found is True
     assert report.schema_errors == []
+    assert report.provenance_errors == []
     assert report.missing_seed_classes == []
     assert report.failed_trials == []
     assert report.failed_clean_runs == []
@@ -83,9 +115,194 @@ def test_schema_errors_when_authority_boundary_missing(tmp_path):
     assert report.passing is False
 
 
+# --- provenance: copied / stale / unjournaled records grant nothing -----------
+
+
+def test_record_for_another_gate_fails(tmp_path):
+    """A record copied from another gate's file (its `gate` field names someone
+    else) must not grant blocking authority to the gate whose filename it wears."""
+    record = _minimal_valid_record(gate="some_other_gate")
+    vdir = _write_record(tmp_path, "example_gate", record)
+    report = gv.check("example_gate", vdir)
+    assert any("copied" in e or "gate field" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_missing_ratchet_record_id_fails(tmp_path):
+    record = _minimal_valid_record()
+    del record["ratchet_record_id"]
+    vdir = _write_record(tmp_path, "example_gate", record)
+    report = gv.check("example_gate", vdir)
+    assert any("ratchet_record_id" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_missing_journal_fails(tmp_path):
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(), journal=False)
+    report = gv.check("example_gate", vdir)
+    assert any("journal not found" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_record_id_absent_from_journal_fails(tmp_path):
+    record = _minimal_valid_record(ratchet_record_id="rec-00099")
+    vdir = _write_record(tmp_path, "example_gate", record)
+    # journal helper wrote rec-00099... rewrite it with a different id
+    _write_journal(tmp_path / "quality", [{
+        "record_id": "rec-00001", "event": "gate-validation", "ref": "example_gate"}])
+    report = gv.check("example_gate", vdir)
+    assert any("not found in the ratchet journal" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_tampered_journal_fails_closed(tmp_path):
+    """A journal entry whose content was edited without re-chaining (the classic
+    lower-the-bar tamper) must fail the whole corroboration, not just that entry."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    journal = tmp_path / "quality" / "ratchet-journal.jsonl"
+    entry = json.loads(journal.read_text())
+    entry["ref"] = "example_gate"  # no-op value, but the hash no longer matches...
+    entry["notes"] = "edited after the fact"  # ...because of this
+    journal.write_text(json.dumps(entry, sort_keys=True) + "\n")
+    report = gv.check("example_gate", vdir)
+    assert any("chain broken" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_journal_entry_for_wrong_gate_fails(tmp_path):
+    """A journaled gate-validation entry whose ref names a DIFFERENT gate cannot
+    corroborate this record — that would let one journal entry bless every record."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(),
+                         journal_ref="unrelated_gate")
+    report = gv.check("example_gate", vdir)
+    assert any("does not name gate" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_journal_entry_with_wrong_event_fails(tmp_path):
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(),
+                         journal_event="epic-close")
+    report = gv.check("example_gate", vdir)
+    assert any("expected 'gate-validation'" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def _fake_gate_script(scripts_dir: Path, gate: str, version: str) -> None:
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / f"{gate}.py").write_text(
+        "import sys\n"
+        "if '--scanner-version' in sys.argv:\n"
+        f"    print({version!r})\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(2)\n"
+    )
+
+
+def test_stale_scanner_version_fails(tmp_path):
+    """A record authored against an older scanner is stale — the live gate's
+    --scanner-version output is the source of truth, not the record's claim."""
+    record = _minimal_valid_record(scanner_version="old-version-hash")
+    vdir = _write_record(tmp_path, "example_gate", record)
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "current-version-hash")
+    report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert any("scanner_version mismatch" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_matching_scanner_version_passes(tmp_path):
+    record = _minimal_valid_record(scanner_version="current-version-hash")
+    vdir = _write_record(tmp_path, "example_gate", record)
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "current-version-hash")
+    report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report.provenance_errors == []
+    assert report.passing is True
+
+
+def test_record_omitting_scanner_version_fails_when_live_available(tmp_path):
+    """When the gate exposes a live --scanner-version, a record that omits its own
+    is unverifiable-by-omission — it must not pass."""
+    record = _minimal_valid_record()
+    record.pop("scanner_version", None)
+    vdir = _write_record(tmp_path, "example_gate", record)
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "current-version-hash")
+    report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert any("scanner_version mismatch" in e for e in report.provenance_errors)
+    assert report.passing is False
+
+
+def test_gate_without_scanner_version_support_skips_the_check(tmp_path):
+    """No live version to compare against (script absent / flag unsupported) —
+    the check is skipped, not failed; the journal still anchors provenance."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    report = gv.check("example_gate", vdir, scripts_dir=tmp_path / "no-scripts-here")
+    assert report.provenance_errors == []
+    assert report.passing is True
+
+
+# --- trials: pass/fail is derived, never trusted ------------------------------
+
+
+def test_forged_passed_flag_fails(tmp_path):
+    """`passed: true` on a trial whose result contradicts its expectation is a
+    forgery — the checker derives pass/fail from result vs expected."""
+    record = _minimal_valid_record()
+    record["seeded_defect_trials"][0]["result"] = "not-fired"  # expected: fire
+    # passed stays (forged) True
+    vdir = _write_record(tmp_path, "example_gate", record)
+    report = gv.check("example_gate", vdir)
+    assert len(report.failed_trials) == 1
+    assert "direct" in report.missing_seed_classes  # the forged trial doesn't count
+    assert report.passing is False
+
+
+def test_failed_trial_marks_not_passing(tmp_path):
+    record = _minimal_valid_record()
+    record["seeded_defect_trials"][0]["passed"] = False
+    record["seeded_defect_trials"][0]["result"] = "not-fired"
+    vdir = _write_record(tmp_path, "example_gate", record)
+    report = gv.check("example_gate", vdir)
+    assert len(report.failed_trials) == 1
+    assert report.passing is False
+
+
+def test_no_fire_trial_that_actually_fired_fails_even_with_forged_passed(tmp_path):
+    record = _minimal_valid_record()
+    record["seeded_defect_trials"][3]["result"] = "fired"  # expected: no-fire
+    vdir = _write_record(tmp_path, "example_gate", record)
+    report = gv.check("example_gate", vdir)
+    assert len(report.failed_trials) == 1
+    assert report.passing is False
+
+
+def test_trial_genuinely_passed_derivation():
+    assert gv.trial_genuinely_passed({"expected": "fire", "result": "fired", "passed": True})
+    assert gv.trial_genuinely_passed({"expected": "no-fire", "result": "not-fired", "passed": True})
+    # forged flags don't count
+    assert not gv.trial_genuinely_passed({"expected": "fire", "result": "not-fired", "passed": True})
+    assert not gv.trial_genuinely_passed({"expected": "no-fire", "result": "fired", "passed": True})
+    # a truthful passed: false doesn't count either
+    assert not gv.trial_genuinely_passed({"expected": "fire", "result": "fired", "passed": False})
+
+
+# --- mandatory seed classes ---------------------------------------------------
+
+
+def test_missing_direct_class_fails(tmp_path):
+    record = _minimal_valid_record()
+    record["seeded_defect_trials"] = [
+        t for t in record["seeded_defect_trials"] if t["seed_class"] != "direct"
+    ]
+    vdir = _write_record(tmp_path, "example_gate", record)
+    report = gv.check("example_gate", vdir)
+    assert "direct" in report.missing_seed_classes
+    assert report.passing is False
+
+
 def test_missing_mandatory_evasion_class_fails(tmp_path):
     record = _minimal_valid_record()
-    # Drop the evasion-sampling-gap trial — a mandatory class.
     record["seeded_defect_trials"] = [
         t for t in record["seeded_defect_trials"] if t["seed_class"] != "evasion-sampling-gap"
     ]
@@ -130,13 +347,16 @@ def test_instrumentation_deleted_required_when_telemetry_dependent(tmp_path):
     assert report2.passing is True
 
 
-def test_failed_trial_marks_not_passing(tmp_path):
+# --- clean-corpus runs: derived too -------------------------------------------
+
+
+def test_clean_corpus_run_with_nonzero_findings_fails(tmp_path):
+    """`passed: true` on a run with findings != 0 is a forgery — clean means zero."""
     record = _minimal_valid_record()
-    record["seeded_defect_trials"][0]["passed"] = False
-    record["seeded_defect_trials"][0]["result"] = "not-fired"
+    record["clean_corpus_runs"][0]["findings"] = 2  # passed stays (forged) True
     vdir = _write_record(tmp_path, "example_gate", record)
     report = gv.check("example_gate", vdir)
-    assert len(report.failed_trials) == 1
+    assert len(report.failed_clean_runs) == 1
     assert report.passing is False
 
 
@@ -163,15 +383,6 @@ def test_status_field_must_be_passed(tmp_path):
     vdir = _write_record(tmp_path, "example_gate", record)
     report = gv.check("example_gate", vdir)
     assert report.passing is False
-
-
-def test_no_fire_trial_that_actually_fired_fails():
-    """A trial's `passed` field is the source of truth (result == expected);
-    check() trusts it rather than re-deriving — the record itself must set
-    passed correctly when authoring it."""
-    trial = {"seed_id": "x", "seed_class": "evasion-sampling-gap", "repo": "r",
-              "expected": "no-fire", "result": "fired", "passed": False}
-    assert trial["passed"] is False
 
 
 # --- CLI ------------------------------------------------------------------
