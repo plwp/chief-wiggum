@@ -120,3 +120,141 @@ internal/admin/handlers.go:     func ChangePlan(...)      { p.StripePlan = ... }
 ```
 
 and exits `1` — the exact regression that shipped silently before this check.
+
+## Infra extension: terraform drift as sanctioned-writer enforcement (#165)
+
+The single-writer idiom above inventories *code* writers of a field. Some
+invariants declare a single writer of *infrastructure* instead: "terraform owns
+env/secrets; CI only pushes images." That rule lived only in a memory file until
+the Dogeared deploy's `enable_cicd` footgun made the gap concrete — a CI run
+silently applied an infra change out-of-band, and nothing flagged it, because no
+check inventories *live* infra writers the way `check_single_writer.py`
+inventories code writers.
+
+`scripts/check_infra_writer.py` closes that gap by treating `terraform plan` as
+the writer-inventory tool: if the live state ever diverges from the declared
+(terraform) state, exactly one thing could have written it out-of-band, and
+`terraform plan -detailed-exitcode` already knows how to detect that.
+
+### Declaration
+
+An infra invariant lives in a JSON config (default
+`docs/system/infra-invariants.json`):
+
+```json
+[
+  {
+    "id": "INV-infra-001",
+    "controls_field": "infra.env-secrets",
+    "sanctioned_writers": ["terraform"],
+    "terraform_root": "infra/",
+    "schedule_note": "run nightly via cron"
+  }
+]
+```
+
+- **`id`** — an `INV-` stable ID (same grammar as `check_traceability.py` /
+  `check_single_writer.py`; validated against the shared ID grammar
+  (`scripts/chief_wiggum/trace_ids.py`) when it exists on the branch, else a
+  local regex — the import is optional/guarded so this checker works standalone).
+- **`controls_field`** — the scope name (e.g. `infra.env-secrets`), matched
+  against exemption `scope` for break-glass downgrade.
+- **`sanctioned_writers`** — the only authorized writer(s) (normally `["terraform"]`).
+- **`terraform_root`** — the directory `terraform plan` runs in for this invariant.
+- **`schedule_note`** — optional free text (e.g. "nightly cron", "on every close-epic run").
+
+### The check
+
+For each declared invariant, `check_infra_writer.py` runs (via `subprocess`, never a
+shell):
+
+```
+terraform plan -detailed-exitcode -input=false -lock=false -no-color
+```
+
+in `terraform_root`, and maps terraform's own exit-code contract:
+
+| Exit code | Meaning | Status |
+| --- | --- | --- |
+| `0` | declared state matches live state | `clean` |
+| `2` | live state diverges from declared state — an unsanctioned write happened out-of-band | `drift` (or `exempted`, see below) |
+| `1` | terraform itself errored (auth/network/config) | `error` — **never conflated with drift** |
+| other | unexpected | `error` |
+
+`terraform` missing entirely degrades gracefully: `{"available": false, ...}`,
+exit `0` — mirroring `lsp_query.py`'s missing-language-server path. A missing
+`terraform_root` directory is an `error`, not a `drift`.
+
+### Drift is an event, not just a state
+
+Every detected drift (`drift` or `exempted`) appends an **append-only** JSONL
+record to `docs/quality/infra-drift.jsonl`:
+
+```json
+{"ts": 1752921600.0, "invariant": "INV-infra-001", "root": "infra/", "plan_summary_first_40_lines": ["~ update in place", "..."]}
+```
+
+A later clean plan (someone reconciled the drift, or terraform re-applied) does
+**not** erase this record — convergence is not innocence. The journal is the
+durable evidence that an out-of-band write occurred, independent of whether it
+was later fixed.
+
+### Break-glass: committed exemption records
+
+An incident sometimes requires a deliberate, temporary out-of-band change (the
+break-glass case GitOps assumes exists). Rather than silently accepting drift,
+`check_infra_writer.py` looks for committed exemption records in
+`docs/system/exemptions/*.json`:
+
+```json
+{
+  "scope": "infra.env-secrets",
+  "reason": "emergency secret rotation during INC-42",
+  "expiry": "2026-08-01",
+  "approver": "pat",
+  "incident_ref": "INC-42"
+}
+```
+
+- An **active** exemption (`scope` matches the invariant's `controls_field`, and
+  `expiry` has not passed) downgrades a `drift` finding to `exempted` — it is
+  still journaled (see above), just not gate-failing.
+- An **expired** exemption is itself a finding: the break-glass window closed
+  and nobody re-declared or cleaned it up. Expired exemptions gate-fail
+  independently of whether any current drift matches their scope.
+
+Creating an exemption is a single JSON file commit — frictionless by design, so
+it happens *during* an incident, not as after-the-fact paperwork.
+
+### Authority boundary
+
+Every report — text or JSON — states the same authority line:
+
+> proves declared state matches live state at scan time for scanned roots; does
+> not prove no out-of-band write occurred between scans
+
+This is the same class of caveat the code-level checker states for its regex
+lens: the tool proves what it can observe, not everything that could have
+happened. Audit-log integration (proving *no* out-of-band write happened
+*between* scans, not just checking whether one has left a live trace) is a
+deferred trigger item.
+
+### Running it
+
+```bash
+# report-only (default): prints findings, exit 0
+python3 scripts/check_infra_writer.py --config docs/system/infra-invariants.json
+
+# JSON output
+python3 scripts/check_infra_writer.py --format json
+
+# blocking: exit 1 on unexempted drift or an expired exemption
+python3 scripts/check_infra_writer.py --gate
+```
+
+Per `docs/gate-rollout.md`: this gate ships **report-only**. Validate it against
+a real repo's terraform (a clean-plan run, and a seeded drift caught in a
+sandbox workspace) before wiring `--gate` into `/close-epic` for repos that
+declare infra invariants.
+
+Exit codes: `0` ok / report-only, `1` gate violation, `2` usage error.
