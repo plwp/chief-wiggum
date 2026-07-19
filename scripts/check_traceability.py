@@ -37,6 +37,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,9 +49,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # the git-native manifest helper behind --changed-since (#160). walk_source_files
 # prunes submodules/nested git checkouts from the FULL scan so both scan modes
 # agree on the file universe (the manifest never surfaces submodule blobs).
-from chief_wiggum.hashing import scanner_version  # noqa: E402
+from chief_wiggum.hashing import hash_epic_definitions, scanner_version  # noqa: E402
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
-from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402
+from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE, canonical_id  # noqa: E402
+
+# Suspect-link propagation (#169): a link is SUSPECT when the ID it was
+# verified against has a definition hash that no longer matches the hash
+# recorded in docs/quality/trace-links.json at the time the link last passed
+# a gate. JUSTIFIED waivers (docs/epics/<slug>/justifications/*.json) let an
+# uncovered/untested contract satisfy coverage with a committed, ticket-backed
+# reason instead of a false "guards"/"verifies" annotation. See
+# chief_wiggum.trace_links and docs/traceability.md.
+from chief_wiggum.trace_links import (  # noqa: E402
+    SIDECAR_RELPATH,
+    build_sidecar,
+    find_suspect_links,
+    is_justification_path,
+    load_justifications,
+    load_sidecar,
+    write_sidecar,
+)
 
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
 
@@ -86,6 +104,20 @@ class TraceReport:
     untested_contracts: list[str] = field(default_factory=list)
     dangling: list[dict] = field(default_factory=list)
     invalid_links: list[dict] = field(default_factory=list)
+    # Suspect propagation (#169): links recorded in docs/quality/trace-links.json
+    # whose target's definition hash has since changed. Report-only — does NOT
+    # affect soundness_ok/coverage_ok (see docs/gate-rollout.md). Distinct from
+    # dangling (target gone) and uncovered/untested (no link at all): here a
+    # link DOES exist, its claim is just stale.
+    suspect_links: list[dict] = field(default_factory=list)
+    suspect_contracts: list[str] = field(default_factory=list)
+    # JUSTIFIED waivers (#169): an uncovered/untested contract with a valid,
+    # non-expired, ticket-backed justification record is moved out of
+    # uncovered_contracts/untested_contracts and reported here instead — a
+    # third status, neither a clean pass nor a silent gap.
+    justified_contracts: list[dict] = field(default_factory=list)
+    expired_justifications: list[dict] = field(default_factory=list)
+    invalid_justifications: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -97,6 +129,10 @@ class TraceReport:
             "untested_contracts": len(self.untested_contracts),
             "dangling": len(self.dangling),
             "invalid_links": len(self.invalid_links),
+            "suspect_links": len(self.suspect_links),
+            "justified_contracts": len(self.justified_contracts),
+            "expired_justifications": len(self.expired_justifications),
+            "invalid_justifications": len(self.invalid_justifications),
         }
 
     @property
@@ -118,6 +154,11 @@ class TraceReport:
             "untested_contracts": self.untested_contracts,
             "dangling": self.dangling,
             "invalid_links": self.invalid_links,
+            "suspect_links": self.suspect_links,
+            "suspect_contracts": self.suspect_contracts,
+            "justified_contracts": self.justified_contracts,
+            "expired_justifications": self.expired_justifications,
+            "invalid_justifications": self.invalid_justifications,
             "warnings": self.warnings,
         }
 
@@ -130,15 +171,10 @@ def kind_of(node_id: str) -> str:
     return node_id.split("-", 1)[0].upper()
 
 
-def canonical_id(node_id: str) -> str:
-    """Canonical form: uppercase kind prefix, lowercase remainder.
-
-    IDs are matched case-insensitively (CTR-order-001 == CTR-ORDER-001); this
-    keeps the familiar display shape while making links immune to case drift
-    between epic docs and code annotations.
-    """
-    kind, _, rest = node_id.partition("-")
-    return f"{kind.upper()}-{rest.lower()}"
+# canonical_id's home is chief_wiggum.trace_ids (shared with the hashing
+# module, so definition-hash keys and annotation targets join on the same
+# canonical form — PR #181 review); imported above, re-exported here for
+# existing callers.
 
 
 def parse_annotations(text: str) -> list[tuple[str, list[str]]]:
@@ -153,13 +189,20 @@ def parse_annotations(text: str) -> list[tuple[str, list[str]]]:
 
 
 def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
-    """Collect IDs *declared* in the epic's prose + model artifacts."""
+    """Collect IDs *declared* in the epic's prose + model artifacts.
+
+    The ``justifications/`` subtree (waiver records, #169) is excluded: a
+    waiver's own ``"id"`` field names the CTR/INV it waives and must never be
+    misread as a new stable-ID declaration.
+    """
     root = Path(epic_dir)
     defined: dict[str, str] = {}
     if not root.exists():
         return defined
     for path in sorted(root.rglob("*")):
         if path.suffix not in (".md", ".json") or not path.is_file():
+            continue
+        if is_justification_path(root, path):
             continue
         try:
             text = path.read_text()
@@ -169,6 +212,44 @@ def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
             node_id = canonical_id(m.group(1))
             defined[node_id] = kind_of(node_id)
     return defined
+
+
+def _collect_coverage_requirements(node, out: dict[str, list[str]]) -> None:
+    if isinstance(node, dict):
+        cid = node.get("id")
+        reqs = node.get("coverage_requires")
+        if isinstance(cid, str) and ID_RE.fullmatch(cid) and isinstance(reqs, list) and reqs:
+            out[canonical_id(cid)] = [str(r) for r in reqs]
+        for v in node.values():
+            _collect_coverage_requirements(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _collect_coverage_requirements(v, out)
+
+
+def extract_coverage_requirements(epic_dir: str | Path) -> dict[str, list[str]]:
+    """Per-contract coverage-requirement alternatives (LOBSTER pattern, #169).
+
+    A JSON model entry may declare ``"coverage_requires": ["unit-test", "probe"]``
+    alongside its ``"id"``: the contract is tested only by a ``verifies``
+    annotation whose ``source_kind`` is ONE of the listed alternatives (an "A
+    OR B" requirement), instead of the default "any verifying kind counts".
+    Absent for a given ID, behavior is unchanged. Degrades gracefully on a
+    missing epic dir or unparsable JSON (skipped, not raised).
+    """
+    root = Path(epic_dir)
+    out: dict[str, list[str]] = {}
+    if not root.exists():
+        return out
+    for path in sorted(root.rglob("*.json")):
+        if is_justification_path(root, path):
+            continue
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        _collect_coverage_requirements(doc, out)
+    return out
 
 
 def emit_epic_annotations(rel: str, text: str) -> list[Annotation]:
@@ -216,6 +297,8 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
         return annotations
     for path in sorted(root.rglob("*")):
         if path.suffix not in (".md", ".json") or not path.is_file():
+            continue
+        if is_justification_path(root, path):
             continue
         try:
             text = path.read_text()
@@ -321,13 +404,21 @@ def build_report(
     defined: dict[str, str],
     annotations: list[Annotation],
     schema: dict,
+    *,
+    coverage_requirements: dict[str, list[str]] | None = None,
 ) -> TraceReport:
+    """Build the trace report. ``coverage_requirements`` (#169, optional) maps a
+    contract ID to a list of ``source_kind`` alternatives (e.g.
+    ``["test", "probe"]``) — when present, a contract is tested only by a
+    ``verifies`` link whose kind is one of those alternatives ("A OR B");
+    absent, any verifying kind counts (unchanged prior behavior)."""
     report = TraceReport(defined=dict(defined))
     link_types = schema.get("link_types", {})
+    coverage_requirements = coverage_requirements or {}
 
     realized: set[str] = set()      # BR ids with an incoming realizes
     guarded: set[str] = set()       # CTR/INV with guards/ensures (code)
-    verified: set[str] = set()      # CTR/INV with verifies (test)
+    verified_kinds: dict[str, set[str]] = {}  # CTR/INV -> set of verifying source_kinds
 
     for ann in annotations:
         # Dangling: references an ID that isn't defined.
@@ -361,14 +452,21 @@ def build_report(
         elif ann.verb in ("guards", "ensures"):
             guarded.add(ann.target)
         elif ann.verb == "verifies":
-            verified.add(ann.target)
+            verified_kinds.setdefault(ann.target, set()).add(ann.source_kind)
 
     contracts = [i for i, k in defined.items() if k in ("CTR", "INV")]
     business_rules = [i for i, k in defined.items() if k == "BR"]
 
+    def _tested(cid: str) -> bool:
+        kinds = verified_kinds.get(cid, set())
+        required = coverage_requirements.get(cid)
+        if required:
+            return bool(kinds & set(required))
+        return bool(kinds)
+
     report.orphan_business_rules = sorted(b for b in business_rules if b not in realized)
     report.uncovered_contracts = sorted(c for c in contracts if c not in guarded)
-    report.untested_contracts = sorted(c for c in contracts if c not in verified)
+    report.untested_contracts = sorted(c for c in contracts if not _tested(c))
 
     if not annotations:
         report.warnings.append("no @cw-trace annotations found; reporting coverage as absent")
@@ -377,15 +475,67 @@ def build_report(
     return report
 
 
+def apply_justifications(
+    report: TraceReport,
+    justifications: dict,
+    invalid: list[dict],
+    *,
+    today: date | None = None,
+) -> None:
+    """Apply JUSTIFIED waivers (#169) to an already-built ``report``, in place.
+
+    A valid (ticket-backed, non-expired) justification for a currently
+    uncovered/untested contract moves it OUT of those lists and into
+    ``justified_contracts`` — satisfying coverage without a fake guard/verify
+    annotation. An expired justification is reported but does NOT satisfy
+    coverage. A justification referencing an ID that isn't even defined, or
+    that had no gap to waive in the first place, is not silently accepted.
+    """
+    today = today or date.today()
+    report.invalid_justifications = list(invalid)
+    justified: list[dict] = []
+    expired: list[dict] = []
+    for cid in sorted(justifications):
+        j = justifications[cid]
+        if cid not in report.defined:
+            report.invalid_justifications.append(
+                {"source": j.source, "reason": f"references undefined id {cid}"}
+            )
+            continue
+        if j.is_expired(today):
+            expired.append(j.to_dict())
+            continue
+        moved = False
+        if cid in report.uncovered_contracts:
+            report.uncovered_contracts.remove(cid)
+            moved = True
+        if cid in report.untested_contracts:
+            report.untested_contracts.remove(cid)
+            moved = True
+        if moved:
+            justified.append(j.to_dict())
+    report.justified_contracts = justified
+    report.expired_justifications = expired
+
+
 def check(
     epic_dir: str | Path,
     source_root: str | Path | None = None,
     *,
     schema: dict | None = None,
     changed_since: str | None = None,
+    links_path: str | Path | None = None,
+    today: date | None = None,
 ) -> TraceReport:
+    """Build the trace report. ``links_path`` (#169, optional), when given, is
+    the ``docs/quality/trace-links.json`` sidecar to compare current contract
+    definition hashes against for suspect-link detection — omitted, no sidecar
+    is read and ``suspect_links`` stays empty (nothing to compare against yet,
+    e.g. the very first validation). ``today`` (optional) overrides the clock
+    used for justification-expiry checks; defaults to the real today."""
     schema = schema or load_schema()
     defined = extract_defined_ids(epic_dir)
+    coverage_requirements = extract_coverage_requirements(epic_dir)
     # Contract->BR realizes links live in the epic docs; code/test links in source.
     annotations = scan_epic_annotations(epic_dir)
     if source_root:
@@ -395,7 +545,44 @@ def check(
             # gate, which must see the whole repo to be authoritative.
             only_files = changed_paths(source_root, changed_since, predicate=_file_predicate)
         annotations += scan_source(source_root, only_files=only_files)
-    return build_report(defined, annotations, schema)
+    report = build_report(defined, annotations, schema, coverage_requirements=coverage_requirements)
+
+    if links_path is not None:
+        current_hashes = hash_epic_definitions(Path(epic_dir))
+        sidecar = load_sidecar(links_path)
+        report.suspect_links = find_suspect_links(sidecar, current_hashes)
+        report.suspect_contracts = sorted({link["target"] for link in report.suspect_links})
+
+    justifications, invalid_justifications = load_justifications(epic_dir)
+    apply_justifications(report, justifications, invalid_justifications, today=today)
+    return report
+
+
+def write_links_sidecar(
+    epic_dir: str | Path,
+    source_root: str | Path | None,
+    path: str | Path,
+) -> dict:
+    """Write the ``docs/quality/trace-links.json`` sidecar (#169) from the
+    CURRENT scan: every ``@cw-trace`` link's definition hash, at the moment
+    this is called. Not hand-maintained — called by ``/architect``/
+    ``/close-epic`` only once their respective gate has passed (see ``main``'s
+    ``--write-links``), so a stale/failing state never gets recorded as
+    validated.
+
+    Always a FULL source scan, by construction: the sidecar is the global
+    record of validated links, and rewriting it from a ``--changed-since``
+    partial scan would silently drop every validated link in unchanged files
+    (they'd then never be able to go suspect). ``main`` rejects the
+    ``--write-links --changed-since`` combination as a usage error (PR #181
+    review)."""
+    annotations = scan_epic_annotations(epic_dir)
+    if source_root:
+        annotations += scan_source(source_root)
+    current_hashes = hash_epic_definitions(Path(epic_dir))
+    body = build_sidecar(annotations, current_hashes, scanner_version=_scanner_version())
+    write_sidecar(path, body)
+    return body
 
 
 def render_markdown(report: TraceReport) -> str:
@@ -415,6 +602,29 @@ def render_markdown(report: TraceReport) -> str:
     if report.invalid_links:
         lines += ["", "## Invalid links", ""]
         lines += [f"- {d['file']}:{d['line']} {d['reason']}" for d in report.invalid_links]
+    if report.suspect_links:
+        lines += ["", "## Suspect links (definition changed since verified)", ""]
+        lines += [
+            f"- {d['file']}:{d['line']} {d['verb']} {d['target']} "
+            f"(definition hash changed since this link was validated)"
+            for d in report.suspect_links
+        ]
+    if report.justified_contracts:
+        lines += ["", "## Justified (waived, ticket-tracked)", ""]
+        lines += [
+            f"- {j['id']} — {j['reason']} (ticket {j['ticket']}, approver {j['approver']}, "
+            f"expires {j['expiry']})"
+            for j in report.justified_contracts
+        ]
+    if report.expired_justifications:
+        lines += ["", "## Expired justifications (no longer satisfy coverage)", ""]
+        lines += [
+            f"- {j['id']} — expired {j['expiry']} (ticket {j['ticket']})"
+            for j in report.expired_justifications
+        ]
+    if report.invalid_justifications:
+        lines += ["", "## Invalid justifications", ""]
+        lines += [f"- {d['source']}: {d['reason']}" for d in report.invalid_justifications]
     if report.warnings:
         lines += ["", "## Warnings", ""] + [f"- {w}" for w in report.warnings]
     return "\n".join(lines) + "\n"
@@ -442,6 +652,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the hash-derived scanner version (source hash of this module + its "
         "chief_wiggum deps) and exit",
     )
+    parser.add_argument(
+        "--links",
+        metavar="PATH",
+        help="Path to the trace-links.json sidecar (#169) used for suspect-link detection. "
+        f"Defaults to <--source or cwd>/{SIDECAR_RELPATH}.",
+    )
+    parser.add_argument(
+        "--write-links",
+        action="store_true",
+        help="(Re)write the trace-links.json sidecar from a FULL scan's current link/definition "
+        "hashes — but ONLY when the requested --gate passes (or no --gate was given). A failing "
+        "gate leaves the sidecar untouched, so a stale/broken state is never recorded as "
+        "validated. Incompatible with --changed-since (a partial scan would drop validated "
+        "links for unchanged files). Not hand-maintained; see docs/traceability.md.",
+    )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
@@ -451,6 +676,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.epic_dir:
         print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
+        return 2
+
+    if args.write_links and args.changed_since:
+        print(
+            "Error: --write-links cannot be combined with --changed-since — the sidecar is the "
+            "global record of validated links and must be written from a FULL scan; a partial "
+            "scan would silently drop validated links for unchanged files",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -464,8 +698,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
+    links_path = Path(args.links) if args.links else Path(args.source or ".") / SIDECAR_RELPATH
+
     try:
-        report = check(args.epic_dir, args.source, schema=schema, changed_since=args.changed_since)
+        report = check(
+            args.epic_dir, args.source, schema=schema, changed_since=args.changed_since,
+            links_path=links_path,
+        )
     except ManifestError as exc:
         # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
         # a usage error, reported concisely — never a traceback.
@@ -476,6 +715,21 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report.to_dict(), indent=2))
     else:
         print(render_markdown(report))
+
+    if args.write_links:
+        gate_passed = (
+            args.gate is None
+            or (args.gate == "soundness" and report.soundness_ok)
+            or (args.gate == "coverage" and report.coverage_ok)
+        )
+        if gate_passed:
+            write_links_sidecar(args.epic_dir, args.source, links_path)
+        else:
+            print(
+                f"check_traceability: --write-links skipped — --gate {args.gate} did not pass "
+                "(sidecar left untouched)",
+                file=sys.stderr,
+            )
 
     try:  # factory telemetry; no-op unless enabled, never breaks the gate
         import os

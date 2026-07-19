@@ -40,7 +40,9 @@ def make_repo(tmp_path, contracts_md=None, suites=None):
 
 def test_uppercase_stable_ids_are_hashed(tmp_path):
     """Regression (chief-wiggum#86 class): uppercase INV-/CTR- ids must be detected
-    for weakening-hashing, not silently skipped by a lowercase-only grammar."""
+    for weakening-hashing, not silently skipped by a lowercase-only grammar.
+    Keys are CANONICAL (uppercase kind, lowercase slug — PR #181 review) so they
+    join against the traceability scanner's canonicalized annotation targets."""
     cfg = make_repo(
         tmp_path,
         contracts_md=(
@@ -51,8 +53,31 @@ def test_uppercase_stable_ids_are_hashed(tmp_path):
         ),
     )
     hashes = ratchet.load_contract_hashes(cfg)
-    assert "CTR-BIL-001" in hashes
-    assert "INV-FOWR-004" in hashes
+    assert "CTR-bil-001" in hashes
+    assert "INV-fowr-004" in hashes
+    # raw-cased keys must NOT appear — one canonical key per declared ID
+    assert "CTR-BIL-001" not in hashes and "INV-FOWR-004" not in hashes
+
+
+def test_highwater_from_precanonicalization_journal_is_not_falsely_removed(tmp_path):
+    """Back-compat (PR #181 review): journals written before hash keys were
+    canonicalized carry raw-cased IDs (CTR-BIL-001). derive_highwater/violations
+    must canonicalize both sides of the join, or every such contract would
+    falsely read as *removed* against a new canonical scorecard and block."""
+    cfg = make_repo(
+        tmp_path,
+        contracts_md="### CTR-BIL-001 — customer uniqueness\nREQUIRES: one customer per provider\n",
+    )
+    current = scorecard_from(cfg, set())  # canonical keys: CTR-bil-001
+    # Old-style journal record: same hash VALUE (it covers block content only),
+    # raw-cased KEY — exactly what a pre-#181 scorecard recorded.
+    old_sc = dict(current)
+    old_sc["contract_hashes"] = {"CTR-BIL-001": current["contract_hashes"]["CTR-bil-001"]}
+    append_record(cfg, old_sc, merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert set(hw["contract_hashes"]) == {"CTR-bil-001"}
+    v = ratchet.violations(current, hw)
+    assert v["removed_contracts"] == [] and v["weakened_contracts"] == []
 
 
 def scorecard_from(cfg, pass_set):
@@ -357,6 +382,88 @@ def test_skipped_quality_snapshot_never_regresses(tmp_path):
         {"skipped": "lizard not found"}), merged=True)
     hw2 = ratchet.derive_highwater(ratchet.load_journal(cfg))["quality"]
     assert hw2 == {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
+
+
+# ---- suspect-link visibility (#169) ----------------------------------------
+
+
+def _write_sidecar(cfg, links):
+    from chief_wiggum.trace_links import write_sidecar
+    write_sidecar(cfg.repo / ratchet.SIDECAR_RELPATH, {"links": links})
+
+
+def test_suspect_links_for_flags_a_changed_contract_hash(tmp_path):
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    assert hashes["CTR-order-001"] != "stale-hash"
+    susp = ratchet.suspect_links_for(cfg, sc)
+    assert len(susp) == 1
+    assert susp[0]["target"] == "CTR-order-001"
+
+
+def test_suspect_links_for_is_empty_when_hash_matches(tmp_path):
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": hashes["CTR-order-001"],
+    }])
+    sc = scorecard_from(cfg, set())
+    assert ratchet.suspect_links_for(cfg, sc) == []
+
+
+def test_suspect_links_for_is_empty_when_no_sidecar_written(tmp_path):
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, set())
+    assert ratchet.suspect_links_for(cfg, sc) == []
+
+
+def test_cmd_check_surfaces_suspect_links_visibly_but_does_not_block(tmp_path, capsys):
+    """AC3 (#169): a definition-hash change with surviving suspect links must be
+    VISIBLE in `check`'s output, never silently absorbed into 'the ratchet held'
+    — but suspect propagation ships report-only, so it must not change the exit
+    code (docs/gate-rollout.md)."""
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    append_record(cfg, sc, merged=True)
+    _write_scorecard(cfg, sc)
+    assert hashes["CTR-order-001"] != "stale-hash"
+
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0  # visible, but does not block
+    err = capsys.readouterr().err
+    assert "suspect link" in err
+    assert "CTR-order-001" in err
+
+    args_json = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    ratchet.cmd_check(args_json)
+    data = json.loads(capsys.readouterr().out)
+    assert data["suspect_links"][0]["target"] == "CTR-order-001"
+
+
+def test_cmd_regressed_includes_suspect_links(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    append_record(cfg, sc, merged=True)
+    _write_scorecard(cfg, sc)
+    args = argparse.Namespace(repo=str(tmp_path))
+    ratchet.cmd_regressed(args)
+    data = json.loads(capsys.readouterr().out)
+    assert data["suspect_links"][0]["target"] == "CTR-order-001"
 
 
 @pytest.mark.skipif(shutil.which("lizard") is None,

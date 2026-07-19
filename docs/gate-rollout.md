@@ -63,3 +63,4 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 | SaaS NFR | `saas_gate.py --gate` | `--gate` | blocking (`/saas-gate`) |
 | **Minimal-CI** | `ci_scaffold.py` | `--gate` | **report-only** (#111); wired into `/close-epic` report-only; `--gate` mode held off until validated across shipped repos |
 | **AI-slop signals (code survival + duplication)** | `quality_slop_gate.py` | `--gate` | **report-only** (#113); `/close-epic`; promote after a dry-run shows the GitClear bands don't false-positive on shipped repos |
+| **Traceability: suspect-link propagation** | `check_traceability.py` (`suspect_links`) | none yet | **NEW — report-only** (#169); does not affect `coverage_ok`/the `--gate coverage` exit code; `ratchet.py check`/`regressed` surface the same sidecar cross-reference visibly. Promote once a dry-run across a real epic's link churn shows an acceptable false-positive rate (see docs/traceability.md) |

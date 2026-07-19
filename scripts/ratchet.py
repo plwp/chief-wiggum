@@ -73,14 +73,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Same stable-ID grammar as check_traceability.py and the TIM schema — shared
 # via chief_wiggum.trace_ids so a kind added in one place cannot be silently
 # dropped by another (#166; uppercase-id vacuity was the same class of bug,
-# chief-wiggum#86). Ratchet's DEFINE_RE is the markdown-only form: JSON "id"
-# nodes are hashed structurally by _walk_json_ids.
-# stable_hash's home is chief_wiggum.hashing (#160) — check_single_writer.py and
-# check_traceability.py import the same function for their --scanner-version,
-# so there is exactly one implementation, not a copy per module.
-from chief_wiggum.hashing import stable_hash  # noqa: E402,F401
-from chief_wiggum.trace_ids import ID_RE  # noqa: E402
-from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE
+# chief-wiggum#86). Re-exported here (identity, not a copy) so
+# tests/test_trace_ids.py can keep cross-checking that ratchet, check_traceability,
+# and the TIM schema all agree on the same regex objects.
+# stable_hash/hash_epic_definitions's home is chief_wiggum.hashing (#160, #169) —
+# check_single_writer.py and check_traceability.py import the same functions
+# for --scanner-version and per-link suspect-propagation hashing, so there is
+# exactly one contract-block hashing implementation, not a copy per module.
+# _hash_markdown_defs/_walk_json_ids are kept as thin aliases to that shared
+# home for callers/tests that reach into ratchet's (formerly private) internals.
+from chief_wiggum.hashing import hash_epic_definitions, stable_hash  # noqa: E402,F401
+from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
+from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
+from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
+from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE  # noqa: E402,F401
+from chief_wiggum.trace_links import SIDECAR_RELPATH, find_suspect_links, load_sidecar  # noqa: E402
 
 CONFIG_NAME = "ratchet.json"
 JOURNAL_NAME = "ratchet-journal.jsonl"
@@ -191,58 +198,14 @@ def load_config(repo: Path) -> Config:
 # ---- contract definition hashes (weakening detection) --------------------------
 
 
-def _hash_markdown_defs(text: str) -> dict[str, list[str]]:
-    """Map each stable ID declared in the markdown to the hash of its block.
-
-    A block runs from the declaring line to the next line that declares another
-    ID (or EOF), whitespace-normalized — so reformatting doesn't read as
-    weakening, but any wording change to the REQUIRES/ENSURES does.
-    """
-    lines = text.splitlines()
-    decls: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        m = DEFINE_RE.search(line)
-        if m:
-            decls.append((i, m.group(1)))
-    out: dict[str, list[str]] = {}
-    for idx, (start, cid) in enumerate(decls):
-        end = decls[idx + 1][0] if idx + 1 < len(decls) else len(lines)
-        block = "\n".join(ln.rstrip() for ln in lines[start:end]).strip()
-        out.setdefault(cid, []).append(stable_hash(block))
-    return out
-
-
-def _walk_json_ids(node, out: dict[str, list[str]]) -> None:
-    if isinstance(node, dict):
-        cid = node.get("id")
-        if isinstance(cid, str) and ID_RE.fullmatch(cid):
-            out.setdefault(cid, []).append(
-                stable_hash(json.dumps(node, sort_keys=True))
-            )
-        for v in node.values():
-            _walk_json_ids(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            _walk_json_ids(v, out)
-
-
 def load_contract_hashes(cfg: Config) -> dict[str, str]:
-    """Map stable ID -> definition hash across all epic docs (md + model JSON)."""
-    root = cfg.repo / cfg.epic_docs
-    collected: dict[str, list[str]] = {}
-    if root.is_dir():
-        for f in sorted(root.rglob("*.md")):
-            for cid, hashes in _hash_markdown_defs(f.read_text(errors="replace")).items():
-                collected.setdefault(cid, []).extend(hashes)
-        for f in sorted(root.rglob("*.json")):
-            try:
-                doc = json.loads(f.read_text(errors="replace"))
-            except json.JSONDecodeError:
-                continue
-            _walk_json_ids(doc, collected)
-    # An ID declared in several places hashes as the sorted combination, so the
-    # result is deterministic and any one declaration changing is visible.
-    return {cid: stable_hash(*sorted(hs)) for cid, hs in collected.items()}
+    """Map stable ID -> definition hash across all epic docs (md + model JSON).
+
+    Delegates to ``chief_wiggum.hashing.hash_epic_definitions`` (#169) — the
+    single implementation of contract-block hashing, also reused by
+    ``check_traceability.py`` for per-link suspect propagation.
+    """
+    return hash_epic_definitions(cfg.repo / cfg.epic_docs)
 
 
 # ---- suite parsers (pluggable, per target repo) --------------------------------
@@ -469,7 +432,14 @@ def load_journal(cfg: Config) -> list[dict]:
 def derive_highwater(records: list[dict]) -> dict:
     """High-water = union of every case passing in a MERGED record, plus the
     definition hash each contract had when it first entered. Amendments and
-    retirements are deliberate, journaled human acts that move the baseline."""
+    retirements are deliberate, journaled human acts that move the baseline.
+
+    Contract-hash keys are canonicalized on read: journals written before
+    ``hash_epic_definitions`` keyed by canonical form (PR #181 review) may
+    carry raw-cased IDs (``CTR-BIL-001``), and without canonicalization here
+    every such contract would falsely read as *removed* against a new
+    canonical scorecard. The hash VALUES cover block content only, so they
+    compare identically across the change."""
     pass_set: set[str] = set()
     contract_hashes: dict[str, str] = {}
     for rec in records:
@@ -477,11 +447,11 @@ def derive_highwater(records: list[dict]) -> dict:
             sc = rec.get("scorecard", {}) or {}
             pass_set.update(sc.get("pass_set", []) or [])
             for cid, h in (sc.get("contract_hashes", {}) or {}).items():
-                contract_hashes.setdefault(cid, h)
+                contract_hashes.setdefault(canonical_id(cid), h)
         for cid, h in (rec.get("amended", {}) or {}).items():
-            contract_hashes[cid] = h
+            contract_hashes[canonical_id(cid)] = h
         for cid in rec.get("retired", []) or []:
-            contract_hashes.pop(cid, None)
+            contract_hashes.pop(canonical_id(cid), None)
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
@@ -491,7 +461,10 @@ def derive_highwater(records: list[dict]) -> dict:
 
 def violations(scorecard: dict, highwater: dict) -> dict:
     cur_pass = set(scorecard.get("pass_set", []))
-    cur_defs = scorecard.get("contract_hashes", {})
+    # Canonicalize both sides of the join (see derive_highwater) so a scorecard
+    # written by an older version cannot make canonical high-water keys look
+    # removed, and vice versa.
+    cur_defs = {canonical_id(c): h for c, h in (scorecard.get("contract_hashes", {}) or {}).items()}
     missing = sorted(set(highwater["pass_set"]) - cur_pass)
     weakened, removed = [], []
     for cid, h in sorted(highwater["contract_hashes"].items()):
@@ -594,6 +567,22 @@ def cmd_score(args) -> int:
     return 0
 
 
+def suspect_links_for(cfg: Config, sc: dict) -> list[dict]:
+    """Suspect links (#169) visible from THIS scorecard's contract hashes.
+
+    Cross-references the ``docs/quality/trace-links.json`` sidecar (written by
+    ``check_traceability.py --write-links`` once its gate passes) against the
+    CURRENT scorecard's ``contract_hashes``: a link recorded against a hash
+    that no longer matches means the contract it claims to guard/verify
+    changed since that claim was last validated. A definition-hash change with
+    surviving suspect links must be VISIBLE here, not silently absorbed into
+    "the ratchet held" — report-only (see docs/gate-rollout.md); it does not
+    change ``check``'s exit code.
+    """
+    sidecar = load_sidecar(cfg.repo / SIDECAR_RELPATH)
+    return find_suspect_links(sidecar, sc.get("contract_hashes", {}) or {})
+
+
 def cmd_check(args) -> int:
     cfg = load_config(repo_root(args.repo))
     hw = derive_highwater(load_journal(cfg))
@@ -606,17 +595,26 @@ def cmd_check(args) -> int:
     qregs = quality_regressions(
         sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
     )
+    susp = suspect_links_for(cfg, sc)
     hard = {k: v[k] for k in ("missing_tests", "weakened_contracts", "removed_contracts")}
     if args.format == "json":
-        print(json.dumps({**hard, "quality_regressions": qregs}, indent=2))
-    elif qregs:
-        tag = "VIOLATED (gated)" if args.gate_quality else "report-only"
-        sys.stderr.write(f"ratchet: complexity/churn regressions [{tag}]:\n")
-        for r in qregs:
+        print(json.dumps({**hard, "quality_regressions": qregs, "suspect_links": susp}, indent=2))
+    else:
+        if qregs:
+            tag = "VIOLATED (gated)" if args.gate_quality else "report-only"
+            sys.stderr.write(f"ratchet: complexity/churn regressions [{tag}]:\n")
+            for r in qregs:
+                sys.stderr.write(
+                    f"  {r['metric']}: {r['current']} > limit {r['limit']} "
+                    f"(best {r['best']}, +{r['delta']})\n"
+                )
+        if susp:
             sys.stderr.write(
-                f"  {r['metric']}: {r['current']} > limit {r['limit']} "
-                f"(best {r['best']}, +{r['delta']})\n"
+                f"ratchet: {len(susp)} suspect link(s) [report-only] — a definition changed "
+                "since the link was last validated (see docs/traceability.md):\n"
             )
+            for s in susp:
+                sys.stderr.write(f"  {s['file']}:{s['line']} {s['verb']} {s['target']}\n")
     if any(hard.values()):
         if args.format != "json":
             sys.stderr.write(
@@ -641,6 +639,7 @@ def cmd_regressed(args) -> int:
     out["quality_regressions"] = quality_regressions(
         sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
     )
+    out["suspect_links"] = suspect_links_for(cfg, sc)
     print(json.dumps(out, indent=2))
     return 0
 
@@ -659,6 +658,7 @@ def cmd_record(args) -> int:
         status = "held"
     amended = {}
     for cid in args.amend or []:
+        cid = canonical_id(cid)  # match hash_epic_definitions' canonical keys
         if cid not in sc.get("contract_hashes", {}):
             raise RatchetError(f"--amend {cid}: not defined in the current epic docs")
         amended[cid] = sc["contract_hashes"][cid]
@@ -670,7 +670,7 @@ def cmd_record(args) -> int:
         "merged": bool(args.merged),
         "scorecard": sc,
         "amended": amended,
-        "retired": sorted(args.retire or []),
+        "retired": sorted(canonical_id(c) for c in (args.retire or [])),
         "ratchet_status": status,
         "notes": args.notes,
     }
