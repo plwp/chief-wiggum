@@ -65,7 +65,7 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Tail probability: P(this node's observed value > bound) <= alpha. Required to run the union-bound consistency check meaningfully; a node without alpha is skipped in the alpha half of that check."
+          "description": "Tail probability: P(this node's observed value > bound) <= alpha. In a union-bound tree, alpha is effectively mandatory: a non-leaf node without alpha, or any child/residual without alpha, is a structure finding — missing alphas must never silently degrade the sound check into a naive sum-of-bounds. Naive trees do not use alpha."
         },
         "headroom": {
           "type": "number",
@@ -79,7 +79,7 @@
         },
         "children": {
           "type": "array",
-          "description": "Sub-allocations of this node's budget. If non-empty, 'residual' is REQUIRED on this node.",
+          "description": "Sub-allocations of this node's budget. If non-empty, 'residual' is REQUIRED on this node. Every child (and the residual) must carry the same kind and unit as this node — the checker rejects mixed-kind/unit arithmetic as a structure finding.",
           "items": { "$ref": "#/$defs/node" }
         },
         "residual": {

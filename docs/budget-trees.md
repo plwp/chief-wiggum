@@ -39,6 +39,18 @@ true union bound, not a sum of the underlying random variables. A tree may
 opt into `arithmetic: "naive"` (plain sum-of-bounds, ignoring alpha), but that
 mode is **WARN-only and can never gate a workflow**, regardless of `--gate`.
 
+Two structural preconditions keep the sound check sound:
+
+- **Alphas must be declared.** In a union-bound tree, a non-leaf node without
+  its own `alpha`, or any child/residual without `alpha`, is a **structure
+  finding** — missing alphas must never silently degrade the union-bound
+  check into a naive sum-of-bounds. (Naive trees don't use alpha, so they
+  don't require it.)
+- **Kind/unit homogeneity.** Every child and residual must carry the same
+  `kind` and `unit` as its parent — a ms parent must not sum usd/tokens
+  children. A mismatch is a **structure finding** and the meaningless mixed
+  sums are skipped.
+
 ## Coverage: the residual bucket
 
 Every node that declares `children` **must** also declare a `residual` child
@@ -66,18 +78,20 @@ worst-case occupancy beyond what a single-hop timeout chain models.
 
 ## Two modes
 
-- **static** (default): well-formedness + arithmetic + monotonicity.
-  `--gate` fails (exit 1) on **structure/arithmetic findings only** —
-  monotonicity and naive-arithmetic are advisory and never gate.
+- **static** (default): schema validation + well-formedness + arithmetic +
+  monotonicity. `--gate` fails (exit 1) on **schema/structure/arithmetic
+  findings only** — monotonicity and naive-arithmetic are advisory and never
+  gate.
 - **`--measured <file>`**: evaluate declared bounds against a k6 summary
   export (`{"metrics": {name: {...p95...}}}`) or a flat `{metric: {p95:
-  ...}}` export. Every node gets a three-way status:
+  ...}}` export. Every node gets a status:
 
   | Status | Meaning |
   | --- | --- |
   | `held` | an observation exists and satisfies the declared bound |
-  | `unbound` | no `telemetry_ref` declared, OR an observation exists but **breaches** the bound |
-  | `no_observations` | the metric was never observed — missing from the export, or present with an explicit zero count. **A finding, never a pass.** |
+  | `breached` | an observation exists and **exceeds** the declared bound |
+  | `no_observations` | a `telemetry_ref` is declared but the metric was never observed — missing from the export, or present with an explicit zero count. A measurement gap: **a finding, never a pass.** |
+  | `unbound` | no `telemetry_ref` declared — the node is not bound to any metric. A spec gap, deliberately distinct from `no_observations`, and never a pass. |
 
   Measured mode is **evidence-only, permanently**: it never exits non-zero,
   even with `--gate` — environment variance means a measured latency claim
@@ -100,6 +114,12 @@ Neither mode ever claims to prove runtime behavior holds in production.
 nodes: `{id, kind: latency|throughput|spend, unit, bound, alpha, headroom,
 telemetry_ref, children, residual, asm_refs}`. Same tree arithmetic applies to
 all three `kind`s.
+
+The schema is **enforced, not just documentation**: the checker walks the
+schema's `required`/`enum`/`pattern`/`minimum`/`maximum`/`additionalProperties`
+keywords against the document (stdlib, no jsonschema dependency) and reports
+violations as `schema`-category findings — gateable in static mode like any
+other structure finding.
 
 ## The checker
 

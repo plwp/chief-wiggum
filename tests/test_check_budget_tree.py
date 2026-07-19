@@ -223,6 +223,252 @@ def test_leaf_node_does_not_require_residual():
     assert report.findings == []
 
 
+# --- missing alpha must not silently degrade union-bound to a naive sum ------
+
+
+def test_union_bound_missing_child_alpha_is_structure_finding():
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-ma-001",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    "alpha": 0.05,
+                    "children": [
+                        _leaf("BUD-ma-002", 300, 0.02),
+                        _leaf("BUD-ma-003", 300),  # NO alpha
+                    ],
+                    "residual": _residual("BUD-ma-004", 100, 0.01),
+                }
+            }
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(
+        f.category == "structure" and "missing alpha" in f.message and "BUD-ma-003" in f.message
+        for f in report.findings
+    )
+
+
+def test_union_bound_missing_parent_alpha_is_structure_finding():
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-ma-005",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    # NO alpha on a non-leaf union-bound node
+                    "children": [_leaf("BUD-ma-006", 300, 0.02)],
+                    "residual": _residual("BUD-ma-007", 100, 0.01),
+                }
+            }
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(
+        f.category == "structure" and "no alpha" in f.message and "BUD-ma-005" in f.message
+        for f in report.findings
+    )
+
+
+def test_naive_mode_does_not_require_alphas():
+    # Alphas are unused by naive arithmetic; their absence is not a finding there
+    # (the mode itself already carries the unsound-and-never-gateable warning).
+    doc = {
+        "trees": [
+            {
+                "arithmetic": "naive",
+                "root": {
+                    "id": "BUD-ma-008",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    "children": [_leaf("BUD-ma-009", 300)],
+                    "residual": _residual("BUD-ma-010", 100),
+                },
+            }
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert report.ok
+    assert not any("alpha" in f.message for f in report.findings)
+
+
+# --- kind/unit compatibility --------------------------------------------------
+
+
+def test_mixed_unit_child_is_structure_finding():
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-mix-001",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    "alpha": 0.05,
+                    "children": [
+                        _leaf("BUD-mix-002", 300, 0.02),
+                        {"id": "BUD-mix-003", "kind": "latency", "unit": "s", "bound": 0.3, "alpha": 0.02},
+                    ],
+                    "residual": _residual("BUD-mix-004", 100, 0.01),
+                }
+            }
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(
+        f.category == "structure" and "incompatible" in f.message and "BUD-mix-003" in f.message
+        for f in report.findings
+    )
+
+
+def test_mixed_kind_child_is_structure_finding_and_arithmetic_is_skipped():
+    # A ms parent must not sum usd children — and the meaningless mixed sum must
+    # not produce a bogus arithmetic finding on top of the structure finding.
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-mix-005",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 100,
+                    "alpha": 0.05,
+                    "children": [
+                        {"id": "BUD-mix-006", "kind": "spend", "unit": "usd", "bound": 5000, "alpha": 0.02},
+                    ],
+                    "residual": _residual("BUD-mix-007", 10, 0.01),
+                }
+            }
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(f.category == "structure" and "incompatible" in f.message for f in report.findings)
+    assert not any(f.category == "arithmetic" for f in report.findings)
+
+
+def test_matching_kind_and_unit_produces_no_compatibility_finding():
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-mix-008",
+                    "kind": "spend",
+                    "unit": "usd/day",
+                    "bound": 100,
+                    "alpha": 0.05,
+                    "children": [{"id": "BUD-mix-009", "kind": "spend", "unit": "usd/day", "bound": 60, "alpha": 0.02}],
+                    "residual": {"id": "BUD-mix-010", "kind": "spend", "unit": "usd/day", "bound": 30, "alpha": 0.02},
+                }
+            }
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert report.ok
+
+
+# --- schema enforcement --------------------------------------------------------
+
+
+def test_schema_unknown_field_is_finding():
+    doc = {"trees": [{"root": _leaf("BUD-sch-001", 100, 0.05, bogus_field=True)}]}
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(f.category == "schema" and "bogus_field" in f.message for f in report.findings)
+
+
+def test_schema_invalid_arithmetic_enum_is_finding():
+    doc = {"trees": [{"arithmetic": "vibes", "root": _leaf("BUD-sch-002", 100, 0.05)}]}
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(f.category == "schema" and "arithmetic" in f.id for f in report.findings)
+
+
+def test_schema_bad_bud_id_pattern_is_finding():
+    doc = {"trees": [{"root": _leaf("BUDGET-001", 100, 0.05)}]}
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(f.category == "schema" and "pattern" in f.message for f in report.findings)
+
+
+def test_schema_alpha_out_of_range_is_finding():
+    doc = {"trees": [{"root": _leaf("BUD-sch-003", 100, 1.5)}]}
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(f.category == "schema" and "maximum" in f.message for f in report.findings)
+
+
+def test_schema_missing_required_asm_evidence_is_finding():
+    doc = {
+        "trees": [
+            {"root": _leaf("BUD-sch-004", 100, 0.05, asm_refs=[{"id": "ASM-sch-001", "ref": "somewhere"}])}
+        ]
+    }
+    report = cbt.check_static(doc)
+    assert not report.ok
+    assert any(
+        f.category == "schema" and "evidence" in f.message and "asm_refs" in f.id for f in report.findings
+    )
+
+
+def test_schema_missing_required_node_fields_is_finding():
+    doc = {"trees": [{"root": {"id": "BUD-sch-005"}}]}  # no kind/unit/bound
+    report = cbt.check_static(doc)
+    assert not report.ok
+    msgs = [f.message for f in report.findings if f.category == "schema"]
+    assert any("kind" in m for m in msgs)
+    assert any("unit" in m for m in msgs)
+    assert any("bound" in m for m in msgs)
+
+
+def test_schema_valid_doc_has_no_schema_findings():
+    doc = {
+        "trees": [
+            {
+                "arithmetic": "union-bound",
+                "root": {
+                    "id": "BUD-sch-006",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    "alpha": 0.05,
+                    "telemetry_ref": "e2e_latency",
+                    "children": [
+                        _leaf(
+                            "BUD-sch-007",
+                            300,
+                            0.02,
+                            asm_refs=[{"id": "ASM-sch-002", "evidence": "sla-doc", "ref": "https://x.example/sla"}],
+                        )
+                    ],
+                    "residual": _residual("BUD-sch-008", 100, 0.01),
+                },
+            }
+        ],
+        "chains": [{"id": "c1", "hops": [{"caller": "a", "callee": "b", "timeout_ms": 100}]}],
+    }
+    report = cbt.check_static(doc)
+    assert not any(f.category == "schema" for f in report.findings)
+    assert report.ok
+
+
+def test_schema_findings_are_gateable_in_static_mode(tmp_path):
+    doc = {"trees": [{"root": {"id": "BUD-sch-009", "kind": "latency", "unit": "ms", "bound": 100, "oops": 1}}]}
+    p = tmp_path / "budget.json"
+    p.write_text(json.dumps(doc))
+    assert cbt.main([str(p)]) == 0  # report-only by default
+    assert cbt.main([str(p), "--gate"]) == 1  # schema findings gate like structure findings
+
+
 # --- timeout monotonicity -----------------------------------------------------
 
 
@@ -315,7 +561,7 @@ def test_asm_ref_missing_ref_is_finding():
     assert not report.ok
 
 
-# --- measured mode: three-way status -------------------------------------------
+# --- measured mode: binding statuses ------------------------------------------
 
 
 def test_measured_held_when_observation_within_bound():
@@ -326,12 +572,13 @@ def test_measured_held_when_observation_within_bound():
     assert report.measured[0].status == "held"
 
 
-def test_measured_unbound_when_observation_breaches_bound():
+def test_measured_breached_when_observation_exceeds_bound():
     doc = {"trees": [{"root": _leaf("BUD-meas-002", 300, telemetry_ref="asr_latency")}]}
     measured = {"asr_latency": {"p95": 450, "count": 500}}
     report = cbt.check_measured(doc, measured, source="k6-summary.json")
     assert report.ok  # still never gates, evidence-only
-    assert report.measured[0].status == "unbound"
+    assert report.measured[0].status == "breached"
+    assert report.counts["measured_breached"] == 1
 
 
 def test_measured_no_observations_when_zero_count_is_a_finding_signal():
@@ -350,10 +597,48 @@ def test_measured_no_observations_when_metric_absent_from_export():
     assert report.measured[0].status == "no_observations"
 
 
-def test_measured_no_observations_when_node_has_no_telemetry_ref():
+def test_measured_unbound_when_node_has_no_telemetry_ref():
+    # No telemetry_ref = the node is not bound to any metric: "unbound" — a spec
+    # gap, DISTINCT from "no_observations" (a declared binding with no data — a
+    # measurement gap). Neither is ever a pass.
     doc = {"trees": [{"root": _leaf("BUD-meas-005", 300)}]}  # no telemetry_ref at all
     report = cbt.check_measured(doc, {"asr_latency": {"p95": 100, "count": 10}}, source="k6-summary.json")
-    assert report.measured[0].status == "no_observations"
+    assert report.measured[0].status == "unbound"
+    assert report.counts["measured_unbound"] == 1
+
+
+def test_measured_all_four_statuses_are_distinct():
+    doc = {
+        "trees": [
+            {
+                "root": {
+                    "id": "BUD-meas-010",
+                    "kind": "latency",
+                    "unit": "ms",
+                    "bound": 800,
+                    "children": [
+                        _leaf("BUD-meas-011", 300, telemetry_ref="m_held"),
+                        _leaf("BUD-meas-012", 300, telemetry_ref="m_breached"),
+                        _leaf("BUD-meas-013", 300, telemetry_ref="m_nodata"),
+                    ],
+                    "residual": _residual("BUD-meas-014", 100),  # no telemetry_ref
+                }
+            }
+        ]
+    }
+    measured = {
+        "m_held": {"p95": 250, "count": 100},
+        "m_breached": {"p95": 999, "count": 100},
+        "m_nodata": {"p95": None, "count": 0},
+    }
+    report = cbt.check_measured(doc, measured, source="k6-summary.json")
+    statuses = {m.id: m.status for m in report.measured}
+    assert statuses["BUD-meas-011"] == "held"
+    assert statuses["BUD-meas-012"] == "breached"
+    assert statuses["BUD-meas-013"] == "no_observations"
+    assert statuses["BUD-meas-014"] == "unbound"  # residual: no binding declared
+    assert statuses["BUD-meas-010"] == "unbound"  # root: no binding declared
+    assert report.ok  # measured mode is evidence-only, always ok
 
 
 def test_measured_recurses_into_children_and_residual():
@@ -374,9 +659,9 @@ def test_measured_recurses_into_children_and_residual():
     measured = {"child_metric": {"p95": 250, "count": 10}}
     report = cbt.check_measured(doc, measured, source="k6-summary.json")
     ids = {m.id: m.status for m in report.measured}
-    assert ids["BUD-meas-006"] == "no_observations"  # root has no telemetry_ref
+    assert ids["BUD-meas-006"] == "unbound"  # root has no telemetry_ref
     assert ids["BUD-meas-007"] == "held"
-    assert ids["BUD-meas-008"] == "no_observations"  # residual has no telemetry_ref
+    assert ids["BUD-meas-008"] == "unbound"  # residual has no telemetry_ref
 
 
 # --- load_measured: k6 summary + flat export shapes ---------------------------
@@ -515,7 +800,17 @@ def test_cli_measured_never_exits_nonzero_even_with_gate(tmp_path, capsys):
     rc = cbt.main([str(budget_path), "--measured", str(measured_path), "--gate"])
     assert rc == 0  # measured mode is evidence-only, permanently
     out = capsys.readouterr().out
-    assert "unbound" in out
+    assert "breached" in out
+
+
+def test_cli_measured_with_schema_findings_still_exits_zero_even_with_gate(tmp_path):
+    # Even a schema-invalid document cannot make measured mode exit non-zero:
+    # findings are reported as evidence, --gate has no effect.
+    doc = {"trees": [{"root": _leaf("BUD-cli-008", 100, telemetry_ref="m1", bogus_field=True)}]}
+    budget_path = _write(tmp_path, "budget.json", doc)
+    measured_path = _write(tmp_path, "measured.json", {"m1": {"p95": 50, "count": 5}})
+    rc = cbt.main([str(budget_path), "--measured", str(measured_path), "--gate"])
+    assert rc == 0
 
 
 def test_cli_json_format_includes_authority_and_counts(tmp_path, capsys):
