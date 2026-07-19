@@ -114,6 +114,11 @@ The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) fee
 
 These artifacts are **hard constraints** on the implementation. The coding worker MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
+**Query the architecture live instead of re-deriving it** — when $EPIC_DIR exists, `scripts/code_query.py` (see `docs/code-query.md`) answers "what governs this file/field/contract" from the epic artifacts + code annotations, as small JSON with `file:line` handles instead of a full context-load of these docs. Steps 4/6/8 below use it in place of ad hoc grepping:
+```bash
+python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" orient path/to/file.go
+```
+
 **Unresolved-unknowns gate**: scan the epic artifacts for markers this ticket would inherit:
 ```bash
 python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json
@@ -278,6 +283,11 @@ The worker should:
    python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" --line <L> --col <C> hover path/to/file.go
    python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics path/to/file.py
    ```
+
+   **Architecture knowledge (if $EPIC_DIR exists)**: before editing a file this ticket touches, ask what already governs it instead of re-reading the whole epic — `orient` surfaces the contracts/invariants/state-transitions bound to it (by annotation OR by artifact — an un-annotated handler still gets a real answer), so you don't silently miss a REQUIRES/invariant that isn't yet annotated:
+   ```bash
+   python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" orient path/to/file.go
+   ```
 2. Enforce epic contracts as runtime guards:
    - Every REQUIRES block → input validation / guard clause at function entry
    - Every ENSURES block → verify postcondition before returning (or via integration test)
@@ -379,6 +389,11 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
      --changed-since "$DEFAULT_BRANCH" --format text
    ```
    Surface any findings to the fixer as early feedback (a new unsanctioned writer, a missing `@cw-trace guards`/`verifies` on the code this ticket just wrote); don't hard-block on them here. Skip this item if the ticket has no epic context.
+
+   **Inspecting a finding**: `code_query.py` turns a bare ID from either report into its full governing context in one call, instead of re-opening `invariants.md`/`contracts.md` — `trace <BR-or-CTR-ID>` for the full BR→contract→code→test slice, `writers <INV-ID>` for every writer of that invariant's controlled field (sanctioned/unsanctioned), `guards`/`verifies <CTR-ID>` for just the code or test side:
+   ```bash
+   python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" trace CTR-order-001
+   ```
 5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
