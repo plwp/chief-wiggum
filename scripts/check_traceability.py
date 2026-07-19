@@ -180,12 +180,15 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
         # *declared above it* in the same file, so it is tied to a real source.
         # Any kind that can be a link SOURCE qualifies (BUD-/EDG-/... declare
         # derive links the same way CTR-/INV- declare realizes — #166). BR is
-        # only ever a link target, so a BR declaration never captures
-        # attribution (a stray realizes under a BR stays source-less).
+        # only ever a link target, so a BR declaration RESETS attribution: an
+        # annotation under a BR heading must not inherit an earlier contract
+        # (that would let a stray realizes clear the BR's own orphan status).
         nearest_contract: str | None = None
         for i, line in enumerate(lines, start=1):
             for dm in DEFINE_RE.finditer(line):
-                if kind_of(dm.group(1)) != "BR":
+                if kind_of(dm.group(1)) == "BR":
+                    nearest_contract = None
+                else:
                     nearest_contract = canonical_id(dm.group(1))
             for verb, ids in parse_annotations(line):
                 src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"

@@ -142,6 +142,38 @@ def test_fixture_epic_with_system_ids_round_trips(tmp_path):
     assert set(report.defined) == {"BUD-voice-001", "BUD-voice-002", "ASM-tts-001"}
 
 
+def test_br_declaration_resets_attribution(tmp_path):
+    # Codex review of PR #172: a realizes under a BR heading must not inherit
+    # an earlier contract's attribution and clear the BR's own orphan status.
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text(
+        "### CTR-x-001\n\nContract.\n\n### BR-y-001\n\nRule.\n"
+        "<!-- @cw-trace realizes BR-y-001 -->\n"
+    )
+    report = ct.check(epic)
+    assert "BR-y-001" in report.orphan_business_rules
+    assert any(
+        "no declaring contract" in d.get("reason", "") for d in report.invalid_links
+    )
+
+
+def test_realizes_from_system_kind_does_not_clear_orphan(tmp_path):
+    # Codex review of PR #172: a BUD- realizing a BR must not satisfy the
+    # BR -> contract/invariant gate; system kinds relate via derive instead.
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "rules.md").write_text("**BR-y-001**: the rule\n")
+    (epic / "budgets.md").write_text(
+        "### BUD-voice-001\n\nBudget.\n\n@cw-trace realizes BR-y-001\n"
+    )
+    report = ct.check(epic)
+    assert "BR-y-001" in report.orphan_business_rules
+    assert any(
+        d["reason"] == "realizes cannot originate from BUD" for d in report.invalid_links
+    )
+
+
 def test_verifies_from_probe_is_valid_but_from_code_still_invalid(tmp_path):
     epic = tmp_path / "epic"
     epic.mkdir()

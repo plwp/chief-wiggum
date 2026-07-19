@@ -71,6 +71,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Same stable-ID grammar as check_traceability.py and the TIM schema — shared
+# via chief_wiggum.trace_ids so a kind added in one place cannot be silently
+# dropped by another (#166; uppercase-id vacuity was the same class of bug,
+# chief-wiggum#86). Ratchet's DEFINE_RE is the markdown-only form: JSON "id"
+# nodes are hashed structurally by _walk_json_ids.
+from chief_wiggum.trace_ids import ID_RE  # noqa: E402
+from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE
+
 CONFIG_NAME = "ratchet.json"
 JOURNAL_NAME = "ratchet-journal.jsonl"
 HIGHWATER_NAME = "ratchet-highwater.json"
@@ -91,13 +99,6 @@ DEFAULT_QUALITY_TOLERANCE = {
     "relative_churn_rel": 0.25,  # relative churn is advisory — a wide band
     "relative_churn_abs": 0.05,
 }
-
-# Same stable-ID grammar as check_traceability.py and the TIM schema — shared
-# via chief_wiggum.trace_ids so a kind added in one place cannot be silently
-# dropped by another (#166; uppercase-id vacuity was the same class of bug,
-# chief-wiggum#86). Ratchet's DEFINE_RE is the markdown-only form: JSON "id"
-# nodes are hashed structurally by _walk_json_ids below.
-from chief_wiggum.trace_ids import ID_RE, MD_DEFINE_RE as DEFINE_RE  # noqa: E402
 
 DEFAULT_PROTECTED = [
     "docs/epics/*/contracts.md",
