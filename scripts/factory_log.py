@@ -13,16 +13,21 @@ exists.
 Event schema (one JSON object per line):
     {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
      provider?, tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
-     missed_by?, found_in?, invariant?, fixed?, seed_class?, details?}
+     missed_by?, found_in?, invariant?, fixed?, seed_class?, details?,
+     verb?, path?, hit_count?}
 
-  event: "gate" | "consult" | "worker" | "skill" | "escape" | "demotion"
+  event: "gate" | "consult" | "worker" | "skill" | "escape" | "demotion" | "query"
   A gate records name/result/duration_ms/caught; a consult records
   provider/tokens/cost; an **escape** records a manually-found bug — especially
   one that slipped PAST a gate and was caught later (`missed_by` the gate/stage
   that should have caught it, `found_in` the review/verification step that
   actually caught it) — so `aggregate()` can compute gate RECALL
-  (caught / (caught + escaped)), not just catches. Each call site fills what it
-  KNOWS and omits the rest.
+  (caught / (caught + escaped)), not just catches. A **query** records one
+  `code_query.py` call — `verb` (orient/governs/writers/...), `hit_count` (facts
+  found before the response cap), `path` (the queried path/field/ID, when it's
+  short/stable enough to be useful) — so `aggregate()` can show which structural
+  questions agents actually ask (#159), not just that the tool exists. Each call
+  site fills what it KNOWS and omits the rest.
 
   A **demotion** (docs/gate-validation.md) fires when an escape's `--seed-class`
   matches a seed class the `missed_by` gate's validation record certified it
@@ -56,6 +61,7 @@ WORKER = "worker"
 SKILL = "skill"
 ESCAPE = "escape"  # a manually-found bug, especially one a gate missed
 DEMOTION = "demotion"  # a gate reverted to report-only after a validated seed class escaped
+QUERY = "query"  # one code_query.py verb call (#159)
 CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's own OTEL telemetry
 
 ESCAPE_SEVERITIES = ("low", "medium", "high", "critical")
@@ -192,6 +198,16 @@ def demotion_check(missed_by: str, seed_class: str | None,
             "re-promoting the gate to blocking."
         ),
     }
+
+
+def emit_query(verb: str, *, repo: str | None = None, path: str | None = None,
+               hit_count: int | None = None) -> bool:
+    """Record one ``code_query.py`` verb call — usage telemetry, not a gate.
+
+    The point isn't pass/fail; it's learning which structural questions agents
+    actually ask (#159) — `aggregate()` tallies calls per verb from these events.
+    """
+    return emit(QUERY, verb=verb, repo=repo, path=path, hit_count=hit_count)
 
 
 def load_pricing(path: Path = PRICING_PATH) -> dict:
@@ -347,6 +363,7 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
     gates: dict[str, dict] = {}
     consults: dict[str, dict] = {}
     escapes: dict[str, dict] = {}
+    queries: dict[str, dict] = {}
     # Claude Code's own token cost, split orchestrator (repl_main_thread) vs subagent,
     # and (when the OTEL events carry skill.name/agent.name) by loop/validation.
     claude_code: dict[str, dict] = {}
@@ -391,6 +408,15 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
                 es["fixed"] += 1
             sev = r.get("severity") or "unknown"
             es["by_severity"][sev] = es["by_severity"].get(sev, 0) + 1
+        elif r.get("event") == QUERY:
+            key = r.get("verb") or "unknown"
+            q = queries.setdefault(key, {"calls": 0, "hits": 0, "misses": 0})
+            q["calls"] += 1
+            hc = r.get("hit_count")
+            if hc:
+                q["hits"] += 1
+            else:
+                q["misses"] += 1
     # value/noise hint: a gate with runs but zero caught is a noise candidate
     for g in gates.values():
         g["value"] = "earning" if g["caught"] > 0 else ("noise-candidate" if g["runs"] >= 3 else "unproven")
@@ -409,6 +435,7 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
     return {"gates": gates, "consults": consults, "claude_code": claude_code,
             "cost_by_loop": by_loop, "verdict": cost_value_verdict(gates, by_loop),
             "escapes": escapes, "escapes_total": sum(es["escaped"] for es in escapes.values()),
+            "queries": queries, "queries_total": sum(q["calls"] for q in queries.values()),
             "records": len(records),
             "consult_cost_usd": round(consult_cost, 4),
             "claude_code_cost_usd": round(cc_cost, 4),
@@ -492,6 +519,14 @@ def render_report(agg: dict, repo: str | None = None) -> str:
         for name, e in sorted(escapes.items(), key=lambda kv: -kv[1]["escaped"]):
             recall = f"{e['recall']:.0%}" if e["recall"] is not None else "—"
             L.append(f"    {name:<22}{e['caught']:>7}{e['escaped']:>9}{e['fixed']:>7}   {recall}")
+
+    queries = agg.get("queries") or {}
+    if queries:
+        L.append(f"\n  code_query.py verbs asked ({agg.get('queries_total', 0)} total calls):")
+        L.append(f"    {'VERB':<16}{'CALLS':>7}{'HITS':>7}{'MISSES':>8}")
+        L.append("    " + "─" * 40)
+        for name, q in sorted(queries.items(), key=lambda kv: -kv[1]["calls"]):
+            L.append(f"    {name:<16}{q['calls']:>7}{q['hits']:>7}{q['misses']:>8}")
     return "\n".join(L)
 
 

@@ -370,18 +370,49 @@ for inv in sm.get('invariants', []):
     fi
   done
 
-  # Check that shared helpers are used (INV-009)
+  # Single-write-path / sanctioned-caller invariants: whatever THIS epic
+  # actually declared (controls_field + sanctioned_writers), not a
+  # hardcoded pattern from one target repo. code_query.py wraps
+  # check_single_writer.py's writer inventory as a per-invariant query, so a
+  # future epic's INV-<whatever> is covered without editing this skill.
+  for inv_id in $(python3 -c "
+import json
+sm = json.load(open('$MODELS_DIR/state-machines.json'))
+for inv in sm.get('invariants', []):
+    if inv.get('controls_field') and inv.get('sanctioned_writers'):
+        print(inv['id'])
+"); do
+    result=$(python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" --format json writers "$inv_id")
+    violations=$(echo "$result" | jq '[.facts[] | select(.sanctioned == false)] | length')
+    if [ "$violations" -gt 0 ]; then
+      echo "  $inv_id: WARN — $violations unsanctioned writer(s)"
+      echo "$result" | jq -r '.facts[] | select(.sanctioned == false) | "    " + .handle + " (" + (.symbol // "?") + ")"'
+    else
+      echo "  $inv_id: PASS — no unsanctioned writer found"
+    fi
+  done
+
+  # Duplicated inline-auth detection (INV-009-style "use the shared auth
+  # helper" invariants). NOTE this is a DIFFERENT check from the writer
+  # inventory above: inline auth checks are READS (a route re-deriving the
+  # session/ownership answer itself), so check_single_writer/code_query's
+  # writer scan cannot see them. Until an epic models its shared-helper rule
+  # as a queryable invariant, keep the explicit grep — patterns come from the
+  # epic's invariants.md ("shared helper" / "inline auth" rules), with the
+  # original Next.js pair shown as the example default. Superseded only when
+  # the epic's own invariant models this (e.g. a future read-path analog of
+  # controls_field).
   inline_count=$(grep -r "getServerSession\|board\.userId ===" "$TARGET_REPO/app/api/" --include="*.ts" -l 2>/dev/null | wc -l | tr -d ' ')
   if [ "$inline_count" -gt 0 ]; then
-    echo "  INV-009: WARN — $inline_count route files still have inline auth checks"
+    echo "  inline-auth: WARN — $inline_count route files still have inline auth checks"
     grep -r "getServerSession\|board\.userId ===" "$TARGET_REPO/app/api/" --include="*.ts" -l 2>/dev/null
   else
-    echo "  INV-009: PASS — no inline auth checks found"
+    echo "  inline-auth: PASS — no inline auth checks found"
   fi
 fi
 ```
 
-This is a signal, not a gate in the current implementation. Log the conformance results in the wave report. If coverage is below 80% on any category, flag it for the `/close-epic` retrospective.
+This is a signal, not a gate in the current implementation. Log the conformance results in the wave report. If coverage is below 80% on any category, flag it for the `/close-epic` retrospective. (`/close-epic`'s own `check_single_writer.py --gate coverage` is the authoritative, whole-repo blocker — this is a fast per-wave early warning, same relationship as the ticket-scoped `--changed-since` check in `/implement` Step 8.)
 
 #### 4g: Promote staging to main
 

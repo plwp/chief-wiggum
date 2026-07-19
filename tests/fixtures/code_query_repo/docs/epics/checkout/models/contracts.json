@@ -1,0 +1,51 @@
+{
+  "entities": [
+    {
+      "name": "Order",
+      "description": "A customer order moving through checkout.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum",
+          "required": "always",
+          "source_of_truth": "orders collection",
+          "immutable": false,
+          "notes": "single write path — see INV-checkout-001"
+        },
+        {
+          "name": "customer_id",
+          "type": "ObjectID",
+          "required": "always",
+          "immutable": true
+        }
+      ],
+      "operations": [
+        {
+          "name": "Confirm Order",
+          "method": "POST",
+          "path": "/api/v1/orders/:id/confirm",
+          "description": "Confirms a pending order.",
+          "preconditions": [
+            {
+              "id": "CTR-order-confirm-001-pre1",
+              "description": "order status is pending",
+              "expression": "order.status == 'pending'"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "CTR-order-confirm-001-post1",
+              "description": "order status becomes confirmed",
+              "expression": "order.status == 'confirmed'"
+            }
+          ],
+          "error_cases": [
+            { "status": 409, "condition": "order is already confirmed" }
+          ],
+          "state_transition": "pending -> confirmed",
+          "invariants_touched": ["INV-checkout-001"]
+        }
+      ]
+    }
+  ]
+}

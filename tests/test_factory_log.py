@@ -565,3 +565,44 @@ def test_cli_bug_demotion_instruction_printed_even_when_telemetry_disabled(tmp_p
     assert "DEMOTION" in proc.stderr
     assert proc.returncode == 1  # escape itself still couldn't be logged (telemetry off)
     assert "telemetry disabled" in proc.stderr
+
+
+# ---- query telemetry (code_query.py, #159) -------------------------------------
+
+
+def test_emit_query_writes_verb_path_and_hit_count(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    assert factory_log.emit_query("orient", repo="acme/app", path="src/order.py", hit_count=3)
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "query"
+    assert rec["verb"] == "orient"
+    assert rec["path"] == "src/order.py"
+    assert rec["hit_count"] == 3
+
+
+def test_emit_query_is_noop_when_disabled(monkeypatch):
+    monkeypatch.delenv("CW_TELEMETRY", raising=False)
+    monkeypatch.delenv("CW_FACTORY_LOG", raising=False)
+    assert factory_log.emit_query("writers", repo="acme/app") is False
+
+
+def test_aggregate_counts_queries_per_verb():
+    records = [
+        {"event": "query", "verb": "orient", "hit_count": 4},
+        {"event": "query", "verb": "orient", "hit_count": 0},
+        {"event": "query", "verb": "writers", "hit_count": 2},
+    ]
+    agg = factory_log.aggregate(records)
+    assert agg["queries"]["orient"] == {"calls": 2, "hits": 1, "misses": 1}
+    assert agg["queries"]["writers"] == {"calls": 1, "hits": 1, "misses": 0}
+    assert agg["queries_total"] == 3
+
+
+def test_render_report_shows_query_verbs():
+    agg = factory_log.aggregate([
+        {"event": "query", "verb": "orient", "hit_count": 4, "repo": "r"},
+    ], repo="r")
+    report = factory_log.render_report(agg, repo="r")
+    assert "code_query.py verbs" in report
+    assert "orient" in report

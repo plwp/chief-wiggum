@@ -1,0 +1,21 @@
+{
+  "pages": {
+    "/orders/:id": {
+      "route": "/orders/:id",
+      "title": "Order Detail",
+      "layout": "centered",
+      "auth": "required",
+      "components": {
+        "status-badge": { "type": "badge", "label": "Order status" }
+      },
+      "root": ["status-badge"],
+      "design_refs": ["order-detail-reference"]
+    }
+  },
+  "navigation": {
+    "initial": "/orders/:id",
+    "states": {
+      "/orders/:id": { "route": "/orders/:id", "on": {} }
+    }
+  }
+}
