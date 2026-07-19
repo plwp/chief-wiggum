@@ -1,7 +1,7 @@
 {
   "gate": "check_traceability",
   "protocol_version": "1",
-  "scanner_version": "912382da54e41ddd0dc1b8afc8e3cd2fe20b405cd1b8fa1ccf3b5171e9e490d0",
+  "scanner_version": "69185ee33cac16899fa7390c90597184fb612fa98e3b7e63f62fe14dab499794",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "check_traceability is a single-pass static text scan of epic docs + a checked-in source tree at a fixed SHA — there is no concurrent/racing dimension in the artifact to evade.",
@@ -74,6 +74,6 @@
   ],
   "status": "passed",
   "validated_at": "2026-07-19T00:00:00Z",
-  "validated_by": "chief-wiggum#168",
-  "ratchet_record_id": "rec-00002"
+  "validated_by": "chief-wiggum#168 (re-validated post #181/#182 scanner changes)",
+  "ratchet_record_id": "rec-00004"
 }

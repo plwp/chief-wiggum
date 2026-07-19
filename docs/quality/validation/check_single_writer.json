@@ -1,7 +1,7 @@
 {
   "gate": "check_single_writer",
   "protocol_version": "1",
-  "scanner_version": "a5a3b4572e20fc69dc7ae3f243ea203d3eca8f07420496cb7f7ada763e8b8633",
+  "scanner_version": "4f7d12a9f3930dc1723507274d2177075fd5064b8824620d4a632d58a17d93dc",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "check_single_writer is a single-pass static scan of checked-in source at a fixed SHA — there is no concurrent/racing writer dimension in the artifact itself to evade (the invariant it checks, an atomic single write PATH in code, is a design-time property, not a runtime race).",
@@ -75,6 +75,6 @@
   ],
   "status": "passed",
   "validated_at": "2026-07-19T00:00:00Z",
-  "validated_by": "chief-wiggum#168",
-  "ratchet_record_id": "rec-00001"
+  "validated_by": "chief-wiggum#168 (re-validated post #181/#182 scanner changes)",
+  "ratchet_record_id": "rec-00003"
 }
