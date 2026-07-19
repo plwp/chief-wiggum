@@ -1,0 +1,117 @@
+{
+  "counts": {
+    "invariants": 3,
+    "writers": 5,
+    "violations": 1,
+    "malformed": 0
+  },
+  "soundness_ok": true,
+  "coverage_ok": false,
+  "invariants": [
+    {
+      "id": "INV-bil-001",
+      "description": "single atomic Stripe\u2192plan write / single write path",
+      "controls_field": [
+        "provider.plan",
+        "provider.stripe_plan"
+      ],
+      "sanctioned_writers": [
+        "ReconcileStripe",
+        "internal/billing/reconcile.go"
+      ],
+      "source": "invariants.md:4",
+      "persistence_only": true
+    },
+    {
+      "id": "INV-leg-002",
+      "description": "single write path for the legacy quota override",
+      "controls_field": [
+        "provider.quota_minutes"
+      ],
+      "sanctioned_writers": [
+        "internal/legacy/store.go"
+      ],
+      "source": "invariants.md:7",
+      "persistence_only": true
+    },
+    {
+      "id": "INV-seat-003",
+      "description": "single write path for the owner counter",
+      "controls_field": [
+        "provider.active_owner_count"
+      ],
+      "sanctioned_writers": [
+        "RemoveStaff",
+        "internal/db/owner_count.go"
+      ],
+      "source": "models/state-machines.json",
+      "persistence_only": false
+    }
+  ],
+  "writers": [
+    {
+      "invariant_id": "INV-bil-001",
+      "field": "provider.plan",
+      "file": "internal/admin/handlers.go",
+      "line": 6,
+      "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"plan\": newPlan}})",
+      "symbol": "ChangePlan",
+      "sanctioned": false,
+      "is_test": false
+    },
+    {
+      "invariant_id": "INV-seat-003",
+      "field": "provider.active_owner_count",
+      "file": "internal/admin/handlers.go",
+      "line": 12,
+      "text": "p.ActiveOwnerCount = p.ActiveOwnerCount - 1",
+      "symbol": "RemoveStaff",
+      "sanctioned": true,
+      "is_test": false
+    },
+    {
+      "invariant_id": "INV-bil-001",
+      "field": "provider.stripe_plan",
+      "file": "internal/billing/reconcile.go",
+      "line": 5,
+      "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"stripe_plan\": plan}})",
+      "symbol": "ReconcileStripe",
+      "sanctioned": true,
+      "is_test": false
+    },
+    {
+      "invariant_id": "INV-bil-001",
+      "field": "provider.stripe_plan",
+      "file": "internal/billing/reconcile_test.go",
+      "line": 10,
+      "text": "fake.UpdateOne(ctx, bson.M{\"_id\": \"1\"}, bson.M{\"$set\": bson.M{\"stripe_plan\": \"pro\"}})",
+      "symbol": "TestReconcileSetsPlan",
+      "sanctioned": true,
+      "is_test": true
+    },
+    {
+      "invariant_id": "INV-leg-002",
+      "field": "provider.quota_minutes",
+      "file": "internal/legacy/store.go",
+      "line": 6,
+      "text": "_, err := db.Exec(\"UPDATE providers SET quota_minutes = $1 WHERE id = $2\", minutes, id)",
+      "symbol": "UpdateQuotaOverride",
+      "sanctioned": true,
+      "is_test": false
+    }
+  ],
+  "violations": [
+    {
+      "invariant_id": "INV-bil-001",
+      "field": "provider.plan",
+      "file": "internal/admin/handlers.go",
+      "line": 6,
+      "text": "c.UpdateOne(ctx, bson.M{\"_id\": id}, bson.M{\"$set\": bson.M{\"plan\": newPlan}})",
+      "symbol": "ChangePlan",
+      "sanctioned": false,
+      "is_test": false
+    }
+  ],
+  "malformed": [],
+  "warnings": []
+}

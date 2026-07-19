@@ -209,3 +209,99 @@ def test_cli_text_output(tmp_path, capsys):
     rc = ct.main([str(epic)])
     assert rc == 0
     assert "# Traceability Audit" in capsys.readouterr().out
+
+
+# --- emission/claim seam (#160) ----------------------------------------------
+
+
+def test_emit_source_annotations_is_pure_function_of_text():
+    anns = ct.emit_source_annotations("order.py", "# @cw-trace guards CTR-order-001\n", ".py")
+    assert len(anns) == 1
+    a = anns[0]
+    assert a.verb == "guards" and a.target == "CTR-order-001"
+    assert a.file == "order.py" and a.line == 1 and a.source_kind == "code"
+
+
+def test_emit_source_annotations_classifies_test_kind():
+    anns = ct.emit_source_annotations("test_order.py", "# @cw-trace verifies CTR-order-001\n", ".py")
+    assert anns[0].source_kind == "test"
+
+
+def test_emit_epic_annotations_attributes_to_nearest_contract():
+    text = "### CTR-x-001 — valid range\n<!-- @cw-trace realizes BR-x-001 -->\n"
+    anns = ct.emit_epic_annotations("contracts.md", text)
+    assert anns[0].verb == "realizes" and anns[0].source_id == "CTR-x-001"
+
+
+def test_scan_source_uses_emit_source_annotations_per_file(tmp_path):
+    (tmp_path / "a.py").write_text("# @cw-trace guards CTR-a-001\n")
+    (tmp_path / "test_a.py").write_text("# @cw-trace verifies CTR-a-001\n")
+    anns = ct.scan_source(tmp_path)
+    assert {(a.file, a.source_kind) for a in anns} == {("a.py", "code"), ("test_a.py", "test")}
+
+
+def test_scan_source_only_files_restricts_the_walk(tmp_path):
+    (tmp_path / "a.py").write_text("# @cw-trace guards CTR-a-001\n")
+    (tmp_path / "b.py").write_text("# @cw-trace guards CTR-b-001\n")
+    anns = ct.scan_source(tmp_path, only_files={"a.py"})
+    assert {a.target for a in anns} == {"CTR-a-001"}
+
+
+# --- --scanner-version / --changed-since (#160) ------------------------------
+
+
+def test_cli_scanner_version_prints_hex_digest(capsys):
+    rc = ct.main(["--scanner-version"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert len(out) == 64
+    int(out, 16)
+
+
+def test_cli_requires_epic_dir_unless_scanner_version(capsys):
+    rc = ct.main([])
+    assert rc == 2
+    assert "epic_dir is required" in capsys.readouterr().err
+
+
+def test_changed_since_scopes_source_scan(tmp_path, capsys):
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.py").write_text("# @cw-trace guards CTR-x-001\n")
+    (tmp_path / "b.py").write_text("pass\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("### CTR-x-001 — x\n### CTR-y-001 — y\n")
+    # A guard for CTR-y-001 lands in b.go AFTER base (dirty, uncommitted).
+    (tmp_path / "b.py").write_text("# @cw-trace guards CTR-y-001\n")
+
+    rc_full = ct.main([str(epic), "--source", str(tmp_path), "--format", "json"])
+    full = json.loads(capsys.readouterr().out)
+    rc_scoped = ct.main([str(epic), "--source", str(tmp_path), "--changed-since", base, "--format", "json"])
+    scoped = json.loads(capsys.readouterr().out)
+
+    assert rc_full == 0
+    assert full["uncovered_contracts"] == []
+    # Scoped scan only sees b.py (the changed file) — a.py's guard of CTR-x-001
+    # is invisible to it, so CTR-x-001 looks uncovered. This is exactly why
+    # --changed-since must never back /close-epic's authoritative coverage gate.
+    assert rc_scoped == 0  # no --gate passed; report-only
+    assert scoped["uncovered_contracts"] == ["CTR-x-001"]
+
+
+def test_changed_since_whole_repo_default_is_unaffected(tmp_path, capsys):
+    epic = _write_epic(tmp_path)
+    rc = ct.main([str(epic), "--gate", "coverage"])
+    assert rc == 1

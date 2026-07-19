@@ -1,0 +1,48 @@
+{
+  "defined": {
+    "CTR-order-001": "CTR",
+    "CTR-order-002": "CTR",
+    "BR-order-001": "BR",
+    "INV-order-003": "INV"
+  },
+  "counts": {
+    "defined": 4,
+    "orphan_business_rules": 0,
+    "uncovered_contracts": 1,
+    "untested_contracts": 2,
+    "dangling": 1,
+    "invalid_links": 1
+  },
+  "soundness_ok": false,
+  "coverage_ok": false,
+  "orphan_business_rules": [],
+  "uncovered_contracts": [
+    "CTR-order-002"
+  ],
+  "untested_contracts": [
+    "CTR-order-002",
+    "INV-order-003"
+  ],
+  "dangling": [
+    {
+      "verb": "guards",
+      "target": "CTR-ghost-999",
+      "file": "order.py",
+      "line": 6,
+      "source_kind": "code",
+      "source_id": null
+    }
+  ],
+  "invalid_links": [
+    {
+      "verb": "verifies",
+      "target": "CTR-order-002",
+      "file": "bad_verify.py",
+      "line": 3,
+      "source_kind": "code",
+      "source_id": null,
+      "reason": "verifies cannot originate from code"
+    }
+  ],
+  "warnings": []
+}

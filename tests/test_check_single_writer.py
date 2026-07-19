@@ -511,3 +511,156 @@ def test_sink_db_skips_query_filter_clause(tmp_path):
         "\tc.UpdateMany(ctx, bson.M{\"plan\": bson.M{\"$exists\": false}}, upd)\n}\n"
     )
     assert sw.scan_writers(tmp_path, [_inv_persist()]) == []
+
+
+# --- emission/claim split (#160) --------------------------------------------
+
+
+def test_emit_write_sites_is_field_agnostic():
+    """emit_write_sites needs no invariant at all — it just finds candidate
+    write-shaped tokens."""
+    sites = sw.emit_write_sites(
+        "admin.go", "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    assert any(s.token == "StripePlan" and s.kind == sw.KIND_ASSIGN for s in sites)
+    assert all(s.file == "admin.go" for s in sites)
+    assert any(s.symbol == "ChangePlan" for s in sites)
+
+
+def test_emit_write_sites_struct_literal_kind():
+    sites = sw.emit_write_sites("seed.go", "func mk() Provider {\n\treturn Provider{Plan: \"pro\"}\n}\n")
+    assert any(s.token == "Plan" and s.kind == sw.KIND_STRUCT for s in sites)
+
+
+def test_emit_write_sites_sql_kind():
+    sites = sw.emit_write_sites(
+        "store.go",
+        "func UpdateQuota(db *sql.DB) {\n\tdb.Exec(\"UPDATE t SET plan = $1, quota = $2\", a, b)\n}\n",
+    )
+    tokens = {s.token for s in sites if s.kind == sw.KIND_SQL}
+    assert tokens == {"plan", "quota"}
+
+
+def test_emit_write_sites_no_candidates_on_dead_line():
+    assert sw.emit_write_sites("f.go", "func f() {\n\tx := 1\n\t_ = x\n}\n") == []
+
+
+def test_match_writers_filters_by_field_token_and_sink():
+    sites = sw.emit_write_sites(
+        "billing.go",
+        "func ReconcileStripe(c *mongo.Collection) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"stripe_plan\": v}})\n}\n",
+    )
+    inv = _inv_persist()  # controls provider.plan + provider.quota_minutes, sink=db
+    other_inv = sw.SingleWriterInvariant(
+        id="INV-unrelated-001", description="", controls_field=["x.unrelated"],
+        sanctioned_writers=["Foo"], source="s",
+    )
+    assert sw.match_writers(sites, other_inv) == []  # token doesn't match this invariant
+
+    bil_inv = _inv()  # controls provider.plan, provider.stripe_plan; no sink
+    matched = sw.match_writers(sites, bil_inv)
+    assert len(matched) == 1
+    assert matched[0].field == "provider.stripe_plan"
+    assert matched[0].sanctioned is True
+
+
+def test_match_writers_same_sites_different_invariants_yield_independent_results():
+    """The same emitted sites can be claimed by multiple invariants — emission
+    ran once, matching is a pure per-invariant query over it."""
+    sites = sw.emit_write_sites(
+        "admin.go", "func ChangePlan(p *Provider) {\n\tp.Plan = \"x\"\n}\n"
+    )
+    inv_a = sw.SingleWriterInvariant("INV-a-001", "", ["p.plan"], ["ChangePlan"], "s")
+    inv_b = sw.SingleWriterInvariant("INV-b-001", "", ["p.plan"], ["SomeoneElse"], "s")
+    assert sw.match_writers(sites, inv_a)[0].sanctioned is True
+    assert sw.match_writers(sites, inv_b)[0].sanctioned is False
+
+
+def test_scan_writers_preserves_line_major_ordering_across_invariants(tmp_path):
+    """Regression guard for the refactor: when two invariants both hit in the
+    same file at interleaved lines, the overall order must stay line-ascending
+    (not grouped by invariant) — matching the original interleaved scan."""
+    inv_a = sw.SingleWriterInvariant("INV-a-001", "", ["p.alpha"], ["Foo"], "s")
+    inv_b = sw.SingleWriterInvariant("INV-b-001", "", ["p.beta"], ["Foo"], "s")
+    (tmp_path / "f.go").write_text(
+        "func f(p *P) {\n"
+        "\tp.Alpha = 1\n"      # line 2: INV-a-001
+        "\tp.Beta = 2\n"       # line 3: INV-b-001
+        "\tp.Alpha = 3\n"      # line 4: INV-a-001 again
+        "}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [inv_a, inv_b])
+    assert [(w.invariant_id, w.line) for w in writers] == [
+        ("INV-a-001", 2), ("INV-b-001", 3), ("INV-a-001", 4),
+    ]
+
+
+# --- --scanner-version / --changed-since (#160) ------------------------------
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    rc1 = sw.main(["--scanner-version"])
+    assert rc1 == 0
+
+
+def test_cli_scanner_version_prints_hex_digest(capsys):
+    rc = sw.main(["--scanner-version"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex
+
+
+def test_cli_requires_epic_dir_unless_scanner_version(capsys):
+    rc = sw.main([])
+    assert rc == 2
+    assert "epic_dir is required" in capsys.readouterr().err
+
+
+def test_changed_since_scopes_scan_to_changed_files(tmp_path, capsys):
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.go").write_text("func A(p *Provider) {\n\tp.Unrelated = \"x\"\n}\n")
+    (tmp_path / "b.go").write_text("func B() {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    epic = _write_billing_epic(tmp_path)
+    # New unsanctioned writer, added AFTER base, unrelated file to a.go.
+    (tmp_path / "b.go").write_text("func ChangePlan(p *Provider) {\n\tp.StripePlan = \"y\"\n}\n")
+
+    rc_full = sw.main([str(epic), "--source", str(tmp_path), "--gate", "coverage", "--format", "json"])
+    full = json.loads(capsys.readouterr().out)
+    rc_scoped = sw.main([
+        str(epic), "--source", str(tmp_path), "--changed-since", base,
+        "--gate", "coverage", "--format", "json",
+    ])
+    scoped = json.loads(capsys.readouterr().out)
+
+    assert rc_full == 1 and rc_scoped == 1
+    assert full["counts"]["violations"] == 1
+    assert scoped["counts"]["violations"] == 1
+    assert scoped["violations"][0]["file"] == "b.go"
+
+
+def test_changed_since_whole_repo_default_is_unaffected(tmp_path, capsys):
+    """No --changed-since given -> unchanged whole-repo behavior (regression
+    guard: the new parameter must be fully opt-in)."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    rc = sw.main([str(epic), "--source", str(src), "--gate", "coverage"])
+    assert rc == 0

@@ -70,6 +70,14 @@ Gates (mirrors ``check_traceability.py``):
     --gate soundness  -> /architect: fail on malformed metadata; surface writers.
     --gate coverage   -> /close-epic: hard-fail on any unsanctioned writer.
 
+Internally, scanning is split into per-file EMISSION (``emit_write_sites``: every
+field-agnostic candidate write site) and query-time CLAIM (``match_writers``: is
+this site's token one of THIS invariant's controlled fields?) — see
+``docs/single-writer.md``. ``--changed-since <ref>`` scopes ``--source`` to files
+changed since ``ref`` (never used by /close-epic's coverage gate, which must see
+the whole repo). ``--scanner-version`` prints a hash of this module's source plus
+its ``chief_wiggum`` deps.
+
 Exit codes: 0 = ok, 1 = gate violation, 2 = usage error.
 """
 
@@ -80,6 +88,7 @@ import fnmatch
 import json
 import re
 import sys
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -90,6 +99,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # for backward compatibility with any existing `check_single_writer.WRITES_TAG_RE`
 # references.
 from chief_wiggum.annotations import ATTR_RE, WRITES_TAG_RE  # noqa: E402, F401
+
+# Shared with check_traceability.py: the hash-derived --scanner-version and the
+# git-native manifest helper behind --changed-since (#160).
+from chief_wiggum.hashing import scanner_version  # noqa: E402
+from chief_wiggum.manifest import changed_paths  # noqa: E402
 
 # Same INV- shape as check_traceability.py (case-insensitive slug segment).
 INV_ID_RE = re.compile(r"\bINV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])", re.IGNORECASE)
@@ -357,36 +371,30 @@ def collect_invariants(epic_dir: str | Path) -> tuple[list[SingleWriterInvariant
 # --- scanning the repo for writers ------------------------------------------
 
 
-def _writer_patterns(token: str) -> list[re.Pattern]:
-    """Build write-detection regexes for a controlled field's leaf ``token``.
+# Generic (field-agnostic) write-site detectors. Each captures a candidate
+# identifier token; whether that token belongs to any particular invariant's
+# controlled field is a QUERY-TIME decision (match_writers), not baked into the
+# regex. Kind indices (0-3) mirror the four write shapes documented in the
+# module docstring and drive `persistence_only` filtering in match_writers.
+KIND_ASSIGN, KIND_STRUCT, KIND_QUOTED, KIND_SQL = range(4)
 
-    ``token`` is already lowercased+de-underscored (e.g. ``stripeplan``). We match
-    the identifier case-insensitively and tolerant of a single underscore between
-    word chars, so ``StripePlan``, ``stripe_plan``, and ``StripePlan`` all hit.
-    """
-    # Rebuild a flexible identifier: optional underscores between characters.
-    ident = re.escape(token)
-    # Also accept the snake form: insert optional underscores is overkill; instead
-    # match either the compacted token or the original snake token. We pass both in.
-    pats: list[re.Pattern] = []
-    # 1. Assignment: `something.Plan =` / `.stripe_plan =` (not ==, not :=... actually
-    #    := is a Go declaration+assignment which IS a write, so allow it).
-    pats.append(re.compile(rf"\.{ident}\s*:?=[^=]", re.IGNORECASE))
-    # 2. Struct-literal / map set: `Plan: value` or `"plan": value` or `Key: "plan"`.
-    #    `:(?!=)` so Go's short-var-decl `plan := expr` is NOT read as a field set
-    #    (the token would be the local var name, and `:` the `:` of `:=`).
-    pats.append(re.compile(rf"""(^|[\s,{{(])['"]?{ident}['"]?\s*:(?!=)\s*""", re.IGNORECASE))
-    # 3. bson/Mongo update key referencing the field literally in a set expression.
-    pats.append(re.compile(rf"""['"]{ident}['"]""", re.IGNORECASE))
-    # 4. SQL UPDATE ... SET plan =
-    pats.append(re.compile(rf"\bSET\b[^;]*\b{ident}\s*=", re.IGNORECASE))
-    return pats
-
+# 0. Assignment: `something.Plan =` / `.stripe_plan =` (not ==; `:=` — Go's
+#    declare+assign — IS a write, so it's allowed).
+ASSIGN_RE = re.compile(r"\.(\w+)\s*:?=[^=]")
+# 1. Struct-literal / map set: `Plan: value` or `"plan": value` or `Key: "plan"`.
+#    `:(?!=)` so Go's short-var-decl `plan := expr` is NOT read as a field set
+#    (the captured token would be the local var name, and `:` the `:` of `:=`).
+STRUCT_RE = re.compile(r"""(^|[\s,{(])['"]?(\w+)['"]?\s*:(?!=)\s*""")
+# 2. bson/Mongo update key referenced literally in a set expression.
+QUOTED_RE = re.compile(r"""['"](\w+)['"]""")
+# 3. SQL UPDATE ... SET <field> = ...  (multiple fields may be set on one line).
+SQL_SET_KEYWORD_RE = re.compile(r"\bSET\b", re.IGNORECASE)
+SQL_FIELD_RE = re.compile(r"\b(\w+)\s*=")
 
 # A bson $set / Mongo update / SQL UPDATE context marker — a bare `"plan":` in a
 # non-mutating context (e.g. a JSON response DTO field) shouldn't count. We only
-# treat pattern #3 (quoted-literal) as a write when the surrounding lines look
-# like a mutation. Assignment (#1) and struct-literal (#2) are writes on their own.
+# treat KIND_QUOTED (quoted-literal) as a write when the surrounding lines look
+# like a mutation. KIND_ASSIGN and KIND_STRUCT are writes on their own.
 MUTATION_CONTEXT_RE = re.compile(
     r"\$set|UpdateOne|UpdateMany|UpdateByID|FindOneAndUpdate|bson\.[ME]|SET\b|UPDATE\b",
     re.IGNORECASE,
@@ -470,84 +478,167 @@ def _distinct_field_forms(inv: SingleWriterInvariant) -> list[tuple[str, str]]:
     return forms
 
 
+@dataclass
+class WriteSite:
+    """A FIELD-AGNOSTIC candidate write site: emission time knows nothing about
+    any invariant's controlled field — just "this line assigns/sets/matches an
+    identifier token, in this file, in this enclosing symbol". Whether ``token``
+    belongs to a controlled field is a query-time decision (``match_writers``).
+    """
+
+    file: str
+    line: int  # 1-indexed
+    text: str  # raw (comment-un-stripped) line, stripped + truncated for display
+    symbol: str | None
+    is_test: bool
+    kind: int  # KIND_ASSIGN | KIND_STRUCT | KIND_QUOTED | KIND_SQL
+    token: str  # the identifier exactly as it appears in source (case preserved)
+
+
+def emit_write_sites(path: str, text: str) -> list[WriteSite]:
+    """Emission: every candidate write site in a single file's ``text``, with NO
+    knowledge of any specific invariant or controlled field (see module + class
+    docstrings). ``path`` is a repo-relative label used only for ``.suffix``
+    (comment-marker lookup) and the ``file`` attribute — the file is never
+    re-read from disk, so this is safe to call on manifest-sourced content.
+    """
+    suffix = Path(path).suffix
+    raw_lines = text.splitlines()
+    code_lines = [_strip_line_comment(rl, suffix) for rl in raw_lines]
+    is_test = _is_test_path(path)
+    sites: list[WriteSite] = []
+    for i, line in enumerate(code_lines):
+        candidates: list[tuple[int, str]] = []  # (kind, token)
+        for m in ASSIGN_RE.finditer(line):
+            candidates.append((KIND_ASSIGN, m.group(1)))
+        for m in STRUCT_RE.finditer(line):
+            candidates.append((KIND_STRUCT, m.group(2)))
+        for m in QUOTED_RE.finditer(line):
+            # A bare quoted literal only counts as a write in a mutation context
+            # (this line or either of the two lines above) and NOT when the same
+            # line carries a query operator (a filter clause, not a $set value).
+            # Both checks are invariant-independent, so resolved once here.
+            if not (
+                MUTATION_CONTEXT_RE.search(line)
+                or (i > 0 and MUTATION_CONTEXT_RE.search(code_lines[i - 1]))
+                or (i > 1 and MUTATION_CONTEXT_RE.search(code_lines[i - 2]))
+            ):
+                continue
+            if FILTER_OPERATOR_RE.search(line):
+                continue
+            candidates.append((KIND_QUOTED, m.group(1)))
+        for set_m in SQL_SET_KEYWORD_RE.finditer(line):
+            tail = line[set_m.end():]
+            semi = tail.find(";")
+            if semi != -1:
+                tail = tail[:semi]
+            for fm in SQL_FIELD_RE.finditer(tail):
+                candidates.append((KIND_SQL, fm.group(1)))
+        if not candidates:
+            continue
+        symbol = _enclosing_symbol(code_lines, i)
+        snippet = raw_lines[i].strip()[:200]
+        for kind, token in candidates:
+            sites.append(WriteSite(
+                file=path, line=i + 1, text=snippet, symbol=symbol,
+                is_test=is_test, kind=kind, token=token,
+            ))
+    return sites
+
+
+def match_writers(sites: list[WriteSite], invariant: SingleWriterInvariant) -> list[Writer]:
+    """Claim: query-time filter of field-agnostic ``sites`` against a single
+    invariant's controlled fields + sanctioned writers. Mirrors the original
+    interleaved scan exactly — including "one write record per (line,
+    invariant), first controlled-field-form wins" — but now as a pure function
+    of pre-emitted sites, with no filesystem access.
+    """
+    by_line: dict[tuple[str, int], list[WriteSite]] = defaultdict(list)
+    for s in sites:
+        by_line[(s.file, s.line)].append(s)
+
+    writers: list[Writer] = []
+    for (file, line), line_sites in by_line.items():
+        for fpath, tok in _distinct_field_forms(invariant):
+            matched: WriteSite | None = None
+            for s in line_sites:
+                # persistence_only (`sink=db`): only DB sinks count — the bare
+                # quoted-literal-in-mutation-context and SQL UPDATE kinds. Skip
+                # in-memory assignment and struct/map literals — those don't
+                # write the row.
+                if invariant.persistence_only and s.kind in (KIND_ASSIGN, KIND_STRUCT):
+                    continue
+                if s.token.lower() != tok:
+                    continue
+                matched = s
+                break  # which kind hit doesn't affect the output; take the first
+            if matched is None:
+                continue
+            sanctioned = matched.is_test or _is_sanctioned(invariant, file, matched.symbol)
+            writers.append(Writer(
+                invariant_id=invariant.id,
+                field=fpath,
+                file=file,
+                line=line,
+                text=matched.text,
+                symbol=matched.symbol,
+                sanctioned=sanctioned,
+                is_test=matched.is_test,
+            ))
+            break  # one write record per (line, invariant)
+    return writers
+
+
 def scan_writers(
     source_root: str | Path,
     invariants: list[SingleWriterInvariant],
     exclude: list[str] | None = None,
+    only_files: set[str] | None = None,
 ) -> list[Writer]:
-    """Find every writer of every controlled field across the repo."""
+    """Find every writer of every controlled field across the repo: emit
+    field-agnostic write sites per file, then claim them against each
+    invariant. ``only_files`` (repo-relative paths), when given, restricts the
+    walk to that set instead of the whole tree — used by ``--changed-since``.
+    """
     root = Path(source_root)
     exclude = exclude or []
     writers: list[Writer] = []
     if not root.exists() or not invariants:
         return writers
 
-    # Precompute per-invariant field patterns.
-    inv_patterns: list[tuple[SingleWriterInvariant, list[tuple[str, str, list[re.Pattern]]]]] = []
-    for inv in invariants:
-        field_pats: list[tuple[str, str, list[re.Pattern]]] = []
-        for fpath, tok in _distinct_field_forms(inv):
-            field_pats.append((fpath, tok, _writer_patterns(tok)))
-        inv_patterns.append((inv, field_pats))
+    if only_files is not None:
+        candidates = sorted(only_files)
+    else:
+        candidates = sorted(
+            str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()
+        )
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix not in SOURCE_EXTS:
+    for rel in candidates:
+        if Path(rel).suffix not in SOURCE_EXTS:
             continue
-        if any(part in SKIP_PARTS for part in path.parts):
+        if any(part in SKIP_PARTS for part in Path(rel).parts):
             continue
-        rel = str(path.relative_to(root))
         if _excluded(rel, exclude):
             continue
+        path = root / rel
         try:
-            raw_lines = path.read_text().splitlines()
+            text = path.read_text()
         except OSError:
             continue
-        # Match on comment-stripped lines so a field mentioned in a comment is not read
-        # as a write; keep raw_lines only for the human-readable `text` of a finding.
-        code_lines = [_strip_line_comment(rl, path.suffix) for rl in raw_lines]
-        is_test = _is_test_path(rel)
-        for i, line in enumerate(code_lines):
-            for inv, field_pats in inv_patterns:
-                for fpath, _tok, pats in field_pats:
-                    hit = False
-                    for pi, pat in enumerate(pats):
-                        # persistence_only (`sink=db`): only DB sinks count — the bare
-                        # quoted-literal-in-mutation-context (#3, index 2) and SQL
-                        # UPDATE (#4, index 3). Skip in-memory assignment (#1) and
-                        # struct/map literals (#2) — those don't write the row.
-                        if inv.persistence_only and pi in (0, 1):
-                            continue
-                        if not pat.search(line):
-                            continue
-                        # Pattern #3 (bare quoted literal, index 2) only counts as a
-                        # write inside a mutation context; otherwise skip (DTO field).
-                        if pi == 2 and not (
-                            MUTATION_CONTEXT_RE.search(line)
-                            or (i > 0 and MUTATION_CONTEXT_RE.search(code_lines[i - 1]))
-                            or (i > 1 and MUTATION_CONTEXT_RE.search(code_lines[i - 2]))
-                        ):
-                            continue
-                        # ...but a query-operator on the line makes it a filter clause,
-                        # not a write (which document to match, not what to set). Skip.
-                        if pi == 2 and FILTER_OPERATOR_RE.search(line):
-                            continue
-                        hit = True
-                        break
-                    if not hit:
-                        continue
-                    symbol = _enclosing_symbol(code_lines, i)
-                    sanctioned = is_test or _is_sanctioned(inv, rel, symbol)
-                    writers.append(Writer(
-                        invariant_id=inv.id,
-                        field=fpath,
-                        file=rel,
-                        line=i + 1,
-                        text=raw_lines[i].strip()[:200],
-                        symbol=symbol,
-                        sanctioned=sanctioned,
-                        is_test=is_test,
-                    ))
-                    break  # one write record per (line, invariant)
+        sites = emit_write_sites(rel, text)
+        if not sites:
+            continue
+        # Claim per invariant, then merge preserving the ORIGINAL ordering: line
+        # ascending first, invariant list-order second (the original scan looped
+        # "for line: for invariant", not "for invariant: for line" — a file with
+        # hits for multiple invariants at interleaved lines must come out in line
+        # order, not grouped by invariant).
+        tagged: list[tuple[int, Writer]] = []
+        for idx, inv in enumerate(invariants):
+            for w in match_writers(sites, inv):
+                tagged.append((idx, w))
+        tagged.sort(key=lambda t: (t[1].line, t[0]))
+        writers.extend(w for _, w in tagged)
     return writers
 
 
@@ -571,6 +662,30 @@ def _is_sanctioned(inv: SingleWriterInvariant, rel: str, symbol: str | None) -> 
     return False
 
 
+# --- manifest-scoped scanning (--changed-since) -----------------------------
+
+
+def _file_predicate(rel: str) -> bool:
+    """The scanner's EXACT file-selection rule (extension allow-list + skipped
+    directories) — the same predicate `scan_writers` applies during its own
+    walk, reused to build a manifest whose keys are exactly the files that walk
+    would visit (see ``chief_wiggum.manifest``)."""
+    p = Path(rel)
+    if p.suffix not in SOURCE_EXTS:
+        return False
+    if any(part in SKIP_PARTS for part in p.parts):
+        return False
+    return True
+
+
+def _scanner_version() -> str:
+    """Hash-derived ``--scanner-version``: the source of this module plus its
+    ``chief_wiggum`` dependencies. No hand-bumped constant to forget."""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    return scanner_version(here, cw_dir / "manifest.py", cw_dir / "hashing.py")
+
+
 # --- top-level check --------------------------------------------------------
 
 
@@ -578,6 +693,7 @@ def check(
     epic_dir: str | Path,
     source_root: str | Path | None = None,
     exclude: list[str] | None = None,
+    changed_since: str | None = None,
 ) -> SingleWriterReport:
     report = SingleWriterReport()
     invariants, malformed = collect_invariants(epic_dir)
@@ -607,18 +723,26 @@ def check(
                 scan_exclude.append(rel_str)
         except ValueError:
             pass  # epic_dir is outside source_root (e.g. CW_TMP at architect time)
-        writers = scan_writers(source_root, invariants, exclude=scan_exclude)
+        only_files = None
+        if changed_since:
+            # Ticket-scoped speed-up ONLY — never used by /close-epic's coverage
+            # gate, which must see the whole repo to be authoritative.
+            only_files = changed_paths(source_root, changed_since, predicate=_file_predicate)
+        writers = scan_writers(source_root, invariants, exclude=scan_exclude, only_files=only_files)
         report.writers = [w.to_dict() for w in writers]
         report.violations = [w.to_dict() for w in writers if not w.sanctioned]
         # Surface any invariant whose controlled field has NO writer at all — the
         # sanctioned path may be missing/misnamed (a soft warning, not a violation).
-        written_ids = {w.invariant_id for w in writers}
-        for inv in invariants:
-            if inv.id not in written_ids:
-                report.warnings.append(
-                    f"{inv.id}: no writer found for {inv.controls_field} — "
-                    f"sanctioned writer(s) {inv.sanctioned_writers} may be missing or misnamed"
-                )
+        # Skipped under --changed-since: a ticket-scoped scan is EXPECTED to miss
+        # unrelated invariants' writers, so this warning would just be noise.
+        if not changed_since:
+            written_ids = {w.invariant_id for w in writers}
+            for inv in invariants:
+                if inv.id not in written_ids:
+                    report.warnings.append(
+                        f"{inv.id}: no writer found for {inv.controls_field} — "
+                        f"sanctioned writer(s) {inv.sanctioned_writers} may be missing or misnamed"
+                    )
     else:
         report.warnings.append("no --source given; parsed invariant metadata only (no repo scan)")
 
@@ -666,7 +790,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Single-writer / mutator-inventory checker for single-write-path invariants"
     )
-    parser.add_argument("epic_dir", help="docs/epics/<slug> directory (or CW_TMP at architect time)")
+    parser.add_argument(
+        "epic_dir", nargs="?", default=None,
+        help="docs/epics/<slug> directory (or CW_TMP at architect time); not required with --scanner-version",
+    )
     parser.add_argument("--source", help="Repo root to scan for writers of controlled fields")
     parser.add_argument(
         "--exclude",
@@ -681,14 +808,35 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail (exit 1) on this gate's findings (soundness=malformed metadata; "
         "coverage=unsanctioned writers)",
     )
+    parser.add_argument(
+        "--changed-since",
+        metavar="REF",
+        help="Scope the --source scan to files changed since REF (via git diff + the "
+        "content-addressed manifest) instead of the whole tree. Ticket-scoped speed-up "
+        "ONLY — /close-epic's coverage gate NEVER uses this; whole-repo remains the default.",
+    )
+    parser.add_argument(
+        "--scanner-version",
+        action="store_true",
+        help="Print the hash-derived scanner version (source hash of this module + its "
+        "chief_wiggum deps) and exit",
+    )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
+
+    if args.scanner_version:
+        print(_scanner_version())
+        return 0
+
+    if not args.epic_dir:
+        print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
+        return 2
 
     if not Path(args.epic_dir).exists():
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    report = check(args.epic_dir, args.source, exclude=args.exclude)
+    report = check(args.epic_dir, args.source, exclude=args.exclude, changed_since=args.changed_since)
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))
