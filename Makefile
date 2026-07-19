@@ -6,7 +6,7 @@ fmt:
 
 lint:
 	python3 -m ruff check scripts tests
-	python3 -m py_compile scripts/*.py scripts/extractors/*.py scripts/chief_wiggum/*.py
+	python3 -m py_compile scripts/*.py scripts/extractors/*.py scripts/chief_wiggum/*.py scripts/emitters/*.py
 	python3 scripts/check_portability.py
 	python3 scripts/check_patterns.py
 	python3 scripts/check_cw_standards.py --gate
