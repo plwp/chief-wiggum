@@ -48,6 +48,14 @@ cat "$TARGET_REPO/docs/domain-context.md" 2>/dev/null
 ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 ```
 
+**New-product check.** DST (deterministic-simulation testing, FoundationDB/TigerBeetle/Antithesis-style) is only cheap if determinism is designed in from day one — retrofitting it into a codebase with wall-clock reads and unseeded randomness scattered through business logic is brutal. This is the one window where it's free, so detect whether this is the epic that first architects the product. The default heuristic: no prior CW epic artifacts AND no existing CW quality state:
+
+```bash
+IS_NEW_PRODUCT=$([ ! -d "$TARGET_REPO/docs/epics" ] && [ ! -f "$TARGET_REPO/docs/quality/ratchet.json" ] && echo true || echo false)
+```
+
+This is a **default the operator can override**, not a proof — a repo can have real history without either marker (e.g. imported code CW never touched), or be effectively greenfield despite a stray artifact. If the signal looks wrong for this repo, say so at the Step 6 checkpoint and let the user decide. If `IS_NEW_PRODUCT` is `true`, Step 4b's structured model gains DST-readiness invariants (rendered into `invariants.md` via Step 4e) and Step 4f's ADR notes the clock/random/IO seam scaffolding (see below). Skip both for an established repo — retrofitting the invariants onto existing code is a separate, deliberate decision, not something to silently stamp in.
+
 `docs/domain-context.md` (written by `/seed` Step 2.5) is the **ground truth for data contracts**: canonical metric definitions, real schema names, source caveats, and mined use cases — each with citations. If the epic touches an existing data source and this file doesn't exist, run the `/seed` Step 2.5 ingestion now (semantic layer, schema introspection, transformation-repo history) before writing any data contract. Contracts authored from guessed table/column names are how query layers get built against names that don't exist.
 
 **Adopted patterns.** If the product has adopted registry patterns (via `/apply-pattern`), load their invariant clusters now — they are **pre-derived contracts** this epic must not re-invent:
@@ -236,6 +244,34 @@ Each invariant MUST have a unique ID (e.g., INV-001) that matches its ID in the 
 
 The connected requirements arrive as a set — adopt the **whole** cluster for a realized pattern, not a subset. Any `unresolved` parameter reported for that pattern must be resolved (or explicitly re-marked `TBD:`) before an invariant depends on it.
 
+**DST-readiness invariants (new products only — `IS_NEW_PRODUCT=true` from Step 1).** Stamp a small, fixed cluster of determinism-readiness invariants so the seams exist from ticket one instead of getting retrofitted later. **Structured model first**: these go into `state-machines.json`'s top-level `invariants` array as schema-valid invariant objects (Step 4b), and the prose in `invariants.md` is then consolidated from the models like every other invariant — never authored verbatim into the prose alone (JSON is the source of truth; prose is derived):
+
+```json
+{
+  "id": "INV-dst-001",
+  "description": "No wall-clock reads outside the clock seam: production code reads the current time only through the designated clock module (e.g. internal/clock), never time.Now() / datetime.now() / Date.now() directly.",
+  "expression": "forall call in production_code: is_wall_clock_read(call) => module(call) == clock_seam",
+  "scope": "global",
+  "category": "operational_safety"
+},
+{
+  "id": "INV-dst-002",
+  "description": "No unseeded randomness outside the random seam: production code draws randomness only through a designated, seedable source (e.g. internal/rand), never default math/rand package functions / Python random module / Math.random() directly.",
+  "expression": "forall call in production_code: is_default_source_random(call) => module(call) == rand_seam",
+  "scope": "global",
+  "category": "operational_safety"
+},
+{
+  "id": "INV-dst-003",
+  "description": "IO behind seam interfaces: network/filesystem/DB calls are made only from designated IO packages, behind an interface a test can substitute. Checked by code review, not check_dst_readiness.py — grepping 'any IO outside package X' is too noisy for a v1 regex tier.",
+  "expression": "forall call in production_code: is_io(call) => package(call) in io_seam_packages",
+  "scope": "global",
+  "category": "operational_safety"
+}
+```
+
+After `render_models.py` regenerates the prose, verify the three IDs appear in `invariants.md` under their own subsection (e.g. "Determinism & Simulation Readiness"). These are advisory, not blocking: `scripts/check_dst_readiness.py` mechanically checks INV-dst-001/002 (report-only by default, FOREVER — this is design-readiness signal, not enforcement) and is run in Step 5a. INV-dst-003 has no mechanical check yet; it's scaffolding for code review to hold workers to. Keep the IDs stable so downstream `/implement` tickets and `check_dst_readiness.py`'s `**/clock*` / `**/rand*` / `**/telemetry/**` seam allowlist line up with real packages.
+
 #### 4f. ADR (`adr.md`)
 
 Architectural Decision Record capturing the key decisions for this epic:
@@ -264,6 +300,26 @@ Accepted
 - [Negative consequences / tech debt accepted]
 - [Follow-up work needed]
 ```
+
+**New products (`IS_NEW_PRODUCT=true`) add a decision entry for the DST seams**, naming the actual packages this codebase will use — not a hypothetical:
+
+```markdown
+### N. Determinism & simulation readiness (clock/random/IO seams)
+- **Decision**: All wall-clock reads go through `internal/clock` (a single `Now() time.Time`
+  seam); all randomness goes through `internal/rand` (seeded, injectable); network/DB/FS
+  calls are made behind interfaces owned by the designated IO packages listed here: [...].
+- **Alternatives considered**: Leaving `time.Now()`/`rand.Intn()` inline — rejected because
+  retrofitting determinism later means touching every call site instead of one seam.
+- **AI consensus**: [Where the three AIs agreed/diverged]
+- **Trade-offs**: One extra layer of indirection for time/randomness/IO from ticket one, in
+  exchange for this codebase staying simulation-testable (fast, reproducible, shrinkable bug
+  repros) instead of needing a painful determinism retrofit later.
+```
+
+This is the scaffolding note that makes INV-dst-001/002/003 (Step 4e) actionable — the
+invariant says "no wall-clock reads outside the clock seam"; this decision says which
+package IS the clock seam, so `/implement` workers build against it from ticket one instead
+of learning about it after the fact.
 
 #### 4g. Integration Test Specification (`integration-tests.md`)
 
@@ -349,6 +405,14 @@ python3 "$CW_HOME/scripts/check_single_writer.py" "$CW_TMP" --source "$TARGET_RE
 
 Any invariant that says "single write path" or "single source of truth" for a field/state MUST name its `controls_field` and `sanctioned_writers` — either as arrays on the structured `state-machines.json` invariant, or via a `<!-- @cw-writes INV-... controls_field=a.b sanctioned_writers=Sym,path.go -->` tag next to its `**INV-...**` label in `invariants.md`. Without this metadata the invariant is prose only and a second mutator (e.g. a legacy admin control) can silently violate it. Review the surfaced writer inventory: if the gate lists a writer outside the sanctioned set, that is a pre-existing violation to fix or explicitly sanction before the epic builds on the invariant.
 
+**DST-readiness baseline (new products only — `IS_NEW_PRODUCT=true`).** Run the scanner report-only against the target repo to document the current wall-clock/random-call baseline — this NEVER blocks (advisory forever, per the design decision behind it):
+
+```bash
+python3 "$CW_HOME/scripts/check_dst_readiness.py" "$TARGET_REPO" --format text
+```
+
+Note the finding counts in Step 6's summary (a fresh repo should have ~zero; a real baseline scan may surface some pre-existing calls worth folding into the seam allowlist or fixing before the first ticket lands). This never gates — `--gate` exists in the script for a repo that later opts in via its own ratchet config, but `/architect` never passes it.
+
 Check the graph analysis output for:
 - **Unreachable states**: States that can't be reached from the initial state — these are model bugs
 - **Dead states**: Non-terminal states with no outgoing transitions — entities get stuck here
@@ -409,6 +473,7 @@ python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name architect-rev
 - **Model health**: graph analysis — any unreachable states, dead states, missing paths
 - **Open unknowns**: every surviving `TBD:`/`UNRESOLVED:` marker, which tickets each one blocks, and the plan to resolve it (who/what/when)
 - **Test coverage preview**: number of test paths that will be mechanically generated (from the test view)
+- **DST readiness** (new products only): the INV-dst-001/002/003 invariants stamped, the clock/random/IO seam packages named in the ADR, and `check_dst_readiness.py`'s baseline finding counts
 - ADR: key decisions with trade-offs
 - Integration tests: what will be validated at epic close
 - Traceability: coverage gaps (any AC without a planned test)
@@ -505,6 +570,12 @@ Your implementation must satisfy the contracts and invariants. The /implement sk
 
 ### Coverage gaps
 - [Any AC without a planned test — these need attention during implementation]
+
+### DST readiness (new products only)
+- Invariants stamped: INV-dst-001 (clock seam), INV-dst-002 (random seam), INV-dst-003 (IO seam)
+- Seam packages named in the ADR: [e.g. `internal/clock`, `internal/rand`]
+- `check_dst_readiness.py` baseline: N findings (report-only — advisory forever, not a blocker)
+- [Omit this section for a repo that already has prior epics]
 
 ### Open unknowns (blockers)
 - [Each surviving TBD/UNRESOLVED marker: what it is, which tickets it blocks, how to resolve it]
