@@ -691,10 +691,13 @@ def _file_predicate(rel: str) -> bool:
 
 def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
-    ``chief_wiggum`` dependencies. No hand-bumped constant to forget."""
+    ``chief_wiggum`` dependencies (annotations.py carries the @cw-writes
+    grammar — #170 moved it there). No hand-bumped constant to forget."""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
-    return scanner_version(here, cw_dir / "manifest.py", cw_dir / "hashing.py")
+    return scanner_version(
+        here, cw_dir / "annotations.py", cw_dir / "manifest.py", cw_dir / "hashing.py"
+    )
 
 
 # --- top-level check --------------------------------------------------------
