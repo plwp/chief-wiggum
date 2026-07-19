@@ -10,23 +10,56 @@ codebase". This checker is advisory: it stamps the opportunity into new products
 `/architect` (see the "DST readiness" step there) and reports violations here — it does
 not, by itself, block anything.
 
-Rules (regex tier, language-aware, mirrors ``check_single_writer.py``'s style of
-line-scanning with comment stripping):
+Rules (regex tier, language-aware line scanning over comment- and string-stripped
+source; see "What is stripped" below):
 
 - **wall-clock** — a direct wall-clock read outside a designated clock seam:
-  Go ``time.Now``; Python ``datetime.now``, ``datetime.utcnow``, ``time.time``;
-  TS/JS ``Date.now`` and no-arg ``new Date`` construction.
-- **unseeded-random** — an unseeded, default-source random call outside a designated
-  random seam: Go ``math/rand`` package-level calls (``rand.Intn(``, ``rand.Float64(``,
-  etc — deliberately not trying to detect "is there a seeded *rand.Rand nearby", that's
-  too clever for a regex tier); Python module-level ``random.<fn>(`` calls (excluding
-  ``random.seed(``, which is the seam pattern, not a violation of it); JS/TS
-  ``Math.random(``.
+  Go ``time.Now``; Python ``datetime.now`` / ``datetime.utcnow`` (both the
+  ``datetime.now(...)`` and ``datetime.datetime.now(...)`` spellings), ``time.time``,
+  plus per-file import-alias forms (``import datetime as dt`` → ``dt.now`` /
+  ``dt.datetime.now``; ``import time as tm`` → ``tm.time``; ``from time import time``
+  → a bare ``time(...)`` call, ``as`` aliases included); TS/JS ``Date.now`` and
+  no-arg ``new Date`` construction.
+- **unseeded-random** — an unseeded, DEFAULT-SOURCE random call outside a designated
+  random seam:
+  - Go: package-level calls on the ``math/rand`` (or ``math/rand/v2``) import —
+    resolved per file from the import declarations, so an aliased import
+    (``mrand "math/rand"``) is tracked, and a file that imports ``crypto/rand`` as
+    ``rand`` is NOT misflagged. Seeded/explicit-source construction
+    (``rand.New(rand.NewSource(...))``, ``rand.Seed(...)``) is not flagged — only
+    the default-source draw functions (``Intn``, ``Float64``, v2's ``N``/``IntN``,
+    etc). A file with no visible rand-related import falls back to matching the
+    conventional ``rand.`` package name (snippets/fixtures).
+  - Python: module-level ``random.<fn>(`` calls (canonical name, an
+    ``import random as X`` alias, or bare names from ``from random import randint,
+    choice``), excluding ``random.seed(`` (seeding explicitly is the seam pattern,
+    not a violation of it) and capitalized constructors (``random.Random(42)``,
+    ``random.SystemRandom()`` — constructing an explicit source is a deliberate
+    decision, and instance-method calls on the resulting variable are untrackable
+    at a regex tier anyway).
+  - JS/TS: ``Math.random(``.
 - **IO in non-designated modules is OUT OF SCOPE for v1.** Grepping for "any file
   read/network call/db call outside package X" is far noisier than the two rules above
   (imports, wrapper libraries, and legitimate framework glue all look like violations)
   and needs project-specific knowledge of which packages are the designated IO seam.
   Revisit once the clock/random tier has proven itself on real repos.
+
+**Precision over recall.** This gate is advisory; per the gate-rollout doctrine a noisy
+advisory is worse than none. Wherever a regex tier cannot decide (an aliased local
+variable holding a rand source, code inside a JS template-literal interpolation, a
+dynamically imported module), the scanner deliberately UNDER-reports rather than risk
+false positives. Known under-reporting: instance-method randomness (``rng.Intn(`` /
+``my_rng.random(``), calls inside JS/TS template-literal ``${...}`` interpolations
+(the whole literal is stripped), multi-line ``from random import (...)`` continuation
+lines, star/dot imports, and rare multi-line ``'``/``"`` string literals.
+
+What is stripped before matching (so prose can't be misread as live code):
+
+- line comments (``//``, ``#``), string-literal aware;
+- Go/TS/JS block comments (``/* ... */``), including multi-line;
+- Python triple-quoted strings/docstrings, including multi-line;
+- quoted string-literal CONTENTS on a line (``'...'``, ``"..."``, and backtick
+  raw/template literals in Go/JS — backtick literals are tracked across lines).
 
 Allowlist (a file is exempt from every rule, not scanned at all):
 
@@ -68,6 +101,8 @@ PY_EXTS = {".py"}
 JS_EXTS = {".ts", ".tsx", ".js", ".jsx"}
 ALL_EXTS = GO_EXTS | PY_EXTS | JS_EXTS
 
+# Matched against path components RELATIVE to the scanned root — a checkout that
+# happens to live under /tmp/build/ or /vendor/ must still be scanned in full.
 SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv", "vendor", "dist", "build"}
 
 DEFAULT_SEAMS = ["**/clock*", "**/rand*", "**/telemetry/**"]
@@ -75,78 +110,236 @@ DEFAULT_SEAMS = ["**/clock*", "**/rand*", "**/telemetry/**"]
 EXEMPT_MARKER = "cw:dst-exempt"
 TOP_MARKER_LINES = 20
 
-# Go's default (package-level, unseeded) math/rand surface. Deliberately not trying to
-# detect "is there a seeded *rand.Rand in scope" — that needs real type/data-flow
-# analysis, not a grep tier. If a repo seeds its own generator, it belongs behind a
-# `**/rand*` seam (or gets a `cw:dst-exempt` marker) so it doesn't show up here.
+WALL_CLOCK = "wall-clock"
+UNSEEDED_RANDOM = "unseeded-random"
+
+# Go's default (package-level, unseeded) math/rand draw surface, v1 and v2 names.
+# Deliberately excludes the seam-construction surface (`New`, `NewSource`, `Seed`,
+# `NewPCG`, `NewChaCha8`) — building a seeded/explicit source is the FIX, not a
+# violation — and instance methods on a *rand.Rand variable are untrackable at a
+# regex tier (documented under-reporting).
 _GO_RAND_FUNCS = (
     "Intn", "Int31n", "Int63n", "Int31", "Int63", "Int",
     "Float32", "Float64", "Perm", "Shuffle", "NormFloat64", "ExpFloat64",
+    # math/rand/v2 spellings
+    "N", "IntN", "Int32N", "Int64N", "Int32", "Int64",
+    "Uint", "UintN", "Uint32", "Uint32N", "Uint64", "Uint64N",
+)
+_GO_RAND_TAIL = r"\.(?:" + "|".join(_GO_RAND_FUNCS) + r")\s*\("
+
+# Python module-level random calls: lowercase names only, so capitalized constructors
+# (`random.Random(42)`, `random.SystemRandom()`) are never flagged, and `seed` is
+# excluded (seeding explicitly IS the seam pattern).
+_PY_RANDOM_TAIL = r"\.(?!seed\b)[a-z]\w*\s*\("
+
+# Static per-extension checks that need no import context.
+_STATIC_CHECKS: dict[str, list[tuple[str, re.Pattern]]] = {}
+for _ext in GO_EXTS:
+    _STATIC_CHECKS[_ext] = [
+        (WALL_CLOCK, re.compile(r"\btime\.Now\s*\(")),
+    ]
+for _ext in PY_EXTS:
+    _STATIC_CHECKS[_ext] = [
+        # `\bdatetime\.now(` also matches inside `datetime.datetime.now(` — one
+        # pattern covers both spellings (findings dedupe per rule+line).
+        (WALL_CLOCK, re.compile(r"\bdatetime\.(?:now|utcnow)\s*\(")),
+        (WALL_CLOCK, re.compile(r"\btime\.time\s*\(")),
+        (UNSEEDED_RANDOM, re.compile(r"\brandom" + _PY_RANDOM_TAIL)),
+    ]
+for _ext in JS_EXTS:
+    _STATIC_CHECKS[_ext] = [
+        (WALL_CLOCK, re.compile(r"\bDate\.now\s*\(")),
+        (WALL_CLOCK, re.compile(r"\bnew\s+Date\s*\(\s*\)")),
+        (UNSEEDED_RANDOM, re.compile(r"\bMath\.random\s*\(")),
+    ]
+
+
+# --- import-alias tracking (per file) ----------------------------------------
+
+# Go import of math/rand or crypto/rand, plain or aliased, single-line or inside an
+# import block. Matched against RAW lines: the sanitizer blanks string literals, and
+# an import path IS a string literal.
+_GO_IMPORT_RE = re.compile(
+    r'^\s*(?:import\s+)?(?:(?P<alias>[A-Za-z_.]\w*)\s+)?"(?P<path>math/rand(?:/v2)?|crypto/rand)"'
 )
 
-RULES: list[dict] = [
-    {
-        "id": "wall-clock",
-        "label": "wall-clock read",
-        "checks": [
-            (GO_EXTS, re.compile(r"\btime\.Now\s*\(")),
-            (PY_EXTS, re.compile(r"\bdatetime\.now\s*\(")),
-            (PY_EXTS, re.compile(r"\bdatetime\.utcnow\s*\(")),
-            (PY_EXTS, re.compile(r"\btime\.time\s*\(")),
-            (JS_EXTS, re.compile(r"\bDate\.now\s*\(")),
-            (JS_EXTS, re.compile(r"\bnew\s+Date\s*\(\s*\)")),
-        ],
-    },
-    {
-        "id": "unseeded-random",
-        "label": "unseeded randomness",
-        "checks": [
-            (GO_EXTS, re.compile(r"\brand\.(?:" + "|".join(_GO_RAND_FUNCS) + r")\s*\(")),
-            # Module-level `random.<fn>(` — excluding `random.seed(`, which IS the seam
-            # pattern (a repo that seeds explicitly is doing the right thing).
-            (PY_EXTS, re.compile(r"\brandom\.(?!seed\b)\w+\s*\(")),
-            (JS_EXTS, re.compile(r"\bMath\.random\s*\(")),
-        ],
-    },
-]
-
-# Line-comment markers per language, used to strip trailing comments before matching so
-# a call mentioned in a comment/docstring isn't misread as live code. Mirrors
-# check_single_writer.py's _strip_line_comment / _COMMENT_MARKERS.
-_COMMENT_MARKERS = {
-    ".go": ("//",), ".ts": ("//",), ".tsx": ("//",), ".js": ("//",), ".jsx": ("//",),
-    ".py": ("#",),
-}
+_PY_IMPORT_AS_RE = re.compile(r"^\s*import\s+(?P<mod>random|datetime|time)\s+as\s+(?P<alias>\w+)\s*$")
+_PY_FROM_IMPORT_RE = re.compile(r"^\s*from\s+(?P<mod>random|datetime|time)\s+import\s+(?P<names>.+)$")
 
 
-def _strip_line_comment(line: str, suffix: str) -> str:
-    """Drop a trailing line comment, respecting string/char literals so an in-string
-    marker (a URL's `//`, a `#` inside a Python string) is preserved. Per-line only —
-    a rare multi-line string literal isn't tracked, matching check_single_writer.py."""
-    markers = _COMMENT_MARKERS.get(suffix)
-    if not markers:
-        return line
-    quote: str | None = None
-    i, n = 0, len(line)
+def _py_from_names(names: str) -> list[tuple[str, str]]:
+    """Parse `a, b as c` (parens tolerated) into [(imported_name, local_name)].
+    Single-line form only — a multi-line parenthesized import's continuation lines
+    are documented under-reporting."""
+    out: list[tuple[str, str]] = []
+    for part in names.split(","):
+        part = part.strip().lstrip("(").rstrip(")").strip()
+        if not part or part == "*":
+            continue
+        m = re.match(r"^(\w+)(?:\s+as\s+(\w+))?$", part)
+        if m:
+            out.append((m.group(1), m.group(2) or m.group(1)))
+    return out
+
+
+def _dynamic_checks(
+    suffix: str, raw_lines: list[str], code_lines: list[str]
+) -> list[tuple[str, re.Pattern]]:
+    """Per-file checks derived from the file's own import declarations."""
+    checks: list[tuple[str, re.Pattern]] = []
+
+    if suffix in GO_EXTS:
+        math_aliases: list[str] = []
+        crypto_seen = False
+        for line in raw_lines:
+            m = _GO_IMPORT_RE.match(line)
+            if not m:
+                continue
+            alias = m.group("alias")
+            if m.group("path").startswith("math/rand"):
+                if alias in ("_", "."):
+                    continue  # blank/dot import: bare-name calls are untrackable
+                math_aliases.append(alias or "rand")
+            else:
+                crypto_seen = True
+        if math_aliases:
+            for a in dict.fromkeys(math_aliases):
+                checks.append((UNSEEDED_RANDOM, re.compile(r"\b" + re.escape(a) + _GO_RAND_TAIL)))
+        elif not crypto_seen:
+            # No visible rand-related import (snippet/fixture): fall back to the
+            # conventional package name. A file importing ONLY crypto/rand gets no
+            # rand check — its `rand.` is the crypto package, not math/rand.
+            checks.append((UNSEEDED_RANDOM, re.compile(r"\brand" + _GO_RAND_TAIL)))
+
+    elif suffix in PY_EXTS:
+        for line in code_lines:
+            m = _PY_IMPORT_AS_RE.match(line)
+            if m:
+                alias = re.escape(m.group("alias"))
+                mod = m.group("mod")
+                if mod == "random":
+                    checks.append((UNSEEDED_RANDOM, re.compile(r"\b" + alias + _PY_RANDOM_TAIL)))
+                elif mod == "datetime":
+                    checks.append((WALL_CLOCK, re.compile(
+                        r"\b" + alias + r"\.(?:datetime\.)?(?:now|utcnow)\s*\(")))
+                elif mod == "time":
+                    checks.append((WALL_CLOCK, re.compile(r"\b" + alias + r"\.time\s*\(")))
+                continue
+            m = _PY_FROM_IMPORT_RE.match(line)
+            if not m:
+                continue
+            mod = m.group("mod")
+            for name, local in _py_from_names(m.group("names")):
+                esc = re.escape(local)
+                if mod == "time" and name == "time":
+                    checks.append((WALL_CLOCK, re.compile(r"(?<![\w.])" + esc + r"\s*\(")))
+                elif mod == "datetime" and name == "datetime" and local != "datetime":
+                    # unaliased `from datetime import datetime` is covered statically
+                    checks.append((WALL_CLOCK, re.compile(r"\b" + esc + r"\.(?:now|utcnow)\s*\(")))
+                elif mod == "random" and name[:1].islower() and name != "seed":
+                    checks.append((UNSEEDED_RANDOM, re.compile(r"(?<![\w.])" + esc + r"\s*\(")))
+
+    return checks
+
+
+# --- comment/string stripping ------------------------------------------------
+
+
+def _skip_string(line: str, i: int) -> int:
+    """Index just past the string literal opening at ``line[i]`` (backslash-escape
+    aware). An unclosed literal blanks the rest of the line (documented: rare
+    multi-line ``'``/``"`` literals are not tracked across lines)."""
+    quote = line[i]
+    i += 1
+    n = len(line)
     while i < n:
         ch = line[i]
-        if quote is not None:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
+        if ch == "\\":
+            i += 2
             continue
-        if ch in ("'", '"', "`"):
-            quote = ch
-            i += 1
-            continue
-        for m in markers:
-            if line.startswith(m, i):
-                return line[:i]
+        if ch == quote:
+            return i + 1
         i += 1
-    return line
+    return n
+
+
+def sanitize_lines(raw_lines: list[str], suffix: str) -> list[str]:
+    """Strip comments and string-literal contents so prose can't match as live code.
+
+    Handles line comments, Go/TS/JS block comments and backtick literals (both
+    tracked across lines), Python triple-quoted strings/docstrings (tracked across
+    lines), and single/double-quoted literal contents on a line. Code inside a JS
+    template-literal interpolation is stripped with the literal — deliberate
+    under-reporting (see module docstring).
+    """
+    is_py = suffix in PY_EXTS
+    out: list[str] = []
+    mode = "code"  # code | block_comment | triple | backtick
+    triple_delim = ""
+    for line in raw_lines:
+        buf: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if mode == "block_comment":
+                j = line.find("*/", i)
+                if j == -1:
+                    i = n
+                else:
+                    i, mode = j + 2, "code"
+                continue
+            if mode == "triple":
+                j = line.find(triple_delim, i)
+                if j == -1:
+                    i = n
+                else:
+                    i, mode = j + 3, "code"
+                continue
+            if mode == "backtick":
+                j = line.find("`", i)
+                if j == -1:
+                    i = n
+                else:
+                    i, mode = j + 1, "code"
+                continue
+            ch = line[i]
+            if is_py:
+                if line.startswith('"""', i) or line.startswith("'''", i):
+                    triple_delim = line[i:i + 3]
+                    j = line.find(triple_delim, i + 3)
+                    if j == -1:
+                        mode, i = "triple", n
+                    else:
+                        i = j + 3
+                    continue
+                if ch == "#":
+                    break
+                if ch in ("'", '"'):
+                    i = _skip_string(line, i)
+                    continue
+            else:
+                if line.startswith("//", i):
+                    break
+                if line.startswith("/*", i):
+                    j = line.find("*/", i + 2)
+                    if j == -1:
+                        mode, i = "block_comment", n
+                    else:
+                        i = j + 2
+                    continue
+                if ch == "`":
+                    j = line.find("`", i + 1)
+                    if j == -1:
+                        mode, i = "backtick", n
+                    else:
+                        i = j + 1
+                    continue
+                if ch in ("'", '"'):
+                    i = _skip_string(line, i)
+                    continue
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+    return out
 
 
 def _is_test_path(rel: str) -> bool:
@@ -204,10 +397,7 @@ def _is_seam(posix_rel: str, seam_regexes: list[re.Pattern]) -> bool:
 
 
 def _has_exempt_marker(raw_lines: list[str]) -> bool:
-    for line in raw_lines[:TOP_MARKER_LINES]:
-        if EXEMPT_MARKER in line:
-            return True
-    return False
+    return any(EXEMPT_MARKER in line for line in raw_lines[:TOP_MARKER_LINES])
 
 
 @dataclass
@@ -233,8 +423,8 @@ class DSTReport:
 
     @property
     def counts(self) -> dict:
-        wall_clock = sum(1 for f in self.findings if f["rule"] == "wall-clock")
-        unseeded_random = sum(1 for f in self.findings if f["rule"] == "unseeded-random")
+        wall_clock = sum(1 for f in self.findings if f["rule"] == WALL_CLOCK)
+        unseeded_random = sum(1 for f in self.findings if f["rule"] == UNSEEDED_RANDOM)
         return {
             "total": len(self.findings),
             "wall_clock": wall_clock,
@@ -279,6 +469,34 @@ def _load_seams(config_path: str | Path | None, warnings: list[str]) -> list[str
     return seams
 
 
+def scan_file(suffix: str, raw_lines: list[str], rel: str) -> list[Finding]:
+    """Scan one file's lines: sanitize, resolve per-file import aliases, match rules.
+
+    At most one finding per (rule, line) — a line spelling several banned calls of
+    the same rule is one item to fix, not several findings.
+    """
+    code_lines = sanitize_lines(raw_lines, suffix)
+    checks = list(_STATIC_CHECKS.get(suffix, ())) + _dynamic_checks(suffix, raw_lines, code_lines)
+    findings: list[Finding] = []
+    seen: set[tuple[str, int]] = set()
+    for i, line in enumerate(code_lines):
+        for rule, pattern in checks:
+            if (rule, i) in seen:
+                continue
+            m = pattern.search(line)
+            if not m:
+                continue
+            seen.add((rule, i))
+            findings.append(Finding(
+                rule=rule,
+                file=rel,
+                line=i + 1,
+                text=raw_lines[i].strip()[:200],
+                match=m.group(0).strip(),
+            ))
+    return findings
+
+
 def check(source_root: str | Path, config_path: str | Path | None = None) -> DSTReport:
     root = Path(source_root)
     warnings: list[str] = []
@@ -296,9 +514,10 @@ def check(source_root: str | Path, config_path: str | Path | None = None) -> DST
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix not in ALL_EXTS:
             continue
-        if any(part in SKIP_PARTS for part in path.parts):
+        rel_path = path.relative_to(root)
+        if any(part in SKIP_PARTS for part in rel_path.parts):
             continue
-        rel = str(path.relative_to(root))
+        rel = str(rel_path)
         posix_rel = rel.replace("\\", "/")
 
         if _is_test_path(rel):
@@ -316,20 +535,7 @@ def check(source_root: str | Path, config_path: str | Path | None = None) -> DST
             continue
 
         scanned += 1
-        code_lines = [_strip_line_comment(rl, path.suffix) for rl in raw_lines]
-        for i, line in enumerate(code_lines):
-            for rule in RULES:
-                for exts, pattern in rule["checks"]:
-                    if path.suffix not in exts:
-                        continue
-                    for m in pattern.finditer(line):
-                        findings.append(Finding(
-                            rule=rule["id"],
-                            file=rel,
-                            line=i + 1,
-                            text=raw_lines[i].strip()[:200],
-                            match=m.group(0).strip(),
-                        ))
+        findings += scan_file(path.suffix, raw_lines, rel)
 
     return DSTReport(
         findings=[f.to_dict() for f in findings],
