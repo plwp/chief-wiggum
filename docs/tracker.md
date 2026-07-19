@@ -31,8 +31,8 @@ Every backend implements the same five verbs plus epic grouping:
 | `get` | `get(ref) -> Issue` | Fetch one issue by ref. |
 | `list` | `list(query=None) -> list[Issue]` | `query` is a substring (matched against title/body) or a `dict` of exact-match filters (e.g. `{"epic": "Epic: Name"}`). |
 | `create` | `create(draft: IssueDraft) -> ref` | Returns the new issue's canonical ref. |
-| `update` | `update(ref, fields: dict) -> Issue` | `fields` may set `title`, `body`, `state` (`"open"`/`"closed"`), `labels` (replaces the set), `assignee`, `epic`. |
-| `comment` | `comment(ref, body) -> None` | Adds a comment. Not part of `Issue.body` — verify per-backend (see `tests/test_tracker.py`). |
+| `update` | `update(ref, fields: dict) -> Issue` | `fields` may set `title`, `body`, `state`, `labels` (replaces the set), `assignee`, `epic`. `state` is validated **before dispatch** on every backend: anything other than `"open"`/`"closed"` raises `ValueError` and nothing is mutated. |
+| `comment` | `comment(ref, body) -> None` | Adds a comment. Comments are never part of `Issue.body` on any backend (GitHub: a separate resource; local: a delimited `## cw-comments` section) — so `list()` substring queries never match comment text. |
 | `group` | `group(refs: list[str], epic_name) -> None` | Assigns every ref to an epic. |
 | `members` | `members(epic_name) -> list[Issue]` | All issues currently in that epic. |
 
@@ -45,7 +45,9 @@ Every backend implements the same five verbs plus epic grouping:
 
 - `gh:owner/repo#42` — GitHub, explicit.
 - `local:docs/issues/0042.md` — the local backend, path relative to the target
-  repo root.
+  repo root. The path is containment-checked: absolute paths and any ref that
+  resolves outside the repo's `docs/issues/` directory (e.g.
+  `local:../other.md`, `local:/tmp/x.md`) are rejected with `ValueError`.
 - Bare `owner/repo#42` (no scheme) **keeps meaning GitHub** — zero breakage for
   existing usage and docs.
 - `obsidian:<vault-rel-path>` and `jira:PROJ-42` are recognized by the ref
@@ -109,9 +111,23 @@ epic: "Epic: Widgets"
 assignee: "alice"
 ---
 
-Body markdown goes here. Comments are appended below a `---` divider by
-`comment()`; they are not folded into the frontmatter.
+Body markdown goes here.
+
+## cw-comments
+
+---
+First comment text.
+
+---
+Second comment text.
 ```
+
+Comments are appended by `comment()` under a `## cw-comments` heading at the
+end of the file. Everything from that heading onward is **excluded** from
+`Issue.body`, so body semantics match the GitHub backend (where comments are
+a separate resource) and `list()` substring queries never match comment text.
+`update(ref, {"body": ...})` replaces only the body and preserves the
+comments section.
 
 Every frontmatter value is written with `json.dumps` — JSON is a valid subset
 of YAML, so the file is real, parseable YAML frontmatter (openable by any
@@ -147,26 +163,41 @@ IDs auto-increment from the highest existing numeric filename in `docs/issues/`.
 ## CLI
 
 ```bash
+python3 scripts/tracker.py --repo-root "$target_root" backend    # print resolved backend name
 python3 scripts/tracker.py get gh:acme/app#42
 python3 scripts/tracker.py get acme/app#42                      # bare = same as gh:
-python3 scripts/tracker.py list acme/app --epic "Epic: Name"
-python3 scripts/tracker.py create acme/app --title "Fix bug" --body "..." --label bug
+python3 scripts/tracker.py --repo-root "$target_root" list acme/app --epic "Epic: Name"
+python3 scripts/tracker.py --repo-root "$target_root" create acme/app --title "Fix bug" --body "..." --label bug
 python3 scripts/tracker.py update gh:acme/app#42 --set state=closed
 python3 scripts/tracker.py comment gh:acme/app#42 "Looks good"
 python3 scripts/tracker.py group "Epic: Name" gh:acme/app#42 gh:acme/app#43
 python3 scripts/tracker.py members acme/app "Epic: Name"
 
 # local backend, operating against a target repo checkout:
-python3 scripts/tracker.py --repo-root "$TARGET_REPO" list acme/app
-python3 scripts/tracker.py --repo-root "$TARGET_REPO" get local:docs/issues/0001.md
+python3 scripts/tracker.py --repo-root "$target_root" get local:docs/issues/0001.md
+python3 scripts/tracker.py --repo-root "$target_root" group "Epic: Name" local:docs/issues/0001.md
 ```
 
 Output is JSON (an `Issue` dict, or a list of them) for every command that
 returns data, matching sibling scripts like `epic_metadata.py`.
 
+**Always pass `--repo-root`** when calling from a workflow: `--repo-root`
+defaults to the current working directory, and workflows run from arbitrary
+cwds. Resolve the target checkout first (`target_root=$(python3
+"$CW_HOME/scripts/repo.py" resolve "$owner_repo")`) and pass it on every
+call — that is what makes the target repo's `docs/cw/tracker.json` config
+(and the local backend's storage location) take effect. The `backend`
+subcommand prints the resolved backend name so command prompts can gate
+GitHub-specific plumbing (e.g. milestone descriptions) on `backend == github`.
+
 ## Command migration
 
 `/create-issue` and `/plan-epic` resolve issue refs via `tracker.py` instead of
-calling `gh issue`/`gh api` directly (see their command markdown). The
-remaining `gh`-calling commands (`/seed`, `/implement`, `/implement-wave`,
+calling `gh issue`/`gh api` directly (see their command markdown). In
+`/plan-epic`, the GitHub milestone plumbing is conditional on the resolved
+backend: for `github` the dependency-graph block lives in the milestone
+description (as today); for other backends it is written to
+`docs/epics/<slug>/epic.md` in the target repo, and epic membership is the
+frontmatter `epic` field set by `tracker.py group`. The remaining
+`gh`-calling commands (`/seed`, `/implement`, `/implement-wave`,
 `/close-epic`) are a later ticket.

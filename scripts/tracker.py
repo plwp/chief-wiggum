@@ -31,6 +31,7 @@ As a module::
 
 As a CLI::
 
+    python3 tracker.py --repo-root /path/to/checkout backend
     python3 tracker.py get gh:acme/app#42
     python3 tracker.py list acme/app --epic "Epic: Name"
     python3 tracker.py create acme/app --title "Fix bug" --body "..." --label bug
@@ -95,6 +96,17 @@ class IssueDraft:
     labels: list[str] = field(default_factory=list)
     assignee: str | None = None
     epic: str | None = None
+
+
+VALID_STATES = ("open", "closed")
+
+
+def _validate_update_fields(fields: dict[str, Any]) -> None:
+    """Shared pre-dispatch validation for ``update()`` across all backends."""
+    if "state" in fields and fields["state"] not in VALID_STATES:
+        raise ValueError(
+            f"invalid state {fields['state']!r}: must be one of {', '.join(VALID_STATES)}"
+        )
 
 
 def _matches_query(issue: Issue, query: str | dict[str, Any] | None) -> bool:
@@ -269,6 +281,7 @@ class GithubBackend:
         return ref
 
     def update(self, ref: str, fields: dict[str, Any]) -> Issue:
+        _validate_update_fields(fields)
         scheme, ident = parse_ref(ref)
         if scheme != "gh":
             raise ValueError(f"GithubBackend cannot resolve ref with scheme {scheme!r}: {ref!r}")
@@ -328,11 +341,28 @@ class GithubBackend:
 # --- local backend ---------------------------------------------------------
 
 
+_COMMENTS_HEADER = "## cw-comments"
+_COMMENTS_RE = re.compile(rf"^{re.escape(_COMMENTS_HEADER)}\s*$", re.MULTILINE)
+
+
+def _split_comments(full_body: str) -> tuple[str, str | None]:
+    """Split a stored issue body into (body, comments-section-or-None).
+
+    Comments live under a ``## cw-comments`` heading at the end of the file so
+    they never leak into ``Issue.body`` (keeping body semantics identical to
+    the GitHub backend, where comments are a separate resource).
+    """
+    match = _COMMENTS_RE.search(full_body)
+    if not match:
+        return full_body, None
+    return full_body[: match.start()], full_body[match.start():]
+
+
 class LocalBackend:
     """One markdown file per issue, YAML frontmatter, under docs/issues/."""
 
     def __init__(self, root: Path | str):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
         self.issues_dir = self.root / ISSUES_SUBDIR
 
     def _path_for_id(self, issue_id: int) -> Path:
@@ -346,12 +376,22 @@ class LocalBackend:
         scheme, ident = parse_ref(ref)
         if scheme != "local":
             raise ValueError(f"LocalBackend cannot resolve ref with scheme {scheme!r}: {ref!r}")
-        return self.root / ident
+        ident_path = Path(ident)
+        if ident_path.is_absolute():
+            raise ValueError(f"local ref must be repo-relative, got absolute path: {ref!r}")
+        resolved = (self.root / ident_path).resolve()
+        issues_root = self.issues_dir.resolve()
+        if not resolved.is_relative_to(issues_root):
+            raise ValueError(
+                f"local ref escapes {ISSUES_SUBDIR.as_posix()}/: {ref!r}"
+            )
+        return resolved
 
     def _read(self, path: Path) -> Issue:
         if not path.is_file():
             raise FileNotFoundError(f"no local issue at {path}")
-        data, body = _parse_frontmatter(path.read_text())
+        data, full_body = _parse_frontmatter(path.read_text())
+        body, _ = _split_comments(full_body)
         rel = path.relative_to(self.root).as_posix()
         return Issue(
             ref=f"local:{rel}",
@@ -395,22 +435,30 @@ class LocalBackend:
         return self._ref_for_id(issue_id)
 
     def update(self, ref: str, fields: dict[str, Any]) -> Issue:
+        _validate_update_fields(fields)
         fields = dict(fields)
         path = self._resolve_path(ref)
-        data, body = _parse_frontmatter(path.read_text())
+        data, full_body = _parse_frontmatter(path.read_text())
+        body, comments = _split_comments(full_body)
         if "body" in fields:
             body = fields.pop("body")
         for key in ("title", "state", "labels", "epic", "assignee"):
             if key in fields:
                 data[key] = fields[key]
-        path.write_text(_dump_frontmatter(data) + "\n\n" + body.rstrip("\n") + "\n")
+        new_full = body.rstrip("\n")
+        if comments:
+            new_full += "\n\n" + comments.rstrip("\n")
+        path.write_text(_dump_frontmatter(data) + "\n\n" + new_full + "\n")
         return self._read(path)
 
     def comment(self, ref: str, body: str) -> None:
         path = self._resolve_path(ref)
-        data, existing_body = _parse_frontmatter(path.read_text())
-        appended = existing_body.rstrip("\n") + f"\n\n---\n**Comment:** {body}\n"
-        path.write_text(_dump_frontmatter(data) + "\n\n" + appended.rstrip("\n") + "\n")
+        data, full_body = _parse_frontmatter(path.read_text())
+        existing_body, comments = _split_comments(full_body)
+        comments = (comments or _COMMENTS_HEADER).rstrip("\n")
+        comments += f"\n\n---\n{body}"
+        new_full = existing_body.rstrip("\n") + "\n\n" + comments
+        path.write_text(_dump_frontmatter(data) + "\n\n" + new_full + "\n")
 
     def group(self, refs: list[str], epic_name: str) -> None:
         for ref in refs:
@@ -506,6 +554,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    sub.add_parser(
+        "backend",
+        help="Print the resolved backend name for --repo-root (github/local/...)",
+    )
+
     p_get = sub.add_parser("get", help="Fetch a single issue by ref")
     p_get.add_argument("ref")
 
@@ -549,7 +602,11 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = args.repo_root
 
     try:
-        if args.command == "get":
+        if args.command == "backend":
+            root = Path(repo_root).resolve() if repo_root else Path.cwd()
+            print(resolve_backend_name(root))
+
+        elif args.command == "get":
             scheme, ident = parse_ref(args.ref)
             backend = _backend_for_ref(scheme, ident, repo_root)
             print(json.dumps(backend.get(args.ref).to_dict(), indent=2))

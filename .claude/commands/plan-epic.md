@@ -13,34 +13,47 @@ Group related issues into a coherent epic with a dependency graph, integration r
 
 ## Workflow
 
-### Step 0: Resolve CW_HOME
+### Step 0: Resolve CW_HOME, the target repo root, and the tracker backend
 
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+target_root=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+backend=$(python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" backend)
 ```
+
+`$target_root` is the local checkout of the target repo; every `tracker.py`
+call below passes `--repo-root "$target_root"` so the target repo's
+`docs/cw/tracker.json` backend config is honored regardless of the current
+working directory. `$backend` (`github`, `local`, ...) gates the
+GitHub-specific milestone plumbing below — when the repo is configured
+`local`, this workflow must never mutate GitHub.
 
 ### Step 1: Load the backlog
 
 Resolve the backlog via `tracker.py` instead of calling `gh issue` directly —
-this is what makes the workflow backend-agnostic (GitHub today, `local` or
-others per `docs/cw/tracker.json` in the target repo). See `docs/tracker.md`
-for the full interface.
+this is what makes the workflow backend-agnostic. See `docs/tracker.md` for
+the full interface.
 
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" list "$owner_repo"
+python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" list "$owner_repo"
 ```
 
 This returns every issue (any state) with full metadata (`ref`, `title`,
 `body`, `state`, `labels`, `assignee`, `epic`, `url_or_path`). Derive the
 open/closed/assigned views you need from this single JSON list client-side
-(filter on `state`/`assignee`) rather than issuing separate queries.
+(filter on `state`/`assignee`) rather than issuing separate queries. Keep the
+`ref` values — they are what Step 6 groups (`gh:owner/repo#N` for the
+`github` backend, `local:docs/issues/NNNN.md` for `local`).
 
-Also fetch milestones to see if there's existing epic-level organisation
-(milestones are GitHub-specific metadata, not part of the tracker-agnostic
-`Issue` shape, so this stays a direct `gh api` call):
+For the `github` backend only, also fetch milestones to see if there's
+existing epic-level organisation (milestones are GitHub-specific metadata,
+not part of the tracker-agnostic `Issue` shape). For other backends the
+`epic` field on each issue already carries the grouping.
 ```bash
-gh api repos/$owner_repo/milestones --jq '.[] | {title, description, open_issues, closed_issues}'
+if [ "$backend" = "github" ]; then
+  gh api repos/$owner_repo/milestones --jq '.[] | {title, description, open_issues, closed_issues}'
+fi
 ```
 
 ### Step 2: Identify the epic
@@ -128,28 +141,60 @@ Present the full epic plan:
 
 Ask the user to confirm. Adjust if needed.
 
-### Step 6: Create the GitHub milestone
+### Step 6: Record the epic (grouping + dependency graph)
 
-Create a milestone to track the epic. The milestone description **must** include a machine-readable dependency block so that `/implement-wave` can parse the DAG without brittle markdown parsing.
+The epic needs two durable artifacts: the **grouping** (which issues belong to
+it) and the **dependency graph** (a machine-readable block `/implement-wave`
+parses to compute waves, without brittle markdown parsing).
 
-Generate the `<!-- DEPENDENCIES -->` block from a JSON adjacency map with the tested formatter (it de-dupes and sorts deps so the output always matches the parser), then embed it in the milestone description:
+First generate the `<!-- DEPENDENCIES -->` block from a JSON adjacency map
+with the tested formatter (it de-dupes and sorts deps so the output always
+matches the parser). This is backend-independent:
 
 ```bash
 DEPS=$(python3 "$CW_HOME/scripts/epic_metadata.py" format-deps '{"42": [], "43": [42], "44": [43], "45": [43], "46": [42]}')
-gh api repos/$owner_repo/milestones -f title="Epic: [Name]" -f description="$(cat <<EOF
+```
+
+The block is an HTML comment (invisible in rendered markdown) with one line per ticket in the format `#N: [#dep1, #dep2]`; empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph. Do not hand-write it; always generate it with `format-deps` so it round-trips through the parser.
+
+**Where the block is stored depends on the backend.** For `github` it lives in
+a milestone description (as today); for any other backend it lives in
+`docs/epics/<slug>/epic.md` in the target repo, committed to git, so
+`/implement-wave` has a storage path with no GitHub dependency. Never run the
+`gh api` milestone mutation when the repo is configured with a non-github
+backend:
+
+```bash
+if [ "$backend" = "github" ]; then
+  gh api repos/$owner_repo/milestones -f title="Epic: [Name]" -f description="$(cat <<EOF
 [Goal]
 
 $DEPS
 EOF
 )"
+else
+  EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "Epic: [Name]")
+  mkdir -p "$target_root/docs/epics/$EPIC_SLUG"
+  cat > "$target_root/docs/epics/$EPIC_SLUG/epic.md" <<EOF
+# Epic: [Name]
+
+[Goal]
+
+$DEPS
+EOF
+  git -C "$target_root" add "docs/epics/$EPIC_SLUG/epic.md"
+  git -C "$target_root" commit -m "docs: record epic plan for Epic: [Name]"
+fi
 ```
 
-The block is an HTML comment (invisible in rendered markdown) with one line per ticket in the format `#N: [#dep1, #dep2]`; empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph — `/implement-wave` parses it to compute waves. Do not hand-write it; always generate it with `format-deps` so it round-trips through the parser.
+Then assign all epic tickets to the epic via `tracker.py group`, using the
+`ref` values captured in Step 1 (`gh:owner/repo#N` refs for `github` — the
+milestone above already exists, so this only assigns issues to it;
+`local:docs/issues/NNNN.md` refs for `local`, where grouping is a frontmatter
+`epic` field):
 
-Add all epic tickets to the milestone via `tracker.py group` (the milestone
-already exists from the step above, so this only assigns each issue to it):
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" group "Epic: [Name]" "gh:$owner_repo#42" "gh:$owner_repo#43" "gh:$owner_repo#44"
+python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" group "Epic: [Name]" "$ref1" "$ref2" "$ref3"
 ```
 
 ### Step 7: Offer next steps
