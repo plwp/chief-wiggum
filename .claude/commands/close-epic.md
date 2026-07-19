@@ -134,6 +134,18 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
 
+**Suspect links (#169, report-only)**: the same run surfaces `suspect_links` — code/test links whose contract's definition hash has changed since that link was last validated ("code claims to guard CTR-X but CTR-X changed since that claim was validated"), distinct from a dangling/uncovered finding. This does not block the gate yet (see `docs/gate-rollout.md`) but re-review any suspect link before closing.
+
+**JUSTIFIED waivers**: a contract that's genuinely not going to be covered (e.g. manual QA only) may carry a committed waiver at `docs/epics/<slug>/justifications/*.json` (`reason`/`approver`/`expiry`/`ticket` — a justification without a ticket ref is invalid and does NOT satisfy coverage). Valid, non-expired waivers render as `justified_contracts` and satisfy the coverage gate honestly instead of a fabricated guard/verify annotation.
+
+Once the gate passes, (re)write the definition-hash sidecar so future runs can detect suspect links — never hand-maintain this file:
+
+```bash
+python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --write-links --format text
+```
+
+`--write-links` only updates `$TARGET_REPO/docs/quality/trace-links.json` when the coverage gate passes — a failing run leaves the sidecar untouched, so a broken state is never recorded as validated. Commit this file alongside the rest of `docs/quality/` in Step 2f.
+
 ### Step 2e: Single-writer coverage gate
 
 For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*.
@@ -154,7 +166,7 @@ python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO"
 python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
 ```
 
-A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
+A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \

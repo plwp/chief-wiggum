@@ -392,7 +392,9 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 # the contract/invariant graph (see docs/traceability.md). Code/test coverage is
 # checked later by /close-epic; at architect time this validates the doc-level
 # graph. Assign stable BR-/CTR-/INV- IDs and `@cw-trace realizes` links so this
-# passes; it degrades gracefully when no IDs exist yet.
+# passes; it degrades gracefully when no IDs exist yet. (Suspect-link propagation
+# and `--write-links` are a /close-epic concern — no code/test links exist to
+# record yet at this stage.)
 python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
 
 # Single-writer soundness gate — validates that "single write path"/"single source

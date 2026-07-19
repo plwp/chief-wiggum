@@ -359,6 +359,88 @@ def test_skipped_quality_snapshot_never_regresses(tmp_path):
     assert hw2 == {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
 
 
+# ---- suspect-link visibility (#169) ----------------------------------------
+
+
+def _write_sidecar(cfg, links):
+    from chief_wiggum.trace_links import write_sidecar
+    write_sidecar(cfg.repo / ratchet.SIDECAR_RELPATH, {"links": links})
+
+
+def test_suspect_links_for_flags_a_changed_contract_hash(tmp_path):
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    assert hashes["CTR-order-001"] != "stale-hash"
+    susp = ratchet.suspect_links_for(cfg, sc)
+    assert len(susp) == 1
+    assert susp[0]["target"] == "CTR-order-001"
+
+
+def test_suspect_links_for_is_empty_when_hash_matches(tmp_path):
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": hashes["CTR-order-001"],
+    }])
+    sc = scorecard_from(cfg, set())
+    assert ratchet.suspect_links_for(cfg, sc) == []
+
+
+def test_suspect_links_for_is_empty_when_no_sidecar_written(tmp_path):
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, set())
+    assert ratchet.suspect_links_for(cfg, sc) == []
+
+
+def test_cmd_check_surfaces_suspect_links_visibly_but_does_not_block(tmp_path, capsys):
+    """AC3 (#169): a definition-hash change with surviving suspect links must be
+    VISIBLE in `check`'s output, never silently absorbed into 'the ratchet held'
+    — but suspect propagation ships report-only, so it must not change the exit
+    code (docs/gate-rollout.md)."""
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    append_record(cfg, sc, merged=True)
+    _write_scorecard(cfg, sc)
+    assert hashes["CTR-order-001"] != "stale-hash"
+
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0  # visible, but does not block
+    err = capsys.readouterr().err
+    assert "suspect link" in err
+    assert "CTR-order-001" in err
+
+    args_json = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    ratchet.cmd_check(args_json)
+    data = json.loads(capsys.readouterr().out)
+    assert data["suspect_links"][0]["target"] == "CTR-order-001"
+
+
+def test_cmd_regressed_includes_suspect_links(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    append_record(cfg, sc, merged=True)
+    _write_scorecard(cfg, sc)
+    args = argparse.Namespace(repo=str(tmp_path))
+    ratchet.cmd_regressed(args)
+    data = json.loads(capsys.readouterr().out)
+    assert data["suspect_links"][0]["target"] == "CTR-order-001"
+
+
 @pytest.mark.skipif(shutil.which("lizard") is None,
                     reason="lizard required for the end-to-end quality snapshot")
 def test_score_quality_end_to_end_on_a_real_repo(tmp_path):

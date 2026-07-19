@@ -148,6 +148,15 @@ deltas in the run output but only `--gate-quality` blocks) until it has been
 validated on a real, already-shipped repo. Promote it to `--gate-quality` in a
 follow-up that cites the dry-run.
 
+`check`/`regressed` also cross-reference `docs/quality/trace-links.json` (the
+suspect-link sidecar written by `check_traceability.py --write-links`, #169)
+against the CURRENT scorecard's `contract_hashes`: any link recorded against a
+hash that no longer matches is printed as a `suspect_links` finding — a
+definition-hash change with surviving suspect links is **visible, not
+silent**, even though (like complexity/churn) it is report-only and does not
+change `check`'s exit code. See [traceability.md](traceability.md) for the
+sidecar format and how a link becomes suspect.
+
 Like the other gates, it degrades gracefully: a target repo with no
 `docs/quality/ratchet.json` skips the ratchet (the workflows treat it as
 not-yet-adopted rather than failing). Adopt it with `init` + a baseline record.

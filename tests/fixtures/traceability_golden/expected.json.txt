@@ -11,7 +11,11 @@
     "uncovered_contracts": 1,
     "untested_contracts": 2,
     "dangling": 1,
-    "invalid_links": 1
+    "invalid_links": 1,
+    "suspect_links": 0,
+    "justified_contracts": 0,
+    "expired_justifications": 0,
+    "invalid_justifications": 0
   },
   "soundness_ok": false,
   "coverage_ok": false,
@@ -44,5 +48,10 @@
       "reason": "verifies cannot originate from code"
     }
   ],
+  "suspect_links": [],
+  "suspect_contracts": [],
+  "justified_contracts": [],
+  "expired_justifications": [],
+  "invalid_justifications": [],
   "warnings": []
 }

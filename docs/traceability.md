@@ -123,3 +123,105 @@ contents belong to the submodule's own repo and its own gates — this keeps the
 two scan modes agreeing on the file universe. A bad `--changed-since` ref or a
 non-git `--source` with `--changed-since` is a usage error (exit 2), reported
 concisely on stderr.
+
+## Suspect-link propagation (#169)
+
+A trace link only proves what it claimed at the moment it was last checked. If
+`CTR-order-001`'s wording changes and no one re-reviews the `@cw-trace guards
+CTR-order-001` annotation that cites it, the link still *looks* healthy —
+uncovered/untested/dangling all miss this, because the annotation still
+resolves to a real, defined ID. This is the doorstop pattern's fix: every link
+also records the **definition hash** of the ID it was verified against
+(the same stable-ID block hash `ratchet.py` uses to detect weakened contracts —
+`chief_wiggum.hashing.hash_epic_definitions`, shared, not duplicated).
+
+The hash-per-link record lives in a generated sidecar,
+`docs/quality/trace-links.json` (in the target repo, alongside the ratchet's
+own state) — never hand-maintained:
+
+```bash
+# Write/refresh the sidecar from the CURRENT scan (only actually writes if the
+# requested --gate passes; a failing gate leaves the file untouched):
+python3 "$CW_HOME/scripts/check_traceability.py" docs/epics/<slug> --source . \
+    --gate coverage --write-links --format text
+
+# Override the sidecar location (default: <--source or cwd>/docs/quality/trace-links.json):
+python3 "$CW_HOME/scripts/check_traceability.py" docs/epics/<slug> --links path/to/trace-links.json
+```
+
+On every run, if a sidecar exists at the resolved location, each recorded link
+is compared against the ID's CURRENT definition hash. A mismatch is **SUSPECT**
+— reported in `suspect_links`/`suspect_contracts`, distinct from both dangling
+(the ID doesn't exist at all) and uncovered/untested (no link exists): here a
+link exists, its claim about the contract is just stale. Rewording the
+contract flips its links to SUSPECT; re-running `--write-links` against the
+reworded contract clears them (the reviewer re-validated the claim).
+
+Suspect propagation is **report-only initially** (see
+[gate-rollout.md](gate-rollout.md)): it does not change `soundness_ok`/
+`coverage_ok`, and `--gate coverage` does not yet hard-fail on it. `ratchet.py
+check`/`regressed` also cross-reference the same sidecar against the CURRENT
+scorecard's contract hashes and print suspect links explicitly — a
+definition-hash change is never silently absorbed into "the ratchet held".
+
+**Known limitation**: the sidecar comparison is scoped to the single epic
+directory `check_traceability.py` is invoked against — a link whose target ID
+is declared in a *different* epic is invisible to that run (it will simply
+have no `current_hash` to compare and is skipped, not falsely flagged).
+Multi-epic sidecar aggregation is a follow-up, not yet needed for the
+single-epic-at-a-time workflow `/architect`/`/close-epic` already use.
+
+## JUSTIFIED waivers (#169)
+
+An uncovered/untested contract isn't always a bug — sometimes coverage is
+deliberately deferred (e.g. manual QA only for this release) and pretending
+otherwise with a fake `@cw-trace guards`/`verifies` annotation would be a lie.
+The LOBSTER pattern's fix: a first-class waiver record, distinct from both
+"OK" and "gap".
+
+Waivers live under `docs/epics/<slug>/justifications/*.json`, one file per
+waiver, diffable and committed like any other epic artifact:
+
+```json
+{
+  "id": "CTR-order-002",
+  "reason": "manual QA only for this release; automated coverage tracked separately",
+  "approver": "jane@example.com",
+  "expiry": "2026-12-31",
+  "ticket": "#170"
+}
+```
+
+All five fields are required. **A justification without a `ticket` ref is
+invalid** — per the ticket-every-deferral doctrine, a waiver is not a way to
+skip opening a tracking ticket, and an invalid record does NOT satisfy
+coverage (it's reported under `invalid_justifications`, and the contract stays
+uncovered/untested). An **expired** justification (`expiry` has passed) also
+does not satisfy coverage — it's reported under `expired_justifications` so a
+stale waiver is visible, not a silent pass forever.
+
+A valid, non-expired justification for a currently uncovered/untested contract
+moves it out of `uncovered_contracts`/`untested_contracts` into
+`justified_contracts` — `coverage_ok` becomes true honestly, because the gap
+is now a documented, ticket-tracked decision instead of an unexplained miss. A
+justification for an already-covered contract, or for an ID that isn't even
+defined, has no effect (not reported as JUSTIFIED — there's nothing to waive).
+
+Note the `justifications/` subtree is excluded from ID/hash scanning (a
+waiver's own `"id"` field names the CTR/INV it waives, not a new declaration).
+
+## Coverage-requirement alternatives (#169)
+
+By default any `verifies` link — from a test, probe, policy, or telemetry
+artifact — satisfies a contract's test coverage. A contract may instead
+declare which kinds are acceptable, with OR semantics, via a JSON model entry:
+
+```json
+{"id": "CTR-order-005", "coverage_requires": ["unit-test", "integration-spec"]}
+```
+
+`CTR-order-005` is then untested unless a `verifies` annotation's `source_kind`
+matches ONE of the declared alternatives — a `telemetry`-only signal, for
+example, would no longer count if only `["unit-test", "integration-spec"]` are
+declared acceptable. Omitting `coverage_requires` for an ID preserves the
+original "any verifying kind counts" behavior.

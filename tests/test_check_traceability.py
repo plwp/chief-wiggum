@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import check_traceability as ct
+from chief_wiggum.hashing import hash_epic_definitions
+from chief_wiggum.trace_links import SIDECAR_RELPATH, build_sidecar, load_sidecar, write_sidecar
 
 SCHEMA = ct.load_schema()
 
@@ -349,3 +352,278 @@ def test_full_scan_skips_nested_git_checkout(tmp_path):
     (sub / "b.py").write_text("# @cw-trace guards CTR-b-001\n")
     anns = ct.scan_source(tmp_path)
     assert {a.target for a in anns} == {"CTR-a-001"}
+
+
+# --- suspect-link propagation (#169) -----------------------------------------
+
+
+def _epic_with_ctr(tmp_path, reworded=False):
+    epic = tmp_path / "epic"
+    epic.mkdir(exist_ok=True)
+    condition = "True" if reworded else "start_date <= end_date"
+    (epic / "contracts.md").write_text(
+        f"### CTR-order-001 — valid date range\nREQUIRES: {condition}\n"
+    )
+    return epic
+
+
+def _src_guarding_ctr(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text("# @cw-trace guards CTR-order-001\n")
+    (src / "test_order.py").write_text("# @cw-trace verifies CTR-order-001\n")
+    return src
+
+
+def test_reword_flips_recorded_links_to_suspect_then_revalidation_clears(tmp_path):
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    links_path = tmp_path / "docs" / "quality" / "trace-links.json"
+
+    # Initial validation: no prior sidecar -> nothing suspect yet; write it.
+    r0 = ct.check(epic, src, links_path=links_path)
+    assert r0.suspect_links == []
+    ct.write_links_sidecar(epic, src, links_path)
+    assert links_path.is_file()
+
+    # Reword the contract -> its definition hash changes.
+    _epic_with_ctr(tmp_path, reworded=True)
+
+    r1 = ct.check(epic, src, links_path=links_path)
+    assert len(r1.suspect_links) == 2  # the guards link AND the verifies link
+    assert r1.suspect_contracts == ["CTR-order-001"]
+    assert {d["verb"] for d in r1.suspect_links} == {"guards", "verifies"}
+
+    # Re-validation: refresh the sidecar against the reworded contract -> clears.
+    ct.write_links_sidecar(epic, src, links_path)
+    r2 = ct.check(epic, src, links_path=links_path)
+    assert r2.suspect_links == []
+    assert r2.suspect_contracts == []
+
+
+def test_suspect_links_do_not_affect_soundness_or_coverage_ok(tmp_path):
+    """Suspect is report-only initially (docs/gate-rollout.md doctrine)."""
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    links_path = tmp_path / "docs" / "quality" / "trace-links.json"
+    ct.write_links_sidecar(epic, src, links_path)
+    _epic_with_ctr(tmp_path, reworded=True)
+    r = ct.check(epic, src, links_path=links_path)
+    assert r.suspect_links  # something IS suspect
+    assert r.soundness_ok and r.coverage_ok  # but the existing gates are unaffected
+
+
+def test_no_sidecar_means_nothing_is_suspect(tmp_path):
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    r = ct.check(epic, src, links_path=tmp_path / "nope" / "trace-links.json")
+    assert r.suspect_links == []
+
+
+def test_write_links_sidecar_records_current_definition_hashes(tmp_path):
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    links_path = tmp_path / "trace-links.json"
+    body = ct.write_links_sidecar(epic, src, links_path)
+    hashes = hash_epic_definitions(epic)
+    assert all(link["definition_hash"] == hashes["CTR-order-001"] for link in body["links"])
+    reloaded = load_sidecar(links_path)
+    assert reloaded == body
+
+
+def test_cli_write_links_writes_sidecar_only_when_gate_passes(tmp_path):
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    links_path = tmp_path / "docs" / "quality" / "trace-links.json"
+
+    # coverage gate passes (guarded + verified) -> sidecar is written.
+    rc = ct.main([
+        str(epic), "--source", str(src), "--gate", "coverage",
+        "--links", str(links_path), "--write-links", "--format", "json",
+    ])
+    assert rc == 0
+    assert links_path.is_file()
+
+    # Now break coverage (delete the verifying test) -> gate fails -> sidecar
+    # must NOT be overwritten with the new (uncovered) state.
+    before = links_path.read_text()
+    (src / "test_order.py").unlink()
+    rc2 = ct.main([
+        str(epic), "--source", str(src), "--gate", "coverage",
+        "--links", str(links_path), "--write-links", "--format", "json",
+    ])
+    assert rc2 == 1
+    assert links_path.read_text() == before
+
+
+def test_cli_default_links_path_is_under_source_docs_quality(tmp_path):
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    rc = ct.main([str(epic), "--source", str(src), "--write-links", "--format", "json"])
+    assert rc == 0
+    assert (src / SIDECAR_RELPATH).is_file()
+
+
+# --- JUSTIFIED waivers (#169) -------------------------------------------------
+
+
+def _epic_with_uncovered_ctr(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir(exist_ok=True)
+    (epic / "contracts.md").write_text("### CTR-order-002 — idempotent creation\nNo code yet.\n")
+    return epic
+
+
+def _write_justification(epic, **overrides):
+    jdir = epic / "justifications"
+    jdir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "id": "CTR-order-002",
+        "reason": "manual QA only for this release",
+        "approver": "jane@example.com",
+        "expiry": "2099-01-01",
+        "ticket": "#170",
+    }
+    data.update(overrides)
+    (jdir / "ctr-order-002.json").write_text(json.dumps(data))
+
+
+def test_valid_justification_satisfies_coverage_and_renders_distinctly(tmp_path):
+    epic = _epic_with_uncovered_ctr(tmp_path)
+    _write_justification(epic)
+    r = ct.check(epic)
+    assert r.uncovered_contracts == [] and r.untested_contracts == []
+    assert r.coverage_ok
+    assert len(r.justified_contracts) == 1
+    assert r.justified_contracts[0]["id"] == "CTR-order-002"
+    assert r.justified_contracts[0]["ticket"] == "#170"
+    assert r.expired_justifications == []
+    assert r.invalid_justifications == []
+
+
+def test_expired_justification_does_not_satisfy_coverage(tmp_path):
+    epic = _epic_with_uncovered_ctr(tmp_path)
+    _write_justification(epic, expiry="2000-01-01")
+    r = ct.check(epic, today=date(2026, 1, 1))
+    assert "CTR-order-002" in r.uncovered_contracts
+    assert "CTR-order-002" in r.untested_contracts
+    assert not r.coverage_ok
+    assert r.justified_contracts == []
+    assert len(r.expired_justifications) == 1
+    assert r.expired_justifications[0]["id"] == "CTR-order-002"
+
+
+def test_justification_without_ticket_ref_is_invalid_and_does_not_satisfy_coverage(tmp_path):
+    epic = _epic_with_uncovered_ctr(tmp_path)
+    _write_justification(epic, ticket="")
+    r = ct.check(epic)
+    assert "CTR-order-002" in r.uncovered_contracts
+    assert not r.coverage_ok
+    assert r.justified_contracts == []
+    assert len(r.invalid_justifications) == 1
+    assert "ticket" in r.invalid_justifications[0]["reason"]
+
+
+def test_justification_for_undefined_id_is_reported_invalid(tmp_path):
+    epic = _epic_with_uncovered_ctr(tmp_path)
+    _write_justification(epic, id="CTR-ghost-999")
+    r = ct.check(epic)
+    assert r.justified_contracts == []
+    assert any("undefined" in d["reason"] for d in r.invalid_justifications)
+
+
+def test_justification_for_already_covered_contract_has_no_effect(tmp_path):
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    _write_justification(epic, id="CTR-order-001")
+    r = ct.check(epic, src)
+    assert r.uncovered_contracts == [] and r.untested_contracts == []
+    assert r.justified_contracts == []  # nothing to waive; not reported as JUSTIFIED
+
+
+def test_justified_renders_in_markdown_and_json(tmp_path, capsys):
+    epic = _epic_with_uncovered_ctr(tmp_path)
+    _write_justification(epic)
+    rc_text = ct.main([str(epic)])
+    assert rc_text == 0
+    text_out = capsys.readouterr().out
+    assert "Justified" in text_out
+    assert "#170" in text_out
+
+    rc_json = ct.main([str(epic), "--format", "json"])
+    assert rc_json == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["justified_contracts"][0]["id"] == "CTR-order-002"
+    assert data["coverage_ok"] is True
+
+
+# --- coverage-requirement alternatives (#169) --------------------------------
+
+
+def test_coverage_requires_alternatives_satisfied_by_any_declared_kind(tmp_path):
+    epic = tmp_path / "epic"
+    models = epic / "models"
+    models.mkdir(parents=True)
+    (epic / "contracts.md").write_text("### CTR-order-005 — refund idempotency\nx\n")
+    (models / "contracts.json").write_text(json.dumps({
+        "id": "CTR-order-005",
+        "coverage_requires": ["test", "probe"],
+    }))
+    src = tmp_path / "src"
+    src.mkdir()
+    # Only a telemetry verifies exists -- NOT in the declared alternatives.
+    (src / "slo.yaml").write_text("# @cw-trace verifies CTR-order-005\n")
+    r = ct.check(epic, src)
+    assert "CTR-order-005" in r.untested_contracts
+
+    # A probe verifies IS in the declared alternatives -> satisfied.
+    (src / "k6" / "latency.js").parent.mkdir(exist_ok=True)
+    (src / "k6" / "latency.js").write_text("// @cw-trace verifies CTR-order-005\n")
+    r2 = ct.check(epic, src)
+    assert "CTR-order-005" not in r2.untested_contracts
+
+
+def test_coverage_requires_absent_falls_back_to_any_verifies_kind(tmp_path):
+    """No coverage_requires declared -> unchanged behavior: ANY verifying kind
+    (test/probe/policy/telemetry) satisfies coverage."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("### CTR-order-006 — x\ny\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "slo.yaml").write_text("# @cw-trace verifies CTR-order-006\n")
+    r = ct.check(epic, src)
+    assert "CTR-order-006" not in r.untested_contracts
+
+
+def test_extract_coverage_requirements_from_json_model(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.json").write_text(json.dumps({
+        "contracts": [{"id": "CTR-x-001", "coverage_requires": ["unit-test", "integration-spec"]}]
+    }))
+    reqs = ct.extract_coverage_requirements(epic)
+    assert reqs == {"CTR-x-001": ["unit-test", "integration-spec"]}
+
+
+# --- sidecar/report plumbing --------------------------------------------------
+
+
+def test_build_sidecar_and_load_sidecar_are_reexported_and_compatible(tmp_path):
+    """check_traceability composes chief_wiggum.trace_links directly — no
+    parallel re-implementation of the sidecar format."""
+    path = tmp_path / SIDECAR_RELPATH
+    body = build_sidecar([], {})
+    write_sidecar(path, body)
+    assert load_sidecar(path) == {"scanner_version": None, "links": []}
+
+
+def test_report_to_dict_includes_new_fields_and_is_json_serializable():
+    r = _report({"CTR-x-001": "CTR"}, [])
+    d = r.to_dict()
+    for key in (
+        "suspect_links", "suspect_contracts", "justified_contracts",
+        "expired_justifications", "invalid_justifications",
+    ):
+        assert key in d
+    json.loads(json.dumps(d))
