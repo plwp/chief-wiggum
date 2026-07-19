@@ -124,9 +124,22 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
 
 Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the fact was resolved during implementation (update the artifact with the real value and a citation) or it wasn't (which means some ticket was built on a guess — trace it and verify what actually shipped). Target: zero markers.
 
+### Step 2c2: Gate-validation check (docs/gate-validation.md)
+
+Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e keep their existing `--gate coverage` enforcement unchanged:
+
+```bash
+python3 "$CW_HOME/scripts/check_gate_validation.py" check_traceability --validation-dir "$CW_HOME/docs/quality/validation" --gate
+python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --validation-dir "$CW_HOME/docs/quality/validation" --gate
+```
+
+(A target repo that hosts gates of its own keeps their records at the same relative path in that repo — `docs/quality/validation/<gate>.json`, sibling to its ratchet journal — and this step checks them the same way.)
+
+**If either exits non-zero (no record, a stale/forged one, or a failing one), do not pass `--gate coverage` to that checker in the corresponding step below** — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
+
 ### Step 2d: Traceability coverage gate
 
-Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`):
+Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`). Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_traceability --gate` passed; otherwise drop `--gate coverage` and report the finding instead:
 
 ```bash
 python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
@@ -148,7 +161,7 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 ### Step 2e: Single-writer coverage gate
 
-For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*.
+For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*. Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_single_writer --gate` passed; otherwise drop `--gate coverage` and report the finding instead:
 
 ```bash
 python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text

@@ -49,6 +49,8 @@ Subcommands:
     check       exit 1 if the ratchet is violated (regression/weakening/removal)
     regressed   print JSON of current violations vs the high-water mark
     record      append a hash-chained record; (re)derive the high-water cache
+                (event=gate-validation records a gate-validation-protocol run —
+                see docs/gate-validation.md — --ref names the gate)
     recent      print the last N records' notes (amnesia context for the fixer)
     highwater   print the derived high-water mark
     protected   exit 1 if a branch diff touches the protected pathset
@@ -781,8 +783,14 @@ def main() -> int:
 
     sp = sub.add_parser("record", help="append a hash-chained journal record")
     common(sp)
-    sp.add_argument("--event", required=True, choices=["baseline", "ticket", "wave", "epic-close"])
-    sp.add_argument("--ref", default="", help="ticket #, wave number, or epic slug")
+    sp.add_argument(
+        "--event", required=True,
+        choices=["baseline", "ticket", "wave", "epic-close", "gate-validation"],
+    )
+    sp.add_argument(
+        "--ref", default="",
+        help="ticket #, wave number, epic slug, or (for gate-validation) the gate name",
+    )
     sp.add_argument("--gate", default="pass", choices=["pass", "fail"])
     sp.add_argument("--merged", action="store_true", help="the change reached the default branch")
     sp.add_argument("--notes", default="")

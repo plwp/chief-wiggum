@@ -1,0 +1,79 @@
+{
+  "gate": "check_traceability",
+  "protocol_version": "1",
+  "scanner_version": "69185ee33cac16899fa7390c90597184fb612fa98e3b7e63f62fe14dab499794",
+  "telemetry_dependent": false,
+  "concurrency_applicable": false,
+  "concurrency_note": "check_traceability is a single-pass static text scan of epic docs + a checked-in source tree at a fixed SHA — there is no concurrent/racing dimension in the artifact to evade.",
+  "authority_boundary": {
+    "proves": "every stable-ID contract/invariant carries a code @cw-trace guards/ensures annotation (coverage) and a test/probe/policy/telemetry @cw-trace verifies annotation (tested), every BR has an incoming realizes from a defined contract/invariant, and every @cw-trace annotation targets a defined ID with a schema-valid verb/source-kind pairing — over the file extensions the scanner walks (.py/.go/.ts/.tsx/.js/.jsx/.java/.rb/.rs/.rego/.yaml/.yml)",
+    "artifact": "a git worktree copy of the target repo's epic docs (docs/epics/<slug>) plus its tracked source tree",
+    "assumptions": [
+      "an @cw-trace annotation is trusted as accurate by presence — the checker verifies the tag exists, not that the annotated code/test actually implements the guard/verification it claims to",
+      "only annotations that appear as literal text on a single line are found; a dynamically-constructed or multi-line-split annotation is invisible to the regex",
+      "only the listed file extensions are scanned; an annotation placed in an unscanned extension (e.g. .txt, .md outside the epic doc tree) does not count toward coverage"
+    ]
+  },
+  "seeded_defect_trials": [
+    {
+      "seed_id": "tr-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/traceability_clean",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "order.py: removed the `@cw-trace guards CTR-order-001 INV-order-003` annotation entirely",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "tr-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/traceability_clean",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "test_create_order.py: guards annotation left intact, but the verifies annotation silently dropped INV-order-003 (kept only CTR-order-001)",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "tr-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/traceability_clean",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "order.py: the real create_order lost its guards annotation, but a decoy `@cw-trace guards CTR-order-001 INV-order-003` was placed on an unrelated no-op function that does not implement the guard",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    },
+    {
+      "seed_id": "tr-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/traceability_clean",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "test_create_order.py lost its real verifies annotation; a decoy verifies annotation for both IDs was placed in notes.txt, an extension outside SOURCE_EXTS",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    }
+  ],
+  "clean_corpus_runs": [
+    {
+      "repo": "tests/fixtures/gate_validation/traceability_clean",
+      "sha": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "findings": 0,
+      "coverage": {
+        "annotations_scanned": 5,
+        "defined_ids": 3
+      },
+      "passed": true
+    }
+  ],
+  "status": "passed",
+  "validated_at": "2026-07-19T00:00:00Z",
+  "validated_by": "chief-wiggum#168 (re-validated post #181/#182 scanner changes)",
+  "ratchet_record_id": "rec-00004"
+}

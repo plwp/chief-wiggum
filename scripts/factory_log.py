@@ -13,9 +13,9 @@ exists.
 Event schema (one JSON object per line):
     {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
      provider?, tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
-     missed_by?, found_in?, invariant?, fixed?, details?}
+     missed_by?, found_in?, invariant?, fixed?, seed_class?, details?}
 
-  event: "gate" | "consult" | "worker" | "skill" | "escape"
+  event: "gate" | "consult" | "worker" | "skill" | "escape" | "demotion"
   A gate records name/result/duration_ms/caught; a consult records
   provider/tokens/cost; an **escape** records a manually-found bug — especially
   one that slipped PAST a gate and was caught later (`missed_by` the gate/stage
@@ -24,9 +24,17 @@ Event schema (one JSON object per line):
   (caught / (caught + escaped)), not just catches. Each call site fills what it
   KNOWS and omits the rest.
 
+  A **demotion** (docs/gate-validation.md) fires when an escape's `--seed-class`
+  matches a seed class the `missed_by` gate's validation record certified it
+  catches: the validation was wrong about production recall, so the gate must
+  drop back to report-only and the seed class gets re-derived — not just logged.
+
     factory_log.py emit --event gate --repo acme/app --name ratchet --result pass --caught 0
     factory_log.py bug --repo acme/app --summary "reset endpoint leaks account existence" \
       --severity high --missed-by ticket-gate --found-in close-epic-review
+    factory_log.py bug --repo acme/app --summary "..." --severity high \
+      --missed-by check_single_writer --seed-class evasion-omission \
+      --found-in close-epic-review   # triggers a DEMOTION instruction if validated
     factory_log.py aggregate [--repo acme/app]
 """
 
@@ -47,10 +55,15 @@ CONSULT = "consult"
 WORKER = "worker"
 SKILL = "skill"
 ESCAPE = "escape"  # a manually-found bug, especially one a gate missed
+DEMOTION = "demotion"  # a gate reverted to report-only after a validated seed class escaped
 CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's own OTEL telemetry
 
 ESCAPE_SEVERITIES = ("low", "medium", "high", "critical")
 ESCAPE_FOUND_IN = ("implement-verify", "close-epic-review", "saas-gate", "manual", "prod")
+
+# CW's own gates ship their validation records with chief-wiggum (see
+# docs/gate-validation.md); default to that so demotion works out of the box.
+DEFAULT_VALIDATION_DIR = str(Path(__file__).resolve().parent.parent / "docs" / "quality" / "validation")
 
 
 def log_path() -> Path:
@@ -94,7 +107,8 @@ def emit_gate(name: str, result: str, *, caught: int | None = None,
 
 def emit_escape(summary: str, *, severity: str, missed_by: str, found_in: str,
                 repo: str | None = None, ticket: str | None = None,
-                invariant: str | None = None, fixed: bool | None = None) -> bool:
+                invariant: str | None = None, fixed: bool | None = None,
+                seed_class: str | None = None) -> bool:
     """Record a manually-found bug — especially an ESCAPE that slipped PAST a gate
     and was only caught later (e.g. close-epic's adversarial review catching a bug
     the ticket's own gates missed).
@@ -110,7 +124,74 @@ def emit_escape(summary: str, *, severity: str, missed_by: str, found_in: str,
     """
     return emit(ESCAPE, summary=summary, severity=severity, missed_by=missed_by,
                 found_in=found_in, repo=repo, ticket=ticket, invariant=invariant,
-                fixed=fixed)
+                fixed=fixed, seed_class=seed_class)
+
+
+def emit_demotion(gate: str, seed_class: str, *, repo: str | None = None,
+                  ticket: str | None = None) -> bool:
+    """Record that `gate` was demoted to report-only after a production escape
+    matched a seed class its gate-validation record certified it catches
+    (see `demotion_check` / docs/gate-validation.md)."""
+    return emit(DEMOTION, name=gate, details=f"seed_class={seed_class}",
+                repo=repo, ticket=ticket)
+
+
+def load_validation_record(gate: str, validation_dir: str | Path) -> dict | None:
+    """Load a gate-validation-protocol record (docs/gate-validation.md) for `gate`.
+    Returns None (never raises) when absent or malformed — a missing record is
+    not itself an error here; `check_gate_validation.py` is the authority on that."""
+    path = Path(validation_dir) / f"{gate}.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def demotion_check(missed_by: str, seed_class: str | None,
+                   validation_dir: str | Path = DEFAULT_VALIDATION_DIR) -> dict | None:
+    """Return a demotion instruction when a real escape's `seed_class` matches a
+    class `missed_by`'s gate-validation record (docs/gate-validation.md)
+    certified it PASSED — i.e. the record claimed this gate catches exactly this
+    evasion technique, and production just proved that claim wrong.
+
+    This is the mechanical half of "quality ratchets, never slides" applied to a
+    gate's own blocking authority: a validated seed class that then escapes in
+    production is not a one-off miss to log and forget, it is evidence the
+    validation itself was insufficient. Returns None (nothing to demote) when no
+    `seed_class` was given, no record exists, or the class wasn't one the record
+    claims to have validated.
+
+    Only classes certified as CAUGHT ground a demotion: the trial must have
+    `expected: "fire"` with `result: "fired"` and `passed: true`. A passing
+    `expected: "no-fire"` trial certifies a documented NON-coverage boundary
+    (e.g. an evasion-sampling-gap seed proving vendor/ is out of scope) — an
+    escape through that boundary is consistent with the record's authority
+    statement, not a refutation of it, so it must not demote the gate.
+    """
+    if not seed_class:
+        return None
+    record = load_validation_record(missed_by, validation_dir)
+    if not record:
+        return None
+    validated_classes = {
+        t.get("seed_class") for t in record.get("seeded_defect_trials", []) or []
+        if t.get("passed") is True and t.get("expected") == "fire" and t.get("result") == "fired"
+    }
+    if seed_class not in validated_classes:
+        return None
+    return {
+        "gate": missed_by,
+        "seed_class": seed_class,
+        "instruction": (
+            f"DEMOTE {missed_by} to report-only (drop --gate from its workflow wiring) — "
+            f"a production escape matched seed class {seed_class!r}, which {missed_by}'s "
+            f"gate-validation record ({validation_dir}/{missed_by}.json) certified it catches. "
+            "File a tracking ticket to re-derive and re-run that seed class before "
+            "re-promoting the gate to blocking."
+        ),
+    }
 
 
 def load_pricing(path: Path = PRICING_PATH) -> dict:
@@ -438,6 +519,12 @@ def main() -> int:
     b.add_argument("--ticket", help="Issue/ticket number, e.g. 42")
     b.add_argument("--invariant", help="Related invariant ID, e.g. INV-012")
     b.add_argument("--fixed", action="store_true", help="Set if already fixed at log time")
+    b.add_argument("--seed-class",
+                   help="Gate-validation seed class this escape resembles (docs/gate-validation.md), "
+                        "e.g. evasion-omission. Triggers a DEMOTION instruction when --missed-by's "
+                        "validation record certified it catches this class.")
+    b.add_argument("--validation-dir", default=DEFAULT_VALIDATION_DIR,
+                   help=f"Directory of <gate>.json validation records (default: {DEFAULT_VALIDATION_DIR})")
 
     a = sub.add_parser("aggregate", help="Summarize the log")
     a.add_argument("--repo")
@@ -469,12 +556,21 @@ def main() -> int:
             return 1
         return 0
     if args.cmd == "bug":
+        # Demotion is a structural check against the gate's validation record —
+        # independent of whether telemetry logging is enabled. It must not be
+        # silenced just because CW_TELEMETRY is off.
+        demotion = demotion_check(args.missed_by, args.seed_class, args.validation_dir)
+        if demotion:
+            print(f"factory_log: DEMOTION — {demotion['instruction']}", file=sys.stderr)
         ok = emit_escape(args.summary, severity=args.severity, missed_by=args.missed_by,
                           found_in=args.found_in, repo=args.repo, ticket=args.ticket,
-                          invariant=args.invariant, fixed=True if args.fixed else None)
+                          invariant=args.invariant, fixed=True if args.fixed else None,
+                          seed_class=args.seed_class)
         if not ok:
             print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)", file=sys.stderr)
             return 1
+        if demotion:
+            emit_demotion(demotion["gate"], demotion["seed_class"], repo=args.repo, ticket=args.ticket)
         return 0
     if args.cmd == "aggregate":
         agg = aggregate(read_log(), repo=args.repo)

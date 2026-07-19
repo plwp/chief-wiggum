@@ -1,0 +1,80 @@
+{
+  "gate": "check_single_writer",
+  "protocol_version": "1",
+  "scanner_version": "4f7d12a9f3930dc1723507274d2177075fd5064b8824620d4a632d58a17d93dc",
+  "telemetry_dependent": false,
+  "concurrency_applicable": false,
+  "concurrency_note": "check_single_writer is a single-pass static scan of checked-in source at a fixed SHA — there is no concurrent/racing writer dimension in the artifact itself to evade (the invariant it checks, an atomic single write PATH in code, is a design-time property, not a runtime race).",
+  "authority_boundary": {
+    "proves": "every writer of a single-write-path invariant's controls_field, found by scanning a Go/Mongo/SQL source tree for assignments, struct-literal sets, bson $set mutations, and SQL UPDATE ... SET, is reported as a violation unless its enclosing symbol or file is in sanctioned_writers",
+    "artifact": "a git worktree copy of the target repo's tracked source tree (vendor/node_modules/dist/build/.git excluded by design)",
+    "assumptions": [
+      "the invariant carries well-formed controls_field + sanctioned_writers metadata (structured state-machines.json or prose @cw-writes tag)",
+      "a writer that never appears as a literal quoted/assigned field-name token (fully dynamic field construction through reflection or string concatenation) is not detectable by a regex scanner",
+      "vendor/node_modules/dist/build subtrees are explicitly out of scope (SKIP_PARTS) — a writer placed there will not be found",
+      "test-file writes are treated as fixtures, never violations, per the is_test heuristic"
+    ]
+  },
+  "seeded_defect_trials": [
+    {
+      "seed_id": "sw-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/single_writer_clean",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "internal/admin/handlers.go: ChangePlan writes provider.plan via bson $set, outside INV-bil-001's sanctioned_writers",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "sw-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/single_writer_clean",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "internal/db/leak.go: an unsanctioned write of provider.active_owner_count hidden inside a nested anonymous closure with no directly-enclosing named function at the write site",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "sw-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/single_writer_clean",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "internal/wrappers/generic.go: a generically-named SetField helper writes provider.stripe_plan via bson $set — indirection through a wrapper function, not the sanctioned symbol name",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "sw-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/single_writer_clean",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "vendor/thirdparty/patch.go: an unsanctioned write of provider.stripe_plan placed inside the vendor/ subtree, which SKIP_PARTS excludes by design",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    }
+  ],
+  "clean_corpus_runs": [
+    {
+      "repo": "tests/fixtures/gate_validation/single_writer_clean",
+      "sha": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "findings": 0,
+      "coverage": {
+        "invariants_checked": 3,
+        "writers_found": 3
+      },
+      "passed": true
+    }
+  ],
+  "status": "passed",
+  "validated_at": "2026-07-19T00:00:00Z",
+  "validated_by": "chief-wiggum#168 (re-validated post #181/#182 scanner changes)",
+  "ratchet_record_id": "rec-00003"
+}
