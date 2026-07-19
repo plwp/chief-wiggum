@@ -292,8 +292,15 @@ def _file_provenance(repo_root: Path, rel: str) -> dict:
 def _scanner_version() -> str:
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
+    # check_single_writer.py / check_traceability.py are hash inputs because
+    # their EMISSIONS define this tool's facts (writer sites, annotation
+    # sites): a change to either scanner's detection logic changes what a
+    # query returns, so it must change this version too.
     return scanner_version(
-        here, cw_dir / "trace_ids.py", cw_dir / "annotations.py",
+        here,
+        here.parent / "check_single_writer.py",
+        here.parent / "check_traceability.py",
+        cw_dir / "trace_ids.py", cw_dir / "annotations.py",
         cw_dir / "manifest.py", cw_dir / "hashing.py",
     )
 
@@ -365,16 +372,19 @@ def _fuzzy_word_match(a: str, b: str) -> bool:
 
 
 def _path_matches_literal_segments(pattern: str, rel: str) -> bool:
-    """Best-effort, inferred binding: at least one non-generic word of `pattern`
-    (a ui-spec route or contracts.json operation path) must word-match the
-    target file's own path. Heuristic by design (no file-level binding field
-    exists in the schemas) — labeled `inferred`, never `exact`, in the facts
-    this produces."""
+    """Best-effort, inferred binding: EVERY non-generic literal word of
+    `pattern` (a ui-spec route or contracts.json operation path) must
+    word-match the target file's own path. All-words (not any-word) keeps
+    precision: `/api/v1/orders/:id/confirm` requires both "orders" AND
+    "confirm" among the file's path words, so `ui/orders/page.tsx` does not
+    inherit the confirm operation just for living in an `orders/` directory.
+    Heuristic by design (no file-level binding field exists in the schemas) —
+    labeled `inferred`, never `exact`, in the facts this produces."""
     literals = _literal_words(pattern)
     if not literals:
         return False
     file_words = _path_words(rel)
-    return any(_fuzzy_word_match(lw, fw) for lw in literals for fw in file_words)
+    return all(any(_fuzzy_word_match(lw, fw) for fw in file_words) for lw in literals)
 
 
 def _path_to_regex(template: str) -> re.Pattern:
@@ -499,6 +509,9 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
                 for op in entity.get("operations", []):
                     if not _path_matches_literal_segments(op.get("path", ""), rel):
                         continue
+                    # Locator discipline (two-plane): counts + IDs only — the
+                    # REQUIRES/ENSURES/error bodies stay in Plane A; deref the
+                    # handle via `show` (or ask `contract`) for the one-liners.
                     facts.append(Fact(
                         kind="contract_operation",
                         id=None,
@@ -507,9 +520,9 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
                         epic=epic.slug,
                         extra={
                             "relation": "inferred",
-                            "preconditions": [c.get("description") for c in op.get("preconditions", [])],
-                            "postconditions": [c.get("description") for c in op.get("postconditions", [])],
-                            "error_cases": op.get("error_cases", []),
+                            "n_preconditions": len(op.get("preconditions", [])),
+                            "n_postconditions": len(op.get("postconditions", [])),
+                            "n_error_cases": len(op.get("error_cases", [])),
                             "state_transition": op.get("state_transition"),
                             "invariants_touched": op.get("invariants_touched", []),
                         },
@@ -873,6 +886,17 @@ def _find_derived_from(obj, target_id: str) -> list[dict] | None:
     return None
 
 
+def _find_derived_from_in_models(epic_ctx: Epic, target_id: str) -> tuple[str, list[dict]] | None:
+    """(model filename, derived_from list) for the node declaring `target_id`,
+    searched per model file so the resulting handle names the FILE that carries
+    the provenance (a dereferenceable `file#ID` handle, not a directory)."""
+    for name, model in epic_ctx.models.items():
+        df = _find_derived_from(model, target_id)
+        if df is not None:
+            return name, df
+    return None
+
+
 def cmd_trace(repo_root: Path, node_id: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     canonical = check_traceability.canonical_id(node_id)
@@ -903,14 +927,15 @@ def cmd_trace(repo_root: Path, node_id: str, epic: str | None, limit: int = DEFA
             facts.append(_annotation_fact(a, epics, repo_root))
 
     if owner is not None:
-        df = _find_derived_from(owner.models, canonical)
-        if df:
+        found = _find_derived_from_in_models(owner, canonical)
+        if found:
+            model_file, df = found
             for p in df:
                 facts.append(Fact(
                     kind="derived_from",
                     id=canonical,
                     statement=f"{p.get('type')}: {p.get('ref')} — {p.get('description', '')}".strip(" —"),
-                    handle=f"docs/epics/{owner.slug}/models/",
+                    handle=f"docs/epics/{owner.slug}/models/{model_file}#{canonical}",
                     epic=owner.slug,
                     extra=dict(p),
                     provenance={"blob_sha": None, "dirty": None, "from_cache": False},
@@ -932,6 +957,15 @@ def cmd_trace(repo_root: Path, node_id: str, epic: str | None, limit: int = DEFA
 # --- verb: contract ----------------------------------------------------------------
 
 
+def _condition_line(cond: dict) -> str:
+    """One summary line for a contracts.json condition — `id: description` when
+    the condition carries an id, bare description otherwise. Never the
+    machine `expression` (that's Plane-A body; deref via `show`)."""
+    desc = cond.get("description", "")
+    cid = cond.get("id")
+    return f"{cid}: {desc}" if cid else desc
+
+
 def cmd_contract(repo_root: Path, query: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     facts: list[Fact] = []
@@ -946,11 +980,10 @@ def cmd_contract(repo_root: Path, query: str, epic: str | None, limit: int = DEF
                 for op in entity.get("operations", []):
                     if op.get("method") != method or not _operation_path_matches(op.get("path", ""), path):
                         continue
-                    inv_stmts = []
-                    sm = epic_ctx.models.get("state-machines.json", {})
-                    for inv_id in op.get("invariants_touched", []):
-                        matches = [i for i in sm.get("invariants", []) if i.get("id") == inv_id]
-                        inv_stmts.append({"id": inv_id, "description": matches[0].get("description") if matches else None})
+                    # Locator discipline (two-plane): each condition/error case
+                    # is AT MOST one summary line ("id: description" / "status:
+                    # condition") — never the structured body (expressions stay
+                    # in Plane A; deref the handle via `show` for the block).
                     facts.append(Fact(
                         kind="contract_operation",
                         id=None,
@@ -958,11 +991,13 @@ def cmd_contract(repo_root: Path, query: str, epic: str | None, limit: int = DEF
                         handle=f"docs/epics/{epic_ctx.slug}/models/contracts.json#{entity['name']}/{op.get('name')}",
                         epic=epic_ctx.slug,
                         extra={
-                            "preconditions": op.get("preconditions", []),
-                            "postconditions": op.get("postconditions", []),
-                            "error_cases": op.get("error_cases", []),
+                            "preconditions": [_condition_line(c) for c in op.get("preconditions", [])],
+                            "postconditions": [_condition_line(c) for c in op.get("postconditions", [])],
+                            "error_cases": [
+                                f"{e.get('status')}: {e.get('condition', '')}" for e in op.get("error_cases", [])
+                            ],
                             "state_transition": op.get("state_transition"),
-                            "invariants_touched": inv_stmts,
+                            "invariants_touched": op.get("invariants_touched", []),
                         },
                         provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                         exact=True,
@@ -989,13 +1024,16 @@ def cmd_contract(repo_root: Path, query: str, epic: str | None, limit: int = DEF
                     for kind, bucket in (("precondition", "preconditions"), ("postcondition", "postconditions")):
                         for cond in op.get(bucket, []):
                             if cond.get("id") == canonical:
+                                # Locator: description is the one-line summary;
+                                # the machine expression stays in Plane A (deref
+                                # the handle via `show`).
                                 facts.append(Fact(
                                     kind=kind,
                                     id=canonical,
                                     statement=cond.get("description", ""),
                                     handle=f"docs/epics/{epic_ctx.slug}/models/contracts.json#{entity['name']}/{op.get('name')}",
                                     epic=epic_ctx.slug,
-                                    extra={"expression": cond.get("expression"), "operation": op.get("name")},
+                                    extra={"operation": op.get("name")},
                                     provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                                     exact=True,
                                     proximity=0,
@@ -1050,7 +1088,7 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
                     kind="invariant",
                     id=canonical,
                     statement=inv.get("description", ""),
-                    handle=f"{handle_base}#invariants",
+                    handle=f"{handle_base}#invariants[{inv.get('id')}]",
                     epic=epic_ctx.slug,
                     extra={
                         "scope": inv.get("scope", "global"),
@@ -1070,7 +1108,7 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
                 facts.append(Fact(
                     kind="transition", id=None,
                     statement=f"{t['from']} -> {t['to']} on {t['event']}",
-                    handle=f"{handle_base}#transitions", epic=epic_ctx.slug,
+                    handle=f"{handle_base}#transitions[{t['from']}->{t['to']}]", epic=epic_ctx.slug,
                     extra={"machine": sm.get("name")},
                     provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                     exact=True, proximity=0,
@@ -1078,7 +1116,7 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
             for inv in sm.get("invariants", []):
                 facts.append(Fact(
                     kind="invariant", id=inv.get("id"), statement=inv.get("description", ""),
-                    handle=f"{handle_base}#invariants", epic=epic_ctx.slug,
+                    handle=f"{handle_base}#invariants[{inv.get('id')}]", epic=epic_ctx.slug,
                     extra={"scope": inv.get("scope", "global")},
                     provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                     exact=True, proximity=0,
@@ -1090,11 +1128,17 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
             state_def = states[query] or {}
             for t in sm.get("transitions", []):
                 if t.get("from") == query or t.get("to") == query:
+                    # Locator discipline: guard summaries are one line each
+                    # (description only) — the machine expression stays in
+                    # Plane A; deref the handle via `show` for the block.
                     facts.append(Fact(
                         kind="transition", id=None,
                         statement=f"{t['from']} -> {t['to']} on {t['event']}",
-                        handle=f"{handle_base}#transitions", epic=epic_ctx.slug,
-                        extra={"guards": t.get("guards", []), "actions": t.get("actions", [])},
+                        handle=f"{handle_base}#transitions[{t['from']}->{t['to']}]", epic=epic_ctx.slug,
+                        extra={
+                            "guards": [_condition_line(g) for g in t.get("guards", [])],
+                            "actions": t.get("actions", []),
+                        },
                         provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                         exact=True, proximity=0,
                     ))
@@ -1103,7 +1147,7 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
                     facts.append(Fact(
                         kind="invalid_transition", id=None,
                         statement=f"{it['from']} -> {it['to']} REJECTED: {it.get('reason', '')}",
-                        handle=f"{handle_base}#invalid_transitions", epic=epic_ctx.slug,
+                        handle=f"{handle_base}#invalid_transitions[{it['from']}->{it['to']}]", epic=epic_ctx.slug,
                         extra={}, provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                         exact=True, violation=True, proximity=0,
                     ))
@@ -1111,7 +1155,7 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
             for inv in applicable_inv:
                 facts.append(Fact(
                     kind="invariant", id=inv.get("id"), statement=inv.get("description", ""),
-                    handle=f"{handle_base}#invariants", epic=epic_ctx.slug,
+                    handle=f"{handle_base}#invariants[{inv.get('id')}]", epic=epic_ctx.slug,
                     extra={"scope": inv.get("scope", "global")},
                     provenance={"blob_sha": None, "dirty": None, "from_cache": False},
                     exact=True, proximity=0,
@@ -1156,8 +1200,134 @@ def cmd_state(repo_root: Path, query: str, epic: str | None, limit: int = DEFAUL
 _HANDLE_RE = re.compile(r"^(.+):(\d+)$")
 
 
+def _find_node_by_id(obj, target_id: str):
+    """The JSON node declaring stable ID `target_id` (case-insensitive), or None."""
+    if isinstance(obj, dict):
+        nid = obj.get("id")
+        if isinstance(nid, str) and check_traceability.canonical_id(nid) == target_id:
+            return obj
+        for v in obj.values():
+            found = _find_node_by_id(v, target_id)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_node_by_id(item, target_id)
+            if found is not None:
+                return found
+    return None
+
+
+def _resolve_json_fragment(data: dict, fragment: str):
+    """Resolve a pseudo-handle fragment against a parsed Plane-A model.
+
+    Supports exactly the fragment grammar the other verbs EMIT — every handle
+    in any envelope must round-trip through `show`:
+
+    - ``pages[<route>]``                      (ui-spec.json)
+    - ``invariants[<ID>]``                    (state-machines.json)
+    - ``transitions[<from>-><to>]``           (state-machines.json)
+    - ``invalid_transitions[<from>-><to>]``   (state-machines.json)
+    - ``states/<name>`` / ``context/<name>``  (state-machines.json)
+    - ``<Entity>/<operation-or-field name>``  (contracts.json)
+    - a bare stable ID                        (any model; derived_from handles)
+
+    Returns the declared node (dict), a list of matching nodes (a from->to
+    pair may carry multiple events), or None.
+    """
+    m = re.match(r"^pages\[(.+)\]$", fragment)
+    if m:
+        return (data.get("pages") or {}).get(m.group(1))
+    m = re.match(r"^invariants\[(.+)\]$", fragment)
+    if m:
+        want = m.group(1).lower()
+        for inv in data.get("invariants", []) or []:
+            if str(inv.get("id", "")).lower() == want:
+                return inv
+        return None
+    m = re.match(r"^(transitions|invalid_transitions)\[(.+?)->(.+)\]$", fragment)
+    if m:
+        bucket, frm, to = m.groups()
+        matches = [t for t in data.get(bucket, []) or [] if t.get("from") == frm and t.get("to") == to]
+        if not matches:
+            return None
+        return matches[0] if len(matches) == 1 else matches
+    m = re.match(r"^states/(.+)$", fragment)
+    if m:
+        return (data.get("states") or {}).get(m.group(1))
+    m = re.match(r"^context/(.+)$", fragment)
+    if m:
+        return (data.get("context") or {}).get(m.group(1))
+    if _ID_KIND_RE.match(fragment):
+        node = _find_node_by_id(data, check_traceability.canonical_id(fragment))
+        if node is not None:
+            return node
+    m = re.match(r"^([^/\[\]]+)/(.+)$", fragment)
+    if m:
+        entity_name, member = m.groups()
+        for entity in data.get("entities", []) or []:
+            if entity.get("name") != entity_name:
+                continue
+            for op in entity.get("operations", []) or []:
+                if op.get("name") == member:
+                    return op
+            for fld in entity.get("fields", []) or []:
+                if fld.get("name") == member:
+                    return fld
+    return None
+
+
+def _show_pseudo_handle(repo_root: Path, handle: str, epics: list[Epic],
+                        limit: int, cursor: str | None) -> dict:
+    """Dereference a `file#fragment` pseudo-handle to its declared JSON block.
+    This is `show`'s job in the two-plane model: the other verbs only LOCATE
+    (IDs + handles + one-line summaries); the actual declared content is only
+    ever served here, read live from Plane A."""
+    rel, _, fragment = handle.partition("#")
+    full = Path(repo_root) / _norm(rel)
+    if not full.is_file():
+        return _unscanned_envelope(
+            f"{rel} not found under {repo_root}", query_provenance=_query_provenance(repo_root, epics)
+        )
+    try:
+        data = json.loads(full.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return _unscanned_envelope(
+            f"{rel} could not be parsed as JSON: {exc}",
+            query_provenance=_query_provenance(repo_root, epics),
+        )
+    node = _resolve_json_fragment(data, fragment)
+    if node is None:
+        return build_envelope(
+            [], verb="show",
+            summary=f"show: scanned, fragment '{fragment}' not found in {rel}",
+            warnings=[], query_provenance=_query_provenance(repo_root, epics),
+            limit=limit, cursor=cursor,
+        )
+    if isinstance(node, dict):
+        statement = str(
+            node.get("description") or node.get("name") or node.get("title") or fragment
+        )
+    else:
+        statement = f"{len(node)} matching declaration(s)"
+    fact = Fact(
+        kind="declaration", id=node.get("id") if isinstance(node, dict) else None,
+        statement=statement, handle=handle, epic=None,
+        extra={"block": json.dumps(node, indent=2).splitlines()},
+        provenance=_file_provenance(repo_root, _norm(rel)),
+        exact=True, proximity=0,
+    )
+    return build_envelope(
+        [fact], verb="show", summary=f"show: {handle}", warnings=[],
+        query_provenance=_query_provenance(repo_root, epics),
+        limit=limit, cursor=cursor,
+    )
+
+
 def cmd_show(repo_root: Path, handle: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
+    if "#" in handle:
+        return _show_pseudo_handle(repo_root, handle, epics, limit, cursor)
     m = _HANDLE_RE.match(handle)
     if m:
         rel, line_s = m.group(1), m.group(2)
@@ -1276,6 +1446,12 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo)
     if not repo_root.is_dir():
         print(f"Error: repo not found: {args.repo}", file=sys.stderr)
+        return 2
+    if args.epic and not (repo_root / "docs" / "epics" / args.epic).is_dir():
+        # A nonexistent epic slug is a usage error (a typo), exactly like the
+        # other checkers' missing epic_dir — NOT a "scanned, nothing governs"
+        # empty answer, which would serve absence of knowledge as knowledge.
+        print(f"Error: epic dir not found: {repo_root / 'docs' / 'epics' / args.epic}", file=sys.stderr)
         return 2
 
     kw = {"limit": args.limit, "cursor": args.cursor}

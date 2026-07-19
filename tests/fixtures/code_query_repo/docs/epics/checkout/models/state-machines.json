@@ -5,37 +5,79 @@
   "context": {
     "customer_id": {
       "type": "string",
-      "required_in_states": ["pending", "confirmed"],
+      "required_in_states": [
+        "pending",
+        "confirmed"
+      ],
       "source_of_truth": "orders collection"
     }
   },
   "states": {
-    "pending": { "description": "Order created, awaiting confirmation.", "type": "initial" },
+    "pending": {
+      "description": "Order created, awaiting confirmation.",
+      "type": "initial"
+    },
     "confirmed": {
       "description": "Order confirmed, ready to ship.",
       "type": "normal",
-      "entry_actions": ["chargePaymentMethod"],
+      "entry_actions": [
+        "chargePaymentMethod"
+      ],
       "exit_actions": []
     },
-    "cancelled": { "description": "Order cancelled.", "type": "terminal" }
+    "cancelled": {
+      "description": "Order cancelled.",
+      "type": "terminal"
+    }
   },
   "transitions": [
-    { "from": "pending", "to": "confirmed", "event": "confirm",
-      "guards": [{ "id": "GRD-confirm-001", "description": "status is pending" }] },
-    { "from": "pending", "to": "cancelled", "event": "cancel" }
+    {
+      "from": "pending",
+      "to": "confirmed",
+      "event": "confirm",
+      "guards": [
+        {
+          "id": "GRD-confirm-001",
+          "description": "status is pending"
+        }
+      ]
+    },
+    {
+      "from": "pending",
+      "to": "cancelled",
+      "event": "cancel"
+    }
   ],
   "invalid_transitions": [
-    { "from": "confirmed", "to": "pending", "reason": "cannot revert a confirmed order" }
+    {
+      "from": "confirmed",
+      "to": "pending",
+      "reason": "cannot revert a confirmed order"
+    }
   ],
   "invariants": [
     {
       "id": "INV-checkout-001",
       "description": "single write path for order status",
       "scope": "state-specific",
-      "applies_to_states": ["confirmed"],
+      "applies_to_states": [
+        "confirmed"
+      ],
       "category": "consistency",
-      "controls_field": ["order.status"],
-      "sanctioned_writers": ["ConfirmOrder", "src/order.py"]
+      "controls_field": [
+        "order.status"
+      ],
+      "sanctioned_writers": [
+        "ConfirmOrder",
+        "src/order.py"
+      ],
+      "derived_from": [
+        {
+          "type": "ticket",
+          "ref": "#1",
+          "description": "Confirm-order ticket"
+        }
+      ]
     }
   ]
 }

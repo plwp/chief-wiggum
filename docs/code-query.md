@@ -40,13 +40,33 @@ python3 scripts/code_query.py --repo <path> [--epic <slug>] [--format json|text]
 | `guards` / `verifies` | `<CTR-ID\|INV-ID>` | `@cw-trace guards`/`ensures` (code) or `verifies` (test/probe/policy/telemetry) sites targeting this ID |
 | `annotations` | `<ID> [--verb V]` | Every `@cw-trace` annotation (any verb, or filtered) targeting this ID, across epic docs (`realizes`) and source |
 | `trace` | `<ID>` | Full `BR -> CTR/INV -> code -> test` slice, plus `derived_from` provenance (ticket/AC) when the declaring JSON node carries it |
-| `contract` | `<CTR-ID \| "METHOD /path">` | REQUIRES/ENSURES, error cases, `invariants_touched`, `state_transition` for a `contracts.json` operation or condition |
-| `state` | `<machine name \| state \| INV-ID>` | Adjacency (in/out transitions), entry/exit actions, invalid transitions, applicable invariants, `required_in_states` context fields |
-| `show` | `<file:line \| ID>` | Dereference a handle or stable ID to its raw declared text — the token-frugal "give me the actual content" escape hatch |
+| `contract` | `<CTR-ID \| "METHOD /path">` | REQUIRES/ENSURES/error-case **one-line summaries** ("id: description" / "status: condition"), `invariants_touched` IDs, `state_transition` for a `contracts.json` operation or condition |
+| `state` | `<machine name \| state \| INV-ID>` | Adjacency (in/out transitions), entry/exit actions, invalid transitions, applicable invariants, `required_in_states` context fields — guard summaries are descriptions only |
+| `show` | `<file:line \| ID \| file#fragment>` | Dereference ANY emitted handle to its raw declared content — the only verb that serves bodies (source context, or a model's declared JSON block) |
 
-`--scanner-version` prints a hash of this module's source plus its
-`chief_wiggum` dependencies (same convention as `check_single_writer.py` /
-`check_traceability.py`).
+**Locator discipline (two-plane, enforced by test):** no verb except `show`
+ever returns a structured Plane-A body or a machine `expression` — facts carry
+IDs, dereferenceable handles, and at most one summary line per item (`orient`'s
+operation facts carry only counts: `n_preconditions`/`n_postconditions`/
+`n_error_cases`). Want the block? `show` the handle.
+
+**Every emitted handle round-trips through `show`** (property-tested). Three
+handle forms exist:
+
+- `file:line` — source/prose location; `show` prints the line + context window.
+- a bare stable ID — `show` prints its declaration site from the epic docs.
+- `file#fragment` — a Plane-A model node; `show` loads the JSON live and prints
+  the declared block. Fragment grammar (exactly what the verbs emit):
+  `Entity/Operation-or-Field` (contracts.json), `pages[route]` (ui-spec.json),
+  `invariants[ID]`, `transitions[from->to]`, `invalid_transitions[from->to]`,
+  `states/name`, `context/name` (state-machines.json), or a bare stable ID
+  (derived_from handles).
+
+`--scanner-version` prints a hash of this module's source plus
+`check_single_writer.py`, `check_traceability.py` (their emissions define this
+tool's facts), and the shared `chief_wiggum` dependencies (same convention as
+those checkers). A nonexistent `--epic` slug is a usage error (exit 2), never
+an empty answer.
 
 ## Response envelope
 
@@ -89,22 +109,23 @@ An un-annotated handler still gets a real answer:
 - **`transition-map.json` `code_locations`** — exact file+line match, so a
   covered-but-un-annotated transition's handler is bound precisely (`exact`).
 - **`contracts.json` operation `path`** / **`ui-spec.json` page route** —
-  word-tokenized, length-aware matching against the file's own path
-  (`inferred`, never `exact`): every literal (non-param) word of the
-  route/path is matched against the file's directory+filename words, with a
-  minimum length before two words may substring-match each other (so `order`
+  word-tokenized, length-aware, ALL-words matching against the file's own path
+  (`inferred`, never `exact`): **every** literal (non-param) word of the
+  route/path must match one of the file's directory+filename words, with a
+  minimum length before two words may substring-match each other. So `order`
   ~ `orders` still matches, but a short word like `ui` can never hide inside
-  an unrelated longer word like `builder` — this exact false positive was
-  found and fixed during validation against a real repo; see below).
+  an unrelated longer word like `builder` (a real false positive found and
+  fixed during validation), and `ui/orders/page.tsx` does not inherit
+  `/api/v1/orders/:id/confirm` just for matching "orders" — "confirm" must
+  match too (regression-tested).
 - **Known limitation, disclosed not hidden**: this is a lexical heuristic, not
-  symbol resolution (tree-sitter/refs-lite is explicitly out of phase 1). In an
-  admin-heavy domain where one entity name (e.g. "provider") is genuinely
-  common across dozens of operations, a file whose own name contains that
-  word (e.g. `auth-provider.tsx`) will match most of them. These facts are
-  always labeled `"relation": "inferred"` and ranked below any `direct`
-  (annotation or `code_locations`-exact) match — real annotations remain the
-  precise path when a file's governing contract must be unambiguous. Tracked
-  for a future precision pass: [chief-wiggum#185](https://github.com/plwp/chief-wiggum/issues/185).
+  symbol resolution (tree-sitter/refs-lite is explicitly out of phase 1). A
+  file whose name word-covers all of an unrelated operation's literal words
+  can still over-match. These facts are always labeled
+  `"relation": "inferred"` and ranked below any `direct` (annotation or
+  `code_locations`-exact) match — real annotations remain the precise path
+  when a file's governing contract must be unambiguous. Tracked for a future
+  precision pass: [chief-wiggum#185](https://github.com/plwp/chief-wiggum/issues/185).
 
 ## Validation
 

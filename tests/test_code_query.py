@@ -212,7 +212,10 @@ def test_contract_by_method_and_path_template():
     assert env["facts"], env
     fact = env["facts"][0]
     assert fact["state_transition"] == "pending -> confirmed"
-    assert fact["invariants_touched"][0]["id"] == "INV-checkout-001"
+    assert fact["invariants_touched"] == ["INV-checkout-001"]
+    # Locator discipline: conditions/errors are AT MOST one summary line each.
+    assert fact["preconditions"] == ["CTR-order-confirm-001-pre1: order status is pending"]
+    assert fact["error_cases"] == ["409: order is already confirmed"]
 
 
 def test_contract_by_condition_id():
@@ -340,3 +343,183 @@ def test_cli_emits_query_telemetry_event(tmp_path, monkeypatch):
     assert query_recs
     assert query_recs[0]["verb"] == "orient"
     assert query_recs[0]["hit_count"] > 0
+
+
+def test_cli_nonexistent_epic_slug_is_usage_error():
+    """Review issue 4: a missing --epic slug must be a usage error (exit 2),
+    matching the other checkers — never a 'scanned, nothing governs' empty."""
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(FIXTURE), "--epic", "no-such-epic",
+         "orient", "src/order.py"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 2
+    assert "epic dir not found" in r.stderr
+
+
+# --- two-plane locator discipline (review issue 1) ------------------------------------
+
+
+def _walk_strings(obj):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _walk_strings(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_strings(item)
+
+
+def test_contract_and_state_facts_carry_no_structured_bodies_or_expressions():
+    """Facts are locators: IDs + handles + one-line summaries at most. The
+    machine `expression` bodies from contracts.json/state-machines.json must
+    never appear in any verb's facts — only `show` serves declared content."""
+    envs = [
+        code_query.cmd_contract(FIXTURE, "POST /api/v1/orders/42/confirm", "checkout"),
+        code_query.cmd_contract(FIXTURE, "CTR-order-confirm-001-pre1", "checkout"),
+        code_query.cmd_state(FIXTURE, "confirmed", "checkout"),
+        code_query.cmd_state(FIXTURE, "INV-checkout-001", "checkout"),
+        code_query.cmd_orient(FIXTURE, "src/orders/confirm.py", "checkout"),
+    ]
+    for env in envs:
+        for fact in env["facts"]:
+            assert "expression" not in fact, fact
+            # No nested dict-valued condition/error bodies anywhere in the fact
+            # (writer facts embed check_single_writer's own flat site record,
+            # which has no nested dicts either).
+            for key in ("preconditions", "postconditions", "error_cases", "guards"):
+                if key in fact:
+                    assert all(isinstance(x, str) for x in fact[key]), (key, fact)
+            # The known expression bodies must not leak in as strings either.
+            for s in _walk_strings(fact):
+                assert "order.status ==" not in s, fact
+
+
+def test_orient_contract_operation_facts_are_counts_not_bodies():
+    env = code_query.cmd_orient(FIXTURE, "src/orders/confirm.py", "checkout")
+    op_facts = [f for f in env["facts"] if f["kind"] == "contract_operation"]
+    assert op_facts, env
+    fact = op_facts[0]
+    assert fact["n_preconditions"] == 1
+    assert fact["n_postconditions"] == 1
+    assert fact["n_error_cases"] == 1
+    assert "preconditions" not in fact
+
+
+# --- all-words inferred binding (review issue 2) --------------------------------------
+
+
+def test_inferred_binding_requires_all_literal_words():
+    # Positive: src/orders/confirm.py covers ALL literal words of
+    # /api/v1/orders/:id/confirm ({orders, confirm}) -> bound.
+    env = code_query.cmd_orient(FIXTURE, "src/orders/confirm.py", "checkout")
+    assert any(f["kind"] == "contract_operation" for f in env["facts"])
+
+    # Negative: ui/orders/page.tsx matches "orders" but NOT "confirm" -> must
+    # NOT inherit the confirm operation (it still gets its ui-spec page).
+    env = code_query.cmd_orient(FIXTURE, "ui/orders/page.tsx", "checkout")
+    assert not any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+    assert any(f["kind"] == "ui_component" for f in env["facts"])
+
+
+# --- every handle round-trips through show (review issue 3) ---------------------------
+
+
+def _all_fixture_envelopes():
+    return [
+        code_query.cmd_orient(FIXTURE, "src/order.py", "checkout"),
+        code_query.cmd_orient(FIXTURE, "src/orders/confirm.py", "checkout"),
+        code_query.cmd_orient(FIXTURE, "ui/orders/page.tsx", "checkout"),
+        code_query.cmd_governs(FIXTURE, "src/admin.py", "checkout"),
+        code_query.cmd_governs(FIXTURE, "order.status", "checkout"),
+        code_query.cmd_writers(FIXTURE, "INV-checkout-001", "checkout"),
+        code_query.cmd_guards(FIXTURE, "CTR-order-confirm-001", "checkout"),
+        code_query.cmd_verifies(FIXTURE, "CTR-order-confirm-001", "checkout"),
+        code_query.cmd_annotations(FIXTURE, "BR-order-001", "checkout", None),
+        code_query.cmd_trace(FIXTURE, "BR-order-001", "checkout"),
+        code_query.cmd_trace(FIXTURE, "INV-checkout-001", "checkout"),
+        code_query.cmd_contract(FIXTURE, "POST /api/v1/orders/42/confirm", "checkout"),
+        code_query.cmd_contract(FIXTURE, "CTR-order-confirm-001-pre1", "checkout"),
+        code_query.cmd_state(FIXTURE, "confirmed", "checkout"),
+        code_query.cmd_state(FIXTURE, "INV-checkout-001", "checkout"),
+        code_query.cmd_state(FIXTURE, "Order Status State Machine", "checkout"),
+    ]
+
+
+def test_every_emitted_handle_dereferences_through_show():
+    """Property: every handle in every fact from every verb must round-trip
+    through `show` — a handle that can't be dereferenced is a broken locator."""
+    seen: set[str] = set()
+    for env in _all_fixture_envelopes():
+        for fact in env["facts"]:
+            handle = fact["handle"]
+            if handle in seen:
+                continue
+            seen.add(handle)
+            shown = code_query.cmd_show(FIXTURE, handle, "checkout")
+            assert not shown["summary"].startswith("unscanned:"), (handle, shown["summary"])
+            assert shown["facts"], (handle, shown["summary"])
+    assert len(seen) > 10  # sanity: the sweep actually exercised many handles
+
+
+def test_show_dereferences_contract_operation_pseudo_handle():
+    env = code_query.cmd_show(
+        FIXTURE, "docs/epics/checkout/models/contracts.json#Order/Confirm Order", "checkout"
+    )
+    fact = env["facts"][0]
+    block = "\n".join(fact["block"])
+    assert '"method": "POST"' in block
+    assert "order.status == 'pending'" in block  # show DOES serve the body
+
+
+def test_show_dereferences_state_machine_bracket_handles():
+    env = code_query.cmd_show(
+        FIXTURE, "docs/epics/checkout/models/state-machines.json#invariants[INV-checkout-001]", "checkout"
+    )
+    fact = env["facts"][0]
+    assert fact["id"] == "INV-checkout-001"
+    assert '"controls_field"' in "\n".join(fact["block"])
+
+    env = code_query.cmd_show(
+        FIXTURE, "docs/epics/checkout/models/state-machines.json#transitions[pending->confirmed]", "checkout"
+    )
+    assert '"event": "confirm"' in "\n".join(env["facts"][0]["block"])
+
+
+def test_show_unknown_fragment_is_genuine_empty_not_unscanned():
+    env = code_query.cmd_show(
+        FIXTURE, "docs/epics/checkout/models/contracts.json#Order/No Such Op", "checkout"
+    )
+    assert env["facts"] == []
+    assert env["summary"].startswith("show: scanned")
+
+
+def test_trace_derived_from_handle_names_the_declaring_model_file():
+    env = code_query.cmd_trace(FIXTURE, "INV-checkout-001", "checkout")
+    df_facts = [f for f in env["facts"] if f["kind"] == "derived_from"]
+    assert df_facts, env
+    handle = df_facts[0]["handle"]
+    assert handle == "docs/epics/checkout/models/state-machines.json#INV-checkout-001"
+    shown = code_query.cmd_show(FIXTURE, handle, "checkout")
+    assert shown["facts"]
+    assert shown["facts"][0]["id"] == "INV-checkout-001"
+
+
+# --- scanner version inputs (review issue 6) ------------------------------------------
+
+
+def test_scanner_version_includes_both_checker_sources():
+    """The checkers' emissions define this tool's facts, so their source must
+    be part of the version hash — pin the exact input list."""
+    from chief_wiggum.hashing import scanner_version
+
+    scripts = Path(code_query.__file__).resolve().parent
+    cw = scripts / "chief_wiggum"
+    expected = scanner_version(
+        scripts / "code_query.py",
+        scripts / "check_single_writer.py",
+        scripts / "check_traceability.py",
+        cw / "trace_ids.py", cw / "annotations.py", cw / "manifest.py", cw / "hashing.py",
+    )
+    assert code_query._scanner_version() == expected

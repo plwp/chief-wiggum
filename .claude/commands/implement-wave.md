@@ -382,7 +382,7 @@ for inv in sm.get('invariants', []):
     if inv.get('controls_field') and inv.get('sanctioned_writers'):
         print(inv['id'])
 "); do
-    result=$(python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" writers "$inv_id" --format json)
+    result=$(python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" --format json writers "$inv_id")
     violations=$(echo "$result" | jq '[.facts[] | select(.sanctioned == false)] | length')
     if [ "$violations" -gt 0 ]; then
       echo "  $inv_id: WARN — $violations unsanctioned writer(s)"
@@ -391,6 +391,24 @@ for inv in sm.get('invariants', []):
       echo "  $inv_id: PASS — no unsanctioned writer found"
     fi
   done
+
+  # Duplicated inline-auth detection (INV-009-style "use the shared auth
+  # helper" invariants). NOTE this is a DIFFERENT check from the writer
+  # inventory above: inline auth checks are READS (a route re-deriving the
+  # session/ownership answer itself), so check_single_writer/code_query's
+  # writer scan cannot see them. Until an epic models its shared-helper rule
+  # as a queryable invariant, keep the explicit grep — patterns come from the
+  # epic's invariants.md ("shared helper" / "inline auth" rules), with the
+  # original Next.js pair shown as the example default. Superseded only when
+  # the epic's own invariant models this (e.g. a future read-path analog of
+  # controls_field).
+  inline_count=$(grep -r "getServerSession\|board\.userId ===" "$TARGET_REPO/app/api/" --include="*.ts" -l 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$inline_count" -gt 0 ]; then
+    echo "  inline-auth: WARN — $inline_count route files still have inline auth checks"
+    grep -r "getServerSession\|board\.userId ===" "$TARGET_REPO/app/api/" --include="*.ts" -l 2>/dev/null
+  else
+    echo "  inline-auth: PASS — no inline auth checks found"
+  fi
 fi
 ```
 
