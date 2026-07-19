@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # agree on the file universe (the manifest never surfaces submodule blobs).
 from chief_wiggum.hashing import hash_epic_definitions, scanner_version  # noqa: E402
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
-from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402
+from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE, canonical_id  # noqa: E402
 
 # Suspect-link propagation (#169): a link is SUSPECT when the ID it was
 # verified against has a definition hash that no longer matches the hash
@@ -171,15 +171,10 @@ def kind_of(node_id: str) -> str:
     return node_id.split("-", 1)[0].upper()
 
 
-def canonical_id(node_id: str) -> str:
-    """Canonical form: uppercase kind prefix, lowercase remainder.
-
-    IDs are matched case-insensitively (CTR-order-001 == CTR-ORDER-001); this
-    keeps the familiar display shape while making links immune to case drift
-    between epic docs and code annotations.
-    """
-    kind, _, rest = node_id.partition("-")
-    return f"{kind.upper()}-{rest.lower()}"
+# canonical_id's home is chief_wiggum.trace_ids (shared with the hashing
+# module, so definition-hash keys and annotation targets join on the same
+# canonical form — PR #181 review); imported above, re-exported here for
+# existing callers.
 
 
 def parse_annotations(text: str) -> list[tuple[str, list[str]]]:
@@ -567,21 +562,23 @@ def write_links_sidecar(
     epic_dir: str | Path,
     source_root: str | Path | None,
     path: str | Path,
-    *,
-    changed_since: str | None = None,
 ) -> dict:
     """Write the ``docs/quality/trace-links.json`` sidecar (#169) from the
     CURRENT scan: every ``@cw-trace`` link's definition hash, at the moment
     this is called. Not hand-maintained — called by ``/architect``/
     ``/close-epic`` only once their respective gate has passed (see ``main``'s
     ``--write-links``), so a stale/failing state never gets recorded as
-    validated."""
+    validated.
+
+    Always a FULL source scan, by construction: the sidecar is the global
+    record of validated links, and rewriting it from a ``--changed-since``
+    partial scan would silently drop every validated link in unchanged files
+    (they'd then never be able to go suspect). ``main`` rejects the
+    ``--write-links --changed-since`` combination as a usage error (PR #181
+    review)."""
     annotations = scan_epic_annotations(epic_dir)
     if source_root:
-        only_files = None
-        if changed_since:
-            only_files = changed_paths(source_root, changed_since, predicate=_file_predicate)
-        annotations += scan_source(source_root, only_files=only_files)
+        annotations += scan_source(source_root)
     current_hashes = hash_epic_definitions(Path(epic_dir))
     body = build_sidecar(annotations, current_hashes, scanner_version=_scanner_version())
     write_sidecar(path, body)
@@ -664,10 +661,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--write-links",
         action="store_true",
-        help="(Re)write the trace-links.json sidecar from this scan's current link/definition "
+        help="(Re)write the trace-links.json sidecar from a FULL scan's current link/definition "
         "hashes — but ONLY when the requested --gate passes (or no --gate was given). A failing "
         "gate leaves the sidecar untouched, so a stale/broken state is never recorded as "
-        "validated. Not hand-maintained; see docs/traceability.md.",
+        "validated. Incompatible with --changed-since (a partial scan would drop validated "
+        "links for unchanged files). Not hand-maintained; see docs/traceability.md.",
     )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
@@ -678,6 +676,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.epic_dir:
         print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
+        return 2
+
+    if args.write_links and args.changed_since:
+        print(
+            "Error: --write-links cannot be combined with --changed-since — the sidecar is the "
+            "global record of validated links and must be written from a FULL scan; a partial "
+            "scan would silently drop validated links for unchanged files",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -716,7 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             or (args.gate == "coverage" and report.coverage_ok)
         )
         if gate_passed:
-            write_links_sidecar(args.epic_dir, args.source, links_path, changed_since=args.changed_since)
+            write_links_sidecar(args.epic_dir, args.source, links_path)
         else:
             print(
                 f"check_traceability: --write-links skipped — --gate {args.gate} did not pass "

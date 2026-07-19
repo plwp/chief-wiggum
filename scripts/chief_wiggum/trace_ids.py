@@ -54,3 +54,19 @@ TRACE_RE = re.compile(
     rf"(?P<ids>(?:{ID_BODY}(?![A-Za-z0-9-])[\s,]*)+)",
     re.IGNORECASE,
 )
+
+
+def canonical_id(node_id: str) -> str:
+    """Canonical form: uppercase kind prefix, lowercase remainder.
+
+    IDs are matched case-insensitively (CTR-order-001 == CTR-ORDER-001); this
+    keeps the familiar display shape while making links immune to case drift
+    between epic docs and code annotations. EVERY consumer that keys a map by
+    a stable ID (the traceability scanner's annotations, the definition-hash
+    maps in ``chief_wiggum.hashing``, the ratchet's contract-hash
+    comparisons) must key by THIS form — a raw-cased key on one side of a
+    join silently drops the match (PR #181 review: an uppercase-slug ID like
+    ``CTR-BIL-001`` recorded no sidecar link and could never go suspect).
+    """
+    kind, _, rest = node_id.partition("-")
+    return f"{kind.upper()}-{rest.lower()}"

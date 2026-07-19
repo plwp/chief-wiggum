@@ -149,6 +149,19 @@ python3 "$CW_HOME/scripts/check_traceability.py" docs/epics/<slug> --source . \
 python3 "$CW_HOME/scripts/check_traceability.py" docs/epics/<slug> --links path/to/trace-links.json
 ```
 
+`--write-links` is always a **full** source scan: the sidecar is the global
+record of validated links, and rewriting it from a `--changed-since` partial
+scan would silently drop every validated link in unchanged files (they could
+then never go suspect). The two flags together are a usage error (exit 2).
+
+Sidecar link targets and definition-hash keys share the **canonical ID form**
+(uppercase kind, lowercase slug — `chief_wiggum.trace_ids.canonical_id`), so an
+epic doc declaring `CTR-BIL-001` and an annotation citing it in any casing
+join on `CTR-bil-001`. The same form keys the ratchet's `contract_hashes`;
+journals written before this canonicalization are read compatibly (keys are
+canonicalized on load — hash *values* cover block content only and are
+unaffected).
+
 On every run, if a sidecar exists at the resolved location, each recorded link
 is compared against the ID's CURRENT definition hash. A mismatch is **SUSPECT**
 — reported in `suspect_links`/`suspect_contracts`, distinct from both dangling
@@ -192,13 +205,16 @@ waiver, diffable and committed like any other epic artifact:
 }
 ```
 
-All five fields are required. **A justification without a `ticket` ref is
+All five fields are required. **A justification without a real `ticket` ref is
 invalid** — per the ticket-every-deferral doctrine, a waiver is not a way to
-skip opening a tracking ticket, and an invalid record does NOT satisfy
-coverage (it's reported under `invalid_justifications`, and the contract stays
-uncovered/untested). An **expired** justification (`expiry` has passed) also
-does not satisfy coverage — it's reported under `expired_justifications` so a
-stale waiver is visible, not a silent pass forever.
+skip opening a tracking ticket. The ref must match one of the accepted forms:
+`#123`, `owner/repo#123`, an `http(s)` issue URL, or a JIRA-style `KEY-123` —
+placeholders (`"none"`, `"N/A"`, whitespace) are rejected, and an invalid
+record does NOT satisfy coverage (it's reported under
+`invalid_justifications`, and the contract stays uncovered/untested). An
+**expired** justification (`expiry` has passed) also does not satisfy coverage
+— it's reported under `expired_justifications` so a stale waiver is visible,
+not a silent pass forever.
 
 A valid, non-expired justification for a currently uncovered/untested contract
 moves it out of `uncovered_contracts`/`untested_contracts` into

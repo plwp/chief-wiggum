@@ -85,7 +85,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chief_wiggum.hashing import hash_epic_definitions, stable_hash  # noqa: E402,F401
 from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
 from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
-from chief_wiggum.trace_ids import ID_RE  # noqa: E402,F401
+from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
 from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE  # noqa: E402,F401
 from chief_wiggum.trace_links import SIDECAR_RELPATH, find_suspect_links, load_sidecar  # noqa: E402
 
@@ -432,7 +432,14 @@ def load_journal(cfg: Config) -> list[dict]:
 def derive_highwater(records: list[dict]) -> dict:
     """High-water = union of every case passing in a MERGED record, plus the
     definition hash each contract had when it first entered. Amendments and
-    retirements are deliberate, journaled human acts that move the baseline."""
+    retirements are deliberate, journaled human acts that move the baseline.
+
+    Contract-hash keys are canonicalized on read: journals written before
+    ``hash_epic_definitions`` keyed by canonical form (PR #181 review) may
+    carry raw-cased IDs (``CTR-BIL-001``), and without canonicalization here
+    every such contract would falsely read as *removed* against a new
+    canonical scorecard. The hash VALUES cover block content only, so they
+    compare identically across the change."""
     pass_set: set[str] = set()
     contract_hashes: dict[str, str] = {}
     for rec in records:
@@ -440,11 +447,11 @@ def derive_highwater(records: list[dict]) -> dict:
             sc = rec.get("scorecard", {}) or {}
             pass_set.update(sc.get("pass_set", []) or [])
             for cid, h in (sc.get("contract_hashes", {}) or {}).items():
-                contract_hashes.setdefault(cid, h)
+                contract_hashes.setdefault(canonical_id(cid), h)
         for cid, h in (rec.get("amended", {}) or {}).items():
-            contract_hashes[cid] = h
+            contract_hashes[canonical_id(cid)] = h
         for cid in rec.get("retired", []) or []:
-            contract_hashes.pop(cid, None)
+            contract_hashes.pop(canonical_id(cid), None)
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
@@ -454,7 +461,10 @@ def derive_highwater(records: list[dict]) -> dict:
 
 def violations(scorecard: dict, highwater: dict) -> dict:
     cur_pass = set(scorecard.get("pass_set", []))
-    cur_defs = scorecard.get("contract_hashes", {})
+    # Canonicalize both sides of the join (see derive_highwater) so a scorecard
+    # written by an older version cannot make canonical high-water keys look
+    # removed, and vice versa.
+    cur_defs = {canonical_id(c): h for c, h in (scorecard.get("contract_hashes", {}) or {}).items()}
     missing = sorted(set(highwater["pass_set"]) - cur_pass)
     weakened, removed = [], []
     for cid, h in sorted(highwater["contract_hashes"].items()):
@@ -648,6 +658,7 @@ def cmd_record(args) -> int:
         status = "held"
     amended = {}
     for cid in args.amend or []:
+        cid = canonical_id(cid)  # match hash_epic_definitions' canonical keys
         if cid not in sc.get("contract_hashes", {}):
             raise RatchetError(f"--amend {cid}: not defined in the current epic docs")
         amended[cid] = sc["contract_hashes"][cid]
@@ -659,7 +670,7 @@ def cmd_record(args) -> int:
         "merged": bool(args.merged),
         "scorecard": sc,
         "amended": amended,
-        "retired": sorted(args.retire or []),
+        "retired": sorted(canonical_id(c) for c in (args.retire or [])),
         "ratchet_status": status,
         "notes": args.notes,
     }

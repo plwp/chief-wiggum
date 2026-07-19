@@ -23,7 +23,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from chief_wiggum.trace_ids import ID_RE
+from chief_wiggum.trace_ids import ID_RE, canonical_id
 from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE
 from chief_wiggum.trace_links import is_justification_path
 
@@ -54,6 +54,13 @@ def hash_markdown_defs(text: str) -> dict[str, list[str]]:
     A block runs from the declaring line to the next line that declares another
     ID (or EOF), whitespace-normalized — so reformatting doesn't read as
     weakening, but any wording change to the REQUIRES/ENSURES does.
+
+    Keys are in **canonical form** (``canonical_id``: uppercase kind, lowercase
+    slug) so they join cleanly against the traceability scanner's canonicalized
+    annotation targets — a raw-cased key (e.g. ``CTR-BIL-001``) on one side of
+    that join silently records no sidecar link and can never go suspect
+    (PR #181 review). The hash VALUES are unaffected: they cover the block
+    text, not the key.
     """
     lines = text.splitlines()
     decls: list[tuple[int, str]] = []
@@ -65,16 +72,19 @@ def hash_markdown_defs(text: str) -> dict[str, list[str]]:
     for idx, (start, cid) in enumerate(decls):
         end = decls[idx + 1][0] if idx + 1 < len(decls) else len(lines)
         block = "\n".join(ln.rstrip() for ln in lines[start:end]).strip()
-        out.setdefault(cid, []).append(stable_hash(block))
+        out.setdefault(canonical_id(cid), []).append(stable_hash(block))
     return out
 
 
 def walk_json_ids(node, out: dict[str, list[str]]) -> None:
-    """Recursively hash every JSON object carrying a stable-ID ``id`` field."""
+    """Recursively hash every JSON object carrying a stable-ID ``id`` field.
+
+    Keys are canonicalized (see ``hash_markdown_defs``); hash values cover the
+    node's JSON content and are unaffected."""
     if isinstance(node, dict):
         cid = node.get("id")
         if isinstance(cid, str) and ID_RE.fullmatch(cid):
-            out.setdefault(cid, []).append(
+            out.setdefault(canonical_id(cid), []).append(
                 stable_hash(json.dumps(node, sort_keys=True))
             )
         for v in node.values():

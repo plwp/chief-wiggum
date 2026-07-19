@@ -40,7 +40,9 @@ def make_repo(tmp_path, contracts_md=None, suites=None):
 
 def test_uppercase_stable_ids_are_hashed(tmp_path):
     """Regression (chief-wiggum#86 class): uppercase INV-/CTR- ids must be detected
-    for weakening-hashing, not silently skipped by a lowercase-only grammar."""
+    for weakening-hashing, not silently skipped by a lowercase-only grammar.
+    Keys are CANONICAL (uppercase kind, lowercase slug — PR #181 review) so they
+    join against the traceability scanner's canonicalized annotation targets."""
     cfg = make_repo(
         tmp_path,
         contracts_md=(
@@ -51,8 +53,31 @@ def test_uppercase_stable_ids_are_hashed(tmp_path):
         ),
     )
     hashes = ratchet.load_contract_hashes(cfg)
-    assert "CTR-BIL-001" in hashes
-    assert "INV-FOWR-004" in hashes
+    assert "CTR-bil-001" in hashes
+    assert "INV-fowr-004" in hashes
+    # raw-cased keys must NOT appear — one canonical key per declared ID
+    assert "CTR-BIL-001" not in hashes and "INV-FOWR-004" not in hashes
+
+
+def test_highwater_from_precanonicalization_journal_is_not_falsely_removed(tmp_path):
+    """Back-compat (PR #181 review): journals written before hash keys were
+    canonicalized carry raw-cased IDs (CTR-BIL-001). derive_highwater/violations
+    must canonicalize both sides of the join, or every such contract would
+    falsely read as *removed* against a new canonical scorecard and block."""
+    cfg = make_repo(
+        tmp_path,
+        contracts_md="### CTR-BIL-001 — customer uniqueness\nREQUIRES: one customer per provider\n",
+    )
+    current = scorecard_from(cfg, set())  # canonical keys: CTR-bil-001
+    # Old-style journal record: same hash VALUE (it covers block content only),
+    # raw-cased KEY — exactly what a pre-#181 scorecard recorded.
+    old_sc = dict(current)
+    old_sc["contract_hashes"] = {"CTR-BIL-001": current["contract_hashes"]["CTR-bil-001"]}
+    append_record(cfg, old_sc, merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert set(hw["contract_hashes"]) == {"CTR-bil-001"}
+    v = ratchet.violations(current, hw)
+    assert v["removed_contracts"] == [] and v["weakened_contracts"] == []
 
 
 def scorecard_from(cfg, pass_set):

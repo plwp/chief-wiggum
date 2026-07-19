@@ -464,6 +464,48 @@ def test_cli_default_links_path_is_under_source_docs_quality(tmp_path):
     assert (src / SIDECAR_RELPATH).is_file()
 
 
+def test_uppercase_slug_id_records_a_link_and_goes_suspect(tmp_path):
+    """Regression (PR #181 review): definition-hash keys and annotation targets
+    must join on the SAME canonical form — an uppercase-slug ID like CTR-BIL-001
+    previously recorded no sidecar link and could never go suspect."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text(
+        "### CTR-BIL-001 — customer uniqueness\nREQUIRES: one customer per provider\n"
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "billing.py").write_text("# @cw-trace guards CTR-BIL-001\n")
+    links_path = tmp_path / "trace-links.json"
+
+    body = ct.write_links_sidecar(epic, src, links_path)
+    assert len(body["links"]) == 1  # the uppercase-slug link IS recorded
+    assert body["links"][0]["target"] == "CTR-bil-001"
+
+    (epic / "contracts.md").write_text(
+        "### CTR-BIL-001 — customer uniqueness\nREQUIRES: True\n"  # reworded
+    )
+    r = ct.check(epic, src, links_path=links_path)
+    assert r.suspect_contracts == ["CTR-bil-001"]
+
+
+def test_cli_write_links_with_changed_since_is_usage_error(tmp_path, capsys):
+    """--write-links must always be a FULL scan (PR #181 review): rewriting the
+    global sidecar from a --changed-since partial scan would silently drop
+    validated links for unchanged files (false-negative suspects later)."""
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    links_path = tmp_path / "trace-links.json"
+    rc = ct.main([
+        str(epic), "--source", str(src), "--write-links", "--changed-since", "main",
+        "--links", str(links_path),
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--write-links" in err and "--changed-since" in err and "FULL scan" in err
+    assert not links_path.exists()  # nothing was written
+
+
 # --- JUSTIFIED waivers (#169) -------------------------------------------------
 
 
@@ -530,6 +572,32 @@ def test_justification_for_undefined_id_is_reported_invalid(tmp_path):
     r = ct.check(epic)
     assert r.justified_contracts == []
     assert any("undefined" in d["reason"] for d in r.invalid_justifications)
+
+
+def test_justification_with_uppercase_slug_id_joins_canonical_contract(tmp_path):
+    """A waiver written with the epic doc's raw casing (CTR-ORDER-002) must join
+    the canonical uncovered/untested sets — same canonicalization rule as
+    annotations and definition hashes (PR #181 review)."""
+    epic = _epic_with_uncovered_ctr(tmp_path)
+    _write_justification(epic, id="CTR-ORDER-002")
+    r = ct.check(epic)
+    assert r.coverage_ok
+    assert r.justified_contracts[0]["id"] == "CTR-order-002"
+    assert r.invalid_justifications == []
+
+
+def test_justification_with_placeholder_ticket_ref_is_invalid(tmp_path):
+    """Regression (PR #181 review): truthiness-only validation let placeholders
+    like '  ', 'none', 'N/A' satisfy the ticket requirement."""
+    for placeholder in ("  ", "none", "N/A", "TBD"):
+        epic = _epic_with_uncovered_ctr(tmp_path)
+        _write_justification(epic, ticket=placeholder)
+        r = ct.check(epic)
+        assert "CTR-order-002" in r.uncovered_contracts, placeholder
+        assert not r.coverage_ok, placeholder
+        assert r.justified_contracts == [], placeholder
+        assert len(r.invalid_justifications) == 1, placeholder
+        assert "ticket" in r.invalid_justifications[0]["reason"], placeholder
 
 
 def test_justification_for_already_covered_contract_has_no_effect(tmp_path):

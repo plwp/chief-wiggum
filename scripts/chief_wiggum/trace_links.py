@@ -30,9 +30,12 @@ single-repo trace graph (``check_traceability.py`` / ``docs/traceability.md``):
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
+
+from chief_wiggum.trace_ids import canonical_id
 
 # Sidecar location, relative to the target repo root (alongside the ratchet's
 # own docs/quality/ state — see docs/ratchet.md).
@@ -135,6 +138,29 @@ def find_suspect_links(sidecar: dict, current_hashes: dict) -> list[dict]:
 
 _REQUIRED_JUSTIFICATION_FIELDS = ("id", "reason", "approver", "expiry", "ticket")
 
+# A ticket ref must actually POINT at a ticket (PR #181 review: truthiness-only
+# validation let placeholders like "  ", "none", "N/A" satisfy the
+# ticket-every-deferral requirement). Accepted forms:
+#   #123                    same-repo issue/PR number
+#   owner/repo#123          cross-repo GitHub-style ref
+#   http(s)://.../...       issue URL
+#   PROJ-123                JIRA-style key
+_TICKET_REF_RE = re.compile(
+    r"^(?:"
+    r"#\d+"
+    r"|[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*#\d+"
+    r"|https?://\S+"
+    r"|[A-Z][A-Z0-9]+-\d+"
+    r")$"
+)
+
+_TICKET_FORMS = "#123, owner/repo#123, an http(s) issue URL, or a JIRA-style KEY-123"
+
+
+def valid_ticket_ref(ticket: str) -> bool:
+    """True if ``ticket`` (stripped) matches one of the accepted ref forms."""
+    return bool(_TICKET_REF_RE.match(ticket.strip()))
+
 
 @dataclass
 class Justification:
@@ -160,8 +186,11 @@ def load_justifications(epic_dir: str | Path) -> tuple[dict[str, Justification],
 
     Missing directory degrades gracefully (no waivers declared). A malformed
     record (not an object, missing a required field, or — per the
-    ticket-every-deferral doctrine — missing its ``ticket`` ref) is reported as
-    invalid, never silently treated as a valid waiver.
+    ticket-every-deferral doctrine — missing OR placeholder ``ticket`` ref:
+    a ref must match one of the accepted forms, so ``"none"``/``"N/A"``/
+    whitespace never satisfy it) is reported as invalid, never silently
+    treated as a valid waiver. Waiver IDs are canonicalized so they join
+    against the report's canonical defined/uncovered/untested sets.
     """
     root = Path(epic_dir) / "justifications"
     justifications: dict[str, Justification] = {}
@@ -184,13 +213,20 @@ def load_justifications(epic_dir: str | Path) -> tuple[dict[str, Justification],
                 "reason": f"missing field(s): {', '.join(missing)}",
             })
             continue
-        jid = str(data["id"])
+        ticket = str(data["ticket"]).strip()
+        if not valid_ticket_ref(ticket):
+            invalid.append({
+                "source": str(path),
+                "reason": f"invalid ticket ref {str(data['ticket'])!r} — expected {_TICKET_FORMS}",
+            })
+            continue
+        jid = canonical_id(str(data["id"]))
         justifications[jid] = Justification(
             id=jid,
             reason=str(data["reason"]),
             approver=str(data["approver"]),
             expiry=str(data["expiry"]),
-            ticket=str(data["ticket"]),
+            ticket=ticket,
             source=str(path),
         )
     return justifications, invalid

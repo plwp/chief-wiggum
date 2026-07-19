@@ -197,3 +197,53 @@ def test_justification_unparseable_expiry_treated_as_expired():
         ticket="#1", source="f.json",
     )
     assert j.is_expired(date(2026, 1, 1)) is True
+
+
+# --- ticket-ref validation (PR #181 review) ----------------------------------
+
+
+def test_valid_ticket_ref_accepts_real_forms():
+    for ref in (
+        "#170",
+        "plwp/chief-wiggum#12",
+        "https://github.com/plwp/chief-wiggum/issues/170",
+        "http://tracker.example.com/t/99",
+        "PROJ-123",
+        "  #170  ",  # surrounding whitespace is stripped
+    ):
+        assert tl.valid_ticket_ref(ref), ref
+
+
+def test_valid_ticket_ref_rejects_placeholders():
+    for ref in ("", "  ", "none", "N/A", "TBD", "yes", "ticket", "#", "PROJ-", "170"):
+        assert not tl.valid_ticket_ref(ref), ref
+
+
+def test_load_justifications_placeholder_ticket_is_invalid(tmp_path):
+    """Regression: truthiness-only validation let '  '/'none'/'N/A' pass."""
+    for i, placeholder in enumerate(("  ", "none", "N/A")):
+        epic = tmp_path / f"epic-{i}"
+        jdir = epic / "justifications"
+        jdir.mkdir(parents=True)
+        (jdir / "w.json").write_text(json.dumps({
+            "id": "CTR-x-001", "reason": "r", "approver": "a",
+            "expiry": "2099-01-01", "ticket": placeholder,
+        }))
+        justifications, invalid = tl.load_justifications(epic)
+        assert justifications == {}, placeholder
+        assert len(invalid) == 1, placeholder
+        assert "ticket" in invalid[0]["reason"], placeholder
+
+
+def test_load_justifications_canonicalizes_waiver_id(tmp_path):
+    epic = tmp_path / "epic"
+    jdir = epic / "justifications"
+    jdir.mkdir(parents=True)
+    (jdir / "w.json").write_text(json.dumps({
+        "id": "CTR-BIL-001", "reason": "r", "approver": "a",
+        "expiry": "2099-01-01", "ticket": "#1",
+    }))
+    justifications, invalid = tl.load_justifications(epic)
+    assert invalid == []
+    assert set(justifications) == {"CTR-bil-001"}
+    assert justifications["CTR-bil-001"].id == "CTR-bil-001"
