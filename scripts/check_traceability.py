@@ -27,34 +27,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# An ID ends at the 3-digit suffix and must not run into more id chars
-# (so CTR-order-001oops is NOT a valid CTR-order-001).
-# The epic slug segment is case-insensitive (CTR-order-001 and CTR-ADM-001 are both
-# valid); matching is normalised to lowercase at ingestion so links can't miss on case.
-ID_RE = re.compile(r"\b(BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
-TRACE_RE = re.compile(
-    r"@cw-trace\s+(?P<verb>realizes|guards|ensures|verifies)\s+"
-    r"(?P<ids>(?:(?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])[\s,]*)+)",
-    re.IGNORECASE,
-)
-# Where a defined ID is *declared*: a markdown heading `### CTR-...`, a bold
-# label `**CTR-...**`, or a JSON `"id": "CTR-..."` field.
-DEFINE_RE = re.compile(
-    r"(?:^#{1,6}\s+|\*\*\s*|[\"']id[\"']\s*:\s*[\"'])((?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})",
-    re.MULTILINE,
-)
+# The ID grammar and verb set are shared with ratchet.py and the TIM schema —
+# a kind added in one place but not the others is silently dropped, so all
+# three build from chief_wiggum.trace_ids (cross-checked in tests).
+from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402
+
+DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
 
 # Code/test annotations live in code/test files — not markdown. Prose docs
 # (including this checker's own examples and the epic's realizes lines) are
 # handled only by scan_epic_annotations, so they aren't double-counted.
-SOURCE_EXTS = {".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs"}
+# .rego/.yaml/.yml are verification artifacts (policy/probe/telemetry — #166).
+SOURCE_EXTS = {".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs", ".rego", ".yaml", ".yml"}
+
+# Directory names whose files are verification probes (k6 scenarios, chaos
+# experiments) rather than product code — see classify_source_kind.
+PROBE_DIR_PARTS = {"k6", "chaos", "probe", "probes", "load", "loadtest"}
 
 
 @dataclass
@@ -63,7 +57,7 @@ class Annotation:
     target: str
     file: str
     line: int
-    source_kind: str  # "code" | "test" | "CTR" | "INV"
+    source_kind: str  # "code" | "test" | "probe" | "policy" | "telemetry" | a declared ID kind (CTR, INV, BUD, ...)
     source_id: str | None = None  # for realizes: the declaring contract/invariant ID
 
     def to_dict(self) -> dict:
@@ -182,12 +176,19 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
         except OSError:
             continue
         rel = str(path.relative_to(root))
-        # A realizes annotation is attributed to the nearest contract/invariant
+        # A realizes/derive annotation is attributed to the nearest stable ID
         # *declared above it* in the same file, so it is tied to a real source.
+        # Any kind that can be a link SOURCE qualifies (BUD-/EDG-/... declare
+        # derive links the same way CTR-/INV- declare realizes — #166). BR is
+        # only ever a link target, so a BR declaration RESETS attribution: an
+        # annotation under a BR heading must not inherit an earlier contract
+        # (that would let a stray realizes clear the BR's own orphan status).
         nearest_contract: str | None = None
         for i, line in enumerate(lines, start=1):
             for dm in DEFINE_RE.finditer(line):
-                if kind_of(dm.group(1)) in ("CTR", "INV"):
+                if kind_of(dm.group(1)) == "BR":
+                    nearest_contract = None
+                else:
                     nearest_contract = canonical_id(dm.group(1))
             for verb, ids in parse_annotations(line):
                 src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
@@ -198,8 +199,34 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
     return annotations
 
 
+def classify_source_kind(rel: str, suffix: str) -> str:
+    """Classify a scanned file into a TIM artifact kind.
+
+    ``probe`` (k6/chaos/load scenarios), ``policy`` (rego), and ``telemetry``
+    (SLO/alert/metric YAML) are verification artifacts a ``verifies`` edge may
+    originate from (#166); everything else keeps the original test/code
+    path heuristic.
+    """
+    rel_lower = rel.lower()
+    parts = set(Path(rel_lower).parts)
+    if suffix == ".rego":
+        return "policy"
+    if parts & PROBE_DIR_PARTS:
+        return "probe"
+    if suffix in (".yaml", ".yml"):
+        return "telemetry"
+    # e2e directories are test infrastructure (setup/fixtures/helpers) even when
+    # the filename itself carries no test/spec marker (e.g. ui/e2e/global-setup.ts).
+    is_test = (
+        "test" in rel_lower
+        or "spec" in rel_lower
+        or "e2e" in parts
+    )
+    return "test" if is_test else "code"
+
+
 def scan_source(source_root: str | Path) -> list[Annotation]:
-    """Scan source/test files for ``@cw-trace`` annotations."""
+    """Scan source/test/verification files for ``@cw-trace`` annotations."""
     root = Path(source_root)
     annotations: list[Annotation] = []
     if not root.exists():
@@ -214,20 +241,11 @@ def scan_source(source_root: str | Path) -> list[Annotation]:
         except OSError:
             continue
         rel = str(path.relative_to(root))
-        rel_lower = rel.lower()
-        # e2e directories are test infrastructure (setup/fixtures/helpers) even when
-        # the filename itself carries no test/spec marker (e.g. ui/e2e/global-setup.ts).
-        is_test = (
-            "test" in rel_lower
-            or "spec" in rel_lower
-            or any(part == "e2e" for part in Path(rel_lower).parts)
-        )
+        source_kind = classify_source_kind(rel, path.suffix)
         for i, line in enumerate(lines, start=1):
             for verb, ids in parse_annotations(line):
                 for target in ids:
-                    annotations.append(
-                        Annotation(verb, target, rel, i, "test" if is_test else "code")
-                    )
+                    annotations.append(Annotation(verb, target, rel, i, source_kind))
     return annotations
 
 
