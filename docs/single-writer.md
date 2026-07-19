@@ -160,7 +160,13 @@ An infra invariant lives in a JSON config (default
 - **`controls_field`** — the scope name (e.g. `infra.env-secrets`), matched
   against exemption `scope` for break-glass downgrade.
 - **`sanctioned_writers`** — the only authorized writer(s) (normally `["terraform"]`).
-- **`terraform_root`** — the directory `terraform plan` runs in for this invariant.
+- **`terraform_root`** — the directory `terraform plan` runs in for this
+  invariant, **repo-relative**. It resolves against the target repo's root — an
+  explicit `--repo`, else the nearest ancestor of the config file containing
+  `.git`, else the config file's directory — never the caller's CWD. Roots that
+  escape the repo boundary (absolute paths, `..` traversal) are rejected as
+  errors: the config is committed data and must not be able to point the
+  scanner (or the journal) outside the repo it lives in.
 - **`schedule_note`** — optional free text (e.g. "nightly cron", "on every close-epic run").
 
 ### The check
@@ -182,13 +188,20 @@ in `terraform_root`, and maps terraform's own exit-code contract:
 | other | unexpected | `error` |
 
 `terraform` missing entirely degrades gracefully: `{"available": false, ...}`,
-exit `0` — mirroring `lsp_query.py`'s missing-language-server path. A missing
-`terraform_root` directory is an `error`, not a `drift`.
+exit `0` — mirroring `lsp_query.py`'s missing-language-server path. This is the
+**one** graceful-degradation exception (intended rollout behavior). Every other
+failure to evaluate — terraform exit `1`, a missing or repo-escaping
+`terraform_root`, an unparseable/malformed declaration, a failed journal write —
+is an `error`/`malformed` finding that **fails `--gate`**: a blocking gate must
+fail when it could not actually evaluate the invariant, otherwise "terraform is
+broken" silently reads as "no drift". None of these are ever conflated with
+`drift` in the report.
 
 ### Drift is an event, not just a state
 
 Every detected drift (`drift` or `exempted`) appends an **append-only** JSONL
-record to `docs/quality/infra-drift.jsonl`:
+record to `docs/quality/infra-drift.jsonl` **in the target repo** (resolved
+against the same repo root as `terraform_root`, never the caller's CWD):
 
 ```json
 {"ts": 1752921600.0, "invariant": "INV-infra-001", "root": "infra/", "plan_summary_first_40_lines": ["~ update in place", "..."]}
@@ -198,6 +211,11 @@ A later clean plan (someone reconciled the drift, or terraform re-applied) does
 **not** erase this record — convergence is not innocence. The journal is the
 durable evidence that an out-of-band write occurred, independent of whether it
 was later fixed.
+
+The drift **finding is recorded before** the journal write, so a failed write
+can never swallow it: a journal-write failure is reported as an explicit
+(gate-failing) `error` finding alongside the drift, and report-only mode still
+renders the full report instead of crashing.
 
 ### Break-glass: committed exemption records
 
@@ -248,7 +266,11 @@ python3 scripts/check_infra_writer.py --config docs/system/infra-invariants.json
 # JSON output
 python3 scripts/check_infra_writer.py --format json
 
-# blocking: exit 1 on unexempted drift or an expired exemption
+# explicit repo root (otherwise derived from the config file's location)
+python3 scripts/check_infra_writer.py --repo /path/to/target-repo
+
+# blocking: exit 1 on unexempted drift, an expired exemption, or any
+# error/malformed finding that prevented evaluating an invariant
 python3 scripts/check_infra_writer.py --gate
 ```
 

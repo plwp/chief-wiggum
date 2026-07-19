@@ -54,8 +54,18 @@ deferred trigger item, same caveat ``docs/single-writer.md`` states for the
 code-level checker's regex lens).
 
 Report-only by default (prints findings, exit 0); ``--gate`` hard-fails (exit 1)
-on any unexempted drift or expired exemption — per ``docs/gate-rollout.md``,
-validate report-only on a real repo before wiring ``--gate`` into a workflow.
+on any unexempted drift, expired exemption, ERROR (terraform exit 1, a missing
+or repo-escaping ``terraform_root``, a failed journal write), or MALFORMED
+declaration — a blocking gate must fail when it could not actually evaluate the
+invariant. The single graceful-degradation exception is terraform not being
+installed at all. Per ``docs/gate-rollout.md``, validate report-only on a real
+repo before wiring ``--gate`` into a workflow.
+
+Path resolution: each ``terraform_root`` is resolved relative to the **repo
+root** — an explicit ``--repo``, else the nearest ancestor of the config file
+containing ``.git``, else the config file's directory — never the caller's CWD.
+Roots that escape that boundary (absolute paths, ``..``) are rejected. The
+drift journal likewise lands in the target repo's ``docs/quality/``, not CWD.
 
 Exit codes: 0 = ok / report-only, 1 = gate violation, 2 = usage error.
 """
@@ -75,7 +85,9 @@ from datetime import date
 from pathlib import Path
 
 DEFAULT_CONFIG = Path("docs/system/infra-invariants.json")
-DEFAULT_JOURNAL = Path("docs/quality/infra-drift.jsonl")
+# Repo-relative: resolved against the target repo's root (see _find_repo_root),
+# never the caller's CWD.
+DEFAULT_JOURNAL_REL = Path("docs/quality/infra-drift.jsonl")
 
 AUTHORITY = (
     "proves declared state matches live state at scan time for scanned roots; "
@@ -168,9 +180,18 @@ class InfraDriftReport:
 
     @property
     def gate_ok(self) -> bool:
-        # --gate hard-fails on unexempted drift or an expired (lapsed) exemption —
-        # the break-glass window closed and nobody re-declared or cleaned it up.
-        return not self.drift and not self.expired_exemptions
+        # --gate hard-fails on:
+        #   - unexempted drift;
+        #   - an expired (lapsed) exemption — the break-glass window closed and
+        #     nobody re-declared or cleaned it up;
+        #   - any ERROR (terraform exit 1, missing/escaping root, journal write
+        #     failure) or MALFORMED declaration — a blocking gate must fail when
+        #     it could not actually evaluate the invariant, otherwise "terraform
+        #     is broken" silently reads as "no drift".
+        # The single graceful-degradation exception is terraform not being
+        # installed at all (available=False): that path returns before any
+        # findings exist, by design (rollout behavior, mirrors lsp_query.py).
+        return not (self.drift or self.expired_exemptions or self.errors or self.malformed)
 
     def to_dict(self) -> dict:
         return {
@@ -300,6 +321,39 @@ def append_drift_journal(journal_path: str | Path, invariant_id: str, root: str,
         fh.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+# --- path resolution -----------------------------------------------------------
+
+
+def _find_repo_root(config_path: Path) -> Path:
+    """The repo root that ``terraform_root`` entries and the drift journal
+    resolve against: the nearest ancestor of the config file containing
+    ``.git``, else the config file's own directory. Never the caller's CWD —
+    the check must behave identically wherever it is invoked from."""
+    resolved = config_path.resolve()
+    for parent in resolved.parents:
+        if (parent / ".git").exists():
+            return parent
+    return resolved.parent
+
+
+def _resolve_terraform_root(repo_root: Path, declared: str) -> Path | None:
+    """Resolve a declared ``terraform_root`` inside ``repo_root``.
+
+    Returns ``None`` for roots that escape the repo boundary — absolute paths
+    and ``..`` traversal are rejected: the config is committed data, and a
+    declared root must not be able to point the scanner (or the journal)
+    outside the repo it lives in.
+    """
+    declared_path = Path(declared)
+    if declared_path.is_absolute():
+        return None
+    base = repo_root.resolve()
+    resolved = (base / declared_path).resolve()
+    if not resolved.is_relative_to(base):
+        return None
+    return resolved
+
+
 # --- running terraform ---------------------------------------------------------
 
 
@@ -326,6 +380,7 @@ def terraform_available() -> bool:
 def check(
     config_path: str | Path = DEFAULT_CONFIG,
     *,
+    repo_root: str | Path | None = None,
     exemptions_dir: str | Path | None = None,
     journal_path: str | Path | None = None,
     runner: Runner | None = None,
@@ -334,6 +389,9 @@ def check(
 ) -> InfraDriftReport:
     """Run the infra single-writer check.
 
+    ``repo_root`` (CLI ``--repo``) overrides the boundary that ``terraform_root``
+    entries and the drift journal resolve against; by default it is derived from
+    the config file's location (see ``_find_repo_root``) — never the caller's CWD.
     ``runner``/``today``/``available`` are injectable seams for tests (mock
     subprocess, freeze the exemption-expiry clock, force the missing-terraform
     path) — production callers leave them ``None`` and get the real behavior.
@@ -344,8 +402,10 @@ def check(
     is_available = terraform_available() if available is None else available
     report.available = is_available
     if not is_available:
-        # Graceful degradation, exactly like lsp_query.py's missing-server path:
-        # never block the workflow because the tool isn't installed here.
+        # The ONE graceful-degradation path (intended rollout behavior, mirrors
+        # lsp_query.py's missing-server path): terraform isn't installed here,
+        # so nothing was evaluated and nothing gates. Every other failure to
+        # evaluate below is an error/malformed finding and DOES gate.
         report.warnings.append("terraform not installed; skipping infra-writer check (graceful degradation)")
         return report
 
@@ -353,20 +413,29 @@ def check(
         report.warnings.append(f"no infra invariants declared (config not found: {config_path})")
         return report
 
+    # From here on the repo HAS declared infra invariants — failing to read or
+    # understand the declaration means the gate could not evaluate them, which
+    # must be a gate-failing finding (malformed), not a warning.
     try:
         raw = json.loads(config_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        report.warnings.append(f"cannot parse config {config_path}: {exc}")
+        report.malformed.append({"source": str(config_path), "reason": f"cannot parse config: {exc}"})
         return report
     if not isinstance(raw, list):
-        report.warnings.append(f"config {config_path} must be a JSON array of invariants")
+        report.malformed.append({
+            "source": str(config_path),
+            "reason": "config must be a JSON array of invariants",
+        })
         return report
 
     invariants, malformed = _parse_invariants(raw)
     report.malformed = malformed
     if not invariants:
-        report.warnings.append("no valid infra invariants found; nothing to check")
+        if not raw:
+            report.warnings.append("config declares no invariants; nothing to check")
         return report
+
+    base_root = Path(repo_root).resolve() if repo_root is not None else _find_repo_root(config_path)
 
     exemptions_root = Path(exemptions_dir) if exemptions_dir is not None else config_path.parent / "exemptions"
     exemptions, exemption_malformed = load_exemptions(exemptions_root)
@@ -377,18 +446,29 @@ def check(
         {**e.to_dict(), "reason": "exemption expired"} for e in exemptions if e.is_expired(check_today)
     ]
 
-    journal = Path(journal_path) if journal_path is not None else DEFAULT_JOURNAL
+    # The journal lands in the target repo's docs/quality/, not the caller's CWD.
+    journal = Path(journal_path) if journal_path is not None else base_root / DEFAULT_JOURNAL_REL
     run = runner or _default_runner
 
     for inv in invariants:
-        root = Path(inv.terraform_root)
+        base = {
+            "invariant_id": inv.id,
+            "controls_field": inv.controls_field,
+            "terraform_root": inv.terraform_root,
+        }
+
+        root = _resolve_terraform_root(base_root, inv.terraform_root)
+        if root is None:
+            report.errors.append({
+                **base, "status": "error",
+                "reason": f"terraform_root escapes repo root {base_root} "
+                          "(absolute paths and .. traversal are rejected)",
+            })
+            continue
         if not root.is_dir():
             report.errors.append({
-                "invariant_id": inv.id,
-                "controls_field": inv.controls_field,
-                "terraform_root": inv.terraform_root,
-                "status": "error",
-                "reason": f"terraform_root not found: {inv.terraform_root}",
+                **base, "status": "error",
+                "reason": f"terraform_root not found: {root}",
             })
             continue
 
@@ -396,31 +476,20 @@ def check(
             proc = run(root)
         except (OSError, subprocess.TimeoutExpired) as exc:
             report.errors.append({
-                "invariant_id": inv.id,
-                "controls_field": inv.controls_field,
-                "terraform_root": inv.terraform_root,
-                "status": "error",
+                **base, "status": "error",
                 "reason": f"terraform plan failed to run: {exc}",
             })
             continue
 
         exit_code = proc.returncode
         stdout = proc.stdout or ""
-        base = {
-            "invariant_id": inv.id,
-            "controls_field": inv.controls_field,
-            "terraform_root": inv.terraform_root,
-            "sanctioned_writers": inv.sanctioned_writers,
-            "exit_code": exit_code,
-        }
+        base = {**base, "sanctioned_writers": inv.sanctioned_writers, "exit_code": exit_code}
 
         if exit_code == 0:
             report.checked.append({**base, "status": "clean"})
         elif exit_code == 2:
-            # DRIFT: an unsanctioned write happened out-of-band. This is an EVENT —
-            # journal it before anything else, so a later clean plan (convergence)
-            # never erases evidence the drift occurred.
-            append_drift_journal(journal, inv.id, inv.terraform_root, stdout)
+            # DRIFT: an unsanctioned write happened out-of-band. Record the
+            # FINDING first — a journal-write failure must never swallow it.
             plan_excerpt = stdout.splitlines()[:10]
             active = _find_active_exemption(exemptions, inv.controls_field, check_today)
             if active:
@@ -430,6 +499,18 @@ def check(
                 })
             else:
                 report.drift.append({**base, "status": "drift", "plan_excerpt": plan_excerpt})
+            # Drift is an EVENT — journal it so a later clean plan (convergence)
+            # never erases the evidence. A failed write is an explicit error
+            # finding (gate-failing): silently losing the event would defeat
+            # the append-only journal's purpose. It must not crash report-only
+            # mode either — the full report still renders.
+            try:
+                append_drift_journal(journal, inv.id, inv.terraform_root, stdout)
+            except OSError as exc:
+                report.errors.append({
+                    **base, "status": "error",
+                    "reason": f"drift detected but journal write failed ({journal}): {exc}",
+                })
         elif exit_code == 1:
             # terraform ERROR — never conflate with drift.
             report.errors.append({
@@ -486,7 +567,7 @@ def render_text(report: InfraDriftReport) -> str:
         for e in report.expired_exemptions:
             lines.append(f"- {e['source']} scope=`{e['scope']}` expired {e['expiry']} (approver {e['approver']})")
     if report.errors:
-        lines += ["", "## Errors (terraform failed to run — not drift)", ""]
+        lines += ["", "## Errors (could not evaluate — gate-failing, but not drift)", ""]
         for e in report.errors:
             lines.append(f"- {e['invariant_id']} root={e['terraform_root']}: {e.get('reason', '')}")
     if report.malformed:
@@ -508,13 +589,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to infra-invariants JSON config")
     parser.add_argument(
+        "--repo",
+        help="Target repo root that terraform_root entries and the drift journal resolve "
+        "against (default: derived from the config file's location, never CWD)",
+    )
+    parser.add_argument(
         "--gate", action="store_true",
-        help="Fail (exit 1) on unexempted drift or an expired exemption; default is report-only",
+        help="Fail (exit 1) on unexempted drift, an expired exemption, or any error/malformed "
+        "finding that prevented evaluating an invariant (terraform exit 1, missing/escaping "
+        "root, failed journal write, bad declaration); default is report-only. Terraform not "
+        "being installed at all remains graceful degradation (exit 0)",
     )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
-    report = check(args.config)
+    report = check(args.config, repo_root=args.repo)
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))
@@ -527,7 +616,8 @@ def main(argv: list[str] | None = None) -> int:
         if _here not in sys.path:
             sys.path.insert(0, _here)
         from factory_log import emit_gate
-        caught = len(report.drift) + len(report.expired_exemptions)
+        caught = (len(report.drift) + len(report.expired_exemptions)
+                  + len(report.errors) + len(report.malformed))
         emit_gate(
             "check_infra_writer",
             "fail" if caught else "pass",
