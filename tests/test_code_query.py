@@ -520,6 +520,8 @@ def test_scanner_version_includes_both_checker_sources():
         scripts / "code_query.py",
         scripts / "check_single_writer.py",
         scripts / "check_traceability.py",
-        cw / "trace_ids.py", cw / "annotations.py", cw / "manifest.py", cw / "hashing.py",
+        cw / "trace_ids.py", cw / "annotations.py",
+        cw / "trace_emission.py", cw / "write_emission.py", cw / "languages.py",
+        cw / "manifest.py", cw / "hashing.py",
     )
     assert code_query._scanner_version() == expected

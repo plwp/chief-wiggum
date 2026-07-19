@@ -295,12 +295,17 @@ def _scanner_version() -> str:
     # check_single_writer.py / check_traceability.py are hash inputs because
     # their EMISSIONS define this tool's facts (writer sites, annotation
     # sites): a change to either scanner's detection logic changes what a
-    # query returns, so it must change this version too.
+    # query returns, so it must change this version too. Since #162 the actual
+    # emission logic lives in chief_wiggum.write_emission / trace_emission
+    # (with the extension universe in chief_wiggum.languages) — those are
+    # inputs for the same reason.
     return scanner_version(
         here,
         here.parent / "check_single_writer.py",
         here.parent / "check_traceability.py",
         cw_dir / "trace_ids.py", cw_dir / "annotations.py",
+        cw_dir / "trace_emission.py", cw_dir / "write_emission.py",
+        cw_dir / "languages.py",
         cw_dir / "manifest.py", cw_dir / "hashing.py",
     )
 
