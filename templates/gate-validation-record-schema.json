@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Gate validation record",
+  "description": "Per-gate protocol record (docs/gate-validation.md): seeded-defect trials, clean-corpus runs with coverage evidence, and an authority-boundary statement, proving a gate deserves to run in blocking (--gate) mode.",
+  "type": "object",
+  "required": [
+    "gate",
+    "protocol_version",
+    "authority_boundary",
+    "seeded_defect_trials",
+    "clean_corpus_runs",
+    "status"
+  ],
+  "properties": {
+    "gate": {
+      "type": "string",
+      "description": "The gate script's name, e.g. check_single_writer"
+    },
+    "protocol_version": { "type": "string" },
+    "scanner_version": {
+      "type": "string",
+      "description": "The gate's --scanner-version hash at authoring time, if it has one"
+    },
+    "telemetry_dependent": {
+      "type": "boolean",
+      "description": "True if the gate reads runtime telemetry/instrumentation rather than static source/docs. Mandates an instrumentation-deleted seed."
+    },
+    "concurrency_applicable": {
+      "type": "boolean",
+      "description": "True if the gate's artifact has a concurrent/racing-writer dimension. Mandates an evasion-concurrency seed."
+    },
+    "concurrency_note": {
+      "type": "string",
+      "description": "Required justification when concurrency_applicable is false."
+    },
+    "authority_boundary": {
+      "type": "object",
+      "required": ["proves", "artifact", "assumptions"],
+      "properties": {
+        "proves": { "type": "string", "minLength": 1 },
+        "artifact": { "type": "string", "minLength": 1 },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        }
+      }
+    },
+    "seeded_defect_trials": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["seed_id", "seed_class", "repo", "expected", "result", "passed"],
+        "properties": {
+          "seed_id": { "type": "string" },
+          "seed_class": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "evasion-omission",
+              "evasion-config-indirection",
+              "evasion-sampling-gap",
+              "evasion-concurrency",
+              "instrumentation-deleted"
+            ]
+          },
+          "seed_version": { "type": "string" },
+          "repo": { "type": "string" },
+          "sha": { "type": "string" },
+          "injected": { "type": "string" },
+          "expected": { "type": "string", "enum": ["fire", "no-fire"] },
+          "result": { "type": "string", "enum": ["fired", "not-fired"] },
+          "passed": { "type": "boolean" }
+        }
+      }
+    },
+    "clean_corpus_runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["repo", "findings", "coverage", "passed"],
+        "properties": {
+          "repo": { "type": "string" },
+          "sha": { "type": "string" },
+          "findings": { "type": "integer", "minimum": 0 },
+          "coverage": { "type": "object" },
+          "passed": { "type": "boolean" }
+        }
+      }
+    },
+    "status": { "type": "string", "enum": ["passed", "failed"] },
+    "validated_at": { "type": "string" },
+    "validated_by": { "type": "string" },
+    "ratchet_record_id": { "type": "string" }
+  }
+}

@@ -55,8 +55,8 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 
 | Gate | Script | Blocking flag | Status |
 | --- | --- | --- | --- |
-| Traceability | `check_traceability.py` | `--gate` | blocking (`/architect`, `/close-epic`) |
-| Single-writer | `check_single_writer.py` | `--gate` | blocking (precision fix in #93) |
+| Traceability | `check_traceability.py` | `--gate` | blocking (`/architect`, `/close-epic`); **gate-validation record: passed** (#168, retroactive) |
+| Single-writer | `check_single_writer.py` | `--gate` | blocking (precision fix in #93); **gate-validation record: passed** (#168, retroactive) |
 | Unresolved markers | `check_unresolved.py` | `--gate` | blocking (`/implement-wave`) |
 | Ratchet: pass-set + contract hashes | `ratchet.py check` | (blocks by default) | blocking (`/implement`, waves, `/close-epic`) |
 | **Ratchet: complexity + relative churn** | `ratchet.py check --gate-quality` | `--gate-quality` | **NEW — report-only** (#110); validate on a shipped repo before wiring as a blocker |
@@ -64,3 +64,17 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 | **Minimal-CI** | `ci_scaffold.py` | `--gate` | **report-only** (#111); wired into `/close-epic` report-only; `--gate` mode held off until validated across shipped repos |
 | **AI-slop signals (code survival + duplication)** | `quality_slop_gate.py` | `--gate` | **report-only** (#113); `/close-epic`; promote after a dry-run shows the GitClear bands don't false-positive on shipped repos |
 | **Traceability: suspect-link propagation** | `check_traceability.py` (`suspect_links`) | none yet | **NEW — report-only** (#169); does not affect `coverage_ok`/the `--gate coverage` exit code; `ratchet.py check`/`regressed` surface the same sidecar cross-reference visibly. Promote once a dry-run across a real epic's link churn shows an acceptable false-positive rate (see docs/traceability.md) |
+
+## From convention to protocol: `docs/gate-validation.md` (#168)
+
+The rule above ("validated on a real, already-shipped repo") was, until #168,
+a human judgment call checked by convention — a dry-run's findings attached to
+a PR, reviewed by eye. `docs/gate-validation.md` makes it a **mechanical
+protocol**: a per-gate `validation/<gate>.json` record (seeded-defect trials —
+including mandatory evasion classes — plus clean-corpus runs with coverage
+evidence and an authority-boundary statement), enforced by
+`scripts/check_gate_validation.py`. `/close-epic` refuses to pass `--gate` to
+a checker lacking a passing record. Traceability and single-writer (both
+predating the doctrine) carry retroactively-completed records as of #168;
+ratchet/SaaS-NFR/minimal-CI/AI-slop-signals do not yet and keep their
+pre-existing wiring unchanged pending their own retroactive validation.

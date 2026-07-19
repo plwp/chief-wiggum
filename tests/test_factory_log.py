@@ -399,3 +399,109 @@ def test_render_report_shows_escapes_and_recall():
     report = factory_log.render_report(agg, repo="r")
     assert "Escapes" in report and "ticket-gate" in report
     assert "RECALL" in report
+
+
+# ---- demotion (docs/gate-validation.md, #168) ---------------------------------
+
+
+def _write_validation_record(tmp_path, gate: str, seed_classes: list[str]) -> Path:
+    vdir = tmp_path / "validation"
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / f"{gate}.json").write_text(json.dumps({
+        "gate": gate,
+        "seeded_defect_trials": [
+            {"seed_id": f"{c}-1", "seed_class": c, "repo": "r", "expected": "fire",
+             "result": "fired", "passed": True}
+            for c in seed_classes
+        ],
+    }))
+    return vdir
+
+
+def test_demotion_check_none_without_seed_class(tmp_path):
+    vdir = _write_validation_record(tmp_path, "check_single_writer", ["evasion-omission"])
+    assert factory_log.demotion_check("check_single_writer", None, vdir) is None
+
+
+def test_demotion_check_none_without_record(tmp_path):
+    assert factory_log.demotion_check("check_single_writer", "evasion-omission",
+                                       tmp_path / "no-such-dir") is None
+
+
+def test_demotion_check_none_when_class_not_validated(tmp_path):
+    vdir = _write_validation_record(tmp_path, "check_single_writer", ["evasion-omission"])
+    assert factory_log.demotion_check("check_single_writer", "evasion-concurrency", vdir) is None
+
+
+def test_demotion_check_fires_when_class_was_validated(tmp_path):
+    vdir = _write_validation_record(tmp_path, "check_single_writer", ["evasion-omission"])
+    demotion = factory_log.demotion_check("check_single_writer", "evasion-omission", vdir)
+    assert demotion is not None
+    assert demotion["gate"] == "check_single_writer"
+    assert demotion["seed_class"] == "evasion-omission"
+    assert "report-only" in demotion["instruction"]
+    assert "check_single_writer" in demotion["instruction"]
+
+
+def test_emit_demotion_writes_record(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    assert factory_log.emit_demotion("check_single_writer", "evasion-omission", repo="acme/app")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "demotion"
+    assert rec["name"] == "check_single_writer"
+    assert rec["details"] == "seed_class=evasion-omission"
+
+
+def test_cli_bug_with_unvalidated_seed_class_prints_no_demotion(tmp_path):
+    import os
+    log = tmp_path / "f.jsonl"
+    env = {**os.environ, "CW_FACTORY_LOG": str(log)}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "factory_log.py"), "bug",
+         "--repo", "acme/app", "--summary", "x", "--severity", "low",
+         "--missed-by", "check_single_writer", "--seed-class", "evasion-omission",
+         "--validation-dir", str(tmp_path / "does-not-exist"), "--found-in", "manual"],
+        capture_output=True, text=True, env=env,
+    )
+    assert proc.returncode == 0
+    assert "DEMOTION" not in proc.stderr
+
+
+def test_cli_bug_with_validated_seed_class_triggers_demotion(tmp_path):
+    import os
+    vdir = _write_validation_record(tmp_path, "check_single_writer", ["evasion-omission"])
+    log = tmp_path / "f.jsonl"
+    env = {**os.environ, "CW_FACTORY_LOG": str(log)}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "factory_log.py"), "bug",
+         "--repo", "acme/app", "--summary", "x", "--severity", "high",
+         "--missed-by", "check_single_writer", "--seed-class", "evasion-omission",
+         "--validation-dir", str(vdir), "--found-in", "close-epic-review", "--ticket", "42"],
+        capture_output=True, text=True, env=env,
+    )
+    assert proc.returncode == 0
+    assert "DEMOTION" in proc.stderr
+    assert "check_single_writer" in proc.stderr
+    records = [json.loads(ln) for ln in log.read_text().splitlines()]
+    events = {r["event"] for r in records}
+    assert events == {"escape", "demotion"}
+
+
+def test_cli_bug_demotion_instruction_printed_even_when_telemetry_disabled(tmp_path):
+    """The demotion instruction is a structural check against the validation
+    record, independent of whether telemetry logging is opted in — it must not
+    be silenced just because CW_TELEMETRY/CW_FACTORY_LOG are unset."""
+    import os
+    vdir = _write_validation_record(tmp_path, "check_single_writer", ["evasion-omission"])
+    env = {k: v for k, v in os.environ.items() if k not in ("CW_TELEMETRY", "CW_FACTORY_LOG")}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "factory_log.py"), "bug",
+         "--repo", "acme/app", "--summary", "x", "--severity", "high",
+         "--missed-by", "check_single_writer", "--seed-class", "evasion-omission",
+         "--validation-dir", str(vdir), "--found-in", "manual"],
+        capture_output=True, text=True, env=env,
+    )
+    assert "DEMOTION" in proc.stderr
+    assert proc.returncode == 1  # escape itself still couldn't be logged (telemetry off)
+    assert "telemetry disabled" in proc.stderr

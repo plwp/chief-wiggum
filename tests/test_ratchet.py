@@ -3,6 +3,7 @@
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -479,3 +480,38 @@ def test_score_quality_end_to_end_on_a_real_repo(tmp_path):
     assert q["total_loc"] > 0 and 0 <= q["pct_ccn_gt10"] <= 100
     # relative_churn requires git history; chief-wiggum has plenty
     assert q["relative_churn"] is None or q["relative_churn"] >= 0
+
+
+# ---- gate-validation event (docs/gate-validation.md, #168) --------------------
+
+
+def test_record_accepts_gate_validation_event(tmp_path):
+    """`ratchet.py record --event gate-validation` journals a gate-validation-protocol
+    run — --ref names the gate, per docs/gate-validation.md's "Recording results"."""
+    cfg = make_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "score", "--repo", str(tmp_path),
+         "--no-tests", "--no-quality"],
+        capture_output=True, text=True, check=True,
+    )
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "gate-validation", "--ref", "check_single_writer", "--merged",
+         "--notes", "seeded-defect + clean-corpus trials passed"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    records = ratchet.load_journal(cfg)
+    assert len(records) == 1
+    assert records[0]["event"] == "gate-validation"
+    assert records[0]["ref"] == "check_single_writer"
+
+
+def test_record_rejects_unknown_event(tmp_path):
+    make_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "not-a-real-event", "--ref", "x"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
