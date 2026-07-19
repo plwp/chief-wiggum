@@ -65,21 +65,38 @@ Show the user the full issue markdown and ask:
 
 ### Step 4: Create the issue
 
+Resolve the issue ref via `tracker.py` instead of calling `gh issue` directly —
+this is what makes the workflow backend-agnostic (GitHub today, `local` or
+others per `docs/cw/tracker.json` in the target repo). See `docs/tracker.md`
+for the full interface.
+
 ```bash
-gh issue create \
-  --repo "$owner_repo" \
+ref=$(python3 "$CW_HOME/scripts/tracker.py" create "$owner_repo" \
   --title "$title" \
   --body "$body" \
-  --label "$labels"
+  --label "$label1" --label "$label2")
 ```
 
-If a milestone was specified:
+If a milestone/epic was specified, pass it at creation time (the backend maps
+it to a GitHub milestone or a local frontmatter `epic` field as appropriate):
+
 ```bash
-gh issue edit "$issue_number" --repo "$owner_repo" --milestone "$milestone"
+ref=$(python3 "$CW_HOME/scripts/tracker.py" create "$owner_repo" \
+  --title "$title" \
+  --body "$body" \
+  --label "$label1" --label "$label2" \
+  --epic "$milestone")
 ```
 
 ### Step 5: Report
 
-Show the created issue URL and number. Ask if the user wants to:
+Fetch the created issue back to show its URL/path and confirm the fields landed:
+
+```bash
+python3 "$CW_HOME/scripts/tracker.py" get "$ref"
+```
+
+Show the created issue's `url_or_path` and ref. Ask if the user wants to:
 - Create another issue
-- Start implementing this one (`/implement owner/repo#N`)
+- Start implementing this one (`/implement owner/repo#N` for the `github`
+  backend; `/implement "$ref"` otherwise)

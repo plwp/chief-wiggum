@@ -13,17 +13,32 @@ Group related issues into a coherent epic with a dependency graph, integration r
 
 ## Workflow
 
-### Step 1: Load the backlog
-
-Fetch all open issues and recent context:
+### Step 0: Resolve CW_HOME
 
 ```bash
-gh issue list --repo "$owner_repo" --state open --limit 200 --json number,title,labels,assignees,milestone,createdAt,updatedAt,body
-gh issue list --repo "$owner_repo" --state open --limit 50 --json number,title,labels,assignees --jq '.[] | select(.assignees | length > 0)'
-gh issue list --repo "$owner_repo" --state closed --limit 10 --json number,title,closedAt,labels
+CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
+CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 ```
 
-Also fetch milestones to see if there's existing epic-level organisation:
+### Step 1: Load the backlog
+
+Resolve the backlog via `tracker.py` instead of calling `gh issue` directly —
+this is what makes the workflow backend-agnostic (GitHub today, `local` or
+others per `docs/cw/tracker.json` in the target repo). See `docs/tracker.md`
+for the full interface.
+
+```bash
+python3 "$CW_HOME/scripts/tracker.py" list "$owner_repo"
+```
+
+This returns every issue (any state) with full metadata (`ref`, `title`,
+`body`, `state`, `labels`, `assignee`, `epic`, `url_or_path`). Derive the
+open/closed/assigned views you need from this single JSON list client-side
+(filter on `state`/`assignee`) rather than issuing separate queries.
+
+Also fetch milestones to see if there's existing epic-level organisation
+(milestones are GitHub-specific metadata, not part of the tracker-agnostic
+`Issue` shape, so this stays a direct `gh api` call):
 ```bash
 gh api repos/$owner_repo/milestones --jq '.[] | {title, description, open_issues, closed_issues}'
 ```
@@ -131,9 +146,10 @@ EOF
 
 The block is an HTML comment (invisible in rendered markdown) with one line per ticket in the format `#N: [#dep1, #dep2]`; empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph — `/implement-wave` parses it to compute waves. Do not hand-write it; always generate it with `format-deps` so it round-trips through the parser.
 
-Add all epic tickets to the milestone:
+Add all epic tickets to the milestone via `tracker.py group` (the milestone
+already exists from the step above, so this only assigns each issue to it):
 ```bash
-gh issue edit $issue_number --repo "$owner_repo" --milestone "Epic: [Name]"
+python3 "$CW_HOME/scripts/tracker.py" group "Epic: [Name]" "gh:$owner_repo#42" "gh:$owner_repo#43" "gh:$owner_repo#44"
 ```
 
 ### Step 7: Offer next steps
