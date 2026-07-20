@@ -1,0 +1,6 @@
+# Minimal stack marker so ci_scaffold's detect_stack() reports "python".
+# Deliberately carries NO [tool.pytest.ini_options] so this fixture cannot
+# perturb the parent repo's pytest rootdir/config discovery.
+[project]
+name = "ci-scaffold-clean-fixture"
+version = "0.0.0"

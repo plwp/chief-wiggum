@@ -1,0 +1,92 @@
+{
+  "gate": "quality_slop_gate",
+  "protocol_version": "1",
+  "scanner_version": "adfec15dcb2d52449bfec1d7e7782ea70b5b5086c676c2a44f31aad9f005532a",
+  "telemetry_dependent": false,
+  "concurrency_applicable": false,
+  "concurrency_note": "quality_slop_gate's verdict is pure classification math (_band / evaluate_survival / evaluate_duplication / has_findings) over a static recorded band-file input; there is no concurrent/racing dimension in the artifact to evade. The upstream engines (git-of-theseus, jscpd) run once over a fixed git history, not concurrently.",
+  "authority_boundary": {
+    "proves": "the gate's banding/classification logic is correct: a survival signal below the AI-assisted band (94.3%) and a duplication signal above the AI-assisted band (12.3%) each classify 'past-ai' and are reported as findings by has_findings; a value exactly at or better than a band, a 'too_young' non-measurement, and a 'skipped' (tool-absent) signal each correctly produce NO finding; and the int-keyed (engine-native) and string-keyed (serialized) survival shapes classify identically",
+    "artifact": "the REAL pure verdict functions evaluate_survival / evaluate_duplication / has_findings imported from scripts/quality_slop_gate.py, fed pre-computed survival.analyze()/duplication.analyze() result-dict shapes from fixture band files (tests/fixtures/gate_validation/quality_slop_gate_clean/*.json)",
+    "assumptions": [
+      "VALIDATED AGAINST A FIXTURE BAND-FILE EXERCISING THE CLASSIFICATION/BANDING LOGIC ONLY (CTR-fh-044): this record says NOTHING about git-of-theseus's or jscpd's own correctness, nor their availability in a given CI environment \u2014 neither is installed in chief-wiggum's own CI, and quality_slop_gate self-reports 'skipped' gracefully when they are absent (exercised by the sampling-gap trial)",
+      "the GitClear/DORA reference bands (survival pre-AI 96.9%/AI 94.3%; duplication pre-AI 8.3%/AI 12.3%) are directional vendor framing, not independently replicated \u2014 the gate treats only a 'past-ai' regression as a finding and this record validates the banding math against those constants, not the constants' external validity",
+      "band boundaries are inclusive on the healthier side: _band classifies a survival value >= a band as in/above it and a duplication value <= a band as in/below it, so a value exactly at the AI band is 'pre-ai..ai' (not a finding), never 'past-ai'",
+      "has_findings only counts a signal whose status == 'measured'; 'too_young' and 'skipped' verdicts produce zero findings regardless of any numbers they carry \u2014 an honest non-measurement, never a fabricated clean or a false fire"
+    ]
+  },
+  "seeded_defect_trials": [
+    {
+      "seed_id": "slop-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "injected": "survival_past_ai.json re-cast to the engine-native INTEGER age keys ({14: ..., 30: ...} as scripts/quality/survival.py emits): survival_14d 90.0% < AI band 94.3% -> evaluate_survival band_14d 'past-ai' -> has_findings reports the elevated-2-week-churn finding",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "slop-direct-02",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "injected": "duplication_past_ai.json: duplication_pct_lines 15.0% > AI band 12.3% -> evaluate_duplication band 'past-ai' -> has_findings reports the duplication finding (survival healthy so duplication is the sole finding)",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "slop-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "injected": "survival_past_ai.json as-serialized with STRING age keys ('14'/'30' \u2014 the shape any recorded/JSON band file carries, an indirection from the engine's native integer keys). evaluate_survival's 'by_age.get(14) or by_age.get(\"14\")' fallback must still reach and classify it 'past-ai' -> fire. The serialized-key indirection does not dodge classification; verified equal to the int-key verdict.",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "slop-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "injected": "too_young.json: git-of-theseus ran but no commit has lived >= 14 days (lines_old_enough 0). evaluate_survival reports status 'too_young' (honest non-measurement); has_findings counts only 'measured' signals, so it produces NO finding rather than fabricating a clean 'measured' verdict from unmeasurable data. A certified honest-degrade boundary -> no-fire.",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    },
+    {
+      "seed_id": "slop-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "injected": "both_skipped.json: git-of-theseus and jscpd both genuinely absent ({'skipped': ...} for each \u2014 the real state in chief-wiggum's CI). evaluate_survival/evaluate_duplication report status 'skipped'; has_findings produces NO finding for a skipped signal \u2014 a skip is neither a silent 'clean' masking a regression nor a false fire. A certified degrade path -> no-fire.",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    }
+  ],
+  "clean_corpus_runs": [
+    {
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "findings": 0,
+      "coverage": {
+        "signals_evaluated": 2,
+        "measured_signals": 2,
+        "bands_classified": 2
+      },
+      "passed": true
+    }
+  ],
+  "status": "passed",
+  "validated_at": "2026-07-20T05:30:00Z",
+  "validated_by": "chief-wiggum#184 (re-validated post PR-review fix: quality/survival.py + quality/duplication.py added to the scanner-version hash inputs \u2014 the engines shape run()'s verdicts)",
+  "ratchet_record_id": "rec-00012"
+}

@@ -1,0 +1,15 @@
+{
+  "contract_hashes": {
+    "CTR-rt-001": "0c84f623bc7aa6c05e595ec218fedd605d1243e7bfb1463b2067be4d2d92e963",
+    "CTR-rt-002": "a95854a499f756821931e90c4c46a980ce706998ca7846ea3d4abda507ff70ce"
+  },
+  "pass_set": [
+    "pytest::test_ratchet_fixture_smoke::test_widget_addition",
+    "pytest::test_ratchet_fixture_smoke::test_widget_identity"
+  ],
+  "passed": 2,
+  "quality": {
+    "skipped": "quality metrics disabled (--no-quality)"
+  },
+  "tests_run": true
+}

@@ -13,13 +13,13 @@ the realizing contracts/invariants.
 
 ## #83 — run_review.py drops ticket comments (BR-fh-001)
 
-| Acceptance criterion | Contracts / invariants | Planned tests | Status |
-|---|---|---|---|
-| Fold issue comments (≥ design refinements) into the assembled review prompt | CTR-fh-001, CTR-fh-003 | unit: `test_review_pipeline` prompt has `{{TICKET_COMMENTS}}` token; IT-fh-01 | pending |
-| TWO labeled regions: "Accepted AC amendments (authoritative-on-conflict)" + "Discussion/context (non-authoritative)" — raw thread never labeled authoritative | CTR-fh-003, INV-fh-010 | unit: `test_review_pipeline` two-section split (amendment lands in region 1, discussion in region 2, both present even when one is empty); IT-fh-01 | pending |
-| `from_dict` preserves `comments` (no silent drop) | CTR-fh-001, INV-fh-009 | unit + IT-fh-02 (dict & legacy-string round-trip) | pending |
-| Upstream `ticket.json` writer serializes comments incl. `author_association` (absent key = failure) | CTR-fh-002 | IT-fh-02, IT-fh-10 (writer golden) | pending |
-| Amendments vs discussion authority (adversarial-safe); stored ACs never rewritten | INV-fh-010, INV-fh-009 | IT-fh-01 (adversarial comment stays discussion; acceptance_criteria byte-identical) | pending |
+| Ticket | Acceptance Criterion | Unit Test | Integration Test | E2E Test | Status |
+|--------|---------------------|-----------|-----------------|----------|--------|
+|  | Fold issue comments (≥ design refinements) into the assembled review prompt | — | — | — | pending |
+|  | TWO labeled regions: "Accepted AC amendments (authoritative-on-conflict)" + "Discussion/context (non-authoritative)" — raw thread never labeled authoritative | — | — | — | pending |
+|  | `from_dict` preserves `comments` (no silent drop) | — | — | — | pending |
+|  | Upstream `ticket.json` writer serializes comments incl. `author_association` (absent key = failure) | — | — | — | pending |
+|  | Amendments vs discussion authority (adversarial-safe); stored ACs never rewritten | — | — | — | pending |
 
 ## #134 — consult_ai per-provider token usage → emit_consult (BR-fh-002)
 
@@ -50,13 +50,13 @@ the realizing contracts/invariants.
 
 | Acceptance criterion | Contracts / invariants | Planned tests | Status |
 |---|---|---|---|
-| Add hash-derived `--scanner-version` to ratchet/saas_gate/ci_scaffold/quality_slop + check_architecture (fifth, via #174) | CTR-fh-040, CTR-fh-041, CTR-fh-026, INV-fh-005 | unit: round-trip per gate; complete-dep-list test (mechanical chief_wiggum-imports check) | pending |
-| Author + live-verify a record per gate; validity read via `--format json passing==true`, never default exit code | CTR-fh-043 | IT-fh-04 (table-driven over ALL FIVE records), IT-fh-06, IT-fh-09 | pending |
-| Journaled via `ratchet record --event gate-validation` | CTR-fh-043 | `test_ratchet` journal corroboration | pending |
-| **Fixture harnesses for saas_gate (recorded target) + quality_slop_gate (pinned band) — explicit AC, BLOCKER for those two records** | CTR-fh-044 | `test_saas_gate` / `test_quality_slop_gate` fixture-target runs | pending |
-| Record for #174's check_architecture in same pass, AFTER CHECKS freezes | INV-fh-003, ADR-fh-06 | IT-fh-04 (one seed per `CHECKS` entry; early-record negative) | pending |
+| Add hash-derived `--scanner-version` to ratchet/saas_gate/ci_scaffold/quality_slop + check_architecture (fifth, via #174) | CTR-fh-040, CTR-fh-041, CTR-fh-026, INV-fh-005 | unit: round-trip per gate; complete-dep-list test (mechanical chief_wiggum-imports check) | covered |
+| Author + live-verify a record per gate; validity read via `--format json passing==true`, never default exit code | CTR-fh-043 | IT-fh-04 (table-driven over ALL FIVE records), IT-fh-06, IT-fh-09 | covered |
+| Journaled via `ratchet record --event gate-validation` | CTR-fh-043 | `test_ratchet` journal corroboration | covered |
+| **Fixture harnesses for saas_gate (recorded target) + quality_slop_gate (pinned band) — explicit AC, BLOCKER for those two records** | CTR-fh-044 | `test_saas_gate` / `test_quality_slop_gate` fixture-target runs | covered |
+| Record for #174's check_architecture in same pass, AFTER CHECKS freezes | INV-fh-003, ADR-fh-06 | IT-fh-04 (one seed per `CHECKS` entry; early-record negative) | covered |
 | Stale record auto-demotes when blocking; downgrades to report_only when not | INV-fh-003, INV-fh-005 | IT-fh-06 (blocking→stale→demoted; validated→stale→report_only) | pending |
-| Single `DEFAULT_VALIDATION_DIR` (import from factory_log, not a second definition) | INV-fh-004 | IT-fh-06 (import-identity assertion) | pending |
+| Single `DEFAULT_VALIDATION_DIR` (import from factory_log, not a second definition) | INV-fh-004 | IT-fh-06 (import-identity assertion) | covered |
 
 ## #185 — code_query orient inferred-binding over-match (BR-fh-005)
 

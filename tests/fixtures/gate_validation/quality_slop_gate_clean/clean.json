@@ -1,0 +1,12 @@
+{
+  "_note": "Healthy repo: 97.5% 14-day survival (better than the pre-AI baseline 96.9%) and 6.0% duplication (below pre-AI 8.3%). Both signals measured, both better-than-pre-ai, has_findings == [].",
+  "survival_result": {
+    "repo": "fixture",
+    "total_lines_tracked": 8000,
+    "survival_by_age_days": {
+      "14": {"survival_pct": 97.5, "lines_old_enough": 8000},
+      "30": {"survival_pct": 96.2, "lines_old_enough": 7000}
+    }
+  },
+  "duplication_result": {"repo": "fixture", "duplication_pct_lines": 6.0}
+}

@@ -403,13 +403,19 @@ def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> 
 
 def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
-    ``chief_wiggum`` dependencies. No hand-bumped constant to forget."""
+    ``chief_wiggum`` dependencies. No hand-bumped constant to forget
+    (INV-fh-005). trace_links.py carries the suspect-link/sidecar/justification
+    logic — finding-affecting, so it is a hash input (its omission was the exact
+    CTR-fh-041 silent-staleness defect, caught by the #184 dep-completeness
+    test).
+    @cw-trace guards CTR-fh-041"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(
         here,
         cw_dir / "trace_ids.py",
         cw_dir / "trace_emission.py",
+        cw_dir / "trace_links.py",
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "languages.py",
