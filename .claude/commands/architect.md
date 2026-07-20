@@ -369,6 +369,26 @@ Maps every acceptance criterion from every ticket to the test(s) that will verif
 
 Each row's "Status" column starts as `pending` and is updated to `covered` when `/implement` writes the test, then `passing` when `/close-epic` verifies it.
 
+#### 4i. System Architecture Model (`docs/system/architecture.json`) — once per product
+
+Unlike 4a–4h, this artifact is **system-level, not epic-level**: it lives at `docs/system/architecture.json` in the target repo (schema: `$CW_HOME/templates/formal-models/architecture-schema.json`) and is authored **once per product**, then updated only when an epic adds/removes/retires a deployable or connector — most epics touching an existing product will find it already present and just extend it.
+
+**Check first**: `test -f "$TARGET_REPO/docs/system/architecture.json"`.
+- **Absent** (first epic that touches system architecture, or a product that has never modeled it): author it fresh. Include `$CW_HOME/templates/formal-models/examples/voice-agent-architecture.json` in the worker prompt as a worked example (client → gateway → STT/LLM/TTS externals with `ASM-` refs) — a concrete template for the node/edge shape, not a fixture to copy verbatim.
+- **Present**: read it, and only add/amend the `ARC-`/`EDG-` nodes and edges THIS epic actually introduces (a new service, a new external vendor call, a connector being retired). Leave everything else untouched — this file is a standing product model, not a per-epic scratchpad.
+
+For every deployable and connector this epic's tickets introduce or change, define:
+- **Nodes** (`ARC-`): `id`, `name`, `kind` (`service`|`worker`|`db`|`queue`|`bucket`|`cron`|`external`), `repo` (URN/path, or `null` for external), `external`, `trust_zone` (`public`|`dmz`|`internal`|`restricted`), `region`, `failure_domain`, `criticality_tier` (`tier-1`|`tier-2`|`tier-3` — **never omit this**: a missing tier is reported as a finding by the checker, not silently skipped, so leaving it out just defers the problem), `emits` (telemetry binding names — bind these to the same names used in `docs/system/system-contracts.json` budget nodes' `telemetry_ref`, if that artifact exists, so the cross-artifact check in 5a has something to verify), `status` (`active`|`deprecated`|`retired`), `asm_refs` (REQUIRED, non-empty, when `external: true` and the node is reached by a `hard` edge — vendor SLA/assumption references, `ASM-` ids).
+- **Edges** (`EDG-`): `from`/`to` (must resolve to declared `ARC-` node ids), `protocol`, `mode` (`sync`|`async`), `criticality` (`hard`|`soft` — an AVAILABILITY dependency only, distinct from `carries` and from a trust-zone crossing: a low-tier logging sink may carry sensitive data without being availability-critical, and a low-tier auth provider may be availability-critical without carrying any payload), `on_failure` (`fallback`/`degrade_to`), `carries` (data-class labels, the monotone lattice `public < internal < pii < secret < official-sensitive`), `auth`, `timeout_ms`, `ordering`, `dlq`, `active`. **Never author `trust_zone_crossing`/`region_crossing`** — those two fields are computed ONLY by `check_architecture.py` from the node attributes; leave them `null` (or omit them) and let the checker derive them. An authored non-null value is itself a finding (INV-fh-006) — a hand-written "safe" crossing label is exactly the kind of thing that could mask a real trust-zone violation.
+
+**Verifier-in-the-loop**: validate against the schema as soon as the worker produces it:
+```bash
+python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/architecture.json" --type architecture
+```
+Fix and re-validate until clean. The deeper consistency checks (dangling endpoints, retired-node edges, unlabelled externals, tier inversion, label propagation, cross-artifact drift) run in Step 5a below — schema validity here is necessary but not sufficient.
+
+**What this proves, and what it doesn't.** `check_architecture.py` proves the DECLARED model in `architecture.json` is internally consistent. It does **not** prove the running code matches this model — that conformance/reflexion question is deliberately deferred (`#171`; see `docs/system-layer.md`). Declaring the model is cheap; treat it as a design-time contract the epic's `contracts.md`/`ui-spec.json` may reference by `ARC-`/`EDG-` id, not as a guarantee about deployed reality.
+
 ### Step 5: Formal model validation + multi-AI review
 
 The synthesised artifacts are the most critical output in the pipeline — every ticket inherits them. Validate mechanically first, then get a second opinion from external AIs.
@@ -404,6 +424,15 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --fo
 # docs/single-writer.md). Degrades gracefully when no such invariant exists.
 python3 "$CW_HOME/scripts/check_single_writer.py" "$CW_TMP" --source "$TARGET_REPO" --gate soundness --format text
 ```
+
+**Architecture model consistency (`docs/system/architecture.json`, when 4i produced or updated one).** Report-only — this checker is NOT gated in `/architect` yet (ADR-fh-07: gating requires the #168 gate-validation protocol plus a passing `#184` validation record for `check_architecture`, which freezes its `CHECKS` inventory as a prerequisite). Run it so findings are visible at design time even though they don't block:
+
+```bash
+python3 "$CW_HOME/scripts/check_architecture.py" "$CW_TMP/architecture.json" \
+  --system-contracts "$TARGET_REPO/docs/system/system-contracts.json" --format text
+```
+
+(Omit `--system-contracts` if the target repo has no budget-tree doc yet — the checker reports that cross-artifact leg as "not checked", distinct from "passed", never silently skipped.) The authority line is printed every run: *"proves the DECLARED model is internally consistent; does not prove the code matches the model."* Fix any dangling endpoints, retired-node edges, unlabelled externals, tier inversions, label-propagation violations, or authored (non-null) crossing labels before proceeding — these are cheap to fix now and expensive to discover once tickets have started referencing the wrong `ARC-`/`EDG-` ids.
 
 Any invariant that says "single write path" or "single source of truth" for a field/state MUST name its `controls_field` and `sanctioned_writers` — either as arrays on the structured `state-machines.json` invariant, or via a `<!-- @cw-writes INV-... controls_field=a.b sanctioned_writers=Sym,path.go -->` tag next to its `**INV-...**` label in `invariants.md`. Without this metadata the invariant is prose only and a second mutator (e.g. a legacy admin control) can silently violate it. Review the surfaced writer inventory: if the gate lists a writer outside the sanctioned set, that is a pre-existing violation to fix or explicitly sanction before the epic builds on the invariant.
 
@@ -476,6 +505,7 @@ python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name architect-rev
 - **Open unknowns**: every surviving `TBD:`/`UNRESOLVED:` marker, which tickets each one blocks, and the plan to resolve it (who/what/when)
 - **Test coverage preview**: number of test paths that will be mechanically generated (from the test view)
 - **DST readiness** (new products only): the INV-dst-001/002/003 invariants stamped, the clock/random/IO seam packages named in the ADR, and `check_dst_readiness.py`'s baseline finding counts
+- **System architecture model** (when 4i produced/updated one): node/edge counts, any `check_architecture.py` findings (report-only — never blocks here), and which `ARC-`/`EDG-` ids this epic's contracts reference
 - ADR: key decisions with trade-offs
 - Integration tests: what will be validated at epic close
 - Traceability: coverage gaps (any AC without a planned test)
@@ -504,6 +534,15 @@ git push
 ```
 
 The transition-map baseline marks existing-code transitions `covered` and new model transitions `planned`; it evolves as tickets are implemented. Use `--dry-run` to preview what would be installed (and the issue-comment body) without writing, and `--no-commit` to install without committing. The JSON output lists `copied`, `generated`, `transition_map`, `issue_comment`, and any `warnings`.
+
+**If Step 4i produced or updated `architecture.json`**, commit it separately to `docs/system/` — it is a system-level, once-per-product artifact and does NOT belong under `docs/epics/$EPIC_SLUG/`:
+```bash
+mkdir -p "$TARGET_REPO/docs/system"
+cp "$CW_TMP/architecture.json" "$TARGET_REPO/docs/system/architecture.json"
+git -C "$TARGET_REPO" add docs/system/architecture.json
+git -C "$TARGET_REPO" commit -m "arch: update docs/system/architecture.json for $EPIC_SLUG"
+```
+(This can be folded into the same commit/push as the epic artifacts above if the installer step hasn't pushed yet.)
 
 **If `git push` fails** (e.g., branch protection rules forbid direct pushes to the default branch), fall back to creating a PR:
 ```bash
