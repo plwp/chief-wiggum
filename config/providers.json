@@ -9,12 +9,12 @@
     "gemini": {
       "type": "tool",
       "tool": "gemini",
-      "enabled": true
+      "enabled": false
     },
     "gemini-vertex": {
       "type": "tool",
       "tool": "gemini-vertex",
-      "enabled": false
+      "enabled": true
     },
     "claude": {
       "type": "tool",
@@ -29,38 +29,67 @@
   },
   "roles": {
     "explorer": {
-      "required": ["codex"],
-      "optional": ["gemini", "claude-interactive"]
+      "required": [
+        "codex"
+      ],
+      "optional": [
+        "gemini-vertex",
+        "claude-interactive"
+      ]
     },
     "implementer": {
-      "required": ["codex"],
-      "optional": ["claude-interactive"]
+      "required": [
+        "codex"
+      ],
+      "optional": [
+        "claude-interactive"
+      ]
     },
     "reviewer": {
-      "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"],
+      "required": [
+        "codex",
+        "gemini-vertex"
+      ],
+      "optional": [
+        "claude-interactive"
+      ],
       "lenses": {
         "codex": "refute-soundness",
-        "gemini": "completeness",
-        "claude-interactive": "adoption-cost"
+        "claude-interactive": "adoption-cost",
+        "gemini-vertex": "completeness"
       }
     },
     "architecture_critic": {
-      "required": ["codex"],
-      "optional": ["gemini", "claude-interactive"],
+      "required": [
+        "codex"
+      ],
+      "optional": [
+        "gemini-vertex",
+        "claude-interactive"
+      ],
       "lenses": {
         "codex": "refute-soundness",
-        "gemini": "completeness",
-        "claude-interactive": "adoption-cost"
+        "claude-interactive": "adoption-cost",
+        "gemini-vertex": "completeness"
       }
     },
     "design_critic": {
-      "required": ["gemini"],
-      "optional": ["codex", "claude-interactive"]
+      "required": [
+        "gemini-vertex"
+      ],
+      "optional": [
+        "codex",
+        "claude-interactive"
+      ]
     },
     "risky_diff_review": {
-      "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"]
+      "required": [
+        "codex",
+        "gemini-vertex"
+      ],
+      "optional": [
+        "claude-interactive"
+      ]
     }
   }
 }

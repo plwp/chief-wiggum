@@ -178,9 +178,13 @@ def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None
 
 
 def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
-    """Call Gemini via Vertex AI SDK. Fetches credentials from keyring."""
+    """Call Gemini via Vertex AI (google-genai SDK). Fetches credentials from keyring.
+
+    Gemini 3.x text models generate only via the `global` location on Vertex,
+    and the legacy vertexai.generative_models surface 404s on them.
+    """
     project = get_secret("GOOGLE_CLOUD_PROJECT")
-    location = get_secret("GOOGLE_CLOUD_LOCATION") or "us-central1"
+    location = get_secret("GOOGLE_CLOUD_LOCATION") or "global"
 
     if not project:
         print("Error: GOOGLE_CLOUD_PROJECT not found in keyring. "
@@ -189,14 +193,13 @@ def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None
         sys.exit(1)
 
     # Import here so the dependency is only needed for this path
-    from google.cloud import aiplatform  # type: ignore
-    from vertexai.generative_models import GenerativeModel  # type: ignore
+    from google import genai  # type: ignore
 
-    aiplatform.init(project=project, location=location)
-    model_id = model or DEFAULT_VERTEX_MODEL
-    gen_model = GenerativeModel(model_id)
-    response = gen_model.generate_content(prompt)
-    return response.text
+    client = genai.Client(vertexai=True, project=project, location=location)
+    response = client.models.generate_content(
+        model=model or DEFAULT_VERTEX_MODEL, contents=prompt
+    )
+    return response.text or ""
 
 
 def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
