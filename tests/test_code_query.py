@@ -414,13 +414,113 @@ def test_inferred_binding_requires_all_literal_words():
     # Positive: src/orders/confirm.py covers ALL literal words of
     # /api/v1/orders/:id/confirm ({orders, confirm}) -> bound.
     env = code_query.cmd_orient(FIXTURE, "src/orders/confirm.py", "checkout")
-    assert any(f["kind"] == "contract_operation" for f in env["facts"])
+    op_names = {f["statement"] for f in env["facts"] if f["kind"] == "contract_operation"}
+    assert any("Confirm Order" in s for s in op_names)
 
     # Negative: ui/orders/page.tsx matches "orders" but NOT "confirm" -> must
-    # NOT inherit the confirm operation (it still gets its ui-spec page).
+    # NOT inherit the confirm operation specifically (it still gets its
+    # ui-spec page, and — #185 fixture addition — its OWN "List Orders"
+    # bare-entity operation, which is a genuine "orders" binding, not an
+    # over-match: "orders" clears the corpus-specificity bar (CTR-fh-050)
+    # because the fixture corpus also contains four unrelated "Provider"
+    # operations that never mention it).
     env = code_query.cmd_orient(FIXTURE, "ui/orders/page.tsx", "checkout")
-    assert not any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+    op_names = {f["statement"] for f in env["facts"] if f["kind"] == "contract_operation"}
+    assert not any("Confirm Order" in s for s in op_names), op_names
+    assert any("List Orders" in s for s in op_names), op_names
     assert any(f["kind"] == "ui_component" for f in env["facts"])
+
+
+# --- corpus-derived word specificity (#185 precision fix) -----------------------------
+#
+# Real-world trigger (dogeared-coach): `ui/src/providers/auth-provider.tsx` word-matched
+# ~30 unrelated operations purely because "provider" is the entity name and recurs
+# across nearly every Provider operation. The fixture's Provider entity (4 operations,
+# 3 of which share ONLY the bare word "providers") + ui-spec route reproduces the same
+# shape at small scale: "providers" clears >40% document-frequency in the fixture's own
+# 8-document corpus (contracts.json operations + ui-spec.json routes), so it carries no
+# binding weight on its own (CTR-fh-050/051, INV-fh-012).
+
+
+def test_common_entity_word_alone_does_not_bind():
+    """
+    @cw-trace verifies CTR-fh-050 INV-fh-012
+    """
+    env = code_query.cmd_orient(FIXTURE, "ui/src/providers/auth-provider.tsx", "checkout")
+    assert not any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+    assert not any(f["kind"] == "ui_component" for f in env["facts"]), env["facts"]
+
+
+def test_entity_verb_combination_still_binds_despite_common_entity_word():
+    """
+    @cw-trace verifies CTR-fh-050 INV-fh-012
+    """
+    # "verify" is a specific (low document-frequency) word in the fixture corpus, so
+    # the entity+verb combination still clears the specificity bar even though
+    # "providers" alone would not.
+    env = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
+    op_names = {f["statement"] for f in env["facts"] if f["kind"] == "contract_operation"}
+    assert any("Verify Provider" in s for s in op_names), op_names
+    # The bare "List Providers"/"Provider Plan"/"Schedule Provider" operations must
+    # NOT also leak in just because "providers" happens to match too.
+    assert not any("List Providers" in s for s in op_names), op_names
+
+
+def test_orient_inferred_binding_is_deterministic_across_runs():
+    """CTR-fh-051: same epic artifacts + same file => identical fact set and
+    ordering across repeated calls (no dict/set-iteration-order dependence).
+
+    @cw-trace verifies CTR-fh-051
+    """
+    first = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
+    for _ in range(5):
+        again = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
+        assert again == first
+
+
+# --- relation-tier-first rank key (CTR-fh-052/053, INV-fh-007/012) --------------------
+
+
+def test_rank_key_relation_tier_is_leading_and_orders_direct_inferred_measured():
+    """Unit-level guard on `_rank_key` itself: direct < inferred < measured,
+    and this leading element dominates `exact` — a `measured` fact (the future
+    #187 hotspot tier; no producer exists yet, only the tier) must never
+    outrank a `direct` or `inferred` fact even when `exact=True`.
+
+    @cw-trace verifies CTR-fh-052 CTR-fh-053 INV-fh-007
+    """
+    direct = code_query.Fact(
+        kind="contract", id="CTR-x", statement="s", handle="h", epic="e",
+        extra={"relation": "direct"}, exact=True, proximity=0,
+    )
+    inferred = code_query.Fact(
+        kind="contract_operation", id=None, statement="s", handle="h", epic="e",
+        extra={"relation": "inferred"}, exact=False, proximity=1,
+    )
+    measured = code_query.Fact(
+        kind="hotspot", id=None, statement="s", handle="h", epic="e",
+        extra={"relation": "measured"}, exact=True, proximity=1,
+    )
+    assert code_query._rank_key(direct, "orient")[0] == 0
+    assert code_query._rank_key(inferred, "orient")[0] == 1
+    assert code_query._rank_key(measured, "orient")[0] == 2
+
+    ranked = code_query.rank_facts([measured, inferred, direct], "orient")
+    assert ranked == [direct, inferred, measured]
+
+
+def test_orient_ranks_direct_before_inferred_for_the_same_file():
+    """Property/regression test (IT-fh-03-style, direct-vs-inferred tier
+    boundary): src/orders/confirm_direct.py carries BOTH a direct @cw-trace
+    annotation AND an artifact-derived inferred match on the same Confirm
+    Order operation. `orient` must rank the direct fact first.
+
+    @cw-trace verifies CTR-fh-052 INV-fh-007
+    """
+    env = code_query.cmd_orient(FIXTURE, "src/orders/confirm_direct.py", "checkout")
+    relations = [f.get("relation") for f in env["facts"]]
+    assert "direct" in relations and "inferred" in relations, env["facts"]
+    assert relations.index("direct") < relations.index("inferred")
 
 
 # --- every handle round-trips through show (review issue 3) ---------------------------

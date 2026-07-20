@@ -44,6 +44,58 @@
           ],
           "state_transition": "pending -> confirmed",
           "invariants_touched": ["INV-checkout-001"]
+        },
+        {
+          "name": "List Orders",
+          "method": "GET",
+          "path": "/api/v1/orders",
+          "description": "Lists orders. #185 fixture: a second Order operation whose path is a BARE entity word — dilutes 'orders' document-frequency across the corpus so it stays a specific (not ubiquitous) word, contrasting with the 'providers' entity below.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        }
+      ]
+    },
+    {
+      "name": "Provider",
+      "description": "#185 fixture: a deliberately common entity — nearly every operation below shares the bare word 'providers', mirroring the real dogeared-coach over-match (an 'auth-provider.tsx' file lexically matched ~30 unrelated provider operations). Regression fixture for CTR-fh-050/051/INV-fh-012: 'providers' alone must NOT bind, but an entity+verb combination (e.g. 'verify') still does.",
+      "fields": [],
+      "operations": [
+        {
+          "name": "List Providers",
+          "method": "GET",
+          "path": "/api/v1/providers",
+          "description": "Bare entity word only — the over-match case.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        },
+        {
+          "name": "Verify Provider",
+          "method": "POST",
+          "path": "/api/v1/providers/:id/verify",
+          "description": "Entity + specific verb — must still bind for a file whose path also contains 'verify'.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        },
+        {
+          "name": "Schedule Provider",
+          "method": "POST",
+          "path": "/api/v1/providers/:id/schedule",
+          "description": "Entity + a different specific word — keeps 'providers' from being the corpus's only word.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        },
+        {
+          "name": "Provider Plan",
+          "method": "GET",
+          "path": "/api/v1/providers/:id/plan",
+          "description": "Entity + a third specific word.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
         }
       ]
     }

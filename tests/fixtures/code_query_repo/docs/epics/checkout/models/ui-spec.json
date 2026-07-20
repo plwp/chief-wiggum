@@ -10,12 +10,22 @@
       },
       "root": ["status-badge"],
       "design_refs": ["order-detail-reference"]
+    },
+    "/providers/:id": {
+      "route": "/providers/:id",
+      "title": "Provider Detail",
+      "layout": "centered",
+      "auth": "required",
+      "components": {},
+      "root": [],
+      "design_refs": []
     }
   },
   "navigation": {
     "initial": "/orders/:id",
     "states": {
-      "/orders/:id": { "route": "/orders/:id", "on": {} }
+      "/orders/:id": { "route": "/orders/:id", "on": {} },
+      "/providers/:id": { "route": "/providers/:id", "on": {} }
     }
   }
 }
