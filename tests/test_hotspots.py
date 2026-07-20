@@ -282,3 +282,155 @@ def test_no_stable_id_field_in_generated_record(synth_repo):
 
     blob = json.dumps(result)
     assert not re.search(r"\b(BR|CTR|INV|ARC|EDG|SLO|BUD|ASM|PRC|MIG)-[A-Za-z0-9-]+-\d{3}\b", blob)
+
+
+# --- PR #194 review fixes ----------------------------------------------------
+
+
+def test_check_fails_when_record_was_generated_from_dirty_worktree(synth_repo):
+    """Generate on a dirty worktree -> record carries dirty=true -> --check
+    fails even after the tree is restored to clean (the recorded inputs were
+    unreproducible at that sha).
+
+    @cw-trace verifies CTR-fh-031
+    """
+    out = synth_repo / "docs" / "quality" / "hotspots.json"
+    tracked = synth_repo / "pair_a.py"
+    original = tracked.read_text()
+    tracked.write_text(original + "# uncommitted local edit\n")
+
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(synth_repo), "--out", str(out)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr  # generate never gates
+    assert json.loads(out.read_text())["dirty"] is True
+
+    tracked.write_text(original)  # restore: tree clean again (artifact itself is ignored)
+    check = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(synth_repo), "--out", str(out), "--check"],
+        capture_output=True, text=True,
+    )
+    assert check.returncode == 1
+    assert "dirty" in check.stderr.lower()
+
+
+def test_check_fails_when_worktree_is_currently_dirty(synth_repo):
+    """Generate clean -> dirty the tree -> --check fails on the CURRENT dirty
+    state, even though the recorded state was clean and the sha matches.
+
+    @cw-trace verifies CTR-fh-031
+    """
+    out = synth_repo / "docs" / "quality" / "hotspots.json"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(synth_repo), "--out", str(out)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert json.loads(out.read_text())["dirty"] is False
+
+    tracked = synth_repo / "pair_a.py"
+    tracked.write_text(tracked.read_text() + "# uncommitted local edit\n")
+    check = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(synth_repo), "--out", str(out), "--check"],
+        capture_output=True, text=True,
+    )
+    assert check.returncode == 1
+    assert "dirty" in check.stderr.lower()
+
+
+def test_check_fails_when_complexity_tool_state_changes(synth_repo, monkeypatch):
+    """A record built with one lizard state must not --check clean under a
+    different one — the same sha would now produce a different record. Covers
+    both directions (absent -> present and present -> absent/other version).
+
+    @cw-trace verifies CTR-fh-031
+    """
+    import hotspot_discovery
+
+    out = synth_repo / "docs" / "quality" / "hotspots.json"
+    result = hotspots.discover(str(synth_repo))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result))
+
+    # Same tool state -> passes.
+    assert hotspot_discovery.run_check(str(synth_repo), str(out)) == 0
+
+    # Simulate the tool state changing (e.g. record built without lizard,
+    # lizard later installed — or the version changing).
+    recorded = result["complexity_source"]
+    flipped = "lizard-9.9.9-simulated" if recorded == "absent" else "absent"
+    monkeypatch.setattr(hotspots, "complexity_source", lambda venv=None, gobin=None: flipped)
+    assert hotspot_discovery.run_check(str(synth_repo), str(out)) == 1
+
+
+def test_record_carries_dirty_and_complexity_source_fields(synth_repo):
+    result = hotspots.discover(str(synth_repo))
+    assert result["dirty"] is False
+    src = result["complexity_source"]
+    assert src == "absent" or src.startswith("lizard-")
+    # a lizard-less record must say so honestly
+    if not HAS_LIZARD:
+        assert src == "absent"
+
+
+@requires_lizard
+def test_lizard_paths_normalized_to_git_style_for_nested_files(tmp_path):
+    """Per-file complexity keys must be git-style (forward-slash, repo-relative)
+    so the churn-intersection and code_query's exact-membership check hold on
+    every platform — regression for a nested path.
+
+    @cw-trace verifies CTR-fh-034
+    """
+    repo = tmp_path / "nested"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Ada")
+    _git(repo, "config", "user.email", "ada@example.com")
+    body = "def f(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(5)) + "    return -1\n"
+    for i in range(2):
+        _commit(repo, f"feat: rev {i}", {"pkg/sub/mod.py": body + f"# rev {i}\n"},
+                date=f"{_day(i)}T12:00:00")
+    result = hotspots.discover(str(repo))
+    files = {h["file"] for h in result["hotspots"]}
+    assert "pkg/sub/mod.py" in files
+    assert not any("\\" in f for f in files)
+
+
+def test_rank_and_decile_use_raw_scores_not_rounded():
+    """Two raw scores that round to the same 6-dp value must still rank by the
+    RAW value — rounding-induced ties must not let filename order decide
+    (which could shift deciles).
+
+    @cw-trace verifies CTR-fh-032
+    """
+    lo = {"file": "a.py", "score": 0.12345601, "norm_churn": 0.5, "norm_complexity": 0.5,
+          "churn": 1, "commits": 1, "complexity": 1, "coupled_with": [], "trend": None}
+    hi = {"file": "z.py", "score": 0.12345649, "norm_churn": 0.5, "norm_complexity": 0.5,
+          "churn": 1, "commits": 1, "complexity": 1, "coupled_with": [], "trend": None}
+    ranked = hotspots._rank_decile_round([lo, hi])
+    # Filename order alone would put a.py first; the raw score puts z.py first.
+    assert [h["file"] for h in ranked] == ["z.py", "a.py"]
+    # Both serialize to the same rounded score — the tie is display-only.
+    assert ranked[0]["score"] == ranked[1]["score"] == 0.123456
+
+
+def test_history_walk_is_head_based_never_all(synth_repo):
+    """An unrelated local ref pointing at extra commits must not change the
+    output for the same HEAD — the walk starts at HEAD, never --all
+    (the former --include-merges flag mapped to --all and was dropped).
+
+    @cw-trace verifies CTR-fh-032
+    """
+    before = hotspots.discover(str(synth_repo), venv=None, trend=False)
+
+    # Park extra history on a side branch; HEAD returns to where it was.
+    _git(synth_repo, "checkout", "-q", "-b", "side")
+    _commit(synth_repo, "feat: side-branch only", {"side_only.py": "def s():\n    return 1\n"},
+            date=f"{_day(40)}T12:00:00")
+    _git(synth_repo, "checkout", "-q", "-")
+
+    after = hotspots.discover(str(synth_repo), venv=None, trend=False)
+    assert before["git_sha"] == after["git_sha"]
+    assert before["window_days"] == after["window_days"]
+    assert json.dumps(before["hotspots"], sort_keys=True) == json.dumps(after["hotspots"], sort_keys=True)
