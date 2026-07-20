@@ -431,6 +431,452 @@ def test_cli_text_format_reports_verdict(tmp_path):
     assert "PASSING" in proc.stdout
 
 
+# --- IT-fh-06: stale-while-blocking auto-demotion (chief-wiggum#198) ----------
+#
+# Blocking authority is a JOURNALED fact (a `gate-authority` wire/unwire event
+# in the ratchet hash chain), never a forgeable sidecar file. "Was this gate
+# blocking?" is read from those events over the verified chain prefix; the
+# current-blocking verdict is `last event == wire AND check() passing now`. A
+# journaled-wired gate whose record is NOT currently passing (stale scanner,
+# broken chain, missing/invalid record) is demoted (fail-to-report-only) and
+# emits the generic DEMOTION — reading "was blocking" from the journal means the
+# demotion fires even when the CURRENT record/chain is what broke.
+# @cw-trace verifies IT-fh-06 INV-fh-003 INV-fh-005
+
+
+def _journal(vdir):
+    return Path(vdir).resolve().parent / "ratchet-journal.jsonl"
+
+
+def test_failure_kind_classifies_stale_vs_invalid(tmp_path):
+    """A record that would otherwise pass except for scanner/journal drift is
+    'stale'; anything else non-passing (missing record, schema errors, forged/
+    failed trials or clean runs, wrong status, a copied/unjournaled record) is
+    'invalid' — the model's two distinct demotion triggers (G-008 vs G-014)."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="old"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "current")
+    stale_report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert gv.failure_kind(stale_report) == "stale"
+
+    missing_report = gv.check("no_such_gate", vdir)
+    assert gv.failure_kind(missing_report) == "invalid"
+
+    record = _minimal_valid_record()
+    record["seeded_defect_trials"][0]["passed"] = False
+    record["seeded_defect_trials"][0]["result"] = "not-fired"
+    vdir2 = _write_record(tmp_path / "v2", "example_gate", record)
+    invalid_report = gv.check("example_gate", vdir2)
+    assert gv.failure_kind(invalid_report) == "invalid"
+
+    passing_report = gv.check("example_gate", _write_record(tmp_path / "v3", "example_gate", _minimal_valid_record()))
+    assert gv.failure_kind(passing_report) is None
+
+
+def test_stale_while_blocking_auto_demotes(tmp_path):
+    """Author a passing record, --wire it (journals a wire event), then edit a
+    hashed dependency so the live --scanner-version changes. The NEXT check must
+    transition blocking -> demoted (never silently stay blocking), emit the
+    generic DEMOTION with details='stale' (no seed_class), and report
+    previous_authority='blocking' read from the journaled wire event."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+
+    report, transition = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+    assert report.passing is True
+    assert transition.new_state == "blocking"
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") == "wire"
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-after-scanner-edit")
+
+    report2, transition2 = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report2.passing is False
+    assert gv.failure_kind(report2) == "stale"
+    assert transition2.new_state == "demoted"
+    assert transition2.demoted is True
+    assert transition2.demotion_reason == "stale"
+    assert transition2.previous_authority == "blocking"
+    assert transition2.instruction and "stale" in transition2.instruction
+
+
+def test_record_missing_while_blocking_demotes(tmp_path):
+    """The record-missing variant of the same edge (G-014): a record deleted out
+    from under a journaled-wired gate must demote, not silently keep blocking."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    _, transition = gv.check_and_transition("example_gate", vdir, wire=True)
+    assert transition.new_state == "blocking"
+
+    (Path(vdir) / "example_gate.json").unlink()
+
+    report2, transition2 = gv.check_and_transition("example_gate", vdir)
+    assert report2.passing is False
+    assert report2.record_found is False
+    assert transition2.new_state == "demoted"
+    assert transition2.demoted is True
+    assert transition2.demotion_reason == "record_missing"
+    assert transition2.previous_authority == "blocking"
+
+
+def test_schema_invalid_while_blocking_demotes_as_record_missing(tmp_path):
+    """The schema-invalid variant: the record file still exists but no longer
+    validates. Classified the same as 'missing' — it grants no blocking
+    authority to a journaled-wired gate."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    _, transition = gv.check_and_transition("example_gate", vdir, wire=True)
+    assert transition.new_state == "blocking"
+
+    broken = _minimal_valid_record()
+    del broken["authority_boundary"]
+    (Path(vdir) / "example_gate.json").write_text(json.dumps(broken))
+
+    report2, transition2 = gv.check_and_transition("example_gate", vdir)
+    assert report2.schema_errors
+    assert transition2.new_state == "demoted"
+    assert transition2.demotion_reason == "record_missing"
+    assert transition2.previous_authority == "blocking"
+
+
+def test_chain_broken_while_blocking_still_demotes(tmp_path):
+    """FINDING 1 REGRESSION: a broken journal chain is itself a stale condition
+    that must demote a wired gate. Because "was wired" is read from the verified
+    chain PREFIX (the wire event survives a LATER tamper), the demotion still
+    fires — the exact case the fail-closed sidecar masked (it returned unknown
+    on a broken chain and silently downgraded with no DEMOTION)."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    _, transition = gv.check_and_transition("example_gate", vdir, wire=True)
+    assert transition.new_state == "blocking"
+
+    # Append a tamper entry AFTER the wire event: the chain breaks at the tail,
+    # but the earlier wire event is still in the verified prefix.
+    journal = _journal(vdir)
+    lines = journal.read_text().splitlines()
+    lines.append(json.dumps({"record_id": "rec-99", "event": "x", "record_hash": "deadbeef"}))
+    journal.write_text("\n".join(lines) + "\n")
+
+    report2, transition2 = gv.check_and_transition("example_gate", vdir)
+    assert report2.passing is False  # check() reports the broken chain
+    assert gv.ratchet_last_authority_action(journal, "example_gate") == "wire"  # survives the tamper
+    assert transition2.new_state == "demoted"
+    assert transition2.demoted is True
+    assert transition2.previous_authority == "blocking"
+
+
+def test_re_journaled_new_rid_recovery_reaches_blocking_not_stuck(tmp_path):
+    """FINDING 2 REGRESSION: real re-derivation normally produces a NEW rid.
+    Because blocking authority is read from journaled wire EVENTS (not by
+    matching the wire event's rid to the record's), a demoted gate re-authored
+    with a fresh rid recovers cleanly: the gate is still journaled-wired, the new
+    record passes, so the verdict is 'blocking' again — never stuck-untrusted,
+    never a spurious straight-to-blocking bypass of a rid check that no longer
+    exists."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    _, demoted = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert demoted.new_state == "demoted"
+
+    # Re-author against the current scanner with a DIFFERENT rid, journaled anew.
+    fixed = _minimal_valid_record(scanner_version="v2-drifted", ratchet_record_id="rec-00002")
+    (Path(vdir) / "example_gate.json").write_text(json.dumps(fixed))
+    _write_journal(tmp_path / "quality", [
+        {"record_id": "rec-00001", "event": "gate-validation", "ref": "example_gate"},
+        {"record_id": "rec-00002", "event": "gate-validation", "ref": "example_gate"},
+    ])
+    # (the wire event was in the prior chain; re-establish it after the rewrite)
+    gv._append_authority(_journal(vdir), "example_gate", "wire", wired_rid="rec-00001")
+
+    report, transition = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report.passing is True
+    assert transition.new_state == "blocking"
+    assert transition.demoted is False
+
+
+def test_stale_while_not_wired_downgrades_not_demotes(tmp_path):
+    """A record that goes stale while the gate is NOT journaled-wired downgrades
+    to report_only — no demotion event, since nothing was blocking (G-015). A
+    plain check never journals a wire, so a never-wired gate simply reports."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+
+    _, t1 = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert t1.new_state == "validated"  # passing, not wired
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    report2, t2 = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report2.passing is False
+    assert t2.new_state == "report_only"
+    assert t2.demoted is False
+    assert t2.demotion_reason is None
+
+
+def test_unwire_then_stale_does_not_demote(tmp_path):
+    """An operator who intentionally un-wires a gate (journaled unwire) is no
+    longer blocking, so a later stale record downgrades rather than demoting —
+    unwire is the clean voluntary edge when the record still passes."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+    _, unwired = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, unwire=True)
+    assert unwired.new_state == "validated"
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") == "unwire"
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    _, t = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert t.new_state == "report_only"
+    assert t.demoted is False
+
+
+def test_forged_authority_sidecar_asserts_nothing(tmp_path):
+    """FINDING 3 REGRESSION: authority now comes ONLY from journaled wire events
+    in the verified chain — a hand-written <gate>.authority.json (or any loose
+    file) asserts nothing and cannot manufacture a false demotion. Dropping the
+    bare sidecar as a trust source is the fix."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    # Forge a blocking sidecar the OLD design would have read.
+    (Path(vdir) / "example_gate.authority.json").write_text(json.dumps(
+        {"gate": "example_gate", "authority": "blocking", "previous_authority": "validated",
+         "ratchet_record_id": "rec-00001"}))
+    # No journaled wire event exists -> the gate is NOT blocking.
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") is None
+    _, transition = gv.check_and_transition("example_gate", vdir)
+    assert transition.new_state == "validated"  # passing, not wired — sidecar ignored
+    assert transition.demoted is False
+
+
+def test_no_trust_write_on_plain_or_missing_gate_checks(tmp_path):
+    """FINDING 4 REGRESSION + P5: no ad-hoc/plain check and no missing-gate op
+    writes anything trust-bearing. Only --wire/--unwire append journal events;
+    plain checks and no-record ops leave the validation dir untouched (beyond the
+    record/journal the test itself seeded)."""
+    # No record at all: nothing is created.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    gv.check_and_transition("no_such_gate", empty)
+    assert list(empty.iterdir()) == []
+    gv.check_and_transition("no_such_gate", empty, unwire=True)  # missing-gate unwire
+    # unwire appends to the (nonexistent) journal beside empty -> it is the
+    # journal, not the validation dir, and only for an explicit op; the
+    # validation dir stays empty.
+    assert list(empty.iterdir()) == []
+
+    # Plain check of a passing record: no authority file appears.
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    before = sorted(pp.name for pp in Path(vdir).iterdir())
+    gv.check_and_transition("example_gate", vdir)  # plain
+    after = sorted(pp.name for pp in Path(vdir).iterdir())
+    assert before == after  # no <gate>.authority.json, nothing new
+
+
+def test_wire_non_passing_never_yields_or_journals_blocking(tmp_path):
+    """FINDING/P1: --wire with a NON-passing record must never reach 'blocking'
+    and must not journal a wire event (INV-fh-003). On a fresh no-record gate it
+    refuses, stays off 'blocking', and writes nothing."""
+    vdir = tmp_path / "validation"
+    vdir.mkdir()
+    report, transition = gv.check_and_transition("no_such_gate", vdir, wire=True)
+    assert report.passing is False
+    assert transition.new_state != "blocking"
+    assert "refused" in (transition.instruction or "")
+    assert gv.ratchet_last_authority_action(_journal(vdir), "no_such_gate") is None
+
+
+def test_wire_on_stale_blocking_record_demotes_never_stays_blocking(tmp_path):
+    """P1: calling --wire again on a journaled-wired gate whose record has gone
+    stale must NOT keep it blocking — a non-passing --wire journals no wire,
+    surfaces the demotion (blocking -> demoted) and emits, and reports the
+    refusal. Wiring blocking authority requires passing==true."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    report, transition = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+    assert report.passing is False
+    assert transition.new_state == "demoted"
+    assert transition.demoted is True
+    assert transition.demotion_reason == "stale"
+    assert transition.previous_authority == "blocking"
+    assert "refused" in (transition.instruction or "")
+
+
+def test_unwire_from_stale_blocking_emits_demotion_not_silent_report_only(tmp_path, monkeypatch):
+    """P1: --unwire must not mask a stale/missing-while-blocking demotion. From a
+    journaled-wired gate with a NON-passing (stale) record, --unwire surfaces and
+    EMITS the demotion (read from the PRE-unwire journal) while still recording
+    the unwire."""
+    log_path = tmp_path / "factory-log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log_path))
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    _, transition = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, unwire=True)
+    assert transition.new_state == "demoted"
+    assert transition.demoted is True
+    assert transition.demotion_reason == "stale"
+
+    demotions = [json.loads(line) for line in log_path.read_text().splitlines()
+                 if json.loads(line).get("event") == "demotion"]
+    assert len(demotions) == 1 and demotions[0]["details"] == "stale"
+
+
+def test_unwire_is_intentional_not_a_demotion(tmp_path):
+    """Opus (i)/codex: an operator dropping --gate on purpose is a normal edge
+    (unwire_gate), not a demotion — the record still passes -> validated."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    gv.check_and_transition("example_gate", vdir, wire=True)
+
+    report, transition = gv.check_and_transition("example_gate", vdir, unwire=True)
+    assert report.passing is True
+    assert transition.new_state == "validated"
+    assert transition.demoted is False
+
+
+def test_stale_demotion_emits_generic_demotion_not_emit_demotion(tmp_path, monkeypatch):
+    """The telemetry event this auto-demotion emits must be the GENERIC
+    `emit_stale_demotion`/`DEMOTION` — never `emit_demotion`, which stamps
+    `details=f"seed_class={{...}}"` and requires one. A staleness demotion has no
+    seed_class at all (nothing escaped in production)."""
+    log_path = tmp_path / "factory-log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log_path))
+
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+
+    lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+    demotions = [r for r in lines if r.get("event") == "demotion"]
+    assert len(demotions) == 1
+    d = demotions[0]
+    assert d["name"] == "example_gate"
+    assert d["details"] == "stale"
+    assert d["previous_authority"] == "blocking"
+    assert "seed_class" not in d  # never emit_demotion's seed_class= detail
+
+
+def test_cli_wire_then_record_missing_reports_demotion_in_json(tmp_path):
+    """End-to-end through the actual CLI (subprocess), matching how /close-epic
+    invokes this script. --wire journals a wire event; deleting the record then
+    demotes on the next plain check, surfaced in the JSON envelope + stderr."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check_gate_validation.py"), "example_gate",
+         "--validation-dir", str(vdir), "--wire", "--format", "json"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["authority"]["new_state"] == "blocking"
+
+    (Path(vdir) / "example_gate.json").unlink()
+
+    proc2 = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check_gate_validation.py"), "example_gate",
+         "--validation-dir", str(vdir), "--format", "json"],
+        capture_output=True, text=True,
+    )
+    assert proc2.returncode == 0  # report-only CLI mode; JSON envelope carries the verdict
+    out2 = json.loads(proc2.stdout)
+    assert out2["passing"] is False
+    assert out2["authority"]["demoted"] is True
+    assert out2["authority"]["demotion_reason"] == "record_missing"
+    assert out2["authority"]["previous_authority"] == "blocking"
+    assert "DEMOTION" in proc2.stderr
+
+
+def _append_chained(journal, body):
+    """Append a hash-chained entry to an existing journal (same chaining as
+    ratchet.append_authority_event), for injecting crafted events in tests."""
+    lines = [ln for ln in Path(journal).read_text().splitlines() if ln.strip()]
+    prev = json.loads(lines[-1])["record_hash"] if lines else "genesis"
+    body = {k: v for k, v in body.items() if k != "record_hash"}
+    body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+    with Path(journal).open("a") as f:
+        f.write(json.dumps(body, sort_keys=True) + "\n")
+
+
+def test_bogus_authority_details_after_wire_still_demotes(tmp_path):
+    """FINDING 1 (end-to-end): a hash-VALID gate-authority event with a bogus
+    `details` (e.g. 'noop') slipped in after a real wire must NOT suppress the
+    demotion — it is ignored, the gate is still treated as wired, and a stale
+    record still demotes."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+
+    _append_chained(_journal(vdir), {
+        "record_id": "rec-90", "event": "gate-authority", "ref": "example_gate",
+        "details": "noop", "merged": False})
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") == "wire"
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    report, transition = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report.passing is False
+    assert transition.new_state == "demoted"
+    assert transition.previous_authority == "blocking"
+
+
+def test_garbage_journal_tail_after_wire_still_demotes(tmp_path):
+    """FINDING 2 (end-to-end): a non-JSON trailing line after a valid wire must
+    not crash the read (verified_prefix parses line-by-line) — the wire is still
+    read and the (now non-corroboratable) record demotes rather than erroring."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    gv.check_and_transition("example_gate", vdir, wire=True)
+
+    with Path(_journal(vdir)).open("a") as f:
+        f.write("this is not json at all\n")
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") == "wire"
+
+    report, transition = gv.check_and_transition("example_gate", vdir)
+    assert report.passing is False
+    assert transition.new_state == "demoted"
+    assert transition.demoted is True
+    assert transition.previous_authority == "blocking"
+
+
+def test_chain_broken_blocking_unwire_still_emits_demotion(tmp_path, monkeypatch):
+    """FINDING 3: for a chain-broken-while-blocking gate + --unwire, the DEMOTION
+    must be emitted and surfaced FIRST — even though append_authority_event
+    refuses to extend the broken chain. The append failure is reported as a
+    distinct note, never swallowing the demotion."""
+    log_path = tmp_path / "factory-log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log_path))
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    gv.check_and_transition("example_gate", vdir, wire=True)
+
+    # Break the chain AFTER the wire event (a valid-JSON, bad-hash entry).
+    journal = Path(_journal(vdir))
+    lines = journal.read_text().splitlines()
+    lines.append(json.dumps({"record_id": "rec-98", "event": "x", "record_hash": "deadbeef"}))
+    journal.write_text("\n".join(lines) + "\n")
+
+    report, transition = gv.check_and_transition("example_gate", vdir, unwire=True)
+    assert report.passing is False
+    assert transition.demoted is True
+    assert transition.previous_authority == "blocking"
+
+    # The DEMOTION was emitted despite the append failing on the broken chain.
+    demotions = [json.loads(line) for line in log_path.read_text().splitlines()
+                 if json.loads(line).get("event") == "demotion"]
+    assert len(demotions) == 1
+    # ...and the append failure is surfaced, not swallowed.
+    assert "could not journal" in (transition.instruction or "")
+
+
 def test_validation_dir_is_defined_once_and_imported():
     """INV-fh-004: docs/quality/validation is defined in exactly one place —
     factory_log.DEFAULT_VALIDATION_DIR — and check_gate_validation IMPORTS it.

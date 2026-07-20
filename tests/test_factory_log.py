@@ -616,6 +616,49 @@ def test_emit_demotion_writes_record(tmp_path, monkeypatch):
     assert rec["details"] == "seed_class=evasion-omission"
 
 
+# ---- emit_stale_demotion: chief-wiggum#198 / IT-fh-06 ------------------------
+#
+# The GENERIC demotion path — no seed_class, no escape, just a blocking gate's
+# validation record going stale or missing/invalid (state-machines.json's
+# Gate Blocking-Authority Lifecycle, G-008/G-014). Distinct from
+# `emit_demotion` above, which requires a `seed_class` an escape-driven
+# demotion always has and a staleness demotion never does.
+
+
+def test_emit_stale_demotion_writes_generic_record(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    assert factory_log.emit_stale_demotion(
+        "ratchet", "stale", previous_authority="blocking", repo="acme/app", ticket="198")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["event"] == "demotion"
+    assert rec["name"] == "ratchet"
+    assert rec["details"] == "stale"
+    assert rec["previous_authority"] == "blocking"
+    assert rec["ticket"] == "198"
+    # never the escape-driven emit_demotion's seed_class= detail shape
+    assert not rec["details"].startswith("seed_class=")
+
+
+def test_emit_stale_demotion_record_missing_variant(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    assert factory_log.emit_stale_demotion("ratchet", "record_missing", previous_authority="blocking")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["details"] == "record_missing"
+
+
+def test_emit_stale_demotion_rejects_unknown_reason():
+    with pytest.raises(AssertionError):
+        factory_log.emit_stale_demotion("ratchet", "something-else")
+
+
+def test_emit_stale_demotion_is_noop_without_telemetry_enabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("CW_FACTORY_LOG", raising=False)
+    monkeypatch.delenv("CW_TELEMETRY", raising=False)
+    assert factory_log.emit_stale_demotion("ratchet", "stale") is False
+
+
 def test_cli_bug_with_unvalidated_seed_class_prints_no_demotion(tmp_path):
     import os
     log = tmp_path / "f.jsonl"

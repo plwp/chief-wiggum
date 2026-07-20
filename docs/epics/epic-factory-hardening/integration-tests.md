@@ -153,6 +153,29 @@ a value-equality accident).
 
 **Files.** `tests/test_check_gate_validation.py`, `tests/test_ratchet.py`.
 
+**Status.** Covered (chief-wiggum#198). Blocking authority is a JOURNALED fact,
+not a forgeable sidecar: `ratchet.py` gained a `gate-authority` event +
+`append_authority_event`/`last_authority_action`/`verified_prefix`;
+`check_gate_validation.py --wire`/`--unwire` append `wire`/`unwire` events to
+the ratchet hash chain, and `check_and_transition`/`authority_status`/
+`failure_kind` derive the demotion from "last authority event is `wire` AND
+`check()` not passing now". `factory_log.emit_stale_demotion` emits the generic
+`DEMOTION` (`details='stale'|'record_missing'`, no `seed_class`). Scope is the
+detection + emission of stale-while-blocking auto-demotion (IT-fh-06's core);
+the persistent recovery state machine is deferred (see the retrospective's
+"Design evolution"). Covering tests (`tests/test_check_gate_validation.py`):
+`test_stale_while_blocking_auto_demotes`,
+`test_record_missing_while_blocking_demotes`,
+`test_schema_invalid_while_blocking_demotes_as_record_missing`,
+`test_chain_broken_while_blocking_still_demotes`,
+`test_re_journaled_new_rid_recovery_reaches_blocking_not_stuck`,
+`test_stale_while_not_wired_downgrades_not_demotes`,
+`test_forged_authority_sidecar_asserts_nothing`,
+`test_no_trust_write_on_plain_or_missing_gate_checks` — plus the real-`ratchet.py`
+CLI end-to-end `test_it_fh_06_real_journal_corroborates_stale_while_blocking_demotion`
+(`tests/test_ratchet.py`), whose `--wire` appends a real `gate-authority` event
+to the real chain.
+
 ## IT-fh-07 — architecture ↔ system-contracts cross-ref resolution (#174)
 
 **Scenario.** A clean voice-agent `architecture.json` plus a

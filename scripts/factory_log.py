@@ -15,7 +15,7 @@ Event schema (one JSON object per line):
      provider?, adapter?, requested_model?, usage_status?, pricing_version?,
      tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
      missed_by?, found_in?, invariant?, fixed?, seed_class?, details?,
-     verb?, path?, hit_count?}
+     previous_authority?, verb?, path?, hit_count?}
 
   event: "gate" | "consult" | "worker" | "skill" | "escape" | "demotion" | "query"
   A consult record's `adapter`/`usage_status`/`pricing_version` are chief-wiggum#134
@@ -41,6 +41,14 @@ Event schema (one JSON object per line):
   matches a seed class the `missed_by` gate's validation record certified it
   catches: the validation was wrong about production recall, so the gate must
   drop back to report-only and the seed class gets re-derived — not just logged.
+  A demotion can ALSO fire without any escape at all: chief-wiggum#198/IT-fh-06's
+  stale-while-blocking auto-demotion (state-machines.json's Gate
+  Blocking-Authority Lifecycle, G-008/G-014) — `check_gate_validation.py`
+  detects a BLOCKING gate's record went stale (scanner_version/journal drift) or
+  missing/invalid, and demotes it. That path has no `seed_class` (nothing
+  escaped in production; the record itself just rotted), so it calls the
+  GENERIC `emit_stale_demotion` (`details='stale'|'record_missing'`,
+  `previous_authority` recorded), never `emit_demotion` (which requires one).
 
     factory_log.py emit --event gate --repo acme/app --name ratchet --result pass --caught 0
     factory_log.py bug --repo acme/app --summary "reset endpoint leaks account existence" \
@@ -162,6 +170,25 @@ def emit_demotion(gate: str, seed_class: str, *, repo: str | None = None,
     matched a seed class its gate-validation record certified it catches
     (see `demotion_check` / docs/gate-validation.md)."""
     return emit(DEMOTION, name=gate, details=f"seed_class={seed_class}",
+                repo=repo, ticket=ticket)
+
+
+def emit_stale_demotion(gate: str, reason: str, *, previous_authority: str | None = None,
+                       repo: str | None = None, ticket: str | None = None) -> bool:
+    """Record that `gate` auto-demoted because its gate-validation record went
+    stale or missing/invalid WHILE BLOCKING (state-machines.json's Gate
+    Blocking-Authority Lifecycle, G-008/G-014 — chief-wiggum#198/IT-fh-06).
+
+    This is deliberately the GENERIC `DEMOTION` event, not `emit_demotion`:
+    `emit_demotion` requires a `seed_class` (an escape-driven demotion always
+    has one — production proved a *validated* seed wrong); a staleness or
+    missing-record demotion has no escape and no seed_class at all, only a
+    `reason` ('stale' | 'record_missing') and the `previous_authority` the
+    gate is coming down from — recorded so a later re-derived/re-journaled
+    record can be told it is being *restored*, not freshly promoted.
+    @cw-trace guards INV-fh-003"""
+    assert reason in ("stale", "record_missing"), f"unknown stale-demotion reason: {reason!r}"
+    return emit(DEMOTION, name=gate, details=reason, previous_authority=previous_authority,
                 repo=repo, ticket=ticket)
 
 

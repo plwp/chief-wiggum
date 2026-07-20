@@ -517,6 +517,161 @@ def test_record_rejects_unknown_event(tmp_path):
     assert proc.returncode != 0
 
 
+def test_it_fh_06_real_journal_corroborates_stale_while_blocking_demotion(tmp_path):
+    """IT-fh-06 (chief-wiggum#198) through the REAL `ratchet.py record` CLI —
+    not a hand-written journal fixture. Journal a gate-validation event for
+    real, author a validation record whose ratchet_record_id names it, wire the
+    gate blocking, then simulate #184's scenario (a scanner edit bumps
+    --scanner-version) and prove check_gate_validation.check_and_transition
+    auto-demotes it (blocking -> demoted), recording previous_authority."""
+    import check_gate_validation as gv  # noqa: PLC0415
+
+    cfg = make_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "score", "--repo", str(tmp_path),
+         "--no-tests", "--no-quality"],
+        capture_output=True, text=True, check=True,
+    )
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "gate-validation", "--ref", "example_gate", "--merged",
+         "--notes", "IT-fh-06 fixture"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    record_id = ratchet.load_journal(cfg)[0]["record_id"]
+
+    validation_dir = cfg.journal.parent / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir = tmp_path / "fake_scripts"
+
+    def _write_fake_gate(version: str) -> None:
+        scripts_dir.mkdir(exist_ok=True)
+        (scripts_dir / "example_gate.py").write_text(
+            "import sys\n"
+            "if '--scanner-version' in sys.argv:\n"
+            f"    print({version!r})\n"
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+
+    _write_fake_gate("v1")
+    record = {
+        "gate": "example_gate",
+        "protocol_version": "1",
+        "scanner_version": "v1",
+        "telemetry_dependent": False,
+        "concurrency_applicable": False,
+        "concurrency_note": "static analysis has no concurrent dimension",
+        "authority_boundary": {"proves": "fixture", "artifact": "fixture", "assumptions": ["fixture"]},
+        "seeded_defect_trials": [
+            {"seed_id": "d1", "seed_class": "direct", "repo": "r", "expected": "fire",
+             "result": "fired", "passed": True},
+            {"seed_id": "o1", "seed_class": "evasion-omission", "repo": "r", "expected": "fire",
+             "result": "fired", "passed": True},
+            {"seed_id": "c1", "seed_class": "evasion-config-indirection", "repo": "r",
+             "expected": "fire", "result": "fired", "passed": True},
+            {"seed_id": "s1", "seed_class": "evasion-sampling-gap", "repo": "r",
+             "expected": "no-fire", "result": "not-fired", "passed": True},
+        ],
+        "clean_corpus_runs": [
+            {"repo": "r", "sha": "abc", "findings": 0, "coverage": {"n": 1}, "passed": True},
+        ],
+        "status": "passed",
+        "ratchet_record_id": record_id,
+    }
+    (validation_dir / "example_gate.json").write_text(json.dumps(record))
+
+    report, transition = gv.check_and_transition(
+        "example_gate", validation_dir, scripts_dir=scripts_dir, wire=True,
+    )
+    assert report.passing is True, (report.provenance_errors, report.schema_errors)
+    assert transition.new_state == "blocking"
+
+    _write_fake_gate("v2-after-scanner-edit")  # #184: a scanner edit bumps --scanner-version
+
+    report2, transition2 = gv.check_and_transition(
+        "example_gate", validation_dir, scripts_dir=scripts_dir,
+    )
+    assert report2.passing is False
+    assert transition2.previous_state == "blocking"
+    assert transition2.new_state == "demoted"
+    assert transition2.demotion_reason == "stale"
+    assert transition2.previous_authority == "blocking"
+
+
+# ---- gate-authority journal primitives: tamper-tolerance (chief-wiggum#198) ----
+
+
+def _chain(journal_path: Path, bodies: list[dict]) -> None:
+    """Write a hash-chained journal (same chaining as ratchet.append_authority_event)."""
+    from chief_wiggum.hashing import stable_hash  # noqa: PLC0415
+    prev = "genesis"
+    lines = []
+    for body in bodies:
+        body = {k: v for k, v in body.items() if k != "record_hash"}
+        body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+        prev = body["record_hash"]
+        lines.append(json.dumps(body, sort_keys=True))
+    journal_path.write_text("\n".join(lines) + "\n")
+
+
+def test_last_authority_action_ignores_bogus_details_after_wire(tmp_path):
+    """FINDING 1: a hash-VALID gate-authority event carrying a bogus `details`
+    (e.g. 'noop') after a real wire must NOT flip the gate to un-wired — only
+    'wire'/'unwire' are authority actions; anything else is ignored, so the
+    prior genuine wire still stands."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+        {"record_id": "rec-00002", "event": "gate-authority", "ref": "g", "details": "noop"},
+    ])
+    # The bogus 'noop' is ignored; the last GENUINE action is still 'wire'.
+    assert ratchet.last_authority_action(journal, "g") == "wire"
+
+
+def test_last_authority_action_respects_a_real_unwire(tmp_path):
+    """Control for finding 1: a genuine 'unwire' after a 'wire' DOES un-wire —
+    the filter ignores only non-action details, never a real unwire."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+        {"record_id": "rec-00002", "event": "gate-authority", "ref": "g", "details": "unwire"},
+    ])
+    assert ratchet.last_authority_action(journal, "g") == "unwire"
+
+
+def test_verified_prefix_stops_before_a_non_json_trailing_line(tmp_path):
+    """FINDING 2: malformed JSON in the journal tail after a valid wire must not
+    crash the read — verified_prefix parses line-by-line and stops before the
+    first unparseable line, so the wire is still read (and a stale record still
+    demotes)."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+    ])
+    # Corrupt the tail with a non-JSON garbage line.
+    with journal.open("a") as f:
+        f.write("this is not json at all\n")
+
+    prefix = ratchet.verified_prefix(journal)
+    assert len(prefix) == 1  # the wire survives; the garbage tail is dropped
+    assert ratchet.last_authority_action(journal, "g") == "wire"
+
+
+def test_append_authority_event_fails_closed_on_garbled_tail(tmp_path):
+    """A garbled tail is a broken chain: append_authority_event must raise
+    TamperError (never a JSONDecodeError crash) so callers can handle it."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+    ])
+    with journal.open("a") as f:
+        f.write("garbage\n")
+    with pytest.raises(ratchet.TamperError):
+        ratchet.append_authority_event(journal, "g", "unwire")
+
+
 # ---- --scanner-version (#184) --------------------------------------------------
 
 
