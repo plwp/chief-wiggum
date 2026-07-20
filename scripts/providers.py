@@ -32,6 +32,13 @@ class Role:
     # is mapped, its charter (from config/lenses.json) is appended to the shared
     # prompt for that provider only — the shared prompt itself never changes.
     lenses: dict[str, str] = field(default_factory=dict)
+    # Per-role override (seconds) for how long an OPTIONAL provider's delegate
+    # call may run before it's abandoned (chief-wiggum#188). An optional voice
+    # that hasn't answered by this deadline is failing softly by design — the
+    # role's required providers must not sit blocked on it for the delegate's
+    # full budget (1800s for claude-interactive). ``None`` falls back to
+    # ``consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS``.
+    optional_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +131,7 @@ def roles_from_config(config: dict[str, Any]) -> dict[str, Role]:
             required=tuple(raw.get("required", [])),
             optional=tuple(raw.get("optional", [])),
             lenses=dict(raw.get("lenses", {})),
+            optional_timeout_seconds=raw.get("optional_timeout_seconds"),
         )
     return roles
 
@@ -201,6 +209,16 @@ def validate_config(
             if name in seen:
                 errors.append(f"role {role_name} references provider {name} more than once")
             seen.add(name)
+        # optional_timeout_seconds (chief-wiggum#188) only means anything for a
+        # role with at least one optional provider — silently ignoring a typo
+        # (a string, a negative number) would let a misconfigured role keep
+        # blocking on the full delegate budget with no visible signal.
+        ots = role.optional_timeout_seconds
+        if ots is not None and (isinstance(ots, bool) or not isinstance(ots, int) or ots <= 0):
+            errors.append(
+                f"role {role_name} has invalid optional_timeout_seconds {ots!r} "
+                "(must be a positive integer)"
+            )
     for provider in providers.values():
         if provider.type == "tool" and not provider.tool:
             errors.append(f"provider {provider.name} has type=tool but no tool")

@@ -35,7 +35,8 @@
       "optional": [
         "gemini-vertex",
         "claude-interactive"
-      ]
+      ],
+      "optional_timeout_seconds": 300
     },
     "implementer": {
       "required": [
@@ -43,7 +44,8 @@
       ],
       "optional": [
         "claude-interactive"
-      ]
+      ],
+      "optional_timeout_seconds": 300
     },
     "reviewer": {
       "required": [
@@ -57,7 +59,8 @@
         "codex": "refute-soundness",
         "claude-interactive": "adoption-cost",
         "gemini-vertex": "completeness"
-      }
+      },
+      "optional_timeout_seconds": 300
     },
     "architecture_critic": {
       "required": [
@@ -71,7 +74,8 @@
         "codex": "refute-soundness",
         "claude-interactive": "adoption-cost",
         "gemini-vertex": "completeness"
-      }
+      },
+      "optional_timeout_seconds": 300
     },
     "design_critic": {
       "required": [
@@ -80,7 +84,8 @@
       "optional": [
         "codex",
         "claude-interactive"
-      ]
+      ],
+      "optional_timeout_seconds": 300
     },
     "risky_diff_review": {
       "required": [
@@ -89,7 +94,8 @@
       ],
       "optional": [
         "claude-interactive"
-      ]
+      ],
+      "optional_timeout_seconds": 300
     }
   }
 }
