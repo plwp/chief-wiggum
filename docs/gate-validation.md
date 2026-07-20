@@ -228,11 +228,20 @@ with the human checkpoint). This is the same "report-only until proven"
 posture as `docs/gate-rollout.md`, just enforced mechanically instead of by
 convention.
 
-Gates not yet carrying a validation record under this protocol (`ratchet.py`,
-`saas_gate.py`, `quality_slop_gate.py`, `ci_scaffold.py` as of #168) keep their
-pre-existing wiring unchanged — retroactively validating them is tracked
-separately (see the gate ledger in `docs/gate-rollout.md`) rather than silently
-widened into this ticket's scope.
+As of #184 every blocking-capable gate carries a record under this protocol:
+`ratchet.py`, `saas_gate.py`, `ci_scaffold.py`, `quality_slop_gate.py`, and
+`check_architecture.py` (the fifth gate, per ADR-fh-06 — one seed per entry in
+its frozen `CHECKS` inventory) join `check_single_writer.py` and
+`check_traceability.py`. Each ships a hash-derived `--scanner-version`
+(`chief_wiggum.hashing.scanner_version` — INV-fh-005), and validity is always
+read via `check_gate_validation.py <gate> --format json` reporting
+`passing == true`, never the default exit code (INV-fh-003). The two gates with
+non-deterministic live targets pin **fixture harnesses** instead (CTR-fh-044):
+`saas_gate` a scripted local HTTP fixture server
+(`tests/fixtures/gate_validation/saas_gate_clean/`), `quality_slop_gate`
+recorded band files (`tests/fixtures/gate_validation/quality_slop_gate_clean/`)
+fed to its pure verdict functions — a record validated against a prod URL or a
+live AI band could never be re-verified.
 
 ## Demotion: an escape a seed class should have caught
 

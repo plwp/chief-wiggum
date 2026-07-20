@@ -429,3 +429,17 @@ def test_cli_text_format_reports_verdict(tmp_path):
     )
     assert proc.returncode == 0
     assert "PASSING" in proc.stdout
+
+
+def test_validation_dir_is_defined_once_and_imported():
+    """INV-fh-004: docs/quality/validation is defined in exactly one place —
+    factory_log.DEFAULT_VALIDATION_DIR — and check_gate_validation IMPORTS it.
+    The two constants were previously separate definitions that had already
+    drifted in form (absolute vs relative), so identity (not mere equality) is
+    asserted: an equality-by-accident re-definition would regress the bug."""
+    # @cw-trace verifies INV-fh-004
+    import factory_log
+
+    assert gv.DEFAULT_VALIDATION_DIR is factory_log.DEFAULT_VALIDATION_DIR
+    assert Path(gv.DEFAULT_VALIDATION_DIR).is_absolute()
+    assert Path(gv.DEFAULT_VALIDATION_DIR).parts[-3:] == ("docs", "quality", "validation")

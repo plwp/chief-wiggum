@@ -1,12 +1,14 @@
 """Retroactive gate-validation trials for check_single_writer and check_traceability
-(docs/gate-validation.md, #168).
+(docs/gate-validation.md, #168), extended by #184 to the FIVE further gates —
+ratchet, ci_scaffold, check_architecture, saas_gate, quality_slop_gate (IT-fh-04).
 
-Both gates predate the gate-validation protocol; they were wired as blockers under
-the older, prose-only docs/gate-rollout.md rule. This module actually RUNS every
-seeded-defect trial each checked-in record (docs/quality/validation/*.json)
-claims, against the fixture corpora under tests/fixtures/gate_validation/ — the
-comparison is DERIVED from the executions, keyed by seed_id, so any drift between
-the shipped records and reality fails the suite:
+These gates predate the gate-validation protocol; they were wired (or wire-able)
+as blockers under the older, prose-only docs/gate-rollout.md rule. This module
+actually RUNS every seeded-defect trial each checked-in record
+(docs/quality/validation/*.json) claims, against the fixture corpora under
+tests/fixtures/gate_validation/ — the comparison is DERIVED from the executions,
+keyed by seed_id, so any drift between the shipped records and reality fails
+the suite:
 
 - a renamed/removed/added trial (seed_id set mismatch with the executor registry),
 - a stale corpus (record `sha` vs a re-derived content digest of the fixture tree),
@@ -15,19 +17,34 @@ the shipped records and reality fails the suite:
 - a `passed` flag that disagrees with result-vs-expected.
 
 It also proves check_gate_validation.py accepts the shipped records as passing —
-including their ratchet-journal provenance (rec-00001/rec-00002 in
-docs/quality/ratchet-journal.jsonl).
+including their ratchet-journal provenance in docs/quality/ratchet-journal.jsonl.
+
+#184 additions (IT-fh-04 — table-driven over ALL FIVE gates): the FH184_GATES
+table asserts, per gate, a passing record read via the JSON envelope
+(`passing == true`, never the default exit code — CTR-fh-043 / INV-fh-003), a
+live-round-tripped scanner_version (INV-fh-005), and — for saas_gate and
+quality_slop_gate — a fixture/recorded target, never a live URL or AI band
+(CTR-fh-044). Seeded trials for ratchet/ci_scaffold/check_architecture are
+re-executed by seed_id here; saas_gate's and quality_slop_gate's are re-executed
+in tests/test_saas_gate.py / tests/test_quality_slop_gate.py against their
+fixture harnesses (the scripted local HTTP server and the band files). Per
+ADR-fh-06, check_architecture additionally proves one genuinely-passing `fire`
+trial per frozen CHECKS entry — and a mutation test asserts dropping one seed is
+detected, not absorbed.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import check_architecture as ca
 import check_gate_validation as gv
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -300,3 +317,398 @@ def test_shipped_records_are_journaled_in_the_ratchet_chain():
         assert rid in entries, f"{gate} record's {rid} is not journaled"
         assert entries[rid]["event"] == "gate-validation"
         assert entries[rid]["ref"] == gate
+
+
+# ==============================================================================
+# #184 — IT-fh-04: table-driven records for ALL FIVE further gates
+# ==============================================================================
+#
+# gate -> its fixture corpus dir under tests/fixtures/gate_validation/. A sixth
+# blocking-capable gate added later without a record fails this table (add it
+# here + author its record), which is the point of the table-driven shape.
+FH184_GATES = {
+    "ratchet": "ratchet_clean",
+    "ci_scaffold": "ci_scaffold_clean",
+    "check_architecture": "check_architecture_clean",
+    "saas_gate": "saas_gate_clean",
+    "quality_slop_gate": "quality_slop_gate_clean",
+}
+
+# The two gates whose live targets are non-deterministic (a live URL, an AI
+# band): CTR-fh-044 requires their records to pin a fixture/recorded target.
+FIXTURE_TARGET_GATES = ("saas_gate", "quality_slop_gate")
+
+
+@pytest.mark.parametrize("gate", sorted(FH184_GATES))
+def test_fh184_record_passes_gate_of_gates(gate):
+    """Validity is the JSON envelope's `passing == true` — NEVER the default
+    exit code, which is 0 in report-only mode even when not validated."""
+    # @cw-trace verifies CTR-fh-043
+    report = gv.check(gate, RECORDS_DIR)
+    assert report.record_found, report.to_dict()
+    assert report.passing, report.to_dict()
+
+
+@pytest.mark.parametrize("gate", sorted(FH184_GATES))
+def test_fh184_record_scanner_version_round_trips_live(gate):
+    """A record authored against an older scanner is stale (INV-fh-005): its
+    scanner_version must equal the gate's LIVE --scanner-version output."""
+    # @cw-trace verifies CTR-fh-040 CTR-fh-043
+    assert _record(gate)["scanner_version"] == _live_scanner_version(f"{gate}.py"), (
+        f"{gate} record's scanner_version is stale — re-run the trials and re-author the record")
+
+
+@pytest.mark.parametrize("gate", sorted(FH184_GATES))
+def test_fh184_record_pins_a_fresh_fixture_corpus(gate):
+    """Every trial and clean run pins the current content digest of its fixture
+    corpus — a changed fixture is detectable staleness, and every corpus lives
+    under tests/fixtures/ (a fixture target, not a live dependency)."""
+    # @cw-trace verifies CTR-fh-044
+    record = _record(gate)
+    digest = gv.corpus_digest(FIXTURES / FH184_GATES[gate])
+    for trial in record["seeded_defect_trials"]:
+        assert trial["repo"].startswith("tests/fixtures/gate_validation/"), (
+            f"{gate} trial {trial['seed_id']} does not target an in-repo fixture corpus")
+        assert trial["sha"] == digest, (
+            f"{gate} trial {trial['seed_id']} pins a stale corpus digest — the fixture "
+            "changed; re-run the trials and re-author the record")
+    for run in record["clean_corpus_runs"]:
+        assert run["repo"].startswith("tests/fixtures/gate_validation/")
+        assert run["sha"] == digest, f"{gate} clean-corpus run pins a stale corpus digest"
+
+
+@pytest.mark.parametrize("gate", FIXTURE_TARGET_GATES)
+def test_fh184_nondeterministic_gates_name_fixture_targets(gate):
+    """saas_gate / quality_slop_gate records must pin a fixture/recorded target
+    (CTR-fh-044): no trial or clean run may name a live URL or AI band — a
+    record validated against prod/live-band can never be re-verified."""
+    # @cw-trace verifies CTR-fh-044
+    record = _record(gate)
+    entries = record["seeded_defect_trials"] + record["clean_corpus_runs"]
+    for entry in entries:
+        assert "http://" not in entry["repo"] and "https://" not in entry["repo"], (
+            f"{gate} record targets a live URL: {entry['repo']!r}")
+    boundary = json.dumps(record["authority_boundary"])
+    assert "fixture" in boundary.lower(), (
+        f"{gate} record's authority boundary does not declare its fixture target")
+
+
+# --- seed executors for the three gates re-executed here ----------------------
+#
+# saas_gate / quality_slop_gate trials are re-executed by seed_id against their
+# fixture harnesses in tests/test_saas_gate.py / tests/test_quality_slop_gate.py
+# (the scripted HTTP server needs its own scenario plumbing; the band files feed
+# the gate's pure verdict functions). The three gates below follow this module's
+# original copy-mutate-run pattern.
+
+
+def _rt_outcome(corpus: Path) -> str:
+    """Re-score the mutated fixture repo, then read `ratchet check`'s JSON."""
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "score",
+         "--repo", str(corpus), "--no-quality"],
+        capture_output=True, text=True, check=True,
+    )
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "check",
+         "--repo", str(corpus), "--format", "json"],
+        capture_output=True, text=True,
+    )
+    rep = json.loads(proc.stdout)
+    findings = (len(rep["missing_tests"]) + len(rep["weakened_contracts"])
+                + len(rep["removed_contracts"]))
+    return "fired" if findings else "not-fired"
+
+
+def _rt_seed_direct(corpus: Path) -> None:
+    """CTR-rt-001's REQUIRES wording is changed — contract-hash weakening."""
+    p = corpus / "docs" / "epics" / "gv-ratchet" / "contracts.md"
+    p.write_text(p.read_text().replace(
+        "no longer than 64 characters", "of any length whatsoever"))
+
+
+def _rt_seed_omission(corpus: Path) -> None:
+    """The weakening happens in the STRUCTURED JSON contract (walk_json_ids
+    path), not markdown prose — proving the JSON channel is hashed too."""
+    p = corpus / "docs" / "epics" / "gv-ratchet" / "models" / "contracts.json"
+    doc = json.loads(p.read_text())
+    doc["contracts"][0]["ensures"] = "the row may be hard-removed"
+    p.write_text(json.dumps(doc, indent=2))
+
+
+def _rt_seed_config_indirection(corpus: Path) -> None:
+    """The whole epic tree is MOVED outside the configured epic_docs root —
+    the IDs stop resolving, which must read as removed_contracts, not silence."""
+    src = corpus / "docs" / "epics" / "gv-ratchet"
+    dst = corpus / "docs" / "archive" / "gv-ratchet"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+
+
+def _rt_seed_sampling_gap(corpus: Path) -> None:
+    """A CONFLICTING redefinition of CTR-rt-001 inside justifications/ — a
+    certified NON-coverage boundary (expected: no-fire). If the subtree were
+    scanned, the combined definition hash would change and the weakened gate
+    would fire; hash_epic_definitions excludes it by design (a waiver's own id
+    names the contract it waives, never a new declaration)."""
+    p = corpus / "docs" / "epics" / "gv-ratchet" / "justifications" / "waiver.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "## CTR-rt-001 — create_widget validates its name (WAIVED)\n\n"
+        "REQUIRES: nothing.\nENSURES: nothing.\n")
+
+
+RT_EXECUTORS = {
+    "rt-direct-01": _rt_seed_direct,
+    "rt-omission-01": _rt_seed_omission,
+    "rt-config-indirection-01": _rt_seed_config_indirection,
+    "rt-sampling-gap-01": _rt_seed_sampling_gap,
+}
+
+
+def _ci_outcome(corpus: Path) -> str:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ci_scaffold.py"),
+         "--repo", str(corpus), "--report", "--json"],
+        capture_output=True, text=True,
+    )
+    rep = json.loads(proc.stdout)
+    return "not-fired" if rep["ci_present"] else "fired"
+
+
+def _ci_seed_direct(corpus: Path) -> None:
+    """The only workflow is deleted — the textbook missing-CI state."""
+    (corpus / ".github" / "workflows" / "ci.yml").unlink()
+
+
+def _ci_seed_omission(corpus: Path) -> None:
+    """workflows/ exists but holds no *.yml/*.yaml — presence of the directory
+    alone must not read as CI."""
+    (corpus / ".github" / "workflows" / "ci.yml").unlink()
+    (corpus / ".github" / "workflows" / "README.md").write_text("# no workflows here\n")
+
+
+def _ci_seed_config_indirection(corpus: Path) -> None:
+    """A real workflow under a different name — the detector requires SOME
+    workflow file, not a specific filename (expected: no-fire)."""
+    wf = corpus / ".github" / "workflows"
+    (wf / "ci.yml").rename(wf / "deploy-then-test.yaml")
+
+
+def _ci_seed_sampling_gap(corpus: Path) -> None:
+    """A no-op workflow with a valid suffix — content is out of the detector's
+    documented scope (presence-only), a certified boundary (expected: no-fire)."""
+    (corpus / ".github" / "workflows" / "ci.yml").write_text(
+        "name: noop\non: push\njobs:\n  noop:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: 'true'\n")
+
+
+CI_EXECUTORS = {
+    "ci-direct-01": _ci_seed_direct,
+    "ci-omission-01": _ci_seed_omission,
+    "ci-config-indirection-01": _ci_seed_config_indirection,
+    "ci-sampling-gap-01": _ci_seed_sampling_gap,
+}
+
+
+def _arch_outcome(corpus: Path) -> str:
+    return _arch_report(corpus)[0]
+
+
+def _arch_report(corpus: Path) -> tuple[str, dict]:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check_architecture.py"),
+         str(corpus / "architecture.json"),
+         "--system-contracts", str(corpus / "system-contracts.json"),
+         "--format", "json"],
+        capture_output=True, text=True,
+    )
+    rep = json.loads(proc.stdout)
+    return ("fired" if rep["counts"]["findings"] else "not-fired"), rep
+
+
+def _edit_arch(corpus: Path, mutate) -> None:
+    p = corpus / "architecture.json"
+    doc = json.loads(p.read_text())
+    mutate(doc)
+    p.write_text(json.dumps(doc, indent=2))
+
+
+def _edit_sc(corpus: Path, mutate) -> None:
+    p = corpus / "system-contracts.json"
+    doc = json.loads(p.read_text())
+    mutate(doc)
+    p.write_text(json.dumps(doc, indent=2))
+
+
+def _node(doc: dict, nid: str) -> dict:
+    return next(n for n in doc["nodes"] if n["id"] == nid)
+
+
+def _edge(doc: dict, eid: str) -> dict:
+    return next(e for e in doc["edges"] if e["id"] == eid)
+
+
+def _arch_seed_sampling_gap(corpus: Path) -> None:
+    """A retired node on an edge marked active:false — the retired-node check
+    covers ACTIVE edges only, a documented exemption (expected: no-fire)."""
+    def mutate(doc):
+        _node(doc, "ARC-analytics-001")["status"] = "retired"
+        _edge(doc, "EDG-gateway-analytics-001")["active"] = False
+    _edit_arch(corpus, mutate)
+
+
+# seed_id -> (executor, CHECKS entry it must fire, or None for the evasions
+# whose finding class is broader than a single check)
+ARCH_EXECUTORS = {
+    "arch-dangling-endpoint-01": (
+        lambda c: _edit_arch(c, lambda d: _edge(d, "EDG-gateway-analytics-001").update(
+            to="ARC-ghost-999")),
+        "dangling-endpoint"),
+    "arch-retired-node-edge-01": (
+        lambda c: _edit_arch(c, lambda d: _node(d, "ARC-analytics-001").update(
+            status="retired")),
+        "retired-node-edge"),
+    "arch-unlabelled-external-01": (
+        lambda c: _edit_arch(c, lambda d: _node(d, "ARC-stt-001").pop("asm_refs")),
+        "unlabelled-external"),
+    "arch-tier-inversion-01": (
+        lambda c: _edit_arch(c, lambda d: _edge(d, "EDG-gateway-analytics-001").update(
+            criticality="hard", on_failure={"fallback": None, "degrade_to": None})),
+        "tier-inversion"),
+    "arch-label-propagation-01": (
+        lambda c: _edit_arch(c, lambda d: _edge(d, "EDG-gateway-analytics-001").update(
+            carries=["official-sensitive"])),
+        "label-propagation"),
+    "arch-undeclared-cross-ref-01": (
+        lambda c: _edit_sc(c, lambda d: d["chains"][0]["hops"][1].update(
+            callee="ARC-does-not-exist-999")),
+        "undeclared-cross-ref"),
+    "arch-missing-tier-01": (
+        lambda c: _edit_arch(c, lambda d: _node(d, "ARC-analytics-001").pop(
+            "criticality_tier")),
+        "missing-tier"),
+    "arch-authored-crossing-label-01": (
+        lambda c: _edit_arch(c, lambda d: _edge(d, "EDG-gateway-analytics-001").update(
+            trust_zone_crossing="dmz->internal")),
+        "authored-crossing-label"),
+    "arch-omission-01": (
+        lambda c: _edit_arch(c, lambda d: d["nodes"].append(
+            {**_node(d, "ARC-analytics-001"), "status": "retired"})),
+        None),
+    "arch-config-indirection-01": (
+        lambda c: _edit_sc(c, lambda d: d["trees"][0]["root"]["children"][0].update(
+            telemetry_ref="nonexistent_binding_ms")),
+        None),
+    "arch-sampling-gap-01": (_arch_seed_sampling_gap, None),
+}
+
+
+def test_ratchet_record_trials_are_backed_by_live_executions(tmp_path):
+    # @cw-trace verifies CTR-fh-043
+    _assert_record_backed_by_live_trials(
+        "ratchet", "ratchet_clean", RT_EXECUTORS, _rt_outcome, "ratchet.py", tmp_path)
+
+
+def test_ratchet_clean_corpus_run_is_backed_by_live_execution(tmp_path):
+    record = _record("ratchet")
+    run = record["clean_corpus_runs"][0]
+    assert run["sha"] == gv.corpus_digest(FIXTURES / "ratchet_clean")
+    corpus = _copy_clean("ratchet_clean", tmp_path, "clean")
+    assert _rt_outcome(corpus) == "not-fired"
+    sc = json.loads((corpus / "docs" / "quality" / "ratchet-scorecard.json").read_text())
+    live_coverage = {"pass_set_size": len(sc["pass_set"]),
+                     "contracts_hashed": len(sc["contract_hashes"])}
+    assert run["findings"] == 0
+    assert run["coverage"] == live_coverage, (
+        f"ratchet clean-corpus coverage {run['coverage']} does not match live {live_coverage}")
+
+
+def test_ci_scaffold_record_trials_are_backed_by_live_executions(tmp_path):
+    # @cw-trace verifies CTR-fh-043
+    _assert_record_backed_by_live_trials(
+        "ci_scaffold", "ci_scaffold_clean", CI_EXECUTORS, _ci_outcome,
+        "ci_scaffold.py", tmp_path)
+
+
+def test_ci_scaffold_clean_corpus_run_is_backed_by_live_execution(tmp_path):
+    record = _record("ci_scaffold")
+    run = record["clean_corpus_runs"][0]
+    assert run["sha"] == gv.corpus_digest(FIXTURES / "ci_scaffold_clean")
+    corpus = _copy_clean("ci_scaffold_clean", tmp_path, "clean")
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ci_scaffold.py"),
+         "--repo", str(corpus), "--report", "--json"],
+        capture_output=True, text=True,
+    )
+    rep = json.loads(proc.stdout)
+    assert rep["ci_present"] is True
+    live_coverage = {"workflows_found": len(rep["workflows"]),
+                     "stacks_detected": len(rep["stack"])}
+    assert run["findings"] == 0
+    assert run["coverage"] == live_coverage
+
+
+def test_check_architecture_record_trials_are_backed_by_live_executions(tmp_path):
+    # @cw-trace verifies CTR-fh-043
+    executors = {sid: fn for sid, (fn, _check) in ARCH_EXECUTORS.items()}
+    _assert_record_backed_by_live_trials(
+        "check_architecture", "check_architecture_clean", executors, _arch_outcome,
+        "check_architecture.py", tmp_path)
+
+
+def test_check_architecture_clean_corpus_run_is_backed_by_live_execution(tmp_path):
+    record = _record("check_architecture")
+    run = record["clean_corpus_runs"][0]
+    assert run["sha"] == gv.corpus_digest(FIXTURES / "check_architecture_clean")
+    corpus = _copy_clean("check_architecture_clean", tmp_path, "clean")
+    result, rep = _arch_report(corpus)
+    assert result == "not-fired"
+    live_coverage = {"nodes_checked": rep["counts"]["nodes"],
+                     "edges_checked": rep["counts"]["edges"],
+                     "checks_run": len(ca.CHECKS)}
+    assert run["findings"] == 0
+    assert run["coverage"] == live_coverage
+
+
+# --- ADR-fh-06: one genuinely-passing fire trial per frozen CHECKS entry ------
+
+
+def _checks_missing_a_passing_fire_seed(record: dict) -> list[str]:
+    """The frozen CHECKS entries lacking a genuinely-passing `fire` trial that
+    targets them. Trial->check binding comes from the executor registry (the
+    table that actually runs each seed), so a renamed trial can't fake coverage."""
+    covered = set()
+    passing = {t["seed_id"] for t in record["seeded_defect_trials"]
+               if t["expected"] == "fire" and t["result"] == "fired" and t["passed"] is True}
+    for seed_id, (_fn, check) in ARCH_EXECUTORS.items():
+        if check is not None and seed_id in passing:
+            covered.add(check)
+    return [check for check in ca.CHECKS if check not in covered]
+
+
+def test_check_architecture_record_covers_every_frozen_check(tmp_path):
+    """ADR-fh-06: the record must carry one genuinely-passing fire trial per
+    CHECKS entry — and each targeted trial must fire EXACTLY its check live."""
+    # @cw-trace verifies CTR-fh-043
+    record = _record("check_architecture")
+    assert _checks_missing_a_passing_fire_seed(record) == []
+    for seed_id, (fn, check) in ARCH_EXECUTORS.items():
+        if check is None:
+            continue
+        corpus = _copy_clean("check_architecture_clean", tmp_path, seed_id)
+        fn(corpus)
+        _result, rep = _arch_report(corpus)
+        assert check in rep["counts"]["by_check"], (
+            f"{seed_id} was expected to fire the {check!r} check but fired "
+            f"{rep['counts']['by_check']}")
+
+
+def test_check_architecture_check_coverage_detects_a_dropped_seed():
+    """Mutation guard: removing one check's seed from the record must be
+    detected — a missing per-check seed fails, not merely the generic
+    required_seed_classes set."""
+    record = copy.deepcopy(_record("check_architecture"))
+    record["seeded_defect_trials"] = [
+        t for t in record["seeded_defect_trials"] if t["seed_id"] != "arch-tier-inversion-01"]
+    assert _checks_missing_a_passing_fire_seed(record) == ["tier-inversion"]

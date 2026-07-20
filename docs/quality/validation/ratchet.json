@@ -23,7 +23,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
       "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
-      "injected": "docs/epics/gv-ratchet/contracts.md: the REQUIRES/ENSURES wording of CTR-rt-001 is changed (max length 64->256; ensures now emits an audit event and permits tags) — a genuine definition change, not a whitespace reformat",
+      "injected": "docs/epics/gv-ratchet/contracts.md: the REQUIRES wording of CTR-rt-001 is changed (name bound 'no longer than 64 characters' -> 'of any length whatsoever') — a genuine definition change, not a whitespace reformat",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -56,7 +56,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
       "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
-      "injected": "a NEW block declaring CTR-rt-009 is placed in docs/epics/gv-ratchet/justifications/waiver.md. hash_epic_definitions excludes the justifications/ subtree by design (is_justification_path), so the heading is not misread as a new declaration — a certified NON-coverage boundary, so the ratchet correctly does not fire",
+      "injected": "a CONFLICTING redefinition of CTR-rt-001 (REQUIRES/ENSURES gutted to 'nothing') is placed in docs/epics/gv-ratchet/justifications/waiver.md. If the subtree were scanned, the combined definition hash would change and the weakened_contracts gate would fire; hash_epic_definitions excludes justifications/ by design (is_justification_path — a waiver's own id names the contract it waives, never a new declaration) — a certified NON-coverage boundary, so the ratchet correctly does not fire",
       "expected": "no-fire",
       "result": "not-fired",
       "passed": true
