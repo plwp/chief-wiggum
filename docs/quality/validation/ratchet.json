@@ -1,7 +1,7 @@
 {
   "gate": "ratchet",
   "protocol_version": "1",
-  "scanner_version": "7eb3b41f18d8a32862b36fc6c713e07a5fa6b3dfc012ff59f05ffb2b9b8b41a5",
+  "scanner_version": "14c24122b2925968078d12649de681390f83e2e22a0d040bc33a4d68e6a97ce6",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "ratchet check is a single-pass fold over checked-in test results (the scorecard's pass_set) and epic-doc contract-definition hashes at a fixed scorecard/journal snapshot. There is no concurrent/racing-writer channel in the artifact to evade; the tamper concern (a racing edit of the journal itself) is addressed by the append-only hash chain, not by a concurrency seed (see assumptions).",
@@ -75,7 +75,7 @@
     }
   ],
   "status": "passed",
-  "validated_at": "2026-07-20T05:30:00Z",
-  "validated_by": "chief-wiggum#184 (re-validated post PR-review fix: quality/churn.py + quality/complexity.py added to the scanner-version hash inputs \u2014 the lazily imported engines shape check's quality_regressions findings)",
-  "ratchet_record_id": "rec-00013"
+  "validated_at": "2026-07-20T05:45:00Z",
+  "validated_by": "chief-wiggum#184 (re-validated after merging main's #187 hotspot changes to quality/churn.py + quality/complexity.py \u2014 hashed deps moved, so the record went stale exactly as INV-fh-005 intends)",
+  "ratchet_record_id": "rec-00014"
 }
