@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from chief_wiggum.hashing import scanner_version  # noqa: E402
 from quality import duplication, survival  # noqa: E402
 
 # GitClear [VENDOR] reference bands — direction is credible, exact multiples are
@@ -248,6 +249,16 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scanner_version() -> str:
+    """Hash-derived ``--scanner-version``: the source of this module plus its
+    ``chief_wiggum`` dependencies. No hand-bumped constant to forget
+    (INV-fh-005).
+    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042"""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    return scanner_version(here, cw_dir / "hashing.py")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="report-only AI-slop signals (code survival + duplication)",
@@ -261,7 +272,18 @@ def main() -> int:
                       help="report-only mode (default): print findings, exit 0")
     mode.add_argument("--gate", action="store_true",
                       help="blocking mode (opt-in): exit 1 if a signal is past the AI band")
+    parser.add_argument(
+        "--scanner-version",
+        action="store_true",
+        help="Print the hash-derived scanner version (source hash of this module + its "
+        "chief_wiggum deps) and exit",
+    )
     args = parser.parse_args()
+
+    if args.scanner_version:
+        print(_scanner_version())
+        return 0
+
     return run(args)
 
 

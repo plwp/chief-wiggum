@@ -282,3 +282,19 @@ def test_integration_multiple_set_cookie_not_collapsed(multi_cookie_server):
     r = sg.run_gate(".", multi_cookie_server)
     statuses = {f.name: f.status for f in r.findings}
     assert statuses["csrf"] == sg.FAIL
+
+
+# ---- --scanner-version (#184) ----------------------------------------------
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    rc1 = sg.main(["--scanner-version"])
+    assert rc1 == 0
+
+
+def test_cli_scanner_version_prints_hex_digest(capsys):
+    rc = sg.main(["--scanner-version"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex

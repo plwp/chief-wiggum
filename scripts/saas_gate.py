@@ -26,6 +26,10 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from chief_wiggum.hashing import scanner_version  # noqa: E402
+
 PASS, FAIL, WARN, SKIPPED, NA = "pass", "fail", "warn", "skipped", "not_applicable"
 
 # http_get(url) -> (status_code, headers_lower_dict, body_text)
@@ -354,6 +358,16 @@ def run_gate(
     return report
 
 
+def _scanner_version() -> str:
+    """Hash-derived ``--scanner-version``: the source of this module plus its
+    ``chief_wiggum`` dependencies. No hand-bumped constant to forget
+    (INV-fh-005).
+    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042"""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    return scanner_version(here, cw_dir / "hashing.py")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SaaS NFR validation gate")
     parser.add_argument("--repo", default=".")
@@ -368,7 +382,17 @@ def main(argv: list[str] | None = None) -> int:
     out = parser.add_mutually_exclusive_group()
     out.add_argument("--json", action="store_true")
     out.add_argument("--markdown", action="store_true")
+    parser.add_argument(
+        "--scanner-version",
+        action="store_true",
+        help="Print the hash-derived scanner version (source hash of this module + its "
+        "chief_wiggum deps) and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.scanner_version:
+        print(_scanner_version())
+        return 0
 
     log_sample = None
     if args.log_sample and Path(args.log_sample).exists():

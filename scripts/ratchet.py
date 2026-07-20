@@ -84,7 +84,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # exactly one contract-block hashing implementation, not a copy per module.
 # _hash_markdown_defs/_walk_json_ids are kept as thin aliases to that shared
 # home for callers/tests that reach into ratchet's (formerly private) internals.
-from chief_wiggum.hashing import hash_epic_definitions, stable_hash  # noqa: E402,F401
+from chief_wiggum.hashing import hash_epic_definitions, scanner_version, stable_hash  # noqa: E402
 from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
 from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
 from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
@@ -749,9 +749,42 @@ def cmd_protected(args) -> int:
     return 0
 
 
+def _scanner_version() -> str:
+    """Hash-derived ``--scanner-version``: the source of this module plus its
+    ``chief_wiggum`` dependencies (hashing.py for stable_hash/hash_epic_definitions,
+    trace_ids.py for the shared stable-ID grammar, trace_links.py for
+    suspect-link propagation). No hand-bumped constant to forget (INV-fh-005).
+    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042"""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    return scanner_version(
+        here,
+        cw_dir / "hashing.py",
+        cw_dir / "trace_ids.py",
+        cw_dir / "trace_links.py",
+    )
+
+
 def main() -> int:
+    # ratchet's CLI is subcommand-based (dest="cmd", required=True below), so
+    # --scanner-version can't be reached via `args.scanner_version` after
+    # parse_args() the way the single-positional gate scripts do — a missing
+    # subcommand would already have failed argparse's own validation. Checked
+    # directly against argv instead, so `ratchet.py --scanner-version` (no
+    # subcommand) works, prints, and exits 0 with no other action — same
+    # contract as the other four scanner-version gates.
+    if "--scanner-version" in sys.argv[1:]:
+        print(_scanner_version())
+        return 0
+
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--scanner-version",
+        action="store_true",
+        help="Print the hash-derived scanner version (source hash of this module + its "
+        "chief_wiggum deps) and exit; works with no subcommand",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

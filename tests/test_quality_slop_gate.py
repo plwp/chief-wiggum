@@ -13,9 +13,13 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 import quality_slop_gate as gate
+
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 # --- band classification ----------------------------------------------------
 
@@ -262,3 +266,24 @@ def test_survival_live_young_repo_self_skips(tmp_path):
     # young repo: either the analyzer produced no 14-day-old lines (too_young)
     # or the tool skipped — both are graceful, neither crashes.
     assert sv["status"] in {"too_young", "skipped"}
+
+
+# ---- --scanner-version (#184) ----------------------------------------------
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    assert gate._scanner_version() == gate._scanner_version()
+
+
+def test_cli_scanner_version_prints_hex_digest():
+    # gate.main() has no injectable argv (reads sys.argv directly), so the CLI
+    # contract — no other arguments needed, exit 0, no side effects — is
+    # exercised via subprocess like ratchet.py's.
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "quality_slop_gate.py"), "--scanner-version"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex

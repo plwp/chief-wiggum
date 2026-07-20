@@ -515,3 +515,23 @@ def test_record_rejects_unknown_event(tmp_path):
         capture_output=True, text=True,
     )
     assert proc.returncode != 0
+
+
+# ---- --scanner-version (#184) --------------------------------------------------
+
+
+def test_cli_scanner_version_prints_hex_digest_with_no_subcommand():
+    # ratchet's CLI is subcommand-based (dest="cmd", required=True); --scanner-version
+    # must still work standalone, with no subcommand and no side effects.
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "--scanner-version"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    assert ratchet._scanner_version() == ratchet._scanner_version()

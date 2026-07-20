@@ -65,8 +65,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum.hashing import stable_hash  # noqa: E402
 
+# Single definition site (INV-fh-004): this used to be a second, independently
+# spelled DEFAULT_VALIDATION_DIR here (a relative string) that happened to
+# differ in form from factory_log.py's (an absolute path) — imported, not
+# redefined, so the two can never silently diverge again.
+# @cw-trace guards INV-fh-004
+from factory_log import DEFAULT_VALIDATION_DIR  # noqa: E402
+
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "gate-validation-record-schema.json"
-DEFAULT_VALIDATION_DIR = "docs/quality/validation"
 JOURNAL_NAME = "ratchet-journal.jsonl"
 
 # Seed classes every gate's record must carry with genuinely-passing trials.
@@ -99,6 +105,10 @@ class GateValidationReport:
 
     @property
     def passing(self) -> bool:
+        """No blocking without a passing record: validity is read via
+        ``passing == True`` here, never inferred from the default exit code
+        (0 in report-only mode even when not validated).
+        @cw-trace guards INV-fh-003"""
         return (
             self.record_found
             and not self.schema_errors
