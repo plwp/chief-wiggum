@@ -56,5 +56,5 @@
     "note": "cyclomatic complexity requires lizard (pip install lizard)",
     "skipped": "lizard not found"
   },
-  "tests_run": false
+  "tests_run": true
 }

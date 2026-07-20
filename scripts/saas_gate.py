@@ -362,7 +362,7 @@ def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
     ``chief_wiggum`` dependencies. No hand-bumped constant to forget
     (INV-fh-005).
-    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042"""
+    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(here, cw_dir / "hashing.py")

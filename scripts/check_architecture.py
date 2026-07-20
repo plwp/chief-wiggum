@@ -710,7 +710,7 @@ def _scanner_version() -> str:
     ``chief_wiggum`` dependencies. No hand-bumped constant to forget
     (INV-fh-005). Makes check_architecture the fifth #184 gate whose
     validation record can be staleness-checked.
-    @cw-trace guards CTR-fh-026"""
+    @cw-trace guards CTR-fh-026 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(here, cw_dir / "hashing.py")

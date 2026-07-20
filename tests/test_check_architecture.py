@@ -596,6 +596,7 @@ def test_scanner_version_changes_if_module_source_changes(tmp_path):
     """scanner_version hashes THIS module's live source (INV-fh-005) — a copy
     with one byte changed must hash differently, proving it is not a
     hand-set constant nobody remembers to bump."""
+    # @cw-trace verifies INV-fh-005
     import shutil
 
     from chief_wiggum.hashing import scanner_version as sv

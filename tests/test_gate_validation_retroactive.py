@@ -778,7 +778,7 @@ def test_scanner_version_dep_list_is_complete(gate):
     logic) without hashing it, and quality_slop_gate/ratchet executed the
     quality engines (survival/duplication; churn/complexity) without hashing
     them."""
-    # @cw-trace verifies CTR-fh-041
+    # @cw-trace verifies CTR-fh-041 INV-fh-005
     source = (SCRIPTS / f"{gate}.py").read_text()
     deps = _chief_wiggum_deps(source) | _quality_deps(source)
     assert deps, f"{gate} imports no chief_wiggum/quality modules?"
