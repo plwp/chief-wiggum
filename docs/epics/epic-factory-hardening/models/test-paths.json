@@ -1,0 +1,431 @@
+{
+  "paths": [
+    {
+      "target": "report_only",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        }
+      ],
+      "length": 1
+    },
+    {
+      "target": "report_only",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        },
+        {
+          "state": "stale",
+          "event": "downgrade_nonblocking_stale",
+          "next_state": "report_only"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "report_only",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        },
+        {
+          "state": "stale",
+          "event": "downgrade_nonblocking_stale",
+          "next_state": "report_only"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "report_only",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "record_missing_or_invalid",
+          "next_state": "report_only"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "validated",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "validated",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        }
+      ],
+      "length": 1
+    },
+    {
+      "target": "blocking",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "blocking",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "stale",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "stale",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "stale",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "stale",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        },
+        {
+          "state": "stale",
+          "event": "auto_demote",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 5
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "escape_matches_certified_seed_class",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "record_missing_or_invalid",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "run_without_record",
+          "next_state": "report_only"
+        },
+        {
+          "state": "report_only",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        },
+        {
+          "state": "stale",
+          "event": "auto_demote",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        },
+        {
+          "state": "stale",
+          "event": "auto_demote",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "escape_matches_certified_seed_class",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "wire_gate",
+          "next_state": "blocking"
+        },
+        {
+          "state": "blocking",
+          "event": "record_missing_or_invalid",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "demoted",
+      "steps": [
+        {
+          "state": "unknown",
+          "event": "author_record",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "scanner_or_journal_drift",
+          "next_state": "stale"
+        },
+        {
+          "state": "stale",
+          "event": "auto_demote",
+          "next_state": "demoted"
+        }
+      ],
+      "length": 3
+    }
+  ],
+  "summary": {
+    "total_paths": 20,
+    "states_covered": 6,
+    "states_total": 6,
+    "transitions_covered": 11,
+    "shortest_paths_count": 6
+  }
+}

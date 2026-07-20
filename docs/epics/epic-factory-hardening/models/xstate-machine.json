@@ -1,0 +1,197 @@
+{
+  "id": "gate_blocking-authority_lifecycle",
+  "initial": "unknown",
+  "states": {
+    "unknown": {
+      "on": {
+        "run_without_record": {
+          "target": "report_only",
+          "guard": "G-001",
+          "actions": [
+            {
+              "type": "run report-only"
+            },
+            {
+              "type": "print authority line"
+            }
+          ]
+        },
+        "author_record": {
+          "target": "validated",
+          "guard": "G-002",
+          "actions": [
+            {
+              "type": "ratchet record --event gate-validation --ref <gate>"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "No validation record exists (or it was removed). The gate may RUN report-only but MUST NOT carry --gate."
+      }
+    },
+    "report_only": {
+      "on": {
+        "author_record": {
+          "target": "validated",
+          "guard": "G-003",
+          "actions": [
+            {
+              "type": "ratchet record --event gate-validation --ref <gate>"
+            }
+          ]
+        },
+        "record_removed": {
+          "target": "unknown",
+          "guard": "G-011"
+        }
+      },
+      "meta": {
+        "description": "A record exists but is not currently valid: check_gate_validation --format json reports passing==false (status!=passed, schema-invalid, or provenance failure). The gate runs and never blocks. NOTE: a fully-validated-but-unwired gate is in 'validated', NOT here \u2014 this state means the record itself does not pass."
+      }
+    },
+    "validated": {
+      "on": {
+        "wire_gate": {
+          "target": "blocking",
+          "guard": "G-004",
+          "actions": [
+            {
+              "type": "workflow invokes gate with --gate"
+            }
+          ]
+        },
+        "scanner_or_journal_drift": {
+          "target": "stale",
+          "guard": "G-005",
+          "actions": [
+            {
+              "type": "previous_authority = 'validated'"
+            }
+          ]
+        },
+        "record_missing_or_invalid": {
+          "target": "report_only",
+          "guard": "G-012"
+        }
+      },
+      "entry": [
+        {
+          "type": "emit_gate('check_gate_validation','pass')"
+        }
+      ],
+      "meta": {
+        "description": "check_gate_validation --format json passing==true: schema ok, status==passed, scanner_version current, journal corroborated. ELIGIBLE to be wired with --gate (wiring is the separate wire_gate event)."
+      }
+    },
+    "blocking": {
+      "on": {
+        "unwire_gate": {
+          "target": "validated",
+          "guard": "G-013",
+          "actions": [
+            {
+              "type": "workflow invokes gate without --gate"
+            }
+          ]
+        },
+        "scanner_or_journal_drift": {
+          "target": "stale",
+          "guard": "G-006",
+          "actions": [
+            {
+              "type": "previous_authority = 'blocking'"
+            }
+          ]
+        },
+        "escape_matches_certified_seed_class": {
+          "target": "demoted",
+          "guard": "G-007",
+          "actions": [
+            {
+              "type": "emit(DEMOTION, gate=gate, seed_class=escape.seed_class)"
+            },
+            {
+              "type": "revert to report-only wiring"
+            }
+          ]
+        },
+        "record_missing_or_invalid": {
+          "target": "demoted",
+          "guard": "G-014",
+          "actions": [
+            {
+              "type": "emit(DEMOTION, gate=gate, details='record-missing-or-invalid')"
+            },
+            {
+              "type": "revert to report-only wiring"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Validated AND wired with --gate. Actively blocks the workflow on a finding. Normal (not terminal) \u2014 can go stale, be demoted, or be intentionally un-wired back to validated."
+      }
+    },
+    "stale": {
+      "on": {
+        "auto_demote": {
+          "target": "demoted",
+          "guard": "G-008",
+          "actions": [
+            {
+              "type": "emit(DEMOTION, gate=gate, details='stale')"
+            },
+            {
+              "type": "revert to report-only wiring"
+            }
+          ]
+        },
+        "downgrade_nonblocking_stale": {
+          "target": "report_only",
+          "guard": "G-015"
+        },
+        "re_derive_record": {
+          "target": "validated",
+          "guard": "G-009",
+          "actions": [
+            {
+              "type": "ratchet record --event gate-validation --ref <gate>"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Scanner version or journal provenance no longer matches the record (e.g. #184 added --scanner-version and a subsequent scanner edit bumped the hash). The system must NOT silently remain blocking. previous_authority records where it came from."
+      }
+    },
+    "demoted": {
+      "on": {
+        "re_derive_and_rejournal": {
+          "target": "validated",
+          "guard": "G-010",
+          "actions": [
+            {
+              "type": "ratchet record --event gate-validation --ref <gate>"
+            }
+          ]
+        }
+      },
+      "entry": [
+        {
+          "type": "emit(DEMOTION, gate=gate, details=reason)"
+        }
+      ],
+      "meta": {
+        "description": "Forcibly removed from blocking authority \u2014 a production escape matched a seed_class the record certified caught (factory_log demotion_check), a stale-while-blocking record auto-demoted (fail-to-report-only), or the record went missing/invalid while blocking. Record must be re-derived before re-promotion."
+      }
+    }
+  },
+  "context": {
+    "validation_record": null,
+    "scanner_version": null,
+    "ratchet_record_id": null,
+    "gate_wired": null,
+    "previous_authority": null
+  }
+}
