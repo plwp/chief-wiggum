@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,7 +47,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    ticket = review.TicketContext.from_dict(json.loads(Path(args.ticket_context).read_text()))
+    # CTR-fh-002: a production ticket.json missing the `comments` key entirely
+    # (as opposed to `"comments": []`) is the writer half of the #83 bug.
+    # `from_dict` warns; make that warning visible on this CLI's stderr
+    # regardless of the caller's warning filters — "explicit, never silent".
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", review.MissingCommentsWarning)
+        ticket = review.TicketContext.from_dict(json.loads(Path(args.ticket_context).read_text()))
+    for w in caught:
+        if issubclass(w.category, review.MissingCommentsWarning):
+            print(f"Warning: {w.message}", file=sys.stderr)
     template = Path(args.template).read_text()
     checklist = Path(args.checklist).read_text() if Path(args.checklist).exists() else None
 
