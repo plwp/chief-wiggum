@@ -13,8 +13,15 @@ the realizing contracts/invariants.
 and pass. `covered` = implemented and exercised, but full verification was
 partial in this environment (e.g. a `lizard`-dependent assertion skips here the
 same way it does in CI — no `lizard` on `PATH` — or the AC is a workflow/manual-review
-item, not a unit-testable one). `pending` = genuinely not implemented; see the
-close-epic retrospective for the one row that stayed `pending`.
+item, not a unit-testable one). `missing` = genuinely not implemented; see the
+close-epic retrospective for the one row marked `missing` (IT-fh-06 → #198).
+`check_traceability --gate coverage` initially failed on CTR-fh-043 /
+CTR-fh-044 / INV-fh-005 (implemented + tested but never `@cw-trace`-linked);
+fixed in the same close via #197 — annotation-only `guards`/`verifies` tags at
+the genuinely-covering sites (`check_gate_validation.py` `passing` property and
+`corpus_digest`, the five gates' `_scanner_version` functions, and the covering
+tests). The coverage gate now passes and `docs/quality/trace-links.json` is
+written.
 Note: `scripts/traceability.py update` could not flip these rows mechanically —
 every table in this file omits (or leaves blank) the numeric `--ticket` cell the
 updater requires, so this pass edited the file by hand. Flagged as a minor

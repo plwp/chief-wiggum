@@ -1,17 +1,17 @@
 {
   "gate": "saas_gate",
   "protocol_version": "1",
-  "scanner_version": "2c02a5324dd210f8aad25d7a44b11480028d05146c6b51e14d2142daa608f75f",
+  "scanner_version": "c03b8270d17ba2849f31703e93aa8b7b6fe9f813579df631b2f941bc243a3f12",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
-  "concurrency_note": "saas_gate issues sequential, single deterministic HTTP exchanges (GET /, /health, /login) against a scripted fixture server; each probe's response is fixed for the scenario. There is no concurrent/racing dimension in the fixture target to evade — the rate-limit probe counts sequential attempts, not concurrent ones.",
+  "concurrency_note": "saas_gate issues sequential, single deterministic HTTP exchanges (GET /, /health, /login) against a scripted fixture server; each probe's response is fixed for the scenario. There is no concurrent/racing dimension in the fixture target to evade \u2014 the rate-limit probe counts sequential attempts, not concurrent ones.",
   "authority_boundary": {
-    "proves": "over a running HTTP endpoint, every FAIL-class SaaS NFR finding the gate makes fires on an injected instance (missing security header, a CSRF cookie whose SameSite is not Lax/Strict even when disguised with stray whitespace), while a documented non-FAIL boundary (a never-429 /login without --rate-limit-required, a header served via case-insensitive name indirection) correctly does NOT fire — driven end-to-end through the real CLI (real urllib.request, real HTTP, real header parsing)",
+    "proves": "over a running HTTP endpoint, every FAIL-class SaaS NFR finding the gate makes fires on an injected instance (missing security header, a CSRF cookie whose SameSite is not Lax/Strict even when disguised with stray whitespace), while a documented non-FAIL boundary (a never-429 /login without --rate-limit-required, a header served via case-insensitive name indirection) correctly does NOT fire \u2014 driven end-to-end through the real CLI (real urllib.request, real HTTP, real header parsing)",
     "artifact": "the REAL scripts/saas_gate.py CLI run as a subprocess against a scripted, deterministic local http.server on 127.0.0.1 (tests/fixtures/gate_validation/saas_gate_clean/saas_gate_server.py), with a trivial fixture repo (pyproject.toml -> detect_stack ['python']) as --repo",
     "assumptions": [
-      "VALIDATED AGAINST A SCRIPTED LOCAL HTTP FIXTURE SERVER, NOT A LIVE PRODUCTION/STAGING URL (CTR-fh-044): a real deployment's TLS configuration, load-balancer/proxy-injected headers, CDN or WAF behaviour, and rate-limiter timing may surface additional findings — or mask them — that this record says nothing about",
+      "VALIDATED AGAINST A SCRIPTED LOCAL HTTP FIXTURE SERVER, NOT A LIVE PRODUCTION/STAGING URL (CTR-fh-044): a real deployment's TLS configuration, load-balancer/proxy-injected headers, CDN or WAF behaviour, and rate-limiter timing may surface additional findings \u2014 or mask them \u2014 that this record says nothing about",
       "the base URL is HTTP, so HSTS is a WARN (not a FAIL) and cookie Secure is not required; an HTTPS target changes those to FAIL-eligible and is out of this record's scope",
-      "tenant-isolation, performance/response-time, structured-logging (no --log-sample), and audit-trail checks are SKIPPED by run_gate without a live multi-user app / log sample and are therefore not exercised here — a SKIPPED status is honestly reported, never counted as a pass",
+      "tenant-isolation, performance/response-time, structured-logging (no --log-sample), and audit-trail checks are SKIPPED by run_gate without a live multi-user app / log sample and are therefore not exercised here \u2014 a SKIPPED status is honestly reported, never counted as a pass",
       "the gate's verdict (report.ok) is FALSE iff any finding has status FAIL; WARN/SKIPPED/NA never block, by design"
     ]
   },
@@ -77,5 +77,5 @@
   "status": "passed",
   "validated_at": "2026-07-20T04:33:10Z",
   "validated_by": "chief-wiggum#184",
-  "ratchet_record_id": "rec-00006"
+  "ratchet_record_id": "rec-00017"
 }

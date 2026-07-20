@@ -1,7 +1,7 @@
 {
   "gate": "check_architecture",
   "protocol_version": "1",
-  "scanner_version": "021a67e5d47e619cdd36074ab0c6fa55dae9ae796ad19deda37f73e4b2ff81b0",
+  "scanner_version": "dddcd9a9d99d98b78f9fab9ea218c5220f9d908404a8cc49b82cc08acdbc3e4a",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "check_architecture is a single-pass static consistency check over a declared architecture.json (and optional system-contracts.json) at a fixed content; it never inspects running code and has no concurrent/racing dimension to evade.",
@@ -11,7 +11,7 @@
     "assumptions": [
       "authority is declared-model consistency only (ADR-fh-07): the checker opens artifacts read-only and never proves the running code matches the model (that is the deferred reflexion/extraction gate)",
       "trust_zone_crossing/region_crossing are COMPUTED-only fields; any authored non-null value is itself an authored-crossing-label finding (INV-fh-006), so a hand-authored 'safe' label cannot mask a real crossing",
-      "the retired-node-edge check exempts edges with active:false by design (a documented, retired path) — a retired-node reference on an inactive edge is a certified NON-coverage boundary, not a missed violation",
+      "the retired-node-edge check exempts edges with active:false by design (a documented, retired path) \u2014 a retired-node reference on an inactive edge is a certified NON-coverage boundary, not a missed violation",
       "cross-artifact consistency (undeclared-cross-ref) is only sampled when --system-contracts is supplied, and only over chain hop caller/callee endpoints and budget-tree telemetry_refs; absent --system-contracts it is reported not_checked, never 'passed' (CTR-fh-024)",
       "label-propagation is declared-graph-only (no taint analysis): it compares an edge's carries[] max data-class rank against the target trust_zone ceiling and region boundary from the declared labels, and a violation carrying a valid asm_refs waiver is recorded as a documented waiver, not a finding"
     ]
@@ -23,7 +23,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: EDG-gateway-analytics-001.to is repointed to ARC-ghost-999, an undeclared node — fires dangling-endpoint",
+      "injected": "architecture.json: EDG-gateway-analytics-001.to is repointed to ARC-ghost-999, an undeclared node \u2014 fires dangling-endpoint",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -34,7 +34,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: ARC-analytics-001.status set to retired while the active edge EDG-gateway-analytics-001 still references it — fires retired-node-edge",
+      "injected": "architecture.json: ARC-analytics-001.status set to retired while the active edge EDG-gateway-analytics-001 still references it \u2014 fires retired-node-edge",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -45,7 +45,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: asm_refs removed from ARC-stt-001, an external node reached by the hard edge EDG-gateway-stt-001 — fires unlabelled-external",
+      "injected": "architecture.json: asm_refs removed from ARC-stt-001, an external node reached by the hard edge EDG-gateway-stt-001 \u2014 fires unlabelled-external",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -56,7 +56,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: EDG-gateway-analytics-001.criticality set to hard, giving tier-1 ARC-gateway-001 a hard-availability path to tier-3 ARC-analytics-001 — fires tier-inversion",
+      "injected": "architecture.json: EDG-gateway-analytics-001.criticality set to hard, giving tier-1 ARC-gateway-001 a hard-availability path to tier-3 ARC-analytics-001 \u2014 fires tier-inversion",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -67,7 +67,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: EDG-gateway-analytics-001.carries set to [official-sensitive] into ARC-analytics-001's internal trust_zone (ceiling forbids it) with no asm_refs waiver — fires label-propagation",
+      "injected": "architecture.json: EDG-gateway-analytics-001.carries set to [official-sensitive] into ARC-analytics-001's internal trust_zone (ceiling forbids it) with no asm_refs waiver \u2014 fires label-propagation",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -78,7 +78,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "system-contracts.json: chains[0].hops[1].callee set to ARC-does-not-exist-999, undeclared in architecture.json (run with --system-contracts) — fires undeclared-cross-ref",
+      "injected": "system-contracts.json: chains[0].hops[1].callee set to ARC-does-not-exist-999, undeclared in architecture.json (run with --system-contracts) \u2014 fires undeclared-cross-ref",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -89,7 +89,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: criticality_tier removed from ARC-analytics-001 — fires missing-tier (a missing tier is a finding, not a silently-skipped node)",
+      "injected": "architecture.json: criticality_tier removed from ARC-analytics-001 \u2014 fires missing-tier (a missing tier is a finding, not a silently-skipped node)",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -100,7 +100,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: EDG-gateway-analytics-001.trust_zone_crossing authored as 'dmz->internal' (a computed-only field) — fires authored-crossing-label",
+      "injected": "architecture.json: EDG-gateway-analytics-001.trust_zone_crossing authored as 'dmz->internal' (a computed-only field) \u2014 fires authored-crossing-label",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -111,7 +111,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: a retired DUPLICATE of ARC-analytics-001 (status=retired) is appended to nodes[] to id-shadow the active one — a naive last-wins dict would silently collapse the duplicate and hide its retired-node-edge. The checker's pre-dict duplicate-id defense catches it (schema finding), and the retired node is not hidden (retired-node-edge also fires)",
+      "injected": "architecture.json: a retired DUPLICATE of ARC-analytics-001 (status=retired) is appended to nodes[] to id-shadow the active one \u2014 a naive last-wins dict would silently collapse the duplicate and hide its retired-node-edge. The checker's pre-dict duplicate-id defense catches it (schema finding), and the retired node is not hidden (retired-node-edge also fires)",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -122,7 +122,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "system-contracts.json: a budget-tree telemetry_ref is changed to nonexistent_binding_ms — the dangling reference is reached through the budget-tree telemetry-binding indirection layer rather than a direct chain hop or architecture.json itself; still caught as undeclared-cross-ref (run with --system-contracts)",
+      "injected": "system-contracts.json: a budget-tree telemetry_ref is changed to nonexistent_binding_ms \u2014 the dangling reference is reached through the budget-tree telemetry-binding indirection layer rather than a direct chain hop or architecture.json itself; still caught as undeclared-cross-ref (run with --system-contracts)",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -133,7 +133,7 @@
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/check_architecture_clean",
       "sha": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
-      "injected": "architecture.json: ARC-analytics-001.status set to retired AND EDG-gateway-analytics-001.active set to false. The retired-node reference lives on an INACTIVE edge, which the retired-node-edge check exempts by design (a documented, retired path) — a certified NON-coverage boundary, so the gate correctly does not fire",
+      "injected": "architecture.json: ARC-analytics-001.status set to retired AND EDG-gateway-analytics-001.active set to false. The retired-node reference lives on an INACTIVE edge, which the retired-node-edge check exempts by design (a documented, retired path) \u2014 a certified NON-coverage boundary, so the gate correctly does not fire",
       "expected": "no-fire",
       "result": "not-fired",
       "passed": true
@@ -155,5 +155,5 @@
   "status": "passed",
   "validated_at": "2026-07-20T04:41:50Z",
   "validated_by": "chief-wiggum#184",
-  "ratchet_record_id": "rec-00010"
+  "ratchet_record_id": "rec-00020"
 }

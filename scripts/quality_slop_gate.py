@@ -256,7 +256,7 @@ def _scanner_version() -> str:
     reports (survival/duplication result dicts feed the banding), so they are
     hash inputs — omitting them was the exact CTR-fh-041 silent-staleness class
     this gate's own dep-completeness test polices.
-    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042"""
+    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     q_dir = here.parent / "quality"

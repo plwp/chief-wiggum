@@ -108,7 +108,7 @@ class GateValidationReport:
         """No blocking without a passing record: validity is read via
         ``passing == True`` here, never inferred from the default exit code
         (0 in report-only mode even when not validated).
-        @cw-trace guards INV-fh-003"""
+        @cw-trace guards INV-fh-003 CTR-fh-043"""
         return (
             self.record_found
             and not self.schema_errors
@@ -153,7 +153,10 @@ def corpus_digest(root: str | Path) -> str:
     pins its trials to when the corpus is an in-repo fixture tree rather than a
     git SHA of an external repo. Any change to any file under the corpus
     changes the digest, so a record authored against an older corpus is
-    detectably stale (tests re-derive this and compare)."""
+    detectably stale (tests re-derive this and compare). This is the mechanism
+    that lets saas_gate/quality_slop_gate records pin a FIXTURE/recorded target
+    (never a live URL / AI band) with reproducible, staleness-checked clean runs.
+    @cw-trace guards CTR-fh-044"""
     h = hashlib.sha256()
     root = Path(root)
     for p in sorted(root.rglob("*")):

@@ -12,14 +12,31 @@ consistency and the UX-flow audit (Steps 5/6) do not apply. No SaaS NFR gate
 (Step 2h) or adversarial security review (Step 2i) either: chief-wiggum is
 internal tooling with no new external/user-facing surface in this epic.
 
-## Status: PARTIAL — one hard gate failed
+## Status: PASS (all hard gates) — one honest open item (#198)
 
-`check_traceability.py --gate coverage` (Step 2d) **fails**: three contracts
-are uncovered/untested by the mechanical `@cw-trace` annotation scan. Per the
-close-epic contract, a failing hard gate blocks the close — this PR reports the
-failure rather than forcing past it. Every other gate that ran (single-writer
-coverage, ratchet, full test suite, all ten IT-fh-* integration tests) is
-green. See "What went wrong" for the precise findings and disposition.
+`check_traceability.py --gate coverage` (Step 2d) initially **failed**: three
+contracts (CTR-fh-043, CTR-fh-044, INV-fh-005) were uncovered/untested by the
+mechanical `@cw-trace` annotation scan, despite being genuinely implemented
+and tested — the tags were simply never added. Fixed on this same close
+branch as **#197** (annotation-only, no behavior change): `guards` tags at
+the covering code sites — `check_gate_validation.py`'s `passing` property
+(CTR-fh-043), its `corpus_digest`, the fixture-pinning mechanism
+(CTR-fh-044), and the five gates' `_scanner_version` functions (INV-fh-005) —
+plus `verifies INV-fh-005` tags in the covering tests. The epic's own
+machinery fired on the fix itself, twice: (1) adding a docstring tag to the
+five gate scripts bumped their hash-derived `--scanner-version`, staling
+their validation records exactly as designed — each was re-verified and
+re-journaled (rec-00016..rec-00020) through the sanctioned path; (2) a first
+attempt to tag the fixture server (`saas_gate_server.py`) was rejected by the
+TIM schema — `guards` cannot originate from a test-kind file — forcing the
+tag to a genuine code site. The coverage gate now **passes** and the
+suspect-link sidecar (`docs/quality/trace-links.json`, 259 links) is
+written.
+
+The one remaining open item is IT-fh-06 / stale-while-blocking auto-demotion
+(**#198**) — a disclosed product decision (implement or deliberately retire),
+not a gate failure. All other gates (single-writer coverage, ratchet, full
+test suite, 9/10 IT-fh-* integration tests) are green.
 
 ## What shipped, per ticket
 
@@ -102,8 +119,10 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
 
 ## What went wrong
 
-- **The `check_traceability.py --gate coverage` gate genuinely fails** on
-  three IDs, discovered only by running the gate rather than trusting the
+- **The `check_traceability.py --gate coverage` gate genuinely failed** on
+  three IDs (since fixed on this branch as #197 — see Status above; the
+  original findings are kept here verbatim as the record of what the gate
+  caught), discovered only by running the gate rather than trusting the
   epic's own `traceability.md` (which had already honestly marked the related
   IT-fh-06 row `pending`, but not the annotation gap):
   - **CTR-fh-043 / CTR-fh-044 uncovered** (no code `@cw-trace guards`/`ensures`
@@ -122,15 +141,15 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
     comment) and tested (`tests/test_check_architecture.py:596` etc.) — but,
     again, no file carries the literal `@cw-trace guards/ensures INV-fh-005`
     or `@cw-trace verifies INV-fh-005` tag the checker requires.
-  - **Disposition**: not waived. These are real annotation gaps on otherwise-real
-    implementations — a five-minute fix (add three `@cw-trace` tags to the
-    right lines in the five gate scripts + one test file), but out of scope for
-    `/close-epic` to silently patch on a just-closed epic's merged code without
-    review. Filed as a follow-up (see below) rather than papered over with a
-    fabricated annotation or an unjustified waiver (no
-    `docs/epics/epic-factory-hardening/justifications/*.json` exists, and none
-    was authored here — these ACs are not "manual QA only," they're missing a
-    tag on code that already exists).
+  - **Disposition**: not waived — fixed as #197 on this close branch
+    (annotation-only tags at the genuinely-covering sites, per the
+    coordinator's direction), with the five stale validation records
+    re-verified and re-journaled (rec-00016..rec-00020) because tagging the
+    gate scripts bumped their hash-derived scanner versions — the epic's own
+    staleness machinery working as designed. No
+    `docs/epics/epic-factory-hardening/justifications/*.json` waiver was
+    authored — these ACs are not "manual QA only," they were missing a tag on
+    code that already exists. Coverage gate now passes; sidecar written.
 - **IT-fh-06 (stale-record auto-demotion end-to-end) was never implemented.**
   The state-machines.json model specifies a `blocking → stale → demoted`
   (fail-to-report-only, via a generic `emit(DEMOTION, gate=gate,
@@ -211,13 +230,17 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
 
 ## Follow-ons (ticketed, not left as prose)
 
-1. **[#197](https://github.com/plwp/chief-wiggum/issues/197)** — Add
-   `@cw-trace guards`/`ensures` tags for CTR-fh-043, CTR-fh-044, and
-   INV-fh-005 to the five gate scripts (and a matching `verifies` tag on
-   `INV-fh-005` in whichever test asserts the hash-derivation, e.g.
-   `tests/test_check_architecture.py:596`), then re-run
-   `check_traceability.py docs/epics/epic-factory-hardening --source . --gate
-   coverage --write-links` to confirm the gate passes and the sidecar writes.
+1. **[#197](https://github.com/plwp/chief-wiggum/issues/197)** — **DONE (on
+   this close branch)**: `@cw-trace guards` tags added for CTR-fh-043
+   (`check_gate_validation.py` `passing` property), CTR-fh-044
+   (`check_gate_validation.py` `corpus_digest` — the fixture-pinning
+   mechanism; a first attempt to tag the fixture server was rejected by the
+   TIM schema since `guards` cannot originate from a test-kind file) and
+   INV-fh-005 (the five gates' `_scanner_version` functions), plus
+   `verifies INV-fh-005` in `tests/test_check_architecture.py` and
+   `tests/test_gate_validation_retroactive.py`. Coverage gate re-run: PASS;
+   `--write-links` sidecar written (259 links); five stale records
+   re-verified + re-journaled (rec-00016..rec-00020).
 2. **[#198](https://github.com/plwp/chief-wiggum/issues/198)** — Implement
    IT-fh-06 (stale-while-blocking auto-demotion + `previous_authority`
    tracking + generic `emit(DEMOTION, details='stale')`) in
@@ -244,10 +267,12 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
   *did* happen, all resolved pre-merge).
 - **Traceability**: 35 acceptance criteria across 6 tickets; 33 `passing`,
   1 `covered` (workflow/manual-review item), 1 `missing` (IT-fh-06 stale-demotion,
-  disclosed above). `check_traceability.py --gate coverage`: **FAIL** — 3
-  uncovered contracts (CTR-fh-043, CTR-fh-044, INV-fh-005), 1 also untested.
-  Dangling annotations found in the whole-repo scan (61) are all pre-existing
-  fixtures for other epics' gate tests (`CTR-order-*`, `BR-x-*`,
+  disclosed above → #198). `check_traceability.py --gate coverage`: **PASS**
+  after #197 (initially FAIL — 3 uncovered contracts CTR-fh-043, CTR-fh-044,
+  INV-fh-005, 1 also untested; fixed with annotation-only tags on this branch,
+  see Status). Suspect-link sidecar written: `docs/quality/trace-links.json`,
+  259 links. Dangling annotations in the whole-repo scan (63) are all
+  pre-existing fixtures for other epics' gate tests (`CTR-order-*`, `BR-x-*`,
   `BUD-voice-*`, etc., used deliberately as undefined-ID fixtures) — none
   reference an `-fh-` ID and none are new from this epic.
 - **Single-writer coverage**: `check_single_writer.py --gate coverage`:
@@ -258,14 +283,18 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
   "write" — a known tool limitation, not a gap; the import-not-redefinition
   fix was confirmed by direct code inspection at `scripts/check_gate_validation.py:73`).
 - **Ratchet**: `ratchet.py check`: **OK**, pass-set and contract-definition
-  hashes hold the high-water mark. 10 most-recent journal entries all `held`,
-  including 3 gate-validation re-verifications after post-merge
-  `--scanner-version` dependency-list corrections during PR #196 review.
-  Epic-close recorded as `rec-00015`.
+  hashes hold the high-water mark. Journal entries all `held`, including 3
+  gate-validation re-verifications after post-merge `--scanner-version`
+  dependency-list corrections during PR #196 review. Epic-close recorded as
+  `rec-00015`; the #197 tag additions re-journaled all five gates'
+  re-validations as `rec-00016`..`rec-00020` (their scanner versions changed
+  when the tags were added — staleness machinery working as designed).
 - **Full test suite**: 1549 passed, 10 skipped (all skips are `lizard`-not-installed,
-  consistent with CI, not epic-specific), 0 failed.
-- **Integration tests (IT-fh-01 .. IT-fh-10)**: 10/10 implemented and mapped to
-  covering tests; all pass. See table below.
+  consistent with CI, not epic-specific), 0 failed — re-run green after the
+  #197 tags + record re-validations.
+- **Integration tests (IT-fh-01 .. IT-fh-10)**: 9/10 implemented and mapped to
+  covering tests; all implemented ones pass; IT-fh-06 missing (→ #198). See
+  table below.
 - **Mutation testing**: not run — no mutation-testing tool
   (mutmut/cosmic-ray/stryker) available in this environment; flagged as a
   standing recommendation, unchanged from prior epics.
@@ -286,7 +315,7 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
 | IT-fh-03 | Hotspot fact does not regress #185 (golden) | `tests/test_code_query_golden.py` (cases a–d) | PASS |
 | IT-fh-04 | Table-driven #184 records for all five gates | `tests/test_gate_validation_184.py` | PASS |
 | IT-fh-05 | Consult degradation matrix per adapter (#134) | `tests/test_consult_ai.py` | PASS |
-| IT-fh-06 | Stale-record auto-demotion end-to-end (#184) | none — **not implemented** | **MISSING** |
+| IT-fh-06 | Stale-record auto-demotion end-to-end (#184) | none — **not implemented** | **MISSING** (→ #198) |
 | IT-fh-07 | architecture ↔ system-contracts cross-ref resolution (#174) | `tests/test_check_architecture.py` | PASS |
 | IT-fh-08 | Hotspot determinism (#187) | `tests/test_hotspots.py` | PASS (2 assertions skip without `lizard`, same as CI) |
 | IT-fh-09 | Report-only vs `--gate` exit-mode semantics (#174, #184) | `tests/test_check_architecture.py`, `tests/test_check_gate_validation.py` | PASS |
@@ -294,11 +323,13 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
 
 ## Recommendation
 
-**FIX before this epic is considered fully closed**: address follow-on #1
-(the three missing `@cw-trace` tags — small, mechanical, no behavior change)
-and re-run `check_traceability.py --gate coverage`; then re-run `--write-links`
-to produce the suspect-link sidecar. Follow-on #2 (IT-fh-06 / stale-demotion)
-is a real product decision (implement it, or deliberately retire the AC) and
-should not be rushed to force a gate pass — ticket it and decide deliberately.
+**SHIP** — all hard gates pass. Follow-on #1 (#197, the three missing
+`@cw-trace` tags) was completed on this same close branch: coverage gate
+re-run **PASS**, `--write-links` sidecar written (259 links), five stale
+validation records re-verified + re-journaled (rec-00016..rec-00020), full
+suite re-run green. The one open item, #198 (IT-fh-06 / stale-demotion), is a
+real product decision (implement it, or deliberately retire the AC via
+`ratchet record --retire`) — it should be decided deliberately, not rushed to
+close, and does not block the milestone if the team prefers to retire it.
 Everything else (integration tests, single-writer, ratchet, full suite,
-AI-slop signals, CI) is green and does not block.
+AI-slop signals, CI) is green.
