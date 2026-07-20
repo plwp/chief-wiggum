@@ -1,0 +1,157 @@
+{
+  "nodes": [
+    {
+      "id": "ARC-client-001",
+      "name": "Client (browser/mobile app)",
+      "kind": "external",
+      "repo": null,
+      "external": true,
+      "trust_zone": "public",
+      "region": null,
+      "failure_domain": "n/a",
+      "criticality_tier": "tier-3",
+      "emits": [],
+      "status": "active"
+    },
+    {
+      "id": "ARC-gateway-001",
+      "name": "Voice Gateway",
+      "kind": "service",
+      "repo": "org/voice-gateway",
+      "external": false,
+      "trust_zone": "dmz",
+      "region": "us-east-1",
+      "failure_domain": "us-east-1a",
+      "criticality_tier": "tier-1",
+      "emits": ["endpointing_latency_ms", "asr_latency_ms", "llm_ttft_ms", "tts_ttfb_ms"],
+      "status": "active"
+    },
+    {
+      "id": "ARC-stt-001",
+      "name": "Speech-to-Text vendor",
+      "kind": "external",
+      "repo": null,
+      "external": true,
+      "trust_zone": "restricted",
+      "region": "us-east-1",
+      "failure_domain": "vendor:stt",
+      "criticality_tier": "tier-1",
+      "emits": [],
+      "status": "active",
+      "asm_refs": [
+        { "id": "ASM-stt-latency-001", "evidence": "sla-doc", "ref": "https://vendor.example/stt/sla" }
+      ]
+    },
+    {
+      "id": "ARC-llm-001",
+      "name": "LLM provider",
+      "kind": "external",
+      "repo": null,
+      "external": true,
+      "trust_zone": "restricted",
+      "region": "us-east-1",
+      "failure_domain": "vendor:llm",
+      "criticality_tier": "tier-1",
+      "emits": [],
+      "status": "active",
+      "asm_refs": [
+        { "id": "ASM-llm-latency-001", "evidence": "sla-doc", "ref": "https://vendor.example/llm/sla" }
+      ]
+    },
+    {
+      "id": "ARC-tts-001",
+      "name": "Text-to-Speech vendor",
+      "kind": "external",
+      "repo": null,
+      "external": true,
+      "trust_zone": "restricted",
+      "region": "us-east-1",
+      "failure_domain": "vendor:tts",
+      "criticality_tier": "tier-1",
+      "emits": [],
+      "status": "active",
+      "asm_refs": [
+        { "id": "ASM-tts-latency-001", "evidence": "sla-doc", "ref": "https://vendor.example/tts/sla" }
+      ]
+    },
+    {
+      "id": "ARC-analytics-001",
+      "name": "Analytics event queue",
+      "kind": "queue",
+      "repo": "org/voice-analytics",
+      "external": false,
+      "trust_zone": "internal",
+      "region": "us-east-1",
+      "failure_domain": "us-east-1a",
+      "criticality_tier": "tier-3",
+      "emits": [],
+      "status": "active"
+    }
+  ],
+  "edges": [
+    {
+      "id": "EDG-client-gateway-001",
+      "from": "ARC-client-001",
+      "to": "ARC-gateway-001",
+      "protocol": "webrtc",
+      "mode": "sync",
+      "criticality": "soft",
+      "carries": ["pii"],
+      "auth": { "mechanism": "session-token", "tenant_scoped": false },
+      "timeout_ms": 5000,
+      "active": true
+    },
+    {
+      "id": "EDG-gateway-stt-001",
+      "from": "ARC-gateway-001",
+      "to": "ARC-stt-001",
+      "protocol": "grpc",
+      "mode": "sync",
+      "criticality": "hard",
+      "on_failure": { "fallback": null, "degrade_to": "text-input-fallback" },
+      "carries": ["pii"],
+      "auth": { "mechanism": "api-key", "tenant_scoped": false },
+      "timeout_ms": 800,
+      "active": true
+    },
+    {
+      "id": "EDG-gateway-llm-001",
+      "from": "ARC-gateway-001",
+      "to": "ARC-llm-001",
+      "protocol": "https",
+      "mode": "sync",
+      "criticality": "hard",
+      "on_failure": { "fallback": null, "degrade_to": null },
+      "carries": ["pii"],
+      "auth": { "mechanism": "api-key", "tenant_scoped": false },
+      "timeout_ms": 1500,
+      "active": true
+    },
+    {
+      "id": "EDG-gateway-tts-001",
+      "from": "ARC-gateway-001",
+      "to": "ARC-tts-001",
+      "protocol": "https",
+      "mode": "sync",
+      "criticality": "hard",
+      "on_failure": { "fallback": null, "degrade_to": "text-only-response" },
+      "carries": ["pii"],
+      "auth": { "mechanism": "api-key", "tenant_scoped": false },
+      "timeout_ms": 500,
+      "active": true
+    },
+    {
+      "id": "EDG-gateway-analytics-001",
+      "from": "ARC-gateway-001",
+      "to": "ARC-analytics-001",
+      "protocol": "kafka",
+      "mode": "async",
+      "criticality": "soft",
+      "carries": ["internal"],
+      "auth": { "mechanism": "mtls", "tenant_scoped": true },
+      "ordering": "none",
+      "dlq": true,
+      "active": true
+    }
+  ]
+}

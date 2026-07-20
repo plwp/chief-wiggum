@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/architecture.json",
+  "title": "Declared System Architecture Model",
+  "description": "A C4-flavored DECLARED system model (#174): ARC- deployables/externals and EDG- connectors between them, checked for STATIC internal consistency by scripts/check_architecture.py. Declaring this model is cheap; it does NOT prove the running code matches it (that conformance/reflexion check is deferred to #171). See docs/system-layer.md.",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "description": "Deployables (service|worker|db|queue|bucket|cron) and external/vendor nodes.",
+      "items": { "$ref": "#/$defs/node" },
+      "minItems": 1
+    },
+    "edges": {
+      "type": "array",
+      "description": "Connectors between declared nodes.",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "derived_from": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/provenance" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "name", "kind", "external", "trust_zone", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ARC-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$",
+          "description": "Stable ID, e.g. ARC-gateway-001"
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["service", "worker", "db", "queue", "bucket", "cron", "external"],
+          "description": "Deployable kind. 'external' is available for a vendor node with no more specific kind."
+        },
+        "repo": {
+          "type": ["string", "null"],
+          "description": "URN/path of the owning repo, or null for an external/no-repo node."
+        },
+        "external": {
+          "type": "boolean",
+          "description": "True for a vendor/third-party node outside this system's own deployables. External nodes reached by a hard (availability) edge MUST carry non-empty asm_refs."
+        },
+        "trust_zone": {
+          "type": "string",
+          "enum": ["public", "dmz", "internal", "restricted"]
+        },
+        "region": {
+          "type": ["string", "null"],
+          "description": "Deployment region/locality, or null when not meaningful (e.g. a global CDN)."
+        },
+        "failure_domain": {
+          "type": "string",
+          "description": "Independent-failure grouping (e.g. an AZ, a vendor account, a cluster) — free text."
+        },
+        "criticality_tier": {
+          "type": "string",
+          "enum": ["tier-1", "tier-2", "tier-3"],
+          "description": "REQUIRED in practice, but deliberately NOT schema-required: an omitted tier must surface as the checker's own 'missing-tier' FINDING, never a silently-skipped node (else a node could opt itself out of the tier-inversion check by omission)."
+        },
+        "emits": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Telemetry binding names this node emits (cross-checked against system-contracts.json telemetry_ref usage)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "deprecated", "retired"]
+        },
+        "asm_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/asm_ref" }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["id", "from", "to", "protocol", "mode", "criticality"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^EDG-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$",
+          "description": "Stable ID, e.g. EDG-gateway-stt-001"
+        },
+        "from": { "type": "string", "description": "Caller node id (must resolve to a declared ARC- node)." },
+        "to": { "type": "string", "description": "Callee node id (must resolve to a declared ARC- node)." },
+        "protocol": { "type": "string" },
+        "mode": {
+          "type": "string",
+          "enum": ["sync", "async"]
+        },
+        "criticality": {
+          "type": "string",
+          "enum": ["hard", "soft"],
+          "description": "'hard' is SPECIFICALLY an AVAILABILITY dependency (caller fails if callee is down) — distinct from what the edge carries (data class) and from a trust-zone crossing. 'soft' means the caller degrades gracefully if the callee is unavailable."
+        },
+        "on_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fallback": { "type": ["string", "null"] },
+            "degrade_to": { "type": ["string", "null"] }
+          }
+        },
+        "carries": {
+          "type": "array",
+          "description": "Data-class labels this edge carries, from the monotone lattice public < internal < pii < secret < official-sensitive.",
+          "items": {
+            "type": "string",
+            "enum": ["public", "internal", "pii", "secret", "official-sensitive"]
+          }
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mechanism": { "type": "string" },
+            "tenant_scoped": { "type": "boolean" }
+          }
+        },
+        "timeout_ms": { "type": "number", "minimum": 0 },
+        "ordering": { "type": "string" },
+        "dlq": { "type": "boolean" },
+        "active": {
+          "type": "boolean",
+          "default": true,
+          "description": "False marks a declared-but-inactive edge (e.g. retired-but-documented path). An ACTIVE edge referencing a retired node is a finding."
+        },
+        "asm_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/asm_ref" },
+          "description": "Optional waiver evidence for this edge's label-propagation (carries x trust_zone x region) — an edge with a valid asm_ref is reported as a documented waiver, not a silent pass and not a hard finding."
+        },
+        "trust_zone_crossing": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "NEVER authored. COMPUTED by check_architecture.py from from.trust_zone -> to.trust_zone. The schema permits the null placeholder; ANY authored non-null value is itself a finding (INV-fh-006)."
+        },
+        "region_crossing": {
+          "type": ["boolean", "null"],
+          "default": null,
+          "description": "NEVER authored. COMPUTED by check_architecture.py from from.region != to.region. ANY authored non-null value is itself a finding (INV-fh-006)."
+        }
+      }
+    },
+    "asm_ref": {
+      "type": "object",
+      "required": ["id", "evidence", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ASM-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$"
+        },
+        "evidence": {
+          "type": "string",
+          "enum": ["sla-doc", "live-probe", "justified"]
+        },
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"]
+        },
+        "ref": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}
