@@ -255,61 +255,67 @@ report `passing == false` in this case; #198 closed the remaining gap — the
 system must not just report `false`, it must actively **track and surface**
 that a gate that WAS blocking no longer is.
 
-`check_gate_validation.py --wire` opts a gate into blocking-authority tracking
-(**only** when its record currently passes — a non-passing `--wire` can never
-reach `blocking`, INV-fh-003) via a persisted `<gate>.authority.json` sidecar
-beside the validation record. Every ordinary check thereafter re-derives the
-authority transition (`compute_transition`/`check_and_transition`, mirroring
-`docs/epics/epic-factory-hardening/models/state-machines.json`'s Gate
-Blocking-Authority Lifecycle):
+**Blocking authority is a journaled fact, not a file.** Whether a gate is
+wired `--gate` is recorded as a `gate-authority` event in the **ratchet hash
+chain** — the same tamper-evident ledger the ratchet already owns — not in a
+loose `<gate>.authority.json` sidecar. A bare mutable file would itself be the
+forgeable trust record this whole protocol exists to eliminate: anyone could
+drop `{"authority": "blocking"}` and manufacture a false demotion. So:
 
-- **Blocking + record goes stale or missing/invalid** → auto-demotes to
-  `demoted` (fail-to-report-only, ADR-fh-04), emits the GENERIC `DEMOTION`
-  event via `factory_log.emit_stale_demotion(gate, reason,
-  previous_authority="blocking")` with `reason` `"stale"` (scanner_version/
-  journal-chain drift, otherwise clean) or `"record_missing"` (missing/
-  schema-invalid/forged/failed) — never `emit_demotion`, which requires a
-  `seed_class` this path never has (nothing escaped in production; the record
-  itself just went bad).
-- **Merely `validated` (not currently wired) + record goes stale or invalid** →
-  downgrades to `report_only` — no demotion event, since nothing was
-  blocking.
-- **Recovery**: re-authoring and re-journaling a `demoted` (or downgraded)
-  record restores `validated` once `passing == true` again — never straight
-  back to `blocking` (the model's `invalid_transitions` explicitly forbid
-  `demoted -> blocking`). A `--wire` on a still-`demoted` gate resolves to
-  `validated` (the re-derivation half); a **second** explicit `--wire` then
-  promotes it to `blocking`.
+- `check_gate_validation.py <gate> --wire` appends a `gate-authority` /
+  `details: "wire"` event (via `ratchet.append_authority_event`) **only** when
+  the record currently passes — a non-passing `--wire` never journals a wire
+  and can never reach `blocking` (INV-fh-003). `--unwire` appends a `details:
+  "unwire"` event.
+- "Is this gate currently blocking?" is read back from those events over the
+  **verified chain prefix** (`ratchet.last_authority_action`): the last
+  `gate-authority` event for the gate is `wire` (not a later `unwire`).
+  Crucially, this read tolerates a *later* chain break — the wire event lives
+  in the still-valid prefix — so "it was blocking" survives exactly the
+  staleness (a broken chain) that must trigger the demotion.
 
-`--wire`/`--unwire` obey the model's legal-vs-invalid transitions strictly, so
-the sidecar can never record blocking authority the record doesn't currently
-earn:
+The **current-blocking verdict** is then simply: the last authority event is
+`wire` **AND** `check()` reports `passing == true` right now.
 
-- A **non-passing `--wire`** never yields or persists `blocking` — it falls
-  through to the natural lifecycle (demoting a stale/missing-while-blocking
-  gate and emitting the DEMOTION, or downgrading otherwise) and reports the
-  refusal.
-- **`--unwire`** is the clean voluntary edge (`blocking -> validated`) ONLY
-  when the record still passes; un-wiring a gate whose record has ALSO gone
-  bad does **not** mask the demotion — it still goes `blocking -> demoted` and
-  emits.
+- **Journaled-wired + record goes stale or missing/invalid** → demoted
+  (fail-to-report-only, ADR-fh-04); emits the GENERIC `DEMOTION` via
+  `factory_log.emit_stale_demotion(gate, reason,
+  previous_authority="blocking")`, `reason` `"stale"` (scanner_version /
+  journal-chain drift, otherwise clean) or `"record_missing"` (missing /
+  schema-invalid / failed) — never `emit_demotion`, which needs a `seed_class`
+  this path never has (nothing escaped; the record itself rotted). Because
+  "was wired" comes from the journal, the demotion fires even when the CURRENT
+  record or chain is the thing that broke — the failure a fail-closed sidecar
+  masked.
+- **Not journaled-wired + record goes stale/invalid** → `report_only` (or
+  `unknown` with no record) — no demotion, nothing was blocking.
+- **`--unwire`** is the clean voluntary edge only when the record still passes
+  (→ `validated`); un-wiring a gate whose record has ALSO gone bad still
+  surfaces + emits the demotion first (read from the pre-unwire journal), so
+  un-wiring can never mask it.
 
-The sidecar is a **corroborated** trust record, not a bare file an attacker
-can drop to forge authority (the exact class of forgeable-trust bug this epic
-exists to prevent). `read_authority` trusts any real authority claim only when
-the sidecar's `gate` field matches, its `ratchet_record_id` is a
-chain-verified `gate-validation` journal entry for the gate, and — when a live
-record exists — that rid matches the record's. A sidecar that fails any check
-(forged `blocking` with no journaled rid, an rid contradicting a re-authored
-record, a tampered/edited file) is treated as `unknown`/untrusted, so it can
-neither assert authority nor manufacture a false demotion.
+Because authority comes ONLY from journaled wire events in the verified chain,
+a hand-written file asserts nothing, and no ad-hoc/plain check, refused
+non-passing `--wire`, or missing-gate op writes any trust-bearing state — only
+operator `--wire`/`--unwire` append journal events.
 
 The actual enforcement point stays exactly where it already was: a workflow
 only passes `--gate coverage` onward when `check_gate_validation.py --gate`
-exits 0, so a demoted/downgraded gate is already refused blocking authority by
-that existing guard (INV-fh-003). `check_and_transition`'s job is detection,
-telemetry, and bookkeeping — making the demotion visible and recording
-`previous_authority` — not re-implementing the refusal.
+exits 0, so a demoted gate is already refused blocking authority by that
+existing guard (INV-fh-003) — the **sole** INV-fh-003 enforcement, independent
+of any authority record. The journaled-authority layer's job is detection,
+telemetry, and surfacing the demotion — not re-implementing the refusal.
+
+**Scope (chief-wiggum#198).** This implements the *detection + emission* of
+stale-while-blocking auto-demotion — IT-fh-06's core assertion. The richer
+persistent lifecycle-management the model also sketches (an explicit `demoted`
+resting state, a two-step `demoted → validated → blocking` recovery handshake)
+is deferred: it needs a writable authority store, and every such store is
+either forgeable (a file) or would force trust-writes on plain report-only
+checks — both rejected in review. Recovery is simply "re-author the record,
+then `--wire` again"; because "was wired" is read from journaled events (not
+by matching the wire event's rid to the record's), a re-derived record with a
+brand-new `ratchet_record_id` recovers cleanly.
 
 ```bash
 python3 "$CW_HOME/scripts/check_gate_validation.py" ratchet \

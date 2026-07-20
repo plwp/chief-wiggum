@@ -344,66 +344,86 @@ stale-while-blocking auto-demotion, or deliberately retire it — was made:
 transitions; retiring them would have meant discarding a design the model
 itself said was correct, with no new information arguing otherwise.
 
-What shipped in #198:
+What shipped in #198 (final, journaled design — see "Design evolution" below
+for why the first two attempts were rejected):
 
+- **Blocking authority is a JOURNALED fact, not a file.** `scripts/ratchet.py`
+  gained a `gate-authority` event type + path-based primitives
+  (`append_authority_event`, `last_authority_action`, `verified_prefix`):
+  `check_gate_validation.py --wire`/`--unwire` append a `wire`/`unwire` event
+  to the ratchet hash chain, and "is this gate blocking?" is read back from
+  those events over the verified chain prefix — tamper-evident, not
+  hand-writable. There is NO `<gate>.authority.json` sidecar; a bare mutable
+  file would itself be the forgeable trust record this epic exists to
+  eliminate.
 - `scripts/check_gate_validation.py` gained `failure_kind` (classifies a
-  non-passing report as `"stale"` — scanner_version/journal-chain drift only,
-  otherwise clean — vs `"invalid"` — missing record, schema errors, forged/
-  failed trials, wrong status), `compute_transition` (the Gate
-  Blocking-Authority Lifecycle's edges), and `check_and_transition` (wraps
-  `check()` with the transition + a persisted `<gate>.authority.json` sidecar
-  recording `authority`/`previous_authority`). New `--wire`/`--unwire` CLI
-  flags record the operator's own wiring intent (`wire_gate`/`unwire_gate`,
-  G-004/G-013) — the prerequisite for the machine to know a subsequent
-  staleness finding is a demotion (was blocking) rather than a mere downgrade
-  (was only validated).
+  non-passing report as `"stale"` — scanner_version/journal-chain drift only —
+  vs `"invalid"` — missing/schema-invalid/failed), `authority_status` (derives
+  the verdict from the journaled wire fact + current `passing`), and
+  `check_and_transition`. The current-blocking verdict is simply: the last
+  authority event is `wire` AND `check()` reports `passing == true` now. A
+  journaled-wired gate whose record is NOT currently passing is demoted
+  (fail-to-report-only, ADR-fh-04). Reading "was wired" from the journal means
+  the demotion fires even when the CURRENT record or chain is what broke — the
+  case the earlier fail-closed sidecar masked.
 - `scripts/factory_log.py` gained `emit_stale_demotion(gate, reason,
   previous_authority=...)` — the generic `DEMOTION` event
-  (`details='stale'|'record_missing'`) the model called for, distinct from
-  the pre-existing escape-driven `emit_demotion` (which requires a
-  `seed_class` a staleness demotion never has).
-- The model's transient `stale` state is resolved atomically within a single
-  `check_gate_validation` invocation (a stateless per-process CLI can't rest
-  in an intermediate state across calls) — `blocking → stale → demoted` and
-  `validated → stale → report_only` each collapse to one hop, with the
-  `event` name (`auto_demote`, `downgrade_nonblocking_stale`,
-  `record_missing_or_invalid`) and `previous_authority` still recording which
-  path was taken. This is the one deliberate elaboration beyond the literal
-  model — the model didn't specify how a stateless CLI persists authority
-  across invocations at all, so `check_and_transition`'s sidecar file is new
-  design within #198's scope, not a rendering of an existing spec.
-- **The sidecar is a corroborated trust record, not a bare file** (hardened
-  after Codex's review of PR #202 flagged that an unauthenticated
-  `<gate>.authority.json` would itself become the forgeable trust record this
-  epic exists to eliminate). `read_authority` trusts a real authority claim
-  only when the sidecar's `gate` field matches, its `ratchet_record_id` is a
-  chain-verified `gate-validation` journal entry for the gate, and (when a
-  live record exists) that rid matches the record's — so a hand-forged
-  `authority: blocking`, an rid contradicting a re-authored record, or a
-  tampered file is treated as `unknown`/untrusted and can neither assert
-  authority nor manufacture a false demotion. `--wire` on a non-passing record
-  never yields/persists `blocking` (it falls through to demotion/downgrade and
-  reports the refusal); `--unwire` from a stale/missing-while-blocking record
-  still demotes and emits rather than silently masking it; and the sidecar is
-  written only under deliberate `--wire` management or continued tracking,
-  never for an ad-hoc/plain check or a missing gate — no pollution of the
-  shared committed `docs/quality/validation/` dir.
-- Per the model's own `invalid_transitions` (`demoted -> blocking` is
-  explicitly forbidden), recovery always lands on `validated`
-  (`re_derive_and_rejournal`/`re_derive_record`), never straight back to
-  `blocking` — an explicit `--wire` is required to re-promote, same as first
-  promotion.
+  (`details='stale'|'record_missing'`) the model called for, distinct from the
+  escape-driven `emit_demotion` (which requires a `seed_class` a staleness
+  demotion never has).
+- `--wire` journals a wire ONLY when the record passes (non-passing `--wire`
+  never reaches `blocking`, INV-fh-003); `--unwire` from a stale/missing-while-
+  blocking record still surfaces + emits the demotion (read from the pre-unwire
+  journal) rather than masking it; no plain/ad-hoc check or missing-gate op
+  writes any trust-bearing state — only operator `--wire`/`--unwire` append.
+  The `--gate` exit-1 guard (`report.passing`) remains the SOLE INV-fh-003
+  enforcement, independent of any authority record.
+- **Scope.** This is the *detection + emission* of stale-while-blocking
+  auto-demotion — IT-fh-06's core assertion. The persistent lifecycle-
+  management the model also sketches (an explicit `demoted` resting state, a
+  two-step `demoted → validated → blocking` recovery handshake) is deferred:
+  it needs a writable authority store, and every such store is either forgeable
+  (a file) or would force trust-writes on plain checks. Recovery is simply
+  "re-author the record, then `--wire` again"; because "was wired" is read from
+  journaled events (not by matching the wire event's rid to the record's), a
+  re-derived record with a brand-new `ratchet_record_id` recovers cleanly.
+  → ticket the richer journaled lifecycle-management as its own follow-up.
+- Editing `ratchet.py` bumped its hash-derived `--scanner-version`, staling its
+  own `docs/quality/validation/ratchet.json` record — the epic's staleness
+  machinery firing on itself (as in PR #197). The record's `scanner_version`
+  was re-authored to the new live value (its seeded trials, re-executed by
+  `tests/test_gate_validation_retroactive.py`, are unchanged — a non-behavioral
+  source bump).
+
+### Design evolution (two review rounds on PR #202)
+
+The lesson: **one trust artifact cannot answer two incompatible questions.**
+The first implementation used a persisted `<gate>.authority.json` sidecar for
+both "was this gate blocking?" (which must survive staleness, since staleness
+is exactly when you need it) and "may it assert blocking now?" (which must
+fail closed on staleness). Codex review round 1 found the sidecar forgeable and
+the `--wire`/`--unwire` state machine leaking blocking authority; round 2's
+corroboration fix (anchoring the sidecar's trust in the journal) then created
+new holes — chain-broken-while-blocking stopped demoting (the corroboration
+fail-closed erased the "was blocking" fact), and real re-journal recovery (a
+new rid) was rejected as contradictory. The fix was structural: drop the
+sidecar as a trust source entirely and read "was wired" from journaled,
+tamper-evident `gate-authority` events (mirroring how `ratchet-highwater.json`
+is a derived display cache, never a trust source), keeping the strict
+"may-assert-now" question answered live by `check().passing`. Findings 1–4 all
+dissolve because there is no longer a forgeable file, and the was-wired read
+tolerates a later chain break (verified prefix) instead of failing closed.
+
 - Tests: `tests/test_check_gate_validation.py` covers both demotion variants
-  (stale scanner/journal drift, and record-missing/schema-invalid) while
-  blocking, the downgrade-only path while merely validated, recovery back to
-  `validated`, `--wire`/`--unwire` semantics, and that the emitted telemetry
-  is the generic `DEMOTION` shape (no `seed_class`).
-  `tests/test_ratchet.py` adds an end-to-end run through the REAL
-  `ratchet.py record` CLI (not a hand-written journal fixture) to prove the
-  journal-corroboration path holds for the new auto-demotion, not just the
-  original `passing` check. `tests/test_factory_log.py` covers
-  `emit_stale_demotion` directly (generic shape, both reasons, no-op without
-  telemetry enabled, rejects unknown reasons).
+  (stale scanner/journal drift, record-missing/schema-invalid) while
+  journaled-wired, the not-wired downgrade, `--wire`/`--unwire` semantics, and
+  four explicit review-finding regressions — chain-broken-while-wired STILL
+  demotes (finding 1), re-journaled-new-rid recovery reaches blocking not stuck
+  (finding 2), a hand-written sidecar asserts nothing (finding 3), and no
+  trust-write on plain/missing-gate checks (finding 4). `tests/test_ratchet.py`
+  drives it end-to-end through the REAL `ratchet.py record` CLI (`--wire`
+  appends a real `gate-authority` event to the real chain).
+  `tests/test_factory_log.py` covers `emit_stale_demotion` directly.
 - `docs/epics/epic-factory-hardening/traceability.md`'s stale-record row is
   now `passing`; `docs/epics/epic-factory-hardening/integration-tests.md`'s
   IT-fh-06 section carries a `Status: Covered` line.

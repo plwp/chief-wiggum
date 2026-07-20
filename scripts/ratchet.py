@@ -97,6 +97,15 @@ HIGHWATER_NAME = "ratchet-highwater.json"
 SCORECARD_NAME = "ratchet-scorecard.json"
 DEFAULT_STATE_DIR = "docs/quality"
 
+# A gate-authority lifecycle event (chief-wiggum#198): the operator wiring a gate
+# with --gate (blocking) or un-wiring it. Journaled here — in the SAME
+# hash-chained, tamper-evident ledger the ratchet already owns — rather than in a
+# loose, forgeable JSON file, so "was this gate blocking?" is a tamper-evident
+# fact and not a hand-writable one (`check_gate_validation.py --wire/--unwire`).
+# It is NOT `merged`, so it never enters `derive_highwater`'s pass-set/contract
+# high-water; it rides the chain purely for its own tamper-evidence.
+GATE_AUTHORITY = "gate-authority"
+
 # Complexity/churn ratchet tolerance (see docs/ratchet.md "Complexity & churn").
 # DIRECTION: unlike the pass-set (which may not SHRINK), complexity is a cost we
 # ratchet DOWNWARD — the high-water mark is the LOWEST (best) value ever merged,
@@ -431,6 +440,79 @@ def load_journal(cfg: Config) -> list[dict]:
     return records
 
 
+# --- gate-authority journal primitives (chief-wiggum#198) ---------------------
+# Path-based so `check_gate_validation.py` can journal/read wire events with only
+# the journal path (it has no ratchet Config), while the chain format stays owned
+# here in ratchet.py — the journal's single writer of record.
+
+
+def _read_journal_path(journal_path: str | Path) -> list[dict]:
+    p = Path(journal_path)
+    if not p.is_file():
+        return []
+    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+
+
+def verified_prefix(journal_path: str | Path) -> list[dict]:
+    """The journal entries whose hash chain verifies from genesis, stopping
+    BEFORE the first broken link. A TOLERANT read for facts that must survive a
+    LATER tamper: "was this gate wired" is knowable from an early, still-valid
+    entry even when a subsequent entry breaks the chain — the demotion path
+    depends on that (a broken chain is itself a stale condition to demote ON,
+    not one that should erase the knowledge the gate was blocking)."""
+    good: list[dict] = []
+    prev = "genesis"
+    for rec in _read_journal_path(journal_path):
+        body = {k: v for k, v in rec.items() if k != "record_hash"}
+        if rec.get("record_hash") != stable_hash(prev, json.dumps(body, sort_keys=True)):
+            break
+        good.append(rec)
+        prev = rec["record_hash"]
+    return good
+
+
+def last_authority_action(journal_path: str | Path, gate: str) -> str | None:
+    """`'wire'` / `'unwire'` of the LAST gate-authority event for `gate` in the
+    verified prefix, or None if the gate was never wired. This is the
+    tamper-evident "is this gate currently under blocking authority" fact —
+    read from journaled events, never from a hand-writable file."""
+    for rec in reversed(verified_prefix(journal_path)):
+        if rec.get("event") == GATE_AUTHORITY and rec.get("ref") == gate:
+            return rec.get("details")
+    return None
+
+
+def append_authority_event(journal_path: str | Path, gate: str, action: str,
+                           wired_rid: str | None = None) -> str:
+    """Append a hash-chained gate-authority event (``wire``/``unwire``) for
+    `gate`. Refuses to append onto a broken chain (fail closed — a tampered
+    journal must not be silently extended). Returns the new ``rec-NNNNN`` id."""
+    if action not in ("wire", "unwire"):
+        raise RatchetError(f"gate-authority action must be wire|unwire, got {action!r}")
+    all_entries = _read_journal_path(journal_path)
+    if len(all_entries) != len(verified_prefix(journal_path)):
+        raise TamperError(
+            f"cannot append a gate-authority event: {journal_path} chain is broken — fail closed"
+        )
+    prev = all_entries[-1]["record_hash"] if all_entries else "genesis"
+    body = {
+        "record_id": f"rec-{len(all_entries) + 1:05d}",
+        "event": GATE_AUTHORITY,
+        "ref": gate,
+        "details": action,
+        "wired_rid": wired_rid,
+        "merged": False,
+    }
+    body["record_hash"] = stable_hash(
+        prev, json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True)
+    )
+    path = Path(journal_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        f.write(json.dumps(body, sort_keys=True) + "\n")
+    return body["record_id"]
+
+
 def derive_highwater(records: list[dict]) -> dict:
     """High-water = union of every case passing in a MERGED record, plus the
     definition hash each contract had when it first entered. Amendments and
@@ -692,9 +774,15 @@ def cmd_record(args) -> int:
 def cmd_recent(args) -> int:
     cfg = load_config(repo_root(args.repo))
     for rec in load_journal(cfg)[-args.n:]:
+        # gate-authority events (chief-wiggum#198) carry no ratchet_status/
+        # gate_result — tolerate their absence rather than KeyError.
+        if rec.get("event") == GATE_AUTHORITY:
+            print(f"- {rec['record_id']} [authority] {rec['event']} {rec['ref']} "
+                  f"action={rec.get('details')} wired_rid={rec.get('wired_rid')}")
+            continue
         print(
-            f"- {rec['record_id']} [{rec['ratchet_status']}] {rec['event']} {rec['ref']} "
-            f"gate={rec['gate_result']} merged={rec['merged']}: {rec.get('notes', '')}"
+            f"- {rec['record_id']} [{rec.get('ratchet_status', '?')}] {rec['event']} {rec['ref']} "
+            f"gate={rec.get('gate_result', '?')} merged={rec.get('merged', False)}: {rec.get('notes', '')}"
         )
     return 0
 

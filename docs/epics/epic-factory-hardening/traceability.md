@@ -82,12 +82,16 @@ close (`check_gate_validation.py`/`factory_log.py` carried no
 `emit(DEMOTION, gate=gate, details='stale')` path — only a `passing: bool`
 collapse, plus the unrelated escape-driven `demotion_check(missed_by,
 seed_class)`; `IT-fh-06` had no test anywhere in `tests/`). #198 implemented the
-decision the model already specified: `check_gate_validation.py` gained
-`check_and_transition` (persisted `<gate>.authority.json` sidecar tracking
-`authority`/`previous_authority`, `--wire`/`--unwire` CLI flags) and
-`factory_log.emit_stale_demotion` (the generic `DEMOTION` event, `details=`
-`'stale'` or `'record_missing'`, no `seed_class`). `IT-fh-06` is now covered —
-see `integration-tests.md`'s Status line and `retrospective.md`'s addendum.
+detection + emission the model specified, anchored in the ratchet hash chain
+(NOT a forgeable sidecar): `ratchet.py` gained a `gate-authority` event +
+`append_authority_event`/`last_authority_action`; `check_gate_validation.py
+--wire`/`--unwire` journal the wire/unwire, and `check_and_transition`/
+`authority_status`/`failure_kind` demote a journaled-wired gate whose record is
+not currently passing via `factory_log.emit_stale_demotion` (generic `DEMOTION`,
+`details='stale'|'record_missing'`, no `seed_class`). The persistent recovery
+state machine is deferred (see `retrospective.md`'s "Design evolution"). `IT-fh-06`
+is now covered — see `integration-tests.md`'s Status line and `retrospective.md`'s
+addendum.
 
 ## #185 — code_query orient inferred-binding over-match (BR-fh-005)
 
