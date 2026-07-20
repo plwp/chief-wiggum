@@ -372,6 +372,22 @@ What shipped in #198:
   model — the model didn't specify how a stateless CLI persists authority
   across invocations at all, so `check_and_transition`'s sidecar file is new
   design within #198's scope, not a rendering of an existing spec.
+- **The sidecar is a corroborated trust record, not a bare file** (hardened
+  after Codex's review of PR #202 flagged that an unauthenticated
+  `<gate>.authority.json` would itself become the forgeable trust record this
+  epic exists to eliminate). `read_authority` trusts a real authority claim
+  only when the sidecar's `gate` field matches, its `ratchet_record_id` is a
+  chain-verified `gate-validation` journal entry for the gate, and (when a
+  live record exists) that rid matches the record's — so a hand-forged
+  `authority: blocking`, an rid contradicting a re-authored record, or a
+  tampered file is treated as `unknown`/untrusted and can neither assert
+  authority nor manufacture a false demotion. `--wire` on a non-passing record
+  never yields/persists `blocking` (it falls through to demotion/downgrade and
+  reports the refusal); `--unwire` from a stale/missing-while-blocking record
+  still demotes and emits rather than silently masking it; and the sidecar is
+  written only under deliberate `--wire` management or continued tracking,
+  never for an ad-hoc/plain check or a missing gate — no pollution of the
+  shared committed `docs/quality/validation/` dir.
 - Per the model's own `invalid_transitions` (`demoted -> blocking` is
   explicitly forbidden), recovery always lands on `validated`
   (`re_derive_and_rejournal`/`re_derive_record`), never straight back to

@@ -54,17 +54,27 @@ answers "may this gate block right now" — it says nothing about whether the
 gate is CURRENTLY wired ``--gate`` in a workflow, so a plain envelope can't
 tell "this just failed its first validation" apart from "this just went stale
 WHILE ALREADY BLOCKING", and only the latter is an auto-demotion. ``--wire``
-records that a gate is now wired ``--gate`` (only when it currently passes);
-``--unwire`` records an intentional un-wiring. Every check (wired or not)
-persists a ``<gate>.authority.json`` sidecar beside the record once the gate
-reaches any real authority state, and on each subsequent run recomputes the
-transition (``check_and_transition``/``compute_transition``): a BLOCKING
-gate's record going stale (scanner_version/journal drift) or missing/invalid
-auto-demotes (fail-to-report-only, ADR-fh-04) and emits the generic
-``factory_log.emit_stale_demotion`` event; the same finding against a gate
-that was only ``validated`` (never wired) merely downgrades to
-``report_only`` — no demotion event, since nothing was blocking. See
-docs/gate-validation.md's "Auto-demotion" section.
+opts a gate into blocking-authority tracking (only when its record currently
+passes — a non-passing ``--wire`` can never reach 'blocking', INV-fh-003);
+``--unwire`` records an intentional un-wiring. A gate under management carries
+a ``<gate>.authority.json`` sidecar beside its record; each subsequent run
+recomputes the transition (``check_and_transition``/``compute_transition``): a
+BLOCKING gate's record going stale (scanner_version/journal drift) or
+missing/invalid auto-demotes (fail-to-report-only, ADR-fh-04) and emits the
+generic ``factory_log.emit_stale_demotion`` event; the same finding against a
+gate that was only ``validated`` merely downgrades to ``report_only`` — no
+demotion, nothing was blocking.
+
+The sidecar is a **corroborated** trust record, never a bare file: any real
+authority claim it makes is trusted only when its ``gate`` field matches, its
+``ratchet_record_id`` is a chain-verified ``gate-validation`` journal entry
+for the gate, and (when a live record exists) that rid matches the record's —
+so a hand-forged ``authority: blocking`` cannot manufacture a false demotion
+(``read_authority``). And it is written ONLY under deliberate management (a
+passing ``--wire``) or continued tracking, never for the 'unknown' state — an
+ad-hoc/plain check or an op on a missing/misspelled gate leaves NOTHING behind
+in what may be a SHARED validation dir. See docs/gate-validation.md's
+"Auto-demotion" section.
 """
 
 from __future__ import annotations
@@ -367,30 +377,92 @@ def _authority_path(gate: str, validation_dir: str | Path) -> Path:
     return Path(validation_dir) / f"{gate}.authority.json"
 
 
-def read_authority(gate: str, validation_dir: str | Path) -> dict:
-    """The persisted blocking-authority state for `gate` — `previous_authority`
-    lives here so a later re-derived/re-journaled record can be told whether it
-    is recovering from a demotion or a mere downgrade. Defaults to 'unknown'
-    (never tracked before) when no sidecar exists or it is unreadable/corrupt —
-    fails closed to the least-privileged state, never invents 'blocking'."""
+def _journal_entries(validation_dir: str | Path) -> list[dict] | None:
+    """The ratchet journal entries beside the validation dir, or None when
+    absent/unreadable. Same journal `check()` corroborates records against."""
+    journal = Path(validation_dir).resolve().parent / JOURNAL_NAME
+    if not journal.is_file():
+        return None
+    try:
+        return [json.loads(line) for line in journal.read_text().splitlines() if line.strip()]
+    except json.JSONDecodeError:
+        return None
+
+
+def _rid_journaled_for_gate(rid: str, gate: str, validation_dir: str | Path) -> bool:
+    """True iff `rid` is a chain-verified ``gate-validation`` journal entry
+    whose ``ref`` names `gate`. The hash chain is the tamper-evidence
+    (docs/ratchet.md); a broken chain fails closed. This is the anchor that
+    stops a hand-forged ``<gate>.authority.json`` from asserting a
+    blocking/validated authority no genuine validation ever earned."""
+    entries = _journal_entries(validation_dir)
+    if not entries:
+        return False
+    prev = "genesis"
+    for entry in entries:
+        body = {k: v for k, v in entry.items() if k != "record_hash"}
+        if entry.get("record_hash") != stable_hash(prev, json.dumps(body, sort_keys=True)):
+            return False  # chain broken -> fail closed
+        prev = entry["record_hash"]
+    match = next((e for e in entries if e.get("record_id") == rid), None)
+    return bool(match and match.get("event") == "gate-validation" and match.get("ref") == gate)
+
+
+def read_authority(gate: str, validation_dir: str | Path, record: dict | None = None) -> dict:
+    """The persisted blocking-authority state for `gate`, **corroborated**
+    before it is trusted. `previous_authority` lets a later re-derived record
+    be told whether it is recovering from a demotion or a mere downgrade.
+
+    The sidecar is an ordinary mutable file in a shared dir, so it must never
+    be able to assert a lifecycle fact the real record/journal contradicts (a
+    forged ``authority: blocking`` would otherwise trigger a false demotion;
+    the whole epic exists to stop exactly this class of forgeable trust
+    record). Any REAL authority claim (report_only/validated/blocking/demoted)
+    is trusted only when ALL hold, else it is treated as 'unknown'/untrusted:
+      - the sidecar's ``gate`` field names this gate;
+      - it carries a ``ratchet_record_id`` that is a chain-verified
+        ``gate-validation`` journal entry for this gate
+        (``_rid_journaled_for_gate``) — the tamper-evident anchor;
+      - if a live validation record exists, its ``ratchet_record_id`` matches
+        the sidecar's (a sidecar out of sync with a re-authored record is not
+        authoritative).
+    Fails closed to 'unknown' when the sidecar is absent, unreadable, has a
+    non-enum authority, or fails any corroboration check — never invents
+    'blocking'."""
+    default = {"gate": gate, "authority": "unknown", "previous_authority": None,
+               "ratchet_record_id": None}
     path = _authority_path(gate, validation_dir)
     if not path.is_file():
-        return {"gate": gate, "authority": "unknown", "previous_authority": None}
+        return default
     try:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return {"gate": gate, "authority": "unknown", "previous_authority": None}
+        return default
     if data.get("authority") not in AUTHORITY_STATES:
-        return {"gate": gate, "authority": "unknown", "previous_authority": None}
+        return default
+    if data.get("authority") == "unknown":
+        return data  # 'unknown' asserts no authority — nothing to corroborate
+    # A real authority claim must be corroborated against the record + journal.
+    if data.get("gate") != gate:
+        return default
+    rid = data.get("ratchet_record_id")
+    if not (isinstance(rid, str) and RID_RE.fullmatch(rid.strip())):
+        return default
+    rid = rid.strip()
+    if record is not None and record.get("ratchet_record_id") not in (None, rid):
+        return default  # sidecar contradicts the live record's provenance
+    if not _rid_journaled_for_gate(rid, gate, validation_dir):
+        return default  # no tamper-evident anchor — untrusted, fail closed
     return data
 
 
 def _write_authority(gate: str, validation_dir: str | Path, authority: str,
-                     previous_authority: str | None) -> None:
+                     previous_authority: str | None, ratchet_record_id: str | None) -> None:
     path = _authority_path(gate, validation_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(
-        {"gate": gate, "authority": authority, "previous_authority": previous_authority},
+        {"gate": gate, "authority": authority, "previous_authority": previous_authority,
+         "ratchet_record_id": ratchet_record_id},
         indent=2, sort_keys=True,
     ) + "\n")
 
@@ -514,48 +586,84 @@ def check_and_transition(
     wire: bool = False,
     unwire: bool = False,
 ) -> tuple[GateValidationReport, AuthorityTransition]:
-    """`check()` plus the persisted blocking-authority transition. Detects a
-    record that went stale or missing/invalid WHILE BLOCKING and auto-demotes
-    it to report-only (fail-to-report-only, ADR-fh-04), tracking
-    `previous_authority` so a later re-derived/re-journaled record is restored
-    to 'validated' (never straight back to 'blocking' — that requires an
-    explicit `--wire`, mirroring the model's invalid_transitions:
-    demoted->blocking would skip re-derivation). This is the enforcement
-    surface IT-fh-06 exercises end-to-end. Emits the GENERIC `DEMOTION` event
-    via `factory_log.emit_stale_demotion` — NOT `emit_demotion`, which requires
-    a `seed_class` a staleness/missing-record demotion never has.
+    """`check()` plus the persisted, corroborated blocking-authority
+    transition. Detects a record that went stale or missing/invalid WHILE
+    BLOCKING and auto-demotes it to report-only (fail-to-report-only,
+    ADR-fh-04), tracking `previous_authority` so a later re-derived/re-journaled
+    record is restored to 'validated' (never straight back to 'blocking').
+    Emits the GENERIC `DEMOTION` event via `factory_log.emit_stale_demotion`
+    — NOT `emit_demotion`, which requires a `seed_class` a staleness/
+    missing-record demotion never has.
 
-    Report-only-safe (docs/gate-rollout.md): checking a gate that has no
-    record at all (or one that never progresses past 'unknown') writes
-    NOTHING — an ad-hoc report-only query (e.g. a gate name that doesn't exist
-    yet) must not leave stray `<gate>.authority.json` state behind in what may
-    be a SHARED validation dir. Once a gate reaches any REAL authority state
-    (validated/blocking/report_only/demoted), or was already being tracked,
-    its sidecar is written/kept current so later staleness is detectable.
+    Wiring legality (INV-fh-003 / the model's legal + invalid transitions):
+      - ``--wire`` reaches 'blocking' ONLY when the record currently passes
+        AND the gate is not coming from 'demoted'. A non-passing ``--wire``
+        NEVER yields/persists 'blocking' — it falls through to the natural
+        lifecycle (demoting a stale/missing-while-blocking gate, emitting the
+        DEMOTION; downgrading otherwise) and reports the refusal.
+      - ``--wire`` from 'demoted' on a re-authored passing record resolves to
+        'validated' (re_derive_and_rejournal), never straight to 'blocking'
+        (the model forbids demoted->blocking) — a second explicit ``--wire``
+        then promotes it.
+      - ``--unwire`` is the clean voluntary edge ONLY when the record still
+        passes (blocking->validated). Un-wiring a gate whose record has ALSO
+        gone bad must NOT mask the demotion — it falls through to the
+        lifecycle so blocking->demoted still fires and emits.
+
+    Report-only-safe (docs/gate-rollout.md): the `<gate>.authority.json`
+    sidecar is written ONLY when a gate is deliberately put under
+    blocking-authority management (a passing ``--wire``) or is already tracked
+    — and never for the 'unknown' state. An ad-hoc/plain check, a ``--wire``
+    refused for a non-passing untracked gate, or any op on a
+    missing/misspelled gate leaves NOTHING behind in what may be a SHARED
+    validation dir.
     @cw-trace guards INV-fh-003"""
     report = check(gate, validation_dir, schema=schema, scripts_dir=scripts_dir)
     already_tracked = _authority_path(gate, validation_dir).is_file()
-    current = read_authority(gate, validation_dir)
+    current = read_authority(gate, validation_dir, record=report.record)
     prev_state = current.get("authority", "unknown")
 
-    if wire:
-        if not report.passing:
-            transition = AuthorityTransition(
-                gate, prev_state, prev_state, "wire_rejected",
-                previous_authority=current.get("previous_authority"),
-                instruction=f"cannot wire {gate} --gate: its record does not currently pass "
-                            "(INV-fh-003 — blocking is unreachable without a passing record).",
-            )
-        else:
-            transition = AuthorityTransition(gate, prev_state, "blocking", "wire_gate")
-    elif unwire:
-        new_state = "validated" if report.passing else "report_only"
-        transition = AuthorityTransition(gate, prev_state, new_state, "unwire_gate")
+    if wire and report.passing and prev_state == "demoted":
+        # invalid_transition demoted->blocking: recovery is two-step. This
+        # first --wire only re-derives to 'validated'; a second promotes.
+        transition = AuthorityTransition(
+            gate, prev_state, "validated", "re_derive_and_rejournal",
+            instruction=(f"{gate}'s record was re-derived and now passes — authority restored to "
+                         "'validated', NOT blocking. Re-run with --wire to promote it back to "
+                         "blocking; a demoted gate is never wired straight to blocking "
+                         "(re-derivation first, per the model's invalid_transitions)."))
+    elif wire and report.passing:
+        transition = AuthorityTransition(gate, prev_state, "blocking", "wire_gate")
+    elif wire and not report.passing:
+        # A non-passing record can NEVER be wired to blocking (INV-fh-003).
+        transition = compute_transition(gate, report, current)
+        refusal = (f"--wire refused: {gate}'s record does not currently pass "
+                   "(INV-fh-003 — blocking is unreachable without a passing record).")
+        transition.instruction = f"{transition.instruction} {refusal}" if transition.instruction else refusal
+    elif unwire and report.passing:
+        # Clean voluntary un-wiring: record still passes -> validated (eligible
+        # to be re-wired), never a demotion.
+        transition = AuthorityTransition(gate, prev_state, "validated", "unwire_gate")
+    elif unwire and not report.passing:
+        # Do not let un-wiring mask a stale/missing-while-blocking demotion.
+        transition = compute_transition(gate, report, current)
     else:
         transition = compute_transition(gate, report, current)
 
-    if transition.new_state != "unknown" or already_tracked:
-        _write_authority(gate, validation_dir, transition.new_state, transition.previous_authority)
+    # The rid that anchors the sidecar's corroboration: the live record's when
+    # present (passing/stale), else the last-known one carried in the trusted
+    # current sidecar (e.g. a record-missing demotion where the record is gone).
+    rid_for_sidecar = current.get("ratchet_record_id")
+    if report.record and isinstance(report.record.get("ratchet_record_id"), str):
+        rid_for_sidecar = report.record["ratchet_record_id"]
+
+    # Persist only under deliberate management (passing --wire) or continued
+    # tracking; never persist 'unknown' (that is the no-authority default and
+    # would only pollute a shared dir).
+    should_write = transition.new_state != "unknown" and (already_tracked or (wire and report.passing))
+    if should_write:
+        _write_authority(gate, validation_dir, transition.new_state,
+                         transition.previous_authority, rid_for_sidecar)
 
     if transition.demoted:
         try:
