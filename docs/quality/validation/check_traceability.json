@@ -1,15 +1,15 @@
 {
   "gate": "check_traceability",
   "protocol_version": "1",
-  "scanner_version": "69185ee33cac16899fa7390c90597184fb612fa98e3b7e63f62fe14dab499794",
+  "scanner_version": "13c250bf2b07c4df38f076e0281297ff25b9e5c71b3da7a0d951ab0dced781fa",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
-  "concurrency_note": "check_traceability is a single-pass static text scan of epic docs + a checked-in source tree at a fixed SHA — there is no concurrent/racing dimension in the artifact to evade.",
+  "concurrency_note": "check_traceability is a single-pass static text scan of epic docs + a checked-in source tree at a fixed SHA \u2014 there is no concurrent/racing dimension in the artifact to evade.",
   "authority_boundary": {
-    "proves": "every stable-ID contract/invariant carries a code @cw-trace guards/ensures annotation (coverage) and a test/probe/policy/telemetry @cw-trace verifies annotation (tested), every BR has an incoming realizes from a defined contract/invariant, and every @cw-trace annotation targets a defined ID with a schema-valid verb/source-kind pairing — over the file extensions the scanner walks (.py/.go/.ts/.tsx/.js/.jsx/.java/.rb/.rs/.rego/.yaml/.yml)",
+    "proves": "every stable-ID contract/invariant carries a code @cw-trace guards/ensures annotation (coverage) and a test/probe/policy/telemetry @cw-trace verifies annotation (tested), every BR has an incoming realizes from a defined contract/invariant, and every @cw-trace annotation targets a defined ID with a schema-valid verb/source-kind pairing \u2014 over the file extensions the scanner walks (.py/.go/.ts/.tsx/.js/.jsx/.java/.rb/.rs/.rego/.yaml/.yml)",
     "artifact": "a git worktree copy of the target repo's epic docs (docs/epics/<slug>) plus its tracked source tree",
     "assumptions": [
-      "an @cw-trace annotation is trusted as accurate by presence — the checker verifies the tag exists, not that the annotated code/test actually implements the guard/verification it claims to",
+      "an @cw-trace annotation is trusted as accurate by presence \u2014 the checker verifies the tag exists, not that the annotated code/test actually implements the guard/verification it claims to",
       "only annotations that appear as literal text on a single line are found; a dynamically-constructed or multi-line-split annotation is invisible to the regex",
       "only the listed file extensions are scanned; an annotation placed in an unscanned extension (e.g. .txt, .md outside the epic doc tree) does not count toward coverage"
     ]
@@ -73,7 +73,7 @@
     }
   ],
   "status": "passed",
-  "validated_at": "2026-07-19T00:00:00Z",
-  "validated_by": "chief-wiggum#168 (re-validated post #181/#182 scanner changes)",
-  "ratchet_record_id": "rec-00004"
+  "validated_at": "2026-07-20T06:00:00Z",
+  "validated_by": "chief-wiggum#168 (re-validated post #184 dep-completeness fix: trace_links.py added to the scanner-version hash inputs)",
+  "ratchet_record_id": "rec-00011"
 }

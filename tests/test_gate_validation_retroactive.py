@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -712,3 +713,59 @@ def test_check_architecture_check_coverage_detects_a_dropped_seed():
     record["seeded_defect_trials"] = [
         t for t in record["seeded_defect_trials"] if t["seed_id"] != "arch-tier-inversion-01"]
     assert _checks_missing_a_passing_fire_seed(record) == ["tier-inversion"]
+
+
+# --- CTR-fh-041: the scanner-version dep list is COMPLETE, checked mechanically
+
+
+SCANNER_VERSION_GATES = (
+    "ratchet", "ci_scaffold", "check_architecture", "saas_gate",
+    "quality_slop_gate", "check_single_writer", "check_traceability",
+)
+
+_CW_IMPORT_RE = re.compile(
+    r"^from chief_wiggum(?:\.(\w+))? import (.+)$|^import chief_wiggum\.(\w+)", re.M)
+
+
+def _chief_wiggum_deps(source: str) -> set[str]:
+    """Every chief_wiggum submodule a gate script imports (both `from
+    chief_wiggum.X import ...` and `from chief_wiggum import X` forms)."""
+    deps: set[str] = set()
+    for m in _CW_IMPORT_RE.finditer(source):
+        if m.group(1):
+            deps.add(m.group(1))
+        elif m.group(3):
+            deps.add(m.group(3))
+        else:
+            # `from chief_wiggum import X [as alias], Y` — the names ARE modules
+            names = m.group(2).split(",")
+            deps.update(n.strip().split(" as ")[0].strip() for n in names)
+    return deps
+
+
+def _scanner_version_hash_inputs(source: str) -> str:
+    """The text of the gate's _scanner_version function — where hash inputs are
+    declared as `cw_dir / "<module>.py"` entries."""
+    start = source.index("def _scanner_version")
+    end = source.find("\ndef ", start + 1)
+    return source[start:end if end != -1 else len(source)]
+
+
+@pytest.mark.parametrize("gate", SCANNER_VERSION_GATES)
+def test_scanner_version_dep_list_is_complete(gate):
+    """INV-fh-005 / CTR-fh-041: for every finding-affecting `chief_wiggum`
+    module a gate imports, that module's file must be among its
+    --scanner-version hash inputs — an omitted dep is silent staleness (a
+    change to the dep never invalidates the gate's validation record). This
+    caught a real defect: check_traceability imported trace_links (suspect-link
+    /sidecar/justification logic) without hashing it."""
+    # @cw-trace verifies CTR-fh-041
+    source = (SCRIPTS / f"{gate}.py").read_text()
+    deps = _chief_wiggum_deps(source)
+    assert deps, f"{gate} imports no chief_wiggum modules?"
+    block = _scanner_version_hash_inputs(source)
+    missing = sorted(d for d in deps if f'"{d}.py"' not in block)
+    assert not missing, (
+        f"{gate}'s _scanner_version omits imported chief_wiggum module(s) "
+        f"{missing} from its hash inputs — an edit there would never mark the "
+        "validation record stale (CTR-fh-041)")
