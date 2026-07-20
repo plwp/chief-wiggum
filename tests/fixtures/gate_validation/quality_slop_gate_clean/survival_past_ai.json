@@ -1,0 +1,12 @@
+{
+  "_note": "Survival regression: 90.0% of added lines survive 14 days, below the AI-assisted band (94.3%). survival_result is the shape scripts/quality/survival.py returns; JSON forces string age keys (the engine emits ints). duplication_result is healthy so only survival is the finding.",
+  "survival_result": {
+    "repo": "fixture",
+    "total_lines_tracked": 5000,
+    "survival_by_age_days": {
+      "14": {"survival_pct": 90.0, "lines_old_enough": 5000},
+      "30": {"survival_pct": 85.0, "lines_old_enough": 4200}
+    }
+  },
+  "duplication_result": {"repo": "fixture", "duplication_pct_lines": 5.0}
+}

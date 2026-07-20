@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import subprocess
+import sys as _sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path as _Path
 
+import check_gate_validation as _gv
 import pytest
 import saas_gate as sg
 
@@ -298,3 +303,92 @@ def test_cli_scanner_version_prints_hex_digest(capsys):
     assert rc == 0
     assert len(out) == 64  # sha256 hex digest
     int(out, 16)  # valid hex
+
+
+# ---- gate-validation record trials (#184, docs/gate-validation.md) ----------
+#
+# Re-executes every seeded-defect trial the shipped saas_gate.json record claims,
+# driving the REAL scripts/saas_gate.py CLI (subprocess) against the scripted
+# local HTTP fixture server — the record is evidence of a real run, never an
+# aspirational claim. Mirrors tests/test_gate_validation_retroactive.py.
+
+_GV_ROOT = _Path(__file__).resolve().parent.parent
+_GV_CORPUS = _GV_ROOT / "tests" / "fixtures" / "gate_validation" / "saas_gate_clean"
+_GV_REPO = _GV_CORPUS / "repo"
+_GV_CLI = _GV_ROOT / "scripts" / "saas_gate.py"
+_GV_RECORD = _GV_ROOT / "docs" / "quality" / "validation" / "saas_gate.json"
+_GV_VALIDATION_DIR = _GV_ROOT / "docs" / "quality" / "validation"
+_GV_EXPECTED_TO_RESULT = {"fire": "fired", "no-fire": "not-fired"}
+
+# seed_id -> the fixture-server scenario that injects that seed
+_GV_SCENARIOS = {
+    "saas-direct-01": "missing_headers",
+    "saas-omission-01": "csrf_samesite_none_spaced",
+    "saas-config-indirection-01": "headers_lowercased",
+    "saas-sampling-gap-01": "no_rate_limit",
+}
+
+
+def _gv_load_server():
+    spec = importlib.util.spec_from_file_location(
+        "saas_gate_server", _GV_CORPUS / "saas_gate_server.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _gv_run_cli(base_url: str) -> dict:
+    proc = subprocess.run(
+        [_sys.executable, str(_GV_CLI), "--repo", str(_GV_REPO),
+         "--base-url", base_url, "--gate", "--json"],
+        capture_output=True, text=True,
+    )
+    return json.loads(proc.stdout)
+
+
+def _gv_outcome(scenario: str) -> tuple[str, dict]:
+    server = _gv_load_server()
+    with server.fixture_server(scenario) as base_url:
+        report = _gv_run_cli(base_url)
+    return ("fired" if not report["ok"] else "not-fired"), report
+
+
+def _gv_record() -> dict:
+    return json.loads(_GV_RECORD.read_text())
+
+
+def test_saas_gate_record_trials_backed_by_live_cli():
+    record = _gv_record()
+    assert record["gate"] == "saas_gate"
+    proc = subprocess.run([_sys.executable, str(_GV_CLI), "--scanner-version"],
+                          capture_output=True, text=True, check=True)
+    assert record["scanner_version"] == proc.stdout.strip(), "record scanner_version is stale"
+    digest = _gv.corpus_digest(_GV_CORPUS)
+    trials = record["seeded_defect_trials"]
+    assert {t["seed_id"] for t in trials} == set(_GV_SCENARIOS)
+    for t in trials:
+        assert t["sha"] == digest, f"{t['seed_id']} pins a stale corpus digest"
+        result, _ = _gv_outcome(_GV_SCENARIOS[t["seed_id"]])
+        assert result == t["result"], (t["seed_id"], result, t["result"])
+        assert t["passed"] == (result == _GV_EXPECTED_TO_RESULT[t["expected"]])
+
+
+def test_saas_gate_clean_corpus_backed_by_live_cli():
+    record = _gv_record()
+    run = record["clean_corpus_runs"][0]
+    assert run["sha"] == _gv.corpus_digest(_GV_CORPUS)
+    result, report = _gv_outcome("clean")
+    assert result == "not-fired"
+    assert report["counts"]["fail"] == run["findings"] == 0
+    sec = [f for f in report["findings"] if f["category"] == "security"]
+    coverage = {
+        "security_checks": len(sec),
+        "runtime_probes": sum(1 for f in report["findings"] if f["name"] in ("health", "rate-limit")),
+        "checks_passed": report["counts"]["pass"],
+    }
+    assert run["coverage"] == coverage
+
+
+def test_saas_gate_record_passes_gate_of_gates():
+    rep = _gv.check("saas_gate", _GV_VALIDATION_DIR)
+    assert rep.record_found and rep.passing, rep.to_dict()

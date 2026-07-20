@@ -1,0 +1,81 @@
+{
+  "gate": "saas_gate",
+  "protocol_version": "1",
+  "scanner_version": "2c02a5324dd210f8aad25d7a44b11480028d05146c6b51e14d2142daa608f75f",
+  "telemetry_dependent": false,
+  "concurrency_applicable": false,
+  "concurrency_note": "saas_gate issues sequential, single deterministic HTTP exchanges (GET /, /health, /login) against a scripted fixture server; each probe's response is fixed for the scenario. There is no concurrent/racing dimension in the fixture target to evade — the rate-limit probe counts sequential attempts, not concurrent ones.",
+  "authority_boundary": {
+    "proves": "over a running HTTP endpoint, every FAIL-class SaaS NFR finding the gate makes fires on an injected instance (missing security header, a CSRF cookie whose SameSite is not Lax/Strict even when disguised with stray whitespace), while a documented non-FAIL boundary (a never-429 /login without --rate-limit-required, a header served via case-insensitive name indirection) correctly does NOT fire — driven end-to-end through the real CLI (real urllib.request, real HTTP, real header parsing)",
+    "artifact": "the REAL scripts/saas_gate.py CLI run as a subprocess against a scripted, deterministic local http.server on 127.0.0.1 (tests/fixtures/gate_validation/saas_gate_clean/saas_gate_server.py), with a trivial fixture repo (pyproject.toml -> detect_stack ['python']) as --repo",
+    "assumptions": [
+      "VALIDATED AGAINST A SCRIPTED LOCAL HTTP FIXTURE SERVER, NOT A LIVE PRODUCTION/STAGING URL (CTR-fh-044): a real deployment's TLS configuration, load-balancer/proxy-injected headers, CDN or WAF behaviour, and rate-limiter timing may surface additional findings — or mask them — that this record says nothing about",
+      "the base URL is HTTP, so HSTS is a WARN (not a FAIL) and cookie Secure is not required; an HTTPS target changes those to FAIL-eligible and is out of this record's scope",
+      "tenant-isolation, performance/response-time, structured-logging (no --log-sample), and audit-trail checks are SKIPPED by run_gate without a live multi-user app / log sample and are therefore not exercised here — a SKIPPED status is honestly reported, never counted as a pass",
+      "the gate's verdict (report.ok) is FALSE iff any finding has status FAIL; WARN/SKIPPED/NA never block, by design"
+    ]
+  },
+  "seeded_defect_trials": [
+    {
+      "seed_id": "saas-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/saas_gate_clean",
+      "sha": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'missing_headers': the root response omits Content-Security-Policy and X-Content-Type-Options entirely -> two FAIL findings (content-security-policy 'missing', x-content-type-options 'missing (want nosniff)')",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "saas-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/saas_gate_clean",
+      "sha": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'csrf_samesite_none_spaced': the session cookie carries 'SameSite = None' with stray whitespace a naive substring check might miss; the structural _cookie_attrs parser still normalizes it to samesite=none and FAILs the csrf check ('SameSite=none (need Lax/Strict)')",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "saas-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/saas_gate_clean",
+      "sha": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'headers_lowercased': an otherwise-healthy response serves every security header NAME lower-cased (content-security-policy, x-content-type-options, ...). The gate's case-insensitive _hget must still recognize them as present+healthy -> zero FAIL findings. A certified non-coverage-evasion boundary: casing indirection neither dodges detection nor causes a spurious finding, so the gate correctly does not fire.",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    },
+    {
+      "seed_id": "saas-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/saas_gate_clean",
+      "sha": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'no_rate_limit': /login returns 200 on every one of the 20 probe attempts, never 429. Absent --rate-limit-required, check_rate_limit marks this WARN (not FAIL) by design -> report.ok stays True. A never-429 endpoint is a certified non-finding under the default scope, not a scanner miss, so the gate correctly does not fire.",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    }
+  ],
+  "clean_corpus_runs": [
+    {
+      "repo": "tests/fixtures/gate_validation/saas_gate_clean",
+      "sha": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "findings": 0,
+      "coverage": {
+        "security_checks": 7,
+        "runtime_probes": 2,
+        "checks_passed": 7
+      },
+      "passed": true
+    }
+  ],
+  "status": "passed",
+  "validated_at": "2026-07-20T04:33:10Z",
+  "validated_by": "chief-wiggum#184",
+  "ratchet_record_id": "rec-00006"
+}

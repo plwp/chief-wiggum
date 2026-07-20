@@ -1,0 +1,12 @@
+{
+  "_note": "Repo too young: git-of-theseus ran but no commit has lived >= 14 days (lines_old_enough 0). evaluate_survival must report status 'too_young' (honest non-measurement), which has_findings does NOT count as a finding — a low-looking number is not fabricated into a clean measured verdict. duplication_result skipped (tool absent).",
+  "survival_result": {
+    "repo": "fixture",
+    "total_lines_tracked": 300,
+    "survival_by_age_days": {
+      "14": {"survival_pct": null, "lines_old_enough": 0},
+      "30": {"survival_pct": null, "lines_old_enough": 0}
+    }
+  },
+  "duplication_result": {"repo": "fixture", "skipped": "jscpd not found", "note": "duplication requires node + jscpd"}
+}

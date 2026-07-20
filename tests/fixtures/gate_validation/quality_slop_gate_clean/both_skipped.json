@@ -1,0 +1,5 @@
+{
+  "_note": "Both engines genuinely absent (git-of-theseus / jscpd not installed — the real state in chief-wiggum's CI). evaluate_* must report status 'skipped'; has_findings produces NO finding for a skipped signal (a skip is neither a silent 'clean' masking a regression nor a false fire).",
+  "survival_result": {"repo": "fixture", "skipped": "git-of-theseus not found", "note": "code survival requires git-of-theseus"},
+  "duplication_result": {"repo": "fixture", "skipped": "jscpd not found", "note": "duplication requires node + jscpd"}
+}
