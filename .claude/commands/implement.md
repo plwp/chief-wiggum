@@ -131,10 +131,12 @@ All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief
 
 ### Step 2: Pick and read the ticket
 
-Fetch the issue details:
+Fetch the issue details, keeping the raw JSON around for the `ticket.json` writer below:
 
 ```bash
-gh issue view "$issue_number" --repo "$owner_repo" --json title,body,labels,assignees,milestone,comments
+gh issue view "$issue_number" --repo "$owner_repo" \
+  --json title,body,author,labels,assignees,milestone,comments \
+  | tee "$TICKET_TMP/issue-raw.json"
 ```
 
 Present to the user:
@@ -143,6 +145,19 @@ Present to the user:
 - Labels and current status
 - Any comments with additional context
 - Epic context (if loaded): relevant contracts, invariants, state machine transitions
+
+**Write `$TICKET_TMP/ticket.json`** — the reusable ticket context Step 4's approach prompt and Step 7's review pipeline both read. Comments (including `authorAssociation`) MUST be fetched and serialized here: before #83, this writer didn't exist at all, so `TicketComment`/`review.TicketContext.from_dict` had nothing to preserve and reviewers judged diffs against stale body-only acceptance criteria even after a maintainer amended them in a comment.
+
+```bash
+python3 "$CW_HOME/scripts/write_ticket_context.py" \
+  --issue-json "$TICKET_TMP/issue-raw.json" \
+  --number "$issue_number" \
+  --acceptance-criteria "<AC line 1 you extracted above>" \
+  --acceptance-criteria "<AC line 2>" \
+  --output "$TICKET_TMP/ticket.json"
+```
+
+Pass one `--acceptance-criteria` per line you extracted for the "Present to the user" summary above (repeatable flag; omit entirely for a ticket with no explicit AC). `write_ticket_context.py` flattens `gh`'s raw comment shape (`author.login`, `authorAssociation`, `createdAt`) into `TicketComment`'s field names and always emits a `comments` array — an issue with zero comments still produces `"comments": []` (CTR-fh-002/IT-fh-10). An absent `comments` key would be the writer-side half of the #83 regression: `review.TicketContext.from_dict` warns loudly (`MissingCommentsWarning`) rather than silently defaulting, but this writer never omits the key in the first place.
 
 ### Step 3: Clarify requirements (only if needed)
 
@@ -322,7 +337,7 @@ The worker should:
    git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
    ```
 
-2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass a `ticket.json` with the title/body/acceptance criteria, and optionally epic artifacts:
+2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass the `ticket.json` written in Step 2 — title/body/acceptance criteria plus the comment thread (`comments`, always an array — CTR-fh-002), which `run_review.py` renders as two labeled, authority-separated regions ("Accepted AC amendments" vs "Discussion/context" — CTR-fh-003/ADR-fh-02) so reviewers judge the diff against the CURRENT authoritative state, not a stale body-only baseline — and optionally epic artifacts:
    ```bash
    python3 "$CW_HOME/scripts/run_review.py" \
      --ticket-context "$TICKET_TMP/ticket.json" \
