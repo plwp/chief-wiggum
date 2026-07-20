@@ -797,6 +797,86 @@ def test_cli_wire_then_record_missing_reports_demotion_in_json(tmp_path):
     assert "DEMOTION" in proc2.stderr
 
 
+def _append_chained(journal, body):
+    """Append a hash-chained entry to an existing journal (same chaining as
+    ratchet.append_authority_event), for injecting crafted events in tests."""
+    lines = [ln for ln in Path(journal).read_text().splitlines() if ln.strip()]
+    prev = json.loads(lines[-1])["record_hash"] if lines else "genesis"
+    body = {k: v for k, v in body.items() if k != "record_hash"}
+    body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+    with Path(journal).open("a") as f:
+        f.write(json.dumps(body, sort_keys=True) + "\n")
+
+
+def test_bogus_authority_details_after_wire_still_demotes(tmp_path):
+    """FINDING 1 (end-to-end): a hash-VALID gate-authority event with a bogus
+    `details` (e.g. 'noop') slipped in after a real wire must NOT suppress the
+    demotion — it is ignored, the gate is still treated as wired, and a stale
+    record still demotes."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record(scanner_version="v1"))
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+    gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir, wire=True)
+
+    _append_chained(_journal(vdir), {
+        "record_id": "rec-90", "event": "gate-authority", "ref": "example_gate",
+        "details": "noop", "merged": False})
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") == "wire"
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    report, transition = gv.check_and_transition("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report.passing is False
+    assert transition.new_state == "demoted"
+    assert transition.previous_authority == "blocking"
+
+
+def test_garbage_journal_tail_after_wire_still_demotes(tmp_path):
+    """FINDING 2 (end-to-end): a non-JSON trailing line after a valid wire must
+    not crash the read (verified_prefix parses line-by-line) — the wire is still
+    read and the (now non-corroboratable) record demotes rather than erroring."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    gv.check_and_transition("example_gate", vdir, wire=True)
+
+    with Path(_journal(vdir)).open("a") as f:
+        f.write("this is not json at all\n")
+    assert gv.ratchet_last_authority_action(_journal(vdir), "example_gate") == "wire"
+
+    report, transition = gv.check_and_transition("example_gate", vdir)
+    assert report.passing is False
+    assert transition.new_state == "demoted"
+    assert transition.demoted is True
+    assert transition.previous_authority == "blocking"
+
+
+def test_chain_broken_blocking_unwire_still_emits_demotion(tmp_path, monkeypatch):
+    """FINDING 3: for a chain-broken-while-blocking gate + --unwire, the DEMOTION
+    must be emitted and surfaced FIRST — even though append_authority_event
+    refuses to extend the broken chain. The append failure is reported as a
+    distinct note, never swallowing the demotion."""
+    log_path = tmp_path / "factory-log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log_path))
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    gv.check_and_transition("example_gate", vdir, wire=True)
+
+    # Break the chain AFTER the wire event (a valid-JSON, bad-hash entry).
+    journal = Path(_journal(vdir))
+    lines = journal.read_text().splitlines()
+    lines.append(json.dumps({"record_id": "rec-98", "event": "x", "record_hash": "deadbeef"}))
+    journal.write_text("\n".join(lines) + "\n")
+
+    report, transition = gv.check_and_transition("example_gate", vdir, unwire=True)
+    assert report.passing is False
+    assert transition.demoted is True
+    assert transition.previous_authority == "blocking"
+
+    # The DEMOTION was emitted despite the append failing on the broken chain.
+    demotions = [json.loads(line) for line in log_path.read_text().splitlines()
+                 if json.loads(line).get("event") == "demotion"]
+    assert len(demotions) == 1
+    # ...and the append failure is surfaced, not swallowed.
+    assert "could not journal" in (transition.instruction or "")
+
+
 def test_validation_dir_is_defined_once_and_imported():
     """INV-fh-004: docs/quality/validation is defined in exactly one place —
     factory_log.DEFAULT_VALIDATION_DIR — and check_gate_validation IMPORTS it.

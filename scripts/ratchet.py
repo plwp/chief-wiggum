@@ -453,16 +453,37 @@ def _read_journal_path(journal_path: str | Path) -> list[dict]:
     return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
 
+# The only valid gate-authority actions. A `details` value outside this set is
+# NOT an authority action — it must never flip a wired gate to un-wired (finding
+# 1): `last_authority_action` ignores it rather than treating it as an unwire.
+_AUTHORITY_ACTIONS = ("wire", "unwire")
+
+
 def verified_prefix(journal_path: str | Path) -> list[dict]:
     """The journal entries whose hash chain verifies from genesis, stopping
-    BEFORE the first broken link. A TOLERANT read for facts that must survive a
-    LATER tamper: "was this gate wired" is knowable from an early, still-valid
-    entry even when a subsequent entry breaks the chain — the demotion path
-    depends on that (a broken chain is itself a stale condition to demote ON,
-    not one that should erase the knowledge the gate was blocking)."""
+    BEFORE the first broken OR unparseable link. A TOLERANT read for facts that
+    must survive a LATER tamper: "was this gate wired" is knowable from an
+    early, still-valid entry even when a subsequent entry breaks the chain (a
+    bad hash) OR is garbage that won't parse — the demotion path depends on that
+    (a broken/garbled tail is itself a stale condition to demote ON, not one
+    that should erase the knowledge the gate was blocking). Parsing is
+    line-by-line so a non-JSON trailing line stops the prefix instead of
+    crashing the whole read (finding 2)."""
+    p = Path(journal_path)
+    if not p.is_file():
+        return []
     good: list[dict] = []
     prev = "genesis"
-    for rec in _read_journal_path(journal_path):
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            break  # garbage tail — stop before it, keep the valid prefix
+        if not isinstance(rec, dict):
+            break
         body = {k: v for k, v in rec.items() if k != "record_hash"}
         if rec.get("record_hash") != stable_hash(prev, json.dumps(body, sort_keys=True)):
             break
@@ -475,10 +496,19 @@ def last_authority_action(journal_path: str | Path, gate: str) -> str | None:
     """`'wire'` / `'unwire'` of the LAST gate-authority event for `gate` in the
     verified prefix, or None if the gate was never wired. This is the
     tamper-evident "is this gate currently under blocking authority" fact —
-    read from journaled events, never from a hand-writable file."""
+    read from journaled events, never from a hand-writable file.
+
+    Only `wire`/`unwire` are authority actions: a hash-VALID gate-authority
+    event carrying any OTHER `details` (e.g. a bogus `noop` slipped in after a
+    real wire) is IGNORED, never treated as an un-wiring — it must never flip a
+    wired gate to un-wired and suppress the demotion (finding 1)."""
     for rec in reversed(verified_prefix(journal_path)):
         if rec.get("event") == GATE_AUTHORITY and rec.get("ref") == gate:
-            return rec.get("details")
+            action = rec.get("details")
+            if action in _AUTHORITY_ACTIONS:
+                return action
+            # else: not a real authority action — skip, keep looking for the
+            # last genuine wire/unwire.
     return None
 
 
@@ -489,14 +519,19 @@ def append_authority_event(journal_path: str | Path, gate: str, action: str,
     journal must not be silently extended). Returns the new ``rec-NNNNN`` id."""
     if action not in ("wire", "unwire"):
         raise RatchetError(f"gate-authority action must be wire|unwire, got {action!r}")
-    all_entries = _read_journal_path(journal_path)
-    if len(all_entries) != len(verified_prefix(journal_path)):
+    # Robust broken/garbled-chain detection: compare the verified prefix against
+    # the raw non-empty line count WITHOUT a full JSON parse (a garbage tail
+    # must raise TamperError, not a JSONDecodeError — finding 3's append path).
+    p = Path(journal_path)
+    raw_lines = [ln for ln in p.read_text().splitlines() if ln.strip()] if p.is_file() else []
+    verified = verified_prefix(journal_path)
+    if len(verified) != len(raw_lines):
         raise TamperError(
             f"cannot append a gate-authority event: {journal_path} chain is broken — fail closed"
         )
-    prev = all_entries[-1]["record_hash"] if all_entries else "genesis"
+    prev = verified[-1]["record_hash"] if verified else "genesis"
     body = {
-        "record_id": f"rec-{len(all_entries) + 1:05d}",
+        "record_id": f"rec-{len(verified) + 1:05d}",
         "event": GATE_AUTHORITY,
         "ref": gate,
         "details": action,

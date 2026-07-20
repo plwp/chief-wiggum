@@ -540,10 +540,12 @@ def check_and_transition(
     report = check(gate, validation_dir, schema=schema, scripts_dir=scripts_dir)
     journal = _journal_path(validation_dir)
     was_wired = ratchet_last_authority_action(journal, gate) == "wire"
+    append_action: str | None = None  # 'wire' | 'unwire', journaled AFTER the emit
+    append_rid: str | None = None
 
     if wire and report.passing:
-        rid = report.record.get("ratchet_record_id") if report.record else None
-        _append_authority(journal, gate, "wire", wired_rid=rid)
+        append_action = "wire"
+        append_rid = report.record.get("ratchet_record_id") if report.record else None
         transition = authority_status(gate, validation_dir, report, was_wired=True)
     elif wire and not report.passing:
         # A non-passing record can NEVER be wired to blocking (INV-fh-003): do
@@ -556,16 +558,20 @@ def check_and_transition(
     elif unwire:
         # The demotion decision is read from the PRE-unwire journal so an unwire
         # can't mask a stale/missing-while-blocking demotion; but a CLEAN unwire
-        # (record still passes) reports the POST-unwire state (validated).
+        # (record still passes) reports the POST-unwire state (validated). The
+        # journal append is deferred to AFTER the demotion emit below so a broken
+        # chain (which refuses the append) can never swallow the demotion.
         if was_wired and not report.passing:
             transition = authority_status(gate, validation_dir, report, was_wired=True)  # demoted
         else:
             transition = authority_status(gate, validation_dir, report, was_wired=False)
             transition.event = "unwire_gate"
-        _append_authority(journal, gate, "unwire")
+        append_action = "unwire"
     else:
         transition = authority_status(gate, validation_dir, report, was_wired=was_wired)
 
+    # Emit the DEMOTION FIRST — it must never be swallowed by a subsequent
+    # journal-append failure (finding 3: chain-broken-while-blocking + --unwire).
     if transition.demoted:
         try:
             from factory_log import emit_stale_demotion  # noqa: PLC0415
@@ -573,6 +579,17 @@ def check_and_transition(
                                 previous_authority=transition.previous_authority)
         except Exception:
             pass
+
+    # THEN attempt the operator-requested journal append. On a broken/garbled
+    # chain the append fails closed; surface a distinct note but never lose the
+    # demotion envelope already computed + emitted above.
+    if append_action is not None:
+        try:
+            _append_authority(journal, gate, append_action, wired_rid=append_rid)
+        except Exception as exc:
+            note = (f"(note: could not journal the {append_action} event — "
+                    f"{type(exc).__name__}: {exc})")
+            transition.instruction = f"{transition.instruction} {note}" if transition.instruction else note
 
     return report, transition
 

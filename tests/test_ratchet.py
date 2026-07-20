@@ -600,6 +600,78 @@ def test_it_fh_06_real_journal_corroborates_stale_while_blocking_demotion(tmp_pa
     assert transition2.previous_authority == "blocking"
 
 
+# ---- gate-authority journal primitives: tamper-tolerance (chief-wiggum#198) ----
+
+
+def _chain(journal_path: Path, bodies: list[dict]) -> None:
+    """Write a hash-chained journal (same chaining as ratchet.append_authority_event)."""
+    from chief_wiggum.hashing import stable_hash  # noqa: PLC0415
+    prev = "genesis"
+    lines = []
+    for body in bodies:
+        body = {k: v for k, v in body.items() if k != "record_hash"}
+        body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+        prev = body["record_hash"]
+        lines.append(json.dumps(body, sort_keys=True))
+    journal_path.write_text("\n".join(lines) + "\n")
+
+
+def test_last_authority_action_ignores_bogus_details_after_wire(tmp_path):
+    """FINDING 1: a hash-VALID gate-authority event carrying a bogus `details`
+    (e.g. 'noop') after a real wire must NOT flip the gate to un-wired — only
+    'wire'/'unwire' are authority actions; anything else is ignored, so the
+    prior genuine wire still stands."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+        {"record_id": "rec-00002", "event": "gate-authority", "ref": "g", "details": "noop"},
+    ])
+    # The bogus 'noop' is ignored; the last GENUINE action is still 'wire'.
+    assert ratchet.last_authority_action(journal, "g") == "wire"
+
+
+def test_last_authority_action_respects_a_real_unwire(tmp_path):
+    """Control for finding 1: a genuine 'unwire' after a 'wire' DOES un-wire —
+    the filter ignores only non-action details, never a real unwire."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+        {"record_id": "rec-00002", "event": "gate-authority", "ref": "g", "details": "unwire"},
+    ])
+    assert ratchet.last_authority_action(journal, "g") == "unwire"
+
+
+def test_verified_prefix_stops_before_a_non_json_trailing_line(tmp_path):
+    """FINDING 2: malformed JSON in the journal tail after a valid wire must not
+    crash the read — verified_prefix parses line-by-line and stops before the
+    first unparseable line, so the wire is still read (and a stale record still
+    demotes)."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+    ])
+    # Corrupt the tail with a non-JSON garbage line.
+    with journal.open("a") as f:
+        f.write("this is not json at all\n")
+
+    prefix = ratchet.verified_prefix(journal)
+    assert len(prefix) == 1  # the wire survives; the garbage tail is dropped
+    assert ratchet.last_authority_action(journal, "g") == "wire"
+
+
+def test_append_authority_event_fails_closed_on_garbled_tail(tmp_path):
+    """A garbled tail is a broken chain: append_authority_event must raise
+    TamperError (never a JSONDecodeError crash) so callers can handle it."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+    ])
+    with journal.open("a") as f:
+        f.write("garbage\n")
+    with pytest.raises(ratchet.TamperError):
+        ratchet.append_authority_event(journal, "g", "unwire")
+
+
 # ---- --scanner-version (#184) --------------------------------------------------
 
 

@@ -1,7 +1,7 @@
 {
   "gate": "ratchet",
   "protocol_version": "1",
-  "scanner_version": "fa45c76c322dcfa8d9673e16de5b539ac0994323d83860779727570db0c4e2a4",
+  "scanner_version": "34bc1a05e3b9050313ce62af95e934e6b4cd56bbb5adbd7da40c140ec2646014",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "ratchet check is a single-pass fold over checked-in test results (the scorecard's pass_set) and epic-doc contract-definition hashes at a fixed scorecard/journal snapshot. There is no concurrent/racing-writer channel in the artifact to evade; the tamper concern (a racing edit of the journal itself) is addressed by the append-only hash chain, not by a concurrency seed (see assumptions).",
