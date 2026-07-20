@@ -178,8 +178,8 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
 
 1. **Codex + Gemini** — Launch as background bash commands:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" &
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
    wait
    ```
 
@@ -348,15 +348,24 @@ The worker should:
    ```
    Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `synthesis-prompt.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
-3. Perform its own review of the diff.
+3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:
+   ```bash
+   for f in $(git diff --name-only "$DEFAULT_BRANCH"...HEAD); do
+     python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --format text orient "$f" \
+       | grep -q '^- (hotspot)' && echo "$f: measured hotspot — escalate review depth"
+   done
+   ```
+   If any file is flagged, note it explicitly to the reviewer worker (e.g. append to the ticket context or mention it directly when reviewing) so the reviewer quorum spends more attention there — deeper review, not a different bar. This is advisory only: `docs/quality/hotspots.json` never gates, and its absence for a touched file is not evidence the file is safe (young files have no history yet).
 
-4. Synthesize using:
+4. Perform its own review of the diff.
+
+5. Synthesize using:
    ```bash
    python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/reviews/reviewer-codex.md $TICKET_TMP/reviews/reviewer-gemini.md
    ```
    **When `reviewer` is lensed, expect disjoint findings, not convergence** — each provider was scoped to a different concern over the same diff, so agreement across reviewers is the exception, not the confirmation signal. `synthesize_reviews.py` reconciles by **union, then cross-verifies only contested items**: every concrete finding is retained regardless of whether one reviewer raised it or several (a soundness issue only the refuter caught is not weaker for being unique to it), and cross-verification against the diff is reserved for cases where two reviewers make genuinely *contradictory* claims about the same fact — not merely where one mentions something the other didn't. Do not fall back to majority-vote reasoning when reconciling a lensed quorum; it defeats the reason the lenses were assigned.
 
-5. Return a concise summary categorising each piece of feedback:
+6. Return a concise summary categorising each piece of feedback:
    - **High-confidence fixes**: Concrete bugs/regressions with clear failure scenarios. Apply automatically.
    - **Medium-confidence findings**: Plausible issues that need a quick local verification before applying.
    - **Low-confidence or architectural feedback**: Speculative concerns or design trade-offs. Flag for user decision.
@@ -364,7 +373,7 @@ The worker should:
 
    Also return the **checklist scorecard**: pass/fail for each item in the structured checklist, with one-line justification for any failures.
 
-6. **Record validation telemetry.** The review's cost already flows (its reviewer consults + the review worker's tokens); record its *value* so the cost↔value verdict can rate it. Emit one gate event with the count of substantive findings (high + medium + low real defects; exclude style-only) — no-op unless telemetry is enabled, never blocks:
+7. **Record validation telemetry.** The review's cost already flows (its reviewer consults + the review worker's tokens); record its *value* so the cost↔value verdict can rate it. Emit one gate event with the count of substantive findings (high + medium + low real defects; exclude style-only) — no-op unless telemetry is enabled, never blocks:
 
    ```bash
    python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name code-review \
