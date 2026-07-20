@@ -100,7 +100,7 @@ def test_role_consult_writes_required_and_optional_outputs(tmp_path, monkeypatch
     output_dir = tmp_path / "out"
     write_config(config)
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         return f"{provider.name}: {prompt_text}"
 
     monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
@@ -135,7 +135,7 @@ def test_role_consult_does_not_fail_when_optional_provider_is_disabled(tmp_path,
     write_config(config, optional_enabled=False)
     called: list[str] = []
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         called.append(provider.name)
         return provider.name
 
@@ -276,6 +276,257 @@ def test_claude_interactive_uses_delegate_submit_without_precreating_task(tmp_pa
     assert "--task-id" not in cmd
 
 
+# --- optional-provider timeout knob (chief-wiggum#188) ----------------------
+#
+# claude-interactive timed out at its full 1800s budget on two consecutive
+# large-prompt consults (round-2 design, architecture_critic) while
+# contributing nothing — it is optional in every shipped role. The fix: a
+# role's optional_timeout_seconds caps the delegate's wall-clock when it's
+# running in the OPTIONAL slot, so an unresponsive interactive session fails
+# fast and cleanly instead of holding the whole role's quorum to 1800s.
+
+
+def test_claude_interactive_default_timeout_matches_tool_timeouts_budget(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["cmd"] = cmd
+        captured["timeout"] = timeout
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+
+    # No override given -> falls back to the full delegate budget, plus the
+    # small grace buffer that lets the delegate's own internal poll loop exit
+    # gracefully before the outer hard-kill would fire.
+    assert captured["timeout"] == consult_ai.TOOL_TIMEOUTS["claude-interactive"] + 30
+    assert "--timeout-seconds" in captured["cmd"]
+    idx = captured["cmd"].index("--timeout-seconds")
+    assert captured["cmd"][idx + 1] == str(consult_ai.TOOL_TIMEOUTS["claude-interactive"])
+
+
+def test_claude_interactive_timeout_override_shortens_both_inner_and_outer_budget(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["cmd"] = cmd
+        captured["timeout"] = timeout
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path), timeout=300)
+
+    # The delegate script's own --timeout-seconds is shortened to match, so it
+    # exits GRACEFULLY on its own poll loop well before the outer hard-kill.
+    assert captured["timeout"] == 330  # override + grace buffer
+    idx = captured["cmd"].index("--timeout-seconds")
+    assert captured["cmd"][idx + 1] == "300"
+
+
+def test_consult_provider_threads_timeout_override_to_delegate(monkeypatch):
+    provider = consult_ai.Provider(
+        name="claude-interactive", type="delegate", enabled=True, delegate="claude-interactive",
+    )
+    received = {}
+
+    def fake_consult_claude_interactive(prompt, model=None, cwd=None, timeout=None):
+        received["timeout"] = timeout
+        return "response", consult_ai.Usage()
+
+    monkeypatch.setattr(consult_ai, "consult_claude_interactive", fake_consult_claude_interactive)
+
+    consult_ai.consult_provider(provider, "prompt", None, None, timeout_override=42)
+
+    assert received["timeout"] == 42
+
+
+def test_consult_provider_ignores_timeout_override_for_tool_providers(monkeypatch):
+    # Tool providers (codex, gemini-vertex, ...) already run well under any
+    # optional-slot budget; the override is delegate-specific and must not
+    # leak into their call signature.
+    provider = consult_ai.Provider(name="codex", type="tool", enabled=True, tool="codex")
+    received = {}
+
+    def fake_codex(prompt, model=None, cwd=None):
+        received["called"] = True
+        return "a substantive codex response", consult_ai.Usage()
+
+    monkeypatch.setitem(consult_ai.TOOLS, "codex", fake_codex)
+
+    consult_ai.consult_provider(provider, "prompt", None, None, timeout_override=42)
+
+    assert received["called"] is True
+
+
+def write_config_with_delegate(path, *, optional_timeout_seconds=None, claude_interactive_required=False):
+    role: dict = {"required": ["codex"], "optional": []}
+    if claude_interactive_required:
+        role["required"].append("claude-interactive")
+    else:
+        role["optional"].append("claude-interactive")
+    if optional_timeout_seconds is not None:
+        role["optional_timeout_seconds"] = optional_timeout_seconds
+    path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "codex": {"type": "tool", "tool": "codex", "enabled": True},
+                    "claude-interactive": {
+                        "type": "delegate", "delegate": "claude-interactive", "enabled": True,
+                    },
+                },
+                "roles": {"reviewer": role},
+            }
+        )
+    )
+
+
+def test_role_quorum_skips_hung_optional_delegate_fast_and_still_succeeds(tmp_path, monkeypatch):
+    # Mocks the delegate subprocess at the _run_capture seam: codex answers
+    # normally, claude-interactive "hangs" (its process-group runner would
+    # raise TimeoutExpired once ITS deadline elapses). The quorum must (a)
+    # cap that deadline well below the delegate's 1800s default when the
+    # provider is optional, and (b) still report an overall OK role because
+    # the required provider (codex) succeeded.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config_with_delegate(config)
+
+    captured_timeouts: dict[str, int] = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured_timeouts[tool] = timeout
+        if tool == "codex":
+            return "a substantive codex response, long enough to pass validation", ""
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output_dir),
+            "--min-bytes",
+            "1",
+        ],
+    )
+
+    start = _time.monotonic()
+    consult_ai.main()
+    elapsed = _time.monotonic() - start
+
+    manifest = json.loads((output_dir / "reviewer-manifest.json").read_text())
+    assert manifest["ok"] is True
+    statuses = {r["name"]: r["status"] for r in manifest["results"]}
+    assert statuses == {"codex": "ok", "claude-interactive": "failed"}
+
+    # The measurable fix (chief-wiggum#188): the optional delegate's budget is
+    # far below its 1800s default, so the timed-out call never gates the
+    # role's wall-clock to the full budget.
+    assert captured_timeouts["claude-interactive"] < consult_ai.TOOL_TIMEOUTS["claude-interactive"]
+    assert captured_timeouts["claude-interactive"] == consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS + 30
+    # And since everything here is mocked (no real sleeping), the whole
+    # role-quorum call returns promptly.
+    assert elapsed < 5
+
+
+def test_role_quorum_honors_per_role_optional_timeout_override(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config_with_delegate(config, optional_timeout_seconds=42)
+
+    captured_timeouts: dict[str, int] = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured_timeouts[tool] = timeout
+        if tool == "codex":
+            return "a substantive codex response, long enough to pass validation", ""
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output_dir),
+            "--min-bytes",
+            "1",
+        ],
+    )
+
+    consult_ai.main()
+
+    assert captured_timeouts["claude-interactive"] == 42 + 30
+
+
+def test_role_quorum_does_not_shorten_a_required_delegates_timeout(tmp_path, monkeypatch):
+    # The shortening is specific to the OPTIONAL slot (chief-wiggum#188) — a
+    # role that requires claude-interactive must still get its full budget.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config_with_delegate(config, claude_interactive_required=True)
+
+    result_file = tmp_path / "result.md"
+    result_file.write_text("a substantive claude-interactive response, long enough to pass")
+
+    captured_timeouts: dict[str, int] = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured_timeouts[tool] = timeout
+        if tool == "codex":
+            return "a substantive codex response, long enough to pass validation", ""
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py",
+            "--role",
+            "reviewer",
+            str(prompt),
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output_dir),
+            "--min-bytes",
+            "1",
+        ],
+    )
+
+    consult_ai.main()
+
+    assert captured_timeouts["claude-interactive"] == consult_ai.TOOL_TIMEOUTS["claude-interactive"] + 30
+
+
 # --- _run_capture: hard-timeout process-group runner (#95) -------------------
 
 import time as _time  # noqa: E402
@@ -339,7 +590,7 @@ def test_role_consult_appends_lens_charter_with_byte_identical_shared_body(tmp_p
 
     captured: dict[str, str] = {}
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         captured[provider.name] = prompt_text
         return f"{provider.name} response: {prompt_text}"
 
@@ -397,7 +648,7 @@ def test_role_consult_leaves_unlensed_provider_prompt_unchanged(tmp_path, monkey
 
     captured: dict[str, str] = {}
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         captured[provider.name] = prompt_text
         return f"{provider.name} response: {prompt_text}"
 
@@ -438,7 +689,7 @@ def test_role_consult_fails_cleanly_for_unknown_lens(tmp_path, monkeypatch):
     write_lenses(lenses)
     called: list[str] = []
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         called.append(provider.name)
         return "should never run"
 
@@ -478,7 +729,7 @@ def test_role_consult_refuses_short_prompt_before_any_provider_call(tmp_path, mo
     write_config(config)
     called: list[str] = []
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         called.append(provider.name)
         return "should never run"
 
@@ -1043,7 +1294,7 @@ def test_role_consult_threads_ticket_into_consult_provider(tmp_path, monkeypatch
 
     received_ticket = {}
 
-    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None):
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
         received_ticket[provider.name] = ticket
         return f"{provider.name} response"
 

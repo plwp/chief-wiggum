@@ -114,6 +114,8 @@ python3 scripts/consult_ai.py --role reviewer prompt.md --output-dir "$CW_TMP/re
 
 Roles define required and optional providers. Required providers must succeed; optional providers may be disabled or fail without blocking the role quorum. This keeps Claude, Codex, Gemini, and interactive delegates configurable rather than hard-coded into workflow logic.
 
+**Optional providers fail fast, not slow**: the `claude-interactive` delegate's own budget is a generous 1800s (`TOOL_TIMEOUTS` in `scripts/consult_ai.py`) — appropriate when it's the one voice a step is waiting on, wasteful when it's merely an optional third opinion a role can run without. A role's `optional_timeout_seconds` (`config/providers.json`) caps how long an OPTIONAL provider's delegate call may run before `consult_ai.py`'s role quorum abandons it; every shipped role sets it to `300`. Unset, it falls back to `consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS`. This only affects the claude-interactive delegate (tool providers already run well under that budget) and only when a provider is in the role's `optional` list — a required provider always gets the delegate's full 1800s. See chief-wiggum#188.
+
 ## User Data Directory
 
 Chief-wiggum stores all user-space data under `~/.chief-wiggum/`:

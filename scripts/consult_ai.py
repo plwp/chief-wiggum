@@ -40,9 +40,11 @@ from keychain import get_secret
 from providers import (
     DEFAULT_CONFIG,
     DEFAULT_LENSES,
+    DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
     Provider,
     load_config,
     load_lenses,
+    optional_provider_timeout,
     plan_role,
     prompt_for_provider,
     run_role_quorum,
@@ -65,6 +67,13 @@ TIMEOUT = 600  # fallback
 # runs. A silent multi-minute consult is indistinguishable from a hang to a worker's
 # stream-watchdog; a periodic line proves the consult is alive and progressing.
 HEARTBEAT_INTERVAL = 30
+
+# ``DEFAULT_OPTIONAL_TIMEOUT_SECONDS`` and ``optional_provider_timeout`` are the SINGLE
+# source of the required/optional delegate-timeout decision — they live in providers.py
+# (chief-wiggum#188) so both this module's ``--role`` quorum and the /implement review
+# pipeline (chief_wiggum/review.run_review) cap an optional claude-interactive the same
+# way. Re-exported here (imported above) for callers/tests that reference
+# ``consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS``.
 
 # Default model for Vertex AI path (override with --model)
 DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
@@ -572,13 +581,22 @@ def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None
         return out, Usage(usage_status="unavailable", resolved_model=model)
 
 
-def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+def consult_claude_interactive(
+    prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+) -> tuple[str, Usage]:
     """Delegate to the interactive Claude tmux provider.
 
     The RESULT file the delegate writes carries no usage data by construction
     (``skills/claude-interactive-delegate/scripts/claude_delegate.py`` never
     writes token counts) — this adapter is ALWAYS ``usage_status='unavailable'``,
     per ADR-fh-05.
+
+    ``timeout`` overrides the default 1800s budget (``TOOL_TIMEOUTS["claude-interactive"]``)
+    when given. This is how a role quorum caps this delegate to a much shorter
+    wall-clock when it is running in an OPTIONAL slot (chief-wiggum#188) — the
+    ``subprocess.TimeoutExpired`` this raises is caught by ``_run_one_provider``
+    exactly like any other optional-provider failure, so a shortened timeout
+    still degrades to a clean, non-blocking skip.
 
     @cw-trace guards CTR-fh-010
     """
@@ -590,6 +608,7 @@ def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str |
     prompt_file = Path(prompt_name)
     try:
         prompt_file.write_text(prompt)
+        effective_timeout = timeout if timeout is not None else TOOL_TIMEOUTS["claude-interactive"]
         cmd = [
             sys.executable,
             str(script),
@@ -597,11 +616,18 @@ def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str |
             "--prompt-file",
             str(prompt_file),
             "--wait",
+            "--timeout-seconds",
+            str(effective_timeout),
         ]
         if cwd:
             cmd.extend(["--cwd", cwd])
+        # The delegate script polls internally up to --timeout-seconds and exits
+        # GRACEFULLY (a controlled "TIMEOUT: ..." message + returncode 3) rather than
+        # being killed mid-poll — give it a small grace window to hit that path first;
+        # _run_capture's own timeout is the hard backstop for a subprocess that hangs
+        # instead of returning (chief-wiggum#188).
         stdout, _stderr = _run_capture(
-            cmd, input_text=None, timeout=TOOL_TIMEOUTS["claude-interactive"],
+            cmd, input_text=None, timeout=effective_timeout + 30,
             cwd=None, tool="claude-interactive",
         )
         for line in stdout.splitlines():
@@ -662,8 +688,16 @@ def _emit_consult_telemetry(
 
 def consult_provider(
     provider: Provider, prompt: str, model: str | None, cwd: str | None,
-    *, ticket: str | None = None,
+    *, ticket: str | None = None, timeout_override: int | None = None,
 ) -> str:
+    """Run one provider's consult.
+
+    ``timeout_override`` (chief-wiggum#188) only affects the claude-interactive
+    delegate today — the role quorum sets it when this provider is running in an
+    OPTIONAL slot, so a hung/slow interactive session fails fast instead of
+    holding the whole role's wall-clock to its full 1800s budget. Tool providers
+    ignore it; their own ``TOOL_TIMEOUTS`` entries are already well under that.
+    """
     if provider.type == "tool":
         if not provider.tool or provider.tool not in TOOLS:
             raise ValueError(f"unsupported tool provider: {provider.name}")
@@ -673,7 +707,7 @@ def consult_provider(
     if provider.type == "delegate":
         if provider.delegate != "claude-interactive":
             raise ValueError(f"unsupported delegate provider: {provider.name}")
-        text, usage = consult_claude_interactive(prompt, model=model, cwd=cwd)
+        text, usage = consult_claude_interactive(prompt, model=model, cwd=cwd, timeout=timeout_override)
         _emit_consult_telemetry("claude-interactive", model, cwd, usage, ticket=ticket)
         return text
     raise ValueError(f"unsupported provider type: {provider.type}")
@@ -784,7 +818,19 @@ def main():
         # appended (chief-wiggum#163) — the shared body itself never changes.
         def execute(provider: Provider) -> str:
             provider_prompt = prompt_for_provider(plan.role, provider.name, prompt, lenses)
-            return consult_provider(provider, provider_prompt, args.model, args.cwd, ticket=args.ticket)
+            # An optional provider's delegate call is capped to a much shorter
+            # wall-clock than a required one (chief-wiggum#188): it's allowed to
+            # fail, so it should fail FAST rather than holding the whole role's
+            # quorum to claude-interactive's full 1800s budget. The required/optional
+            # decision is centralized in providers.optional_provider_timeout so the
+            # review pipeline caps the same way.
+            timeout_override = optional_provider_timeout(
+                plan.role, provider.name, DEFAULT_OPTIONAL_TIMEOUT_SECONDS
+            )
+            return consult_provider(
+                provider, provider_prompt, args.model, args.cwd,
+                ticket=args.ticket, timeout_override=timeout_override,
+            )
 
         manifest = run_role_quorum(
             plan,

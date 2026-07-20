@@ -69,8 +69,12 @@ def main(argv: list[str] | None = None) -> int:
         if p.exists():
             epic_sections.append((title, p.read_text()))
 
-    def execute(provider, prompt):
-        return consult_provider(provider, prompt, None, args.worktree)
+    def execute(provider, prompt, timeout_override=None):
+        # timeout_override caps an OPTIONAL claude-interactive delegate so it
+        # fails fast instead of stalling the review quorum at 1800s (#188).
+        return consult_provider(
+            provider, prompt, None, args.worktree, timeout_override=timeout_override
+        )
 
     try:
         manifest = review.run_review(

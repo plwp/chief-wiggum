@@ -490,14 +490,22 @@ def run_review(
     role: str = "reviewer",
     config: dict | None = None,
     lenses: dict | None = None,
-    execute: Callable[[providers.Provider, str], str] | None = None,
+    execute: Callable[[providers.Provider, str, int | None], str] | None = None,
     runner: Runner = subprocess.run,
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
+    optional_timeout_default: int = providers.DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
 ) -> ReviewManifest:
     """Assemble the review prompt, run the reviewer quorum, write synthesis inputs.
 
     Refuses to run outside a git repo or when ``base`` cannot be resolved.
-    ``execute`` (the provider call) is injected so the pipeline is testable.
+    ``execute`` (the provider call) is injected so the pipeline is testable; it
+    receives ``(provider, prompt, timeout_override)`` where ``timeout_override``
+    is the wall-clock cap (seconds) for an OPTIONAL provider's delegate call, or
+    ``None`` for a required provider (chief-wiggum#188). An optional
+    ``claude-interactive`` in this role must fail fast rather than hold the whole
+    review quorum to the delegate's 1800s budget — the same cap ``consult_ai.py``
+    applies on its own ``--role`` path, computed by the shared
+    ``providers.optional_provider_timeout``.
 
     Every provider gets the identical assembled prompt. If ``role`` maps a
     provider to a lens (``config/providers.json`` role.lenses), that provider's
@@ -541,10 +549,18 @@ def run_review(
 
     # The quorum calls execute(provider); bind the assembled prompt here. A
     # provider mapped to a lens on this role gets its charter appended; the
-    # shared prompt every provider starts from is identical either way.
+    # shared prompt every provider starts from is identical either way. An
+    # OPTIONAL provider is additionally handed a shortened delegate timeout so a
+    # hung/slow claude-interactive fails fast instead of stalling the review
+    # quorum for 1800s (chief-wiggum#188) — the required/optional decision is the
+    # same shared helper consult_ai.py's own --role path uses.
     quorum = providers.run_role_quorum(
         plan,
-        lambda p: execute(p, providers.prompt_for_provider(plan.role, p.name, prompt, lenses)),
+        lambda p: execute(
+            p,
+            providers.prompt_for_provider(plan.role, p.name, prompt, lenses),
+            providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default),
+        ),
         out,
     )
     response_paths = [r.path for r in quorum.results if r.path]
