@@ -1,0 +1,338 @@
+{
+  "name": "Gate Blocking-Authority Lifecycle",
+  "description": "The lifecycle of a blocking-capable gate's authority to block, spanning #184 (validation records + --scanner-version for five gates incl. check_architecture) and the existing check_gate_validation.py + factory_log demotion semantics. Core safety property: a gate may not block unless its CURRENT scanner version is validated by a corroborated record (INV-fh-003). Validity is ALWAYS read via `check_gate_validation <gate> --format json` passing==true — never the default exit code, which is 0 in report-only mode even when not validated.",
+  "initial": "unknown",
+  "context": {
+    "validation_record": {
+      "type": "object",
+      "description": "docs/quality/validation/<gate>.json — the seeded-defect + clean-corpus record. Null in 'unknown'.",
+      "required_in_states": ["validated", "blocking"],
+      "source_of_truth": "docs/quality/validation/<gate>.json (single canonical dir, INV-fh-004)"
+    },
+    "scanner_version": {
+      "type": "string",
+      "description": "Hash-derived live `<gate>.py --scanner-version`. Compared to record.scanner_version for staleness.",
+      "source_of_truth": "chief_wiggum.hashing.scanner_version(__file__, *deps) (INV-fh-005)"
+    },
+    "ratchet_record_id": {
+      "type": "string",
+      "description": "rec-\\d+ corroborating entry in docs/quality/ratchet-journal.jsonl (hash-chained).",
+      "source_of_truth": "docs/quality/ratchet-journal.jsonl"
+    },
+    "gate_wired": {
+      "type": "boolean",
+      "description": "Whether the workflow invokes this gate with --gate (block) vs report-only."
+    },
+    "previous_authority": {
+      "type": "enum",
+      "enum_values": ["none", "report_only", "validated", "blocking"],
+      "description": "The state held before entering 'stale' — determines whether a stale record auto-demotes (was blocking) or merely downgrades to report_only (was not). Codex finding: without this, a non-wired stale record is stuck.",
+      "required_in_states": ["stale"]
+    }
+  },
+  "states": {
+    "unknown": {
+      "description": "No validation record exists (or it was removed). The gate may RUN report-only but MUST NOT carry --gate.",
+      "type": "initial",
+      "invariants": ["INV-fh-003"]
+    },
+    "report_only": {
+      "description": "A record exists but is not currently valid: check_gate_validation --format json reports passing==false (status!=passed, schema-invalid, or provenance failure). The gate runs and never blocks. NOTE: a fully-validated-but-unwired gate is in 'validated', NOT here — this state means the record itself does not pass.",
+      "invariants": ["INV-fh-003"]
+    },
+    "validated": {
+      "description": "check_gate_validation --format json passing==true: schema ok, status==passed, scanner_version current, journal corroborated. ELIGIBLE to be wired with --gate (wiring is the separate wire_gate event).",
+      "entry_actions": ["emit_gate('check_gate_validation','pass')"],
+      "invariants": ["INV-fh-003", "INV-fh-005"]
+    },
+    "blocking": {
+      "description": "Validated AND wired with --gate. Actively blocks the workflow on a finding. Normal (not terminal) — can go stale, be demoted, or be intentionally un-wired back to validated.",
+      "type": "normal",
+      "invariants": ["INV-fh-003"]
+    },
+    "stale": {
+      "description": "Scanner version or journal provenance no longer matches the record (e.g. #184 added --scanner-version and a subsequent scanner edit bumped the hash). The system must NOT silently remain blocking. previous_authority records where it came from.",
+      "invariants": ["INV-fh-005"]
+    },
+    "demoted": {
+      "description": "Forcibly removed from blocking authority — a production escape matched a seed_class the record certified caught (factory_log demotion_check), a stale-while-blocking record auto-demoted (fail-to-report-only), or the record went missing/invalid while blocking. Record must be re-derived before re-promotion.",
+      "entry_actions": ["emit(DEMOTION, gate=gate, details=reason)"],
+      "invariants": ["INV-fh-003"]
+    }
+  },
+  "transitions": [
+    {
+      "from": "unknown",
+      "to": "report_only",
+      "event": "run_without_record",
+      "guards": [
+        { "id": "G-001", "description": "Gate is invoked; a record exists but check_gate_validation reports passing==false (a gate with NO record at all stays in 'unknown', also report-only in effect)", "expression": "record is not None and check_gate_validation_json(gate)['passing'] is False" }
+      ],
+      "actions": ["run report-only", "print authority line"],
+      "description": "A gate whose record does not (yet) pass runs for signal only."
+    },
+    {
+      "from": "unknown",
+      "to": "validated",
+      "event": "author_record",
+      "guards": [
+        { "id": "G-002", "description": "Author + live-verify + journal a record; check_gate_validation --format json reports passing==true (never the default exit code)", "expression": "check_gate_validation_json(gate)['passing'] is True and record.scanner_version == live_scanner_version(gate) and journaled(ratchet_record_id)" }
+      ],
+      "actions": ["ratchet record --event gate-validation --ref <gate>"],
+      "description": "The #184 path: seed classes + clean corpus + authority boundary, live-verified and journaled."
+    },
+    {
+      "from": "report_only",
+      "to": "validated",
+      "event": "author_record",
+      "guards": [
+        { "id": "G-003", "description": "A complete, corroborated record now passes: check_gate_validation --format json passing==true", "expression": "check_gate_validation_json(gate)['passing'] is True" }
+      ],
+      "actions": ["ratchet record --event gate-validation --ref <gate>"],
+      "description": "An incomplete/failing record is completed and passes."
+    },
+    {
+      "from": "report_only",
+      "to": "unknown",
+      "event": "record_removed",
+      "guards": [
+        { "id": "G-011", "description": "The validation record file was deleted or is no longer present in the canonical validation dir", "expression": "not (validation_dir / f'{gate}.json').exists()" }
+      ],
+      "description": "Codex finding: record deletion returns the gate to the no-record state."
+    },
+    {
+      "from": "validated",
+      "to": "blocking",
+      "event": "wire_gate",
+      "guards": [
+        { "id": "G-004", "description": "Only a validated gate (passing==true via --format json, current scanner_version, journaled provenance) may be wired --gate (INV-fh-003)", "expression": "check_gate_validation_json(gate)['passing'] is True and record.scanner_version == live_scanner_version(gate) and journaled(ratchet_record_id)" }
+      ],
+      "actions": ["workflow invokes gate with --gate"],
+      "description": "Promotion to blocking authority — the core safety edge."
+    },
+    {
+      "from": "validated",
+      "to": "stale",
+      "event": "scanner_or_journal_drift",
+      "guards": [
+        { "id": "G-005", "description": "Live scanner version no longer matches the record, or the journal hash-chain breaks; previous_authority := validated", "expression": "record.scanner_version != live_scanner_version(gate) or not journal_chain_valid()" }
+      ],
+      "actions": ["previous_authority = 'validated'"],
+      "description": "A validated-but-not-yet-blocking record can also go stale on a scanner edit."
+    },
+    {
+      "from": "validated",
+      "to": "report_only",
+      "event": "record_missing_or_invalid",
+      "guards": [
+        { "id": "G-012", "description": "The record regressed without scanner drift: schema-invalid, status!=passed, or otherwise passing==false", "expression": "check_gate_validation_json(gate)['passing'] is False" }
+      ],
+      "description": "Opus (g): a validated record that becomes invalid drops to report_only — validation is continuously re-derived, never cached."
+    },
+    {
+      "from": "blocking",
+      "to": "validated",
+      "event": "unwire_gate",
+      "guards": [
+        { "id": "G-013", "description": "Operator intentionally removes --gate wiring; the record itself still passes", "expression": "gate_wired is False and check_gate_validation_json(gate)['passing'] is True" }
+      ],
+      "actions": ["workflow invokes gate without --gate"],
+      "description": "Opus (i)/codex: intentional un-wiring is a normal edge, not a demotion."
+    },
+    {
+      "from": "blocking",
+      "to": "stale",
+      "event": "scanner_or_journal_drift",
+      "guards": [
+        { "id": "G-006", "description": "A scanner edit changed --scanner-version (or journal broke) while the gate was blocking; previous_authority := blocking", "expression": "record.scanner_version != live_scanner_version(gate) or not journal_chain_valid()" }
+      ],
+      "actions": ["previous_authority = 'blocking'"],
+      "description": "#184 adding --scanner-version to the five gates is precisely what ACTIVATES this edge for them."
+    },
+    {
+      "from": "blocking",
+      "to": "demoted",
+      "event": "escape_matches_certified_seed_class",
+      "guards": [
+        { "id": "G-007", "description": "A production escape matched a seed_class the record certified caught — factory_log.demotion_check(escape.missed_by, escape.seed_class) returns a demotion instruction (real signature)", "expression": "demotion_check(escape.missed_by, escape.seed_class) is not None" }
+      ],
+      "actions": ["emit(DEMOTION, gate=gate, seed_class=escape.seed_class)", "revert to report-only wiring"],
+      "description": "A certified catch that escaped in production forcibly demotes the gate."
+    },
+    {
+      "from": "blocking",
+      "to": "demoted",
+      "event": "record_missing_or_invalid",
+      "guards": [
+        { "id": "G-014", "description": "The record was deleted or regressed to passing==false while the gate was wired --gate — blocking authority cannot outlive its record", "expression": "gate_wired is True and (record is None or check_gate_validation_json(gate)['passing'] is False)" }
+      ],
+      "actions": ["emit(DEMOTION, gate=gate, details='record-missing-or-invalid')", "revert to report-only wiring"],
+      "description": "Opus (g): a blocking gate whose record vanishes/regresses is demoted, never silently kept blocking."
+    },
+    {
+      "from": "stale",
+      "to": "demoted",
+      "event": "auto_demote",
+      "guards": [
+        { "id": "G-008", "description": "Fail-to-report-only policy: a record that went stale WHILE BLOCKING demotes blocking authority. NOTE: stale demotion emits the GENERIC emit(DEMOTION, gate=gate, details='stale') event — factory_log.emit_demotion requires a seed_class, which a staleness (non-escape) demotion does not have", "expression": "previous_authority == 'blocking'" }
+      ],
+      "actions": ["emit(DEMOTION, gate=gate, details='stale')", "revert to report-only wiring"],
+      "description": "The chosen stale fail-mode: stale-while-blocking demotes (never silently blocks, never silently passes as validated)."
+    },
+    {
+      "from": "stale",
+      "to": "report_only",
+      "event": "downgrade_nonblocking_stale",
+      "guards": [
+        { "id": "G-015", "description": "The record went stale while merely validated (never wired) — no blocking authority to demote; it downgrades to report_only until re-derived", "expression": "previous_authority != 'blocking'" }
+      ],
+      "description": "Codex P0 fix: without this edge a non-wired stale record is stuck (auto_demote required previous blocking)."
+    },
+    {
+      "from": "stale",
+      "to": "validated",
+      "event": "re_derive_record",
+      "guards": [
+        { "id": "G-009", "description": "The record is re-authored against the current scanner and re-journaled; check_gate_validation --format json passing==true again", "expression": "record.scanner_version == live_scanner_version(gate) and check_gate_validation_json(gate)['passing'] is True" }
+      ],
+      "actions": ["ratchet record --event gate-validation --ref <gate>"],
+      "description": "A stale record is refreshed rather than demoted."
+    },
+    {
+      "from": "demoted",
+      "to": "validated",
+      "event": "re_derive_and_rejournal",
+      "guards": [
+        { "id": "G-010", "description": "Re-run the seed classes + clean corpus, re-journal, and pass check_gate_validation (--format json passing==true) before re-promotion", "expression": "check_gate_validation_json(gate)['passing'] is True and journaled(new_ratchet_record_id)" }
+      ],
+      "actions": ["ratchet record --event gate-validation --ref <gate>"],
+      "description": "A demoted gate must be re-validated before it can block again — never demoted->blocking directly."
+    }
+  ],
+  "invalid_transitions": [
+    {
+      "from": "unknown",
+      "to": "blocking",
+      "reason": "blocking is unreachable without a passing, corroborated validation record — a gate with no record must never carry --gate (INV-fh-003)."
+    },
+    {
+      "from": "report_only",
+      "to": "blocking",
+      "reason": "a failing/invalid record cannot be wired to block; it must reach 'validated' (passing==true via --format json) first."
+    },
+    {
+      "from": "stale",
+      "to": "blocking",
+      "reason": "a stale record cannot block; scanner_version and journal must corroborate (-> validated) before re-promotion."
+    },
+    {
+      "from": "demoted",
+      "to": "blocking",
+      "reason": "a demoted gate must be re-validated (-> validated) before blocking again; direct demoted->blocking would skip re-derivation."
+    }
+  ],
+  "invariants": [
+    {
+      "id": "INV-fh-001",
+      "description": "Change-coupling has ONE engine. Change-coupling/co-change confidence is computed only by scripts/quality/process.py; hotspots.py consumes it and no other module recomputes co-change (opus correction: #187 reuses, does not rebuild).",
+      "expression": "co_change_confidence_writers == {'scripts/quality/process.py'}",
+      "scope": "global",
+      "category": "consistency",
+      "controls_field": ["coupling.confidence"],
+      "sanctioned_writers": ["scripts/quality/process.py"]
+    },
+    {
+      "id": "INV-fh-002",
+      "description": "Consult cost is derived and single-sourced — scoped to `consult` events only (CLAUDE_CODE records ingest OTEL-reported costs and are out of scope). cost_usd on a consult record is conditionally derived via factory_log.cost_for against config/model_pricing.json: null when either token count is unknown, else exactly cost_for's value. No consult path stores an author-computed dollar figure.",
+      "expression": "record.event == 'consult' implies (record.cost_usd is None if (record.tokens_in is None or record.tokens_out is None) else record.cost_usd == cost_for(record.name, record.tokens_in, record.tokens_out))",
+      "scope": "global",
+      "category": "consistency",
+      "controls_field": ["consult.cost_usd"],
+      "sanctioned_writers": ["scripts/factory_log.py"]
+    },
+    {
+      "id": "INV-fh-003",
+      "description": "No blocking without a passing record. A gate may be wired with --gate in a workflow only if `check_gate_validation.py <gate> --format json` reports passing==true (NEVER inferred from the default exit code, which is 0 in report-only mode even when not validated) with current scanner_version and journaled provenance. The gate-lifecycle machine's core safety property.",
+      "expression": "gate_wired implies (check_gate_validation_json(gate)['passing'] is True and record.scanner_version == live_scanner_version(gate))",
+      "scope": "global",
+      "category": "operational_safety"
+    },
+    {
+      "id": "INV-fh-004",
+      "description": "Validation records live in exactly one place. The validation directory docs/quality/validation/ is defined ONCE. BUG: currently defined twice — factory_log.DEFAULT_VALIDATION_DIR and check_gate_validation.DEFAULT_VALIDATION_DIR — and the two VALUES already differ in form (absolute vs relative), so equality-by-accident cannot be assumed. The fix is an IMPORT: check_gate_validation imports the constant from factory_log (one definition site); check_single_writer will flag any re-definition as an unsanctioned writer.",
+      "expression": "check_gate_validation.DEFAULT_VALIDATION_DIR is factory_log.DEFAULT_VALIDATION_DIR  # import, not a second assignment",
+      "scope": "global",
+      "category": "consistency",
+      "controls_field": ["DEFAULT_VALIDATION_DIR"],
+      "sanctioned_writers": ["scripts/factory_log.py"]
+    },
+    {
+      "id": "INV-fh-005",
+      "description": "Scanner version is hash-derived, never hand-set. Every gate that supports --scanner-version derives it via chief_wiggum.hashing.scanner_version(__file__, *deps) — never a literal constant — and the dep list covers every finding-affecting chief_wiggum import. This makes 'stale record' structurally detectable.",
+      "expression": "for gate in scanner_version_gates: gate.scanner_version == scanner_version(gate.__file__, *gate.deps) and set(gate.deps) >= chief_wiggum_imports(gate)",
+      "scope": "global",
+      "category": "operational_safety"
+    },
+    {
+      "id": "INV-fh-006",
+      "description": "Derived crossing labels are computed, not authored. In architecture.json, trust_zone_crossing/region_crossing (and any propagated carries label) are computed by check_architecture.py from node attributes; the schema permits a null placeholder but ANY authored non-null value is a finding. Prevents a hand-authored 'safe' label masking a real trust-zone violation.",
+      "expression": "all(edge.trust_zone_crossing is None and edge.region_crossing is None for edge in authored_edges)",
+      "scope": "global",
+      "category": "data_integrity",
+      "controls_field": ["edge.trust_zone_crossing", "edge.region_crossing"],
+      "sanctioned_writers": ["scripts/check_architecture.py"]
+    },
+    {
+      "id": "INV-fh-007",
+      "description": "Derived artifacts never enter Plane A. docs/quality/hotspots.json (and any measured/rebuildable artifact) carries NO ARC-/CTR-/INV-/BR- stable IDs, is referenced by NO @cw-trace link, and is surfaced by code_query only as a 'measured' fact. The below-direct ranking is ENFORCED mechanically: code_query._rank_key's LEADING element is the relation tier (direct=0, inferred=1, measured=2), placed before the exact key — so a measured fact can never outrank a direct or inferred one regardless of its exact-match flag.",
+      "expression": "not ID_RE.search(json.dumps(hotspots_json)) and _rank_key(fact)[0] == {'direct': 0, 'inferred': 1, 'measured': 2}[fact.relation]",
+      "scope": "global",
+      "category": "consistency"
+    },
+    {
+      "id": "INV-fh-008",
+      "description": "architecture.json and system-contracts.json cross-refs resolve. Every node/connector referenced by system-contracts.json budget-tree chains and telemetry bindings must name a declared ARC-/EDG- in architecture.json, and vice-versa where declared. Neither model silently invents the other's nodes.",
+      "expression": "budget_tree_refs <= declared_arc_edg_ids and telemetry_bindings_refs <= declared_arc_edg_ids",
+      "scope": "global",
+      "category": "consistency"
+    },
+    {
+      "id": "INV-fh-009",
+      "description": "Comment thread is append-only, order-preserving. TicketContext.comments preserves source (chronological) order and is never re-sorted, de-duplicated, or merged into acceptance_criteria. Amendment semantics depend on order.",
+      "expression": "ctx.comments == source_order(ctx.comments) and 'comments' not in writers_of(ctx.acceptance_criteria)",
+      "scope": "global",
+      "category": "temporal"
+    },
+    {
+      "id": "INV-fh-010",
+      "description": "Comments are context unless promoted to amendments by a defined rule — and amendments alter AC PRESENTATIONALLY only. An amendment (a comment by the issue author or a maintainer — author_association OWNER/MEMBER/COLLABORATOR — carrying an explicit 'AC:' block) may change the acceptance criteria the reviewer is told are in force, rendered in the labeled amendments region of the prompt; the STORED acceptance_criteria field is never rewritten (reconciled with INV-fh-009). A non-authoritative comment is shown as discussion, never as a requirement.",
+      "expression": "rendered_effective_ac == apply_amendments(ctx.acceptance_criteria, ctx.amendments) and stored(ctx.acceptance_criteria) == baseline(ctx.acceptance_criteria) and (alters_rendered_ac(c) implies is_amendment(c))",
+      "scope": "global",
+      "category": "authorization"
+    },
+    {
+      "id": "INV-fh-011",
+      "description": "Usage cost is honest — never a silent zero. tokens_in/tokens_out obey both-tokens-or-null; both are null (never 0, never estimated) when a provider does not surface complete usage; usage_status names the true source (provider-json | sdk-metadata | partial | unavailable); cost_usd is null or nonzero-derived, never a fabricated 0.",
+      "expression": "((tokens_in is None) == (tokens_out is None)) and ((usage_status in ('unavailable', 'partial')) == (tokens_in is None)) and (cost_usd is None or cost_usd != 0.0)",
+      "scope": "global",
+      "category": "data_integrity"
+    },
+    {
+      "id": "INV-fh-012",
+      "description": "Inferred (artifact-derived) bindings are precision-bounded. code_query orient's inferred facts are always labeled 'inferred' and sort below any 'direct' via the leading relation-tier rank key; the lexical matcher must not surface an inferred fact on single common-entity-word overlap alone (#185: IDF-weighting over the epic's own operations/routes or entity+verb combination, stdlib + deterministic). The #187 hotspot fact is a SEPARATE exact-membership tier (relation 'measured', tier 2), never routed through the lexical matcher.",
+      "expression": "fact.relation == 'inferred' implies (_rank_key(fact)[0] == 1 and not single_common_word_overlap(fact)) and fact.relation == 'measured' implies fact.source == 'hotspot-membership'",
+      "scope": "global",
+      "category": "consistency"
+    }
+  ],
+  "derived_from": [
+    { "type": "ticket", "ref": "#184", "description": "gate-validation records + --scanner-version — the machine's spine" },
+    { "type": "ticket", "ref": "#187", "description": "INV-fh-001/007 derived-signal purity" },
+    { "type": "ticket", "ref": "#134", "description": "INV-fh-002/011 consult cost honesty" },
+    { "type": "ticket", "ref": "#174", "description": "INV-fh-006/008 architecture model consistency" },
+    { "type": "ticket", "ref": "#83", "description": "INV-fh-009/010 comment authority" },
+    { "type": "ticket", "ref": "#185", "description": "INV-fh-012 inferred-binding precision" },
+    { "type": "observed_fact", "ref": "codex", "description": "authority/provenance lattice; stale fail-mode; passing==true guard semantics; missing un-wire/record-removal edges" },
+    { "type": "observed_fact", "ref": "opus-validation", "description": "rank-key enforcement; generic DEMOTION emit for stale; demotion_check real signature" }
+  ]
+}

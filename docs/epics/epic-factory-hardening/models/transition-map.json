@@ -1,0 +1,122 @@
+{
+  "entities": [
+    {
+      "name": "GateBlocking-authority",
+      "transitions": [
+        {
+          "from": "unknown",
+          "to": "report_only",
+          "event": "run_without_record",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639132+00:00"
+        },
+        {
+          "from": "unknown",
+          "to": "validated",
+          "event": "author_record",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639253+00:00"
+        },
+        {
+          "from": "report_only",
+          "to": "validated",
+          "event": "author_record",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639254+00:00"
+        },
+        {
+          "from": "report_only",
+          "to": "unknown",
+          "event": "record_removed",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639255+00:00"
+        },
+        {
+          "from": "validated",
+          "to": "blocking",
+          "event": "wire_gate",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639256+00:00"
+        },
+        {
+          "from": "validated",
+          "to": "stale",
+          "event": "scanner_or_journal_drift",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639257+00:00"
+        },
+        {
+          "from": "validated",
+          "to": "report_only",
+          "event": "record_missing_or_invalid",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639258+00:00"
+        },
+        {
+          "from": "blocking",
+          "to": "validated",
+          "event": "unwire_gate",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639259+00:00"
+        },
+        {
+          "from": "blocking",
+          "to": "stale",
+          "event": "scanner_or_journal_drift",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639260+00:00"
+        },
+        {
+          "from": "blocking",
+          "to": "demoted",
+          "event": "escape_matches_certified_seed_class",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639261+00:00"
+        },
+        {
+          "from": "blocking",
+          "to": "demoted",
+          "event": "record_missing_or_invalid",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639261+00:00"
+        },
+        {
+          "from": "stale",
+          "to": "demoted",
+          "event": "auto_demote",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639262+00:00"
+        },
+        {
+          "from": "stale",
+          "to": "report_only",
+          "event": "downgrade_nonblocking_stale",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639263+00:00"
+        },
+        {
+          "from": "stale",
+          "to": "validated",
+          "event": "re_derive_record",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639264+00:00"
+        },
+        {
+          "from": "demoted",
+          "to": "validated",
+          "event": "re_derive_and_rejournal",
+          "status": "missing",
+          "verified_at": "2026-07-20T03:27:33.639265+00:00"
+        }
+      ]
+    }
+  ],
+  "generated_at": "2026-07-20T03:27:33.639266+00:00",
+  "repo": "/Users/patwork/repos/chief-wiggum",
+  "summary": {
+    "total_model_transitions": 15,
+    "covered": 0,
+    "missing": 15,
+    "undocumented": 0
+  }
+}
