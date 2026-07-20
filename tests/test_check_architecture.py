@@ -115,15 +115,22 @@ def test_cross_artifact_undeclared_telemetry_ref_is_finding():
     )
 
 
-def test_cross_artifact_non_id_shaped_hop_is_skipped_not_flagged():
-    """Legacy plain-service-name hops (not ARC-/EDG- shaped) are not treated
-    as an undeclared reference — they predate this cross-ref convention."""
+def test_cross_artifact_non_id_shaped_hop_is_a_finding():
+    """A legacy plain-service-name hop ("gateway", "billing-api") cannot be
+    resolved against the declared model at all — silently skipping it would
+    recreate exactly the INV-fh-008 blind spot this check closes, so it is a
+    visible undeclared-cross-ref finding, never a silent pass."""
+    # @cw-trace verifies INV-fh-008
     arch, sc = _load(EXAMPLE_ARCH), _load(EXAMPLE_SC)
     sc["chains"][0]["hops"][0]["callee"] = "some-legacy-service-name"
     report = ca.check_static(arch, system_contracts=sc)
-    assert not any(
-        f.check == "undeclared-cross-ref" and "some-legacy-service-name" in f.message for f in report.findings
-    )
+    assert not report.ok
+    hits = [
+        f for f in report.findings
+        if f.check == "undeclared-cross-ref" and "some-legacy-service-name" in f.message
+    ]
+    assert hits, "legacy non-ID hop endpoint must produce a visible finding"
+    assert "not an ARC-/EDG- id" in hits[0].message
 
 
 def test_absent_system_contracts_is_not_checked_never_passed():
@@ -387,6 +394,106 @@ def test_non_dict_document_reports_schema_finding_and_does_not_crash():
     report = ca.check_static(["oops", "not", "an", "object"])
     assert not report.ok
     assert any(f.check == "schema" for f in report.findings)
+
+
+def test_non_dict_edge_item_is_a_schema_finding_never_a_crash():
+    """Codex review regression: {"edges": ["bad"]} previously yielded a schema
+    finding and then an AttributeError inside _check_dangling_endpoints. The
+    graph checks must run over the well-shaped remainder — a malformed model
+    ALWAYS ends as findings, never a traceback."""
+    # @cw-trace verifies CTR-fh-020
+    report = ca.check_static({"edges": ["bad"]})  # the exact reviewed document
+    assert not report.ok
+    assert any(f.check == "schema" for f in report.findings)
+
+    # A mixed doc: the bad item is a finding, the good edge is still checked.
+    report = ca.check_static(
+        {
+            "nodes": [_node("ARC-a-001")],
+            "edges": ["bad", _edge("EDG-a-b-001", "ARC-a-001", "ARC-ghost-999")],
+        }
+    )
+    assert any(f.check == "schema" for f in report.findings)
+    assert any(f.check == "dangling-endpoint" for f in report.findings)
+
+
+def test_non_dict_node_item_is_a_schema_finding_never_a_crash():
+    report = ca.check_static({"nodes": ["bad", _node("ARC-a-001")], "edges": []})
+    assert not report.ok
+    assert any(f.check == "schema" for f in report.findings)
+    assert report.nodes == 1  # the well-shaped node is still counted and checked
+
+
+def test_non_dict_edge_item_renders_as_findings_in_json_format(tmp_path, capsys):
+    """The malformed-edge document must also survive the CLI end-to-end,
+    including --format json (never a traceback)."""
+    p = tmp_path / "architecture.json"
+    p.write_text(json.dumps({"edges": ["bad"]}))
+    rc = ca.main([str(p), "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0  # report-only
+    assert out["ok"] is False
+    assert any(f["check"] == "schema" for f in out["findings"])
+    assert ca.main([str(p), "--gate"]) == 1
+
+
+def test_duplicate_node_id_is_a_schema_finding_not_last_wins():
+    """Codex review regression: duplicate ARC- ids previously collapsed
+    last-wins in the node dict — an active node shadowing a retired duplicate
+    hid the retired-node-edge finding entirely. Duplicates are a schema
+    finding BEFORE dict construction."""
+    # @cw-trace verifies CTR-fh-020
+    doc = {
+        "nodes": [
+            _node("ARC-a-001"),
+            _node("ARC-b-001", status="retired"),
+            _node("ARC-b-001", status="active"),  # shadows the retired duplicate
+        ],
+        "edges": [_edge("EDG-a-b-001", "ARC-a-001", "ARC-b-001", active=True)],
+    }
+    report = ca.check_static(doc)
+    assert not report.ok
+    dup = [f for f in report.findings if f.check == "schema" and "duplicate node id" in f.message]
+    assert dup and dup[0].id == "ARC-b-001"
+
+
+def test_duplicate_edge_id_is_a_schema_finding():
+    doc = {
+        "nodes": [_node("ARC-a-001"), _node("ARC-b-001")],
+        "edges": [
+            _edge("EDG-a-b-001", "ARC-a-001", "ARC-b-001"),
+            _edge("EDG-a-b-001", "ARC-b-001", "ARC-a-001"),
+        ],
+    }
+    report = ca.check_static(doc)
+    assert not report.ok
+    assert any(
+        f.check == "schema" and "duplicate edge id" in f.message and f.id == "EDG-a-b-001"
+        for f in report.findings
+    )
+
+
+def test_min_length_is_enforced_by_the_walker_empty_asm_ref():
+    """Codex review regression: the walker ignored minLength while the schema
+    uses it — an empty-string asm ref passed the checker but failed
+    formal_models.py. The two validators must agree."""
+    # @cw-trace verifies CTR-fh-020
+    doc = {
+        "nodes": [
+            _node("ARC-a-001", criticality_tier="tier-1"),
+            _node(
+                "ARC-vendor-001",
+                external=True,
+                trust_zone="restricted",
+                criticality_tier="tier-1",
+                asm_refs=[{"id": "ASM-vendor-001", "evidence": "sla-doc", "ref": ""}],
+            ),
+        ],
+        "edges": [_edge("EDG-a-vendor-001", "ARC-a-001", "ARC-vendor-001", criticality="hard")],
+    }
+    report = ca.check_static(doc)
+    assert not report.ok
+    assert any(f.check == "schema" and "minLength" in f.message for f in report.findings)
 
 
 # --- IT-fh-09: report-only vs --gate exit-mode semantics ---------------------

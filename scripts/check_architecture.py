@@ -272,6 +272,9 @@ def _validate_value(value, schema_node: dict, path: str, root_schema: dict, erro
         pattern = schema_node.get("pattern")
         if pattern and not re.search(pattern, value):
             errors.append((path, f"value {value!r} does not match pattern {pattern}"))
+        min_length = schema_node.get("minLength")
+        if min_length is not None and len(value) < min_length:
+            errors.append((path, f"string {value!r} shorter than minLength {min_length}"))
     elif expected == "number":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             errors.append((path, f"expected number, got {type(value).__name__}"))
@@ -536,10 +539,29 @@ def _check_cross_artifact(nodes: dict, edges: list[dict], system_contracts: dict
     for chain in system_contracts.get("chains") or []:
         cid = chain.get("id", "<chain>")
         for hop in chain.get("hops") or []:
+            if not isinstance(hop, dict):
+                continue  # malformed hop shape is check_budget_tree's schema concern
             for role in ("caller", "callee"):
                 token = hop.get(role)
-                if not token or not CROSS_REF_ID_RE.match(str(token)):
-                    continue  # legacy plain service-name hops are not ID-shaped; not applicable
+                if not token:
+                    continue  # absent endpoint is check_budget_tree's schema concern
+                token = str(token)
+                if not CROSS_REF_ID_RE.match(token):
+                    # A legacy plain service-name hop ("gateway", "billing-api")
+                    # cannot be cross-checked against the declared model at all —
+                    # silently skipping it would recreate exactly the INV-fh-008
+                    # blind spot this check exists to close. Visible finding:
+                    # declare the node/edge and reference its ARC-/EDG- id.
+                    report.findings.append(
+                        Finding(
+                            "undeclared-cross-ref",
+                            token,
+                            f"system-contracts.json chain {cid} hop.{role}={token!r} is not an "
+                            "ARC-/EDG- id — a plain service name cannot be resolved against "
+                            "architecture.json; declare the node/edge and reference its id",
+                        )
+                    )
+                    continue
                 kind = token.split("-", 1)[0]
                 pool = node_ids if kind == "ARC" else edge_ids
                 if token not in pool:
@@ -590,9 +612,39 @@ def check_static(
 
     raw_nodes = doc.get("nodes")
     raw_edges = doc.get("edges")
-    node_list = raw_nodes if isinstance(raw_nodes, list) else []
-    edges = raw_edges if isinstance(raw_edges, list) else []
-    nodes = {n.get("id"): n for n in node_list if isinstance(n, dict) and n.get("id")}
+    # Normalize to dict-only items: a non-dict node/edge already produced a
+    # "schema"-category finding via validate_doc above; the graph checks must
+    # then run over the well-shaped remainder instead of crashing (a malformed
+    # model must ALWAYS end as findings, never a traceback).
+    node_list = [n for n in raw_nodes if isinstance(n, dict)] if isinstance(raw_nodes, list) else []
+    edges = [e for e in raw_edges if isinstance(e, dict)] if isinstance(raw_edges, list) else []
+
+    # Duplicate stable IDs must be a finding BEFORE dict construction: the
+    # last-wins dict below would otherwise silently collapse duplicates (e.g.
+    # an active node shadowing a retired duplicate, hiding its retired-edge
+    # findings).
+    seen_node_ids: set[str] = set()
+    for n in node_list:
+        nid = n.get("id")
+        if not nid:
+            continue
+        if nid in seen_node_ids:
+            report.findings.append(
+                Finding("schema", nid, f"duplicate node id {nid}: declared more than once in nodes[]")
+            )
+        seen_node_ids.add(nid)
+    seen_edge_ids: set[str] = set()
+    for e in edges:
+        eid = e.get("id")
+        if not eid:
+            continue
+        if eid in seen_edge_ids:
+            report.findings.append(
+                Finding("schema", eid, f"duplicate edge id {eid}: declared more than once in edges[]")
+            )
+        seen_edge_ids.add(eid)
+
+    nodes = {n.get("id"): n for n in node_list if n.get("id")}
     report.nodes = len(nodes)
     report.edges = len(edges)
 
