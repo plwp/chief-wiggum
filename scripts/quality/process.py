@@ -48,8 +48,21 @@ def is_code(p: str) -> bool:
     return p.endswith(CODE) and not EXCLUDE.search(p)
 
 
-def analyze(repo: str) -> dict:
-    """Compute process/history metrics for ``repo``. Never raises on empty repos."""
+# Minimum co-changes for a pair to count as "coupled" at all — below this,
+# two files sharing a handful of commits is noise, not a Tornhill temporal
+# coupling signal. Documented (not a magic number): #187 (hotspots.py) reuses
+# this exact threshold via `compute_coupling`'s ``min_co`` default so the two
+# consumers of change coupling (this module's own report and the hotspot
+# composer) never silently diverge on what "coupled" means.
+DEFAULT_MIN_CO = 4
+
+
+def _parse_commits(repo: str) -> list[dict]:
+    """Parse ``git log --numstat`` into ``[{author, subject, files:[(path, churn)]}]``,
+    restricted to code files (``is_code``). The ONE git-log parse this module
+    does — ``analyze()`` and ``compute_coupling()`` both build on this instead
+    of each re-invoking/re-parsing ``git log`` (INV-fh-001: a second parser of
+    the same history is how a second coupling definition would sneak in)."""
     log = subprocess.run(
         ["git", "-C", repo, "log", "--no-merges", f"--format={SENT}%H\t%an\t%s", "--numstat"],
         capture_output=True, text=True,
@@ -68,11 +81,16 @@ def analyze(repo: str) -> dict:
                 add = 0 if parts[0] == "-" else int(parts[0])
                 dele = 0 if parts[1] == "-" else int(parts[1])
                 cur["files"].append((parts[2], add + dele))
+    return commits
 
-    if not commits:
-        return {"repo": repo.rstrip("/").split("/")[-1], "commits_analyzed": 0}
 
-    # ---- change coupling ----
+def _coupling_from_commits(commits: list[dict], min_co: int = DEFAULT_MIN_CO) -> list[dict]:
+    """Change-coupling pairs (Tornhill co-change) from already-parsed ``commits``.
+    Full pair list, sorted (confidence, co_changes) desc — NOT truncated. This is
+    the single computation both ``analyze()`` (which keeps its own top-8 report
+    slice) and ``compute_coupling()`` (the full-set entry point #187's
+    ``hotspots.py`` calls) share, so there is exactly one co-change definition
+    (INV-fh-001)."""
     pair_co: Counter = Counter()
     file_commits: Counter = Counter()
     for c in commits:
@@ -83,7 +101,7 @@ def analyze(repo: str) -> dict:
             pair_co[(a, b)] += 1
     coupling: list[dict] = []
     for (a, b), co in pair_co.items():
-        if co < 4:
+        if co < min_co:
             continue
         conf = co / min(file_commits[a], file_commits[b])
         cross_dir = a.rsplit("/", 1)[0] != b.rsplit("/", 1)[0]
@@ -92,6 +110,59 @@ def analyze(repo: str) -> dict:
             "confidence": round(conf, 2), "cross_dir": cross_dir,
         })
     coupling.sort(key=lambda x: (x["confidence"], x["co_changes"]), reverse=True)
+    return coupling
+
+
+def compute_coupling(repo: str, min_co: int = DEFAULT_MIN_CO) -> list[dict]:
+    """
+    Public, standalone change-coupling entry point: the FULL pair set (no
+    top-8 truncation), for consumers that need every file's coupled partners
+    rather than just the repo-wide top few — #187's ``hotspots.py`` composes
+    this into ``coupled_with`` for each hotspot file. Same computation
+    ``analyze()`` uses internally (via ``_coupling_from_commits``); this is
+    the ONE change-coupling engine in ``scripts/quality/`` (INV-fh-001) —
+    callers reuse it rather than re-deriving co-change from git history.
+
+    @cw-trace guards CTR-fh-030 INV-fh-001
+    """
+    return _coupling_from_commits(_parse_commits(repo), min_co=min_co)
+
+
+def partners_by_file(pairs: list[dict]) -> dict[str, list[dict]]:
+    """Bidirectional index over ``compute_coupling``'s pair list: for each
+    file, its coupled partners shaped ``{file, confidence, co_changes}``,
+    sorted (confidence desc, co_changes desc, file asc) for determinism.
+
+    ``coupling.confidence`` is single-write-path (INV-fh-001,
+    ``sanctioned_writers: scripts/quality/process.py``) — this is where that
+    field is authored into a per-file partner SHAPE, so downstream composers
+    (#187's ``hotspots.py``) relay these dicts rather than re-declaring the
+    field themselves.
+
+    @cw-trace guards INV-fh-001
+    """
+    out: dict[str, list[dict]] = defaultdict(list)
+    for p in pairs:
+        out[p["a"]].append({"file": p["b"], "confidence": p["confidence"], "co_changes": p["co_changes"]})
+        out[p["b"]].append({"file": p["a"], "confidence": p["confidence"], "co_changes": p["co_changes"]})
+    for f in out:
+        out[f].sort(key=lambda c: (-c["confidence"], -c["co_changes"], c["file"]))
+    return dict(out)
+
+
+def analyze(repo: str) -> dict:
+    """Compute process/history metrics for ``repo``. Never raises on empty repos."""
+    commits = _parse_commits(repo)
+
+    if not commits:
+        return {"repo": repo.rstrip("/").split("/")[-1], "commits_analyzed": 0}
+
+    # ---- change coupling ----
+    file_commits: Counter = Counter()
+    for c in commits:
+        for f in {f for f, _ in c["files"]}:
+            file_commits[f] += 1
+    coupling = _coupling_from_commits(commits, min_co=DEFAULT_MIN_CO)
 
     # ---- change entropy (Hassan HCM), normalized 0..1 ----
     total = sum(file_commits.values())

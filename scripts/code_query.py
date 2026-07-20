@@ -716,6 +716,113 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
     return facts
 
 
+_HOTSPOTS_PATH = Path("docs") / "quality" / "hotspots.json"
+
+
+def _load_hotspots(repo_root: Path) -> dict | None:
+    """Read `docs/quality/hotspots.json` fresh (never cached — same live-scan
+    discipline as everything else this module reads). Missing/unparsable is a
+    silent `None`: the hotspot fact is advisory, never a hard dependency."""
+    p = Path(repo_root) / _HOTSPOTS_PATH
+    if not p.is_file():
+        return None
+    try:
+        doc = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("hotspots"), list):
+        return None
+    return doc
+
+
+def _hotspot_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
+    """The #187 `measured` fact tier: EXACT file-path membership in
+    `docs/quality/hotspots.json` ONLY — never `_path_matches_literal_segments`
+    or any other lexical channel (INV-fh-007/012). A file gets a hotspot fact
+    if it IS a top-decile entry itself, or is a `coupled_with` partner of one
+    (still exact membership: the partner path is read verbatim off that
+    entry, never lexically re-derived). Provenance carries the generating
+    `git_sha` so a stale artifact is visibly attributable.
+
+    @cw-trace guards CTR-fh-033 CTR-fh-034 INV-fh-007 INV-fh-012
+    """
+    doc = _load_hotspots(repo_root)
+    if not doc:
+        return []
+    sha = doc.get("git_sha")
+    authority = doc.get("authority", "")
+    by_file = {h.get("file"): h for h in doc["hotspots"] if isinstance(h, dict) and h.get("file")}
+
+    own = by_file.get(rel)
+    facts: list[Fact] = []
+    if own is not None and own.get("decile") == 10:
+        facts.append(Fact(
+            kind="hotspot",
+            id=None,
+            statement=(
+                f"top-decile hotspot (score={own.get('score')}, "
+                f"churn={own.get('churn')}, complexity={own.get('complexity')}): {authority}"
+            ),
+            handle=f"{_HOTSPOTS_PATH}#hotspots[{rel}]",
+            epic=None,
+            extra={
+                "relation": "measured",
+                "decile": own.get("decile"),
+                "score": own.get("score"),
+                "churn_score": own.get("norm_churn"),
+                "complexity_score": own.get("norm_complexity"),
+                "coupled_with": own.get("coupled_with", []),
+                "trend": own.get("trend"),
+            },
+            provenance={
+                **_file_provenance(repo_root, rel),
+                "derived": True,
+                "generating_sha": sha,
+            },
+            exact=True,
+            proximity=0,
+        ))
+    else:
+        # Coupled-partner path: rel is not itself a top-decile hotspot, but a
+        # top-decile hotspot's coupled_with names it verbatim — still exact
+        # membership, just on the OTHER record's field, never a lexical guess.
+        for h in doc["hotspots"]:
+            if not isinstance(h, dict) or h.get("decile") != 10:
+                continue
+            for partner in h.get("coupled_with") or []:
+                if not isinstance(partner, dict) or partner.get("file") != rel:
+                    continue
+                facts.append(Fact(
+                    kind="hotspot",
+                    id=None,
+                    statement=(
+                        f"coupled with top-decile hotspot {h.get('file')} "
+                        f"(confidence={partner.get('confidence')}, "
+                        f"co_changes={partner.get('co_changes')}): {authority}"
+                    ),
+                    handle=f"{_HOTSPOTS_PATH}#hotspots[{h.get('file')}]",
+                    epic=None,
+                    # coupling.confidence is single-write-path (INV-fh-001,
+                    # sanctioned_writers: scripts/quality/process.py) — relay
+                    # the already-computed sub-fields off `partner` rather than
+                    # re-declaring the field with a fresh dict-literal key.
+                    extra={
+                        "relation": "measured",
+                        "coupled_hotspot": h.get("file"),
+                        **{k: partner.get(k) for k in ("confidence", "co_changes")},
+                    },
+                    provenance={
+                        **_file_provenance(repo_root, rel),
+                        "derived": True,
+                        "generating_sha": sha,
+                    },
+                    exact=True,
+                    proximity=0,
+                ))
+                break  # one fact per coupled owning hotspot is plenty
+    return facts
+
+
 def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     rel = _norm(path)
@@ -726,6 +833,7 @@ def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAUL
             query_provenance=_query_provenance(repo_root, epics),
         )
     facts = governing_facts_for_file(repo_root, rel, epics)
+    facts += _hotspot_facts_for_file(repo_root, rel)
     warnings = [w for e in epics for w in e.warnings]
     if not epics:
         warnings.append("no docs/epics/* found — orienting on annotations/design only would need epic context")
@@ -1365,6 +1473,7 @@ def _resolve_json_fragment(data: dict, fragment: str):
     in any envelope must round-trip through `show`:
 
     - ``pages[<route>]``                      (ui-spec.json)
+    - ``hotspots[<file>]``                    (docs/quality/hotspots.json, #187)
     - ``invariants[<ID>]``                    (state-machines.json)
     - ``transitions[<from>-><to>]``           (state-machines.json)
     - ``invalid_transitions[<from>-><to>]``   (state-machines.json)
@@ -1378,6 +1487,13 @@ def _resolve_json_fragment(data: dict, fragment: str):
     m = re.match(r"^pages\[(.+)\]$", fragment)
     if m:
         return (data.get("pages") or {}).get(m.group(1))
+    m = re.match(r"^hotspots\[(.+)\]$", fragment)
+    if m:
+        want = m.group(1)
+        for h in data.get("hotspots", []) or []:
+            if isinstance(h, dict) and h.get("file") == want:
+                return h
+        return None
     m = re.match(r"^invariants\[(.+)\]$", fragment)
     if m:
         want = m.group(1).lower()

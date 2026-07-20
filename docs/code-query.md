@@ -154,10 +154,28 @@ An un-annotated handler still gets a real answer:
   collisions, it does not eliminate lexical matching's inherent ceiling. These
   facts are always labeled `"relation": "inferred"` and ranked below any
   `direct` fact via `_rank_key`'s **leading relation-tier element**
-  (`direct=0 < inferred=1 < measured=2` — the third tier is reserved for the
-  #187 hotspot fact, forward-compatible as of #185 with no producer yet) —
-  real annotations remain the precise path when a file's governing contract
-  must be unambiguous.
+  (`direct=0 < inferred=1 < measured=2`) — real annotations remain the precise
+  path when a file's governing contract must be unambiguous.
+
+## The `measured` tier: hotspot facts (#187)
+
+`orient` also surfaces a `kind: "hotspot"`, `relation: "measured"` fact when
+the queried file — or a `coupled_with` partner of it — appears as a
+top-decile entry in `docs/quality/hotspots.json` (produced by
+`scripts/hotspot_discovery.py`, composed from `scripts/quality/{churn,
+complexity,process}.py`). This is a **third, separate channel** from the
+`inferred` lexical matcher above: membership is checked by exact file-path
+equality against `hotspots.json` ONLY — `_hotspot_facts_for_file` never calls
+`_path_matches_literal_segments` (INV-fh-007/012). A file that merely *looks*
+like a hotspot path (shares a word) but isn't listed gets no hotspot fact; a
+file that IS listed gets exactly one, with `provenance.generating_sha` set to
+the `git_sha` the record was generated at. The leading relation-tier rank key
+still dominates: a `direct` `@cw-trace` annotation on the same file always
+sorts before its `measured` hotspot fact, regardless of either fact's `exact`
+flag. `docs/quality/hotspots.json` itself carries no stable IDs and is
+referenced by no `@cw-trace` link — it's a rebuildable, observational
+artifact (INV-fh-007), and this fact is advisory: it never gates anything,
+and its absence for a file is not evidence the file is safe.
 
 ## Validation
 
