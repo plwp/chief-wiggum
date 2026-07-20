@@ -13,6 +13,16 @@ from typing import Any
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "providers.json"
 DEFAULT_LENSES = Path(__file__).resolve().parents[1] / "config" / "lenses.json"
 
+# Default wall-clock budget (seconds) for the claude-interactive delegate when it is
+# running in an OPTIONAL role slot, used when the role doesn't set its own
+# ``optional_timeout_seconds`` (chief-wiggum#188). claude-interactive timed out at its
+# full 1800s budget on two consecutive large-prompt consults while contributing
+# nothing — since it is never a role's required voice, there is no reason a role's
+# wall-clock (required providers finish in 10-20 minutes) should be held hostage to a
+# voice that's allowed to fail. Deliberately shorter than every required consult
+# TOOL_TIMEOUTS entry: an optional provider should fail fast, not merely "less slow".
+DEFAULT_OPTIONAL_TIMEOUT_SECONDS = 300
+
 
 @dataclass(frozen=True)
 class Provider:
@@ -187,6 +197,27 @@ def plan_role(
         missing_required=tuple(missing_required),
         skipped_optional=tuple(skipped_optional),
     )
+
+
+def optional_provider_timeout(
+    role: Role,
+    provider_name: str,
+    default: int = DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
+) -> int | None:
+    """Return the wall-clock cap (seconds) for ``provider_name``'s delegate call
+    when it runs in ``role``'s OPTIONAL slot, else ``None`` (chief-wiggum#188).
+
+    A required provider gets its full budget (``None`` = no override). An
+    optional provider is capped to the role's ``optional_timeout_seconds`` when
+    set, otherwise ``default``. This is the SINGLE source of the required/optional
+    timeout decision — both ``consult_ai.py``'s own ``--role`` quorum and the
+    ``/implement`` review pipeline (``chief_wiggum/review.run_review``) call it,
+    so an optional ``claude-interactive`` fails fast on BOTH paths instead of
+    holding a role's wall-clock to the delegate's 1800s budget.
+    """
+    if provider_name in role.required:
+        return None
+    return role.optional_timeout_seconds if role.optional_timeout_seconds is not None else default
 
 
 def validate_config(

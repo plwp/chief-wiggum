@@ -528,7 +528,7 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
 
     captured = {}
 
-    def execute(provider, prompt):
+    def execute(provider, prompt, timeout_override=None):
         captured["prompt"] = prompt
         return "A substantive review with findings to report here."
 
@@ -579,7 +579,7 @@ def test_run_review_applies_lens_charter_per_provider(tmp_path, monkeypatch):
 
     captured = {}
 
-    def execute(provider, prompt):
+    def execute(provider, prompt, timeout_override=None):
         captured[provider.name] = prompt
         return "A substantive review with findings to report here."
 
@@ -630,7 +630,7 @@ def test_run_review_fails_fast_on_lens_for_provider_not_in_role(tmp_path, monkey
     monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
     called: list[str] = []
 
-    def execute(provider, prompt):
+    def execute(provider, prompt, timeout_override=None):
         called.append(provider.name)
         return "A substantive review with findings to report here."
 
@@ -663,7 +663,7 @@ def test_run_review_fails_fast_on_unknown_lens_even_for_optional_provider(tmp_pa
     monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
     called: list[str] = []
 
-    def execute(provider, prompt):
+    def execute(provider, prompt, timeout_override=None):
         called.append(provider.name)
         return "A substantive review with findings to report here."
 
@@ -695,5 +695,126 @@ def test_run_review_missing_required_provider_raises(tmp_path, monkeypatch):
     with pytest.raises(review.ReviewError, match="missing required"):
         review.run_review(
             _ticket(), tmp_path, "main", tmp_path / "o",
-            template=TEMPLATE, config={}, execute=lambda p, pr: "x", runner=runner,
+            template=TEMPLATE, config={}, execute=lambda p, pr, to=None: "x", runner=runner,
         )
+
+
+# --- optional claude-interactive fails fast on the /implement review path ----
+#
+# chief-wiggum#188 (folded #201): the /implement review pipeline runs the
+# reviewer role's quorum with claude-interactive optional. Before this fix, a
+# hung/slow interactive session in that optional slot held the whole review
+# quorum to the delegate's 1800s budget. run_review must now hand each OPTIONAL
+# provider the same shortened timeout consult_ai.py's own --role path uses (via
+# the shared providers.optional_provider_timeout), so it fails fast and the
+# required provider still succeeds.
+
+
+def _delegate_plan():
+    role = Role(name="reviewer", required=("codex",), optional=("claude-interactive",))
+    return RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex"),),
+        optional=(Provider("claude-interactive", "delegate", True, delegate="claude-interactive"),),
+        missing_required=(),
+        skipped_optional=(),
+    )
+
+
+def test_run_review_caps_hung_optional_delegate_and_still_succeeds(tmp_path, monkeypatch):
+    import consult_ai
+
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _delegate_plan())
+
+    captured_timeouts: dict[str, int] = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured_timeouts[tool] = timeout
+        if tool == "codex":
+            return "A substantive review with findings to report here.", ""
+        # claude-interactive "hangs": its process-group runner raises once ITS
+        # (now-shortened) deadline elapses.
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+
+    # The real review-path execute: exactly run_review.py's, routing through
+    # consult_provider so the timeout_override review.run_review computes is
+    # actually threaded to the delegate.
+    def execute(provider, prompt, timeout_override=None):
+        return consult_ai.consult_provider(
+            provider, prompt, None, str(tmp_path), timeout_override=timeout_override
+        )
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, config={}, execute=execute, runner=runner,
+    )
+
+    # Required provider (codex) carried the role -> overall OK despite the
+    # optional delegate timing out.
+    assert manifest.ok is True
+    statuses = {r["name"]: r["status"] for r in manifest.provider_manifest["results"]}
+    assert statuses == {"codex": "ok", "claude-interactive": "failed"}
+
+    # The measurable fix: the optional delegate's budget is far below its 1800s
+    # default, so the timed-out call never gates the review quorum's wall-clock.
+    assert captured_timeouts["claude-interactive"] < consult_ai.TOOL_TIMEOUTS["claude-interactive"]
+    assert captured_timeouts["claude-interactive"] == consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS + 30
+
+
+def test_run_review_honors_per_role_optional_timeout_on_review_path(tmp_path, monkeypatch):
+    import consult_ai
+
+    role = Role(
+        name="reviewer",
+        required=("codex",),
+        optional=("claude-interactive",),
+        optional_timeout_seconds=42,
+    )
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex"),),
+        optional=(Provider("claude-interactive", "delegate", True, delegate="claude-interactive"),),
+        missing_required=(),
+        skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    captured_timeouts: dict[str, int] = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured_timeouts[tool] = timeout
+        if tool == "codex":
+            return "A substantive review with findings to report here.", ""
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+
+    def execute(provider, prompt, timeout_override=None):
+        return consult_ai.consult_provider(
+            provider, prompt, None, str(tmp_path), timeout_override=timeout_override
+        )
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, config={}, execute=execute, runner=runner,
+    )
+
+    assert captured_timeouts["claude-interactive"] == 42 + 30

@@ -40,9 +40,11 @@ from keychain import get_secret
 from providers import (
     DEFAULT_CONFIG,
     DEFAULT_LENSES,
+    DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
     Provider,
     load_config,
     load_lenses,
+    optional_provider_timeout,
     plan_role,
     prompt_for_provider,
     run_role_quorum,
@@ -66,15 +68,12 @@ TIMEOUT = 600  # fallback
 # stream-watchdog; a periodic line proves the consult is alive and progressing.
 HEARTBEAT_INTERVAL = 30
 
-# Default wall-clock budget (seconds) for the claude-interactive delegate when it is
-# running in an OPTIONAL role slot, used when the role doesn't set its own
-# ``optional_timeout_seconds`` (chief-wiggum#188). claude-interactive timed out at its
-# full 1800s budget on two consecutive large-prompt consults while contributing
-# nothing — since it is never a role's required voice, there is no reason a role's
-# wall-clock (required providers finish in 10-20 minutes) should be held hostage to a
-# voice that's allowed to fail. Deliberately shorter than every required TOOL_TIMEOUTS
-# entry: an optional provider should fail fast, not merely "less slow".
-DEFAULT_OPTIONAL_TIMEOUT_SECONDS = 300
+# ``DEFAULT_OPTIONAL_TIMEOUT_SECONDS`` and ``optional_provider_timeout`` are the SINGLE
+# source of the required/optional delegate-timeout decision — they live in providers.py
+# (chief-wiggum#188) so both this module's ``--role`` quorum and the /implement review
+# pipeline (chief_wiggum/review.run_review) cap an optional claude-interactive the same
+# way. Re-exported here (imported above) for callers/tests that reference
+# ``consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS``.
 
 # Default model for Vertex AI path (override with --model)
 DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
@@ -817,21 +816,17 @@ def main():
         # provider gets the identical shared prompt; a provider mapped to a lens
         # (config/providers.json role.lenses) additionally gets its charter
         # appended (chief-wiggum#163) — the shared body itself never changes.
-        required_names = {p.name for p in plan.required}
-
         def execute(provider: Provider) -> str:
             provider_prompt = prompt_for_provider(plan.role, provider.name, prompt, lenses)
             # An optional provider's delegate call is capped to a much shorter
             # wall-clock than a required one (chief-wiggum#188): it's allowed to
             # fail, so it should fail FAST rather than holding the whole role's
-            # quorum to claude-interactive's full 1800s budget.
-            timeout_override = None
-            if provider.name not in required_names:
-                timeout_override = (
-                    plan.role.optional_timeout_seconds
-                    if plan.role.optional_timeout_seconds is not None
-                    else DEFAULT_OPTIONAL_TIMEOUT_SECONDS
-                )
+            # quorum to claude-interactive's full 1800s budget. The required/optional
+            # decision is centralized in providers.optional_provider_timeout so the
+            # review pipeline caps the same way.
+            timeout_override = optional_provider_timeout(
+                plan.role, provider.name, DEFAULT_OPTIONAL_TIMEOUT_SECONDS
+            )
             return consult_provider(
                 provider, provider_prompt, args.model, args.cwd,
                 ticket=args.ticket, timeout_override=timeout_override,
