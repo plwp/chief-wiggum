@@ -205,34 +205,34 @@ def _codex_configured_model() -> str | None:
     return model if isinstance(model, str) and model.strip() else None
 
 
-def _codex_agent_text(stdout: str) -> str:
-    """Reconstruct the plain response text from ``codex exec --json``'s event
-    stream: the concatenation of ``agent_message`` ``item.completed`` events, in
-    order — equivalent to what plain (non-JSON) ``codex exec`` printed as its final
-    answer (verified against a live probe of codex-cli 0.142.5)."""
-    parts: list[str] = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+def _as_int(value) -> int | None:
+    """Coerce a token count from an untrusted provider payload to an ``int``.
+
+    Accepts int, integral float, and numeric string; anything else (bool, None,
+    junk string, list, ...) is ``None`` — never trusted, never guessed. This is
+    the parser-boundary validation that keeps a drifted usage payload from
+    poisoning downstream cost math: a malformed count degrades the usage
+    (partial/unavailable), it never crashes or half-prices the record.
+    """
+    if isinstance(value, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") == "item.completed":
-            item = event.get("item") or {}
-            if item.get("type") == "agent_message" and "text" in item:
-                parts.append(item["text"])
-    return "\n".join(parts)
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
-def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> Usage:
-    """Parse ``codex exec --json``'s JSONL event stream (``turn.completed.usage``)
-    for tokens. Scans BOTH stdout and stderr (CTR-fh-012) even though a live probe
-    against codex-cli 0.142.5 showed the payload lands on stdout only — a future
-    CLI version moving it to stderr must not silently lose it."""
-    resolved = model_override or _codex_configured_model()
-    for stream in (stdout, stderr):
+def _iter_jsonl_events(*streams: str):
+    """Yield each well-formed JSON *object* from JSONL streams, skipping
+    non-JSON lines, malformed lines, and non-dict values — a drifted event
+    shape must degrade parsing, never raise out of it."""
+    for stream in streams:
         for line in stream.splitlines():
             line = line.strip()
             if not line.startswith("{"):
@@ -241,17 +241,54 @@ def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> 
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") != "turn.completed":
-                continue
-            usage = event.get("usage") or {}
-            tin, tout = usage.get("input_tokens"), usage.get("output_tokens")
-            if tin is None and tout is None:
-                continue
-            if tin is None or tout is None:
-                # one-sided payload: both-tokens-or-null (INV-fh-011)
-                return Usage(usage_status="partial", resolved_model=resolved)
-            return Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
-                         resolved_model=resolved)
+            if isinstance(event, dict):
+                yield event
+
+
+def _codex_agent_text(stdout: str, stderr: str = "") -> str:
+    """Reconstruct the plain response text from ``codex exec --json``'s event
+    stream: the concatenation of ``agent_message`` ``item.completed`` events, in
+    order — equivalent to what plain (non-JSON) ``codex exec`` printed as its final
+    answer (verified against a live probe of codex-cli 0.142.5). Scans BOTH
+    streams (CTR-fh-012) and is type-tolerant: a drifted event shape (item not a
+    dict, text not a string) is skipped, never raised — the caller falls back to
+    the raw stream when nothing usable is found (CTR-fh-011)."""
+    parts: list[str] = []
+    for event in _iter_jsonl_events(stdout, stderr):
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> Usage:
+    """Parse ``codex exec --json``'s JSONL event stream (``turn.completed.usage``)
+    for tokens. Scans BOTH stdout and stderr (CTR-fh-012) even though a live probe
+    against codex-cli 0.142.5 showed the payload lands on stdout only — a future
+    CLI version moving it to stderr must not silently lose it. Token values are
+    validated at this boundary (``_as_int``): a present-but-malformed count
+    degrades to 'partial' under both-tokens-or-null, never a crash."""
+    resolved = model_override or _codex_configured_model()
+    for event in _iter_jsonl_events(stdout, stderr):
+        if event.get("type") != "turn.completed":
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        raw_tin, raw_tout = usage.get("input_tokens"), usage.get("output_tokens")
+        if raw_tin is None and raw_tout is None:
+            continue
+        tin, tout = _as_int(raw_tin), _as_int(raw_tout)
+        if tin is None or tout is None:
+            # one-sided or malformed payload: both-tokens-or-null (INV-fh-011)
+            return Usage(usage_status="partial", resolved_model=resolved)
+        return Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
+                     resolved_model=resolved)
     return Usage(usage_status="unavailable", resolved_model=resolved)
 
 
@@ -280,10 +317,17 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
         cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
         cwd=cwd, tool="codex",
     )
-    text = _codex_agent_text(out)
-    # @cw-trace guards CTR-fh-011 — usage parsing is best-effort; a parse
-    # failure never fails the consult itself. The text output above is
-    # produced independently and is unaffected.
+    # @cw-trace guards CTR-fh-011 — BOTH text reconstruction and usage parsing
+    # are best-effort: a drifted event shape must never turn a successful
+    # provider call into a failed consult. If no agent_message text can be
+    # recovered, fall back to the raw stream so the consult's product is
+    # degraded, never lost.
+    try:
+        text = _codex_agent_text(out, err)
+    except Exception:
+        text = ""
+    if not text:
+        text = out
     try:
         usage = _parse_codex_usage(out, err, model)
     except Exception:
@@ -291,14 +335,49 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
     return text, usage
 
 
+def _gemini_usage_from_payload(payload: dict) -> Usage:
+    """Extract usage from a parsed gemini JSON envelope's ``stats.models``
+    section, defensively: any drifted sub-shape (models not a dict, tokens not a
+    dict, non-int counts) degrades to unavailable/partial — never raises."""
+    stats = payload.get("stats")
+    models = stats.get("models") if isinstance(stats, dict) else None
+    if not isinstance(models, dict) or not models:
+        return Usage(usage_status="unavailable")
+
+    def _candidates(entry) -> int:
+        tokens = entry.get("tokens") if isinstance(entry, dict) else None
+        return (_as_int(tokens.get("candidates")) or 0) if isinstance(tokens, dict) else 0
+
+    # A session can bill more than one model (e.g. a router/tool-loop turn);
+    # the one with the most output tokens produced the final answer.
+    model_id, model_stats = max(models.items(), key=lambda kv: _candidates(kv[1]))
+    resolved = model_id if isinstance(model_id, str) else None
+    tokens = model_stats.get("tokens") if isinstance(model_stats, dict) else None
+    if not isinstance(tokens, dict):
+        return Usage(usage_status="unavailable", resolved_model=resolved)
+    raw_tin, raw_tout = tokens.get("prompt"), tokens.get("candidates")
+    if raw_tin is None and raw_tout is None:
+        return Usage(usage_status="unavailable", resolved_model=resolved)
+    tin, tout = _as_int(raw_tin), _as_int(raw_tout)
+    if tin is None or tout is None:
+        return Usage(usage_status="partial", resolved_model=resolved)
+    return Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
+                 resolved_model=resolved)
+
+
 def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str, Usage]:
     """Parse ``gemini --output-format json``'s single JSON object: ``{session_id,
     response, stats:{models:{<id>:{tokens:{prompt,candidates,...}}}}}`` (shape
     verified from the installed @google/gemini-cli 0.36.0 bundle's
-    ``JsonFormatter``/``UiTelemetryService``). Falls back to the raw stdout as the
-    response text if neither stream parses as that payload — a usage-capture
-    problem never loses the consult's actual output (CTR-fh-011). Both stdout and
-    stderr are checked (CTR-fh-012)."""
+    ``JsonFormatter``/``UiTelemetryService``). Both stdout and stderr are checked
+    (CTR-fh-012).
+
+    Text extraction and usage extraction are SPLIT (CTR-fh-011): once the
+    envelope parses and carries ``response``, that response text is the
+    consult's product — a drifted/malformed ``stats`` section degrades ONLY the
+    usage (``unavailable``), it never causes the caller to receive the raw JSON
+    envelope instead of the answer. Only a fully unparseable envelope falls
+    back to the raw stdout (matching the pre-#134 text-mode contract)."""
     for stream in (stdout, stderr):
         stripped = stream.strip()
         if not stripped:
@@ -307,26 +386,16 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str, Usage]:
             payload = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if "response" not in payload:
+        if not isinstance(payload, dict) or "response" not in payload:
             continue
-        response_text = payload.get("response") or ""
-        models = ((payload.get("stats") or {}).get("models")) or {}
-        if not models:
-            return response_text, Usage(usage_status="unavailable")
-        # A session can bill more than one model (e.g. a router/tool-loop turn);
-        # the one with the most output tokens produced the final answer.
-        model_id, model_stats = max(
-            models.items(),
-            key=lambda kv: (kv[1].get("tokens") or {}).get("candidates") or 0,
-        )
-        t = model_stats.get("tokens") or {}
-        tin, tout = t.get("prompt"), t.get("candidates")
-        if tin is None and tout is None:
-            return response_text, Usage(usage_status="unavailable", resolved_model=model_id)
-        if tin is None or tout is None:
-            return response_text, Usage(usage_status="partial", resolved_model=model_id)
-        return response_text, Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
-                                    resolved_model=model_id)
+        response_text = payload.get("response")
+        if not isinstance(response_text, str):
+            response_text = ""
+        try:
+            usage = _gemini_usage_from_payload(payload)
+        except Exception:
+            usage = Usage(usage_status="unavailable")
+        return response_text, usage
     # Neither stream parsed as the expected JSON payload — degrade to the raw
     # stdout as the response text (matches the pre-#134 text-mode contract).
     return stdout, Usage(usage_status="unavailable")
@@ -368,10 +437,13 @@ def _parse_vertex_usage(response, requested_model: str) -> Usage:
     meta = getattr(response, "usage_metadata", None)
     if meta is None:
         return Usage(usage_status="unavailable", resolved_model=resolved)
-    tin, tout = meta.prompt_token_count, meta.candidates_token_count
-    if tin is None and tout is None:
+    raw_tin = getattr(meta, "prompt_token_count", None)
+    raw_tout = getattr(meta, "candidates_token_count", None)
+    if raw_tin is None and raw_tout is None:
         return Usage(usage_status="unavailable", resolved_model=resolved)
+    tin, tout = _as_int(raw_tin), _as_int(raw_tout)
     if tin is None or tout is None:
+        # one-sided or malformed count: both-tokens-or-null (INV-fh-011)
         return Usage(usage_status="partial", resolved_model=resolved)
     return Usage(tokens_in=tin, tokens_out=tout, usage_status="sdk-metadata", resolved_model=resolved)
 
@@ -408,17 +480,57 @@ def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None
     return text, usage
 
 
-def _parse_claude_output(stdout: str, stderr: str, model_override: str | None) -> tuple[str, Usage]:
-    """Parse ``claude -p --output-format json``'s result envelope (shape verified
-    live against Claude Code 2.1.210): ``{result, usage:{input_tokens,output_tokens,
-    ...}, modelUsage:{<model-id>:{inputTokens,outputTokens,...}}}``.
+def _claude_usage_from_payload(payload: dict, model_override: str | None) -> Usage:
+    """Extract usage from a parsed claude JSON envelope's ``usage``/``modelUsage``
+    sections, defensively: any drifted sub-shape (usage not a dict, modelUsage
+    entries not dicts, non-int counts) degrades to unavailable/partial — never
+    raises.
 
     Top-level ``usage`` reflects the LAST/primary turn; ``modelUsage`` breaks
     totals out per model (a session can bill more than one, e.g. a cheap
     title-generation call) — the entry whose token counts match top-level
     ``usage`` is the one that produced ``result``, so its key is the resolved
-    billed model id (never the bare CLI alias ``'claude'``, CTR-fh-013). Both
-    stdout and stderr are checked (CTR-fh-012)."""
+    billed model id (never the bare CLI alias ``'claude'``, CTR-fh-013)."""
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return Usage(usage_status="unavailable", resolved_model=model_override)
+    raw_tin, raw_tout = usage.get("input_tokens"), usage.get("output_tokens")
+    tin, tout = _as_int(raw_tin), _as_int(raw_tout)
+    model_usage = payload.get("modelUsage")
+    if not isinstance(model_usage, dict):
+        model_usage = {}
+    resolved = None
+    if len(model_usage) == 1:
+        only = next(iter(model_usage))
+        resolved = only if isinstance(only, str) else None
+    else:
+        for mid, mu in model_usage.items():
+            if not isinstance(mu, dict) or not isinstance(mid, str):
+                continue
+            if _as_int(mu.get("inputTokens")) == tin and _as_int(mu.get("outputTokens")) == tout:
+                resolved = mid
+                break
+    resolved = resolved or model_override
+    if raw_tin is None and raw_tout is None:
+        return Usage(usage_status="unavailable", resolved_model=resolved)
+    if tin is None or tout is None:
+        # one-sided or malformed count: both-tokens-or-null (INV-fh-011)
+        return Usage(usage_status="partial", resolved_model=resolved)
+    return Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
+                 resolved_model=resolved)
+
+
+def _parse_claude_output(stdout: str, stderr: str, model_override: str | None) -> tuple[str, Usage]:
+    """Parse ``claude -p --output-format json``'s result envelope (shape verified
+    live against Claude Code 2.1.210): ``{result, usage:{input_tokens,output_tokens,
+    ...}, modelUsage:{<model-id>:{inputTokens,outputTokens,...}}}``. Both stdout
+    and stderr are checked (CTR-fh-012).
+
+    Text extraction and usage extraction are SPLIT (CTR-fh-011): once the
+    envelope parses and carries ``result``, that result text is the consult's
+    product — drifted ``usage``/``modelUsage`` shapes degrade ONLY the usage,
+    never replace the answer with the raw JSON envelope. Only a fully
+    unparseable envelope falls back to the raw stdout."""
     for stream in (stdout, stderr):
         stripped = stream.strip()
         if not stripped:
@@ -427,27 +539,16 @@ def _parse_claude_output(stdout: str, stderr: str, model_override: str | None) -
             payload = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if "result" not in payload:
+        if not isinstance(payload, dict) or "result" not in payload:
             continue
-        text = payload.get("result") or ""
-        usage = payload.get("usage") or {}
-        tin, tout = usage.get("input_tokens"), usage.get("output_tokens")
-        model_usage = payload.get("modelUsage") or {}
-        resolved = None
-        if len(model_usage) == 1:
-            resolved = next(iter(model_usage))
-        else:
-            for mid, mu in model_usage.items():
-                if mu.get("inputTokens") == tin and mu.get("outputTokens") == tout:
-                    resolved = mid
-                    break
-        resolved = resolved or model_override
-        if tin is None and tout is None:
-            return text, Usage(usage_status="unavailable", resolved_model=resolved)
-        if tin is None or tout is None:
-            return text, Usage(usage_status="partial", resolved_model=resolved)
-        return text, Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
-                           resolved_model=resolved)
+        text = payload.get("result")
+        if not isinstance(text, str):
+            text = ""
+        try:
+            usage = _claude_usage_from_payload(payload, model_override)
+        except Exception:
+            usage = Usage(usage_status="unavailable", resolved_model=model_override)
+        return text, usage
     return stdout, Usage(usage_status="unavailable", resolved_model=model_override)
 
 

@@ -692,6 +692,52 @@ def test_codex_usage_reads_stderr_when_stdout_lacks_it(monkeypatch):
     assert usage.tokens_in == 8000 and usage.tokens_out == 25
 
 
+def test_codex_drifted_event_shape_never_fails_a_successful_consult(monkeypatch):
+    # @cw-trace verifies CTR-fh-011
+    # P1 regression (PR #195 review): a drifted event shape (item not a dict,
+    # text not a string) previously raised OUTSIDE the usage try/except in
+    # consult_codex, turning a successful provider call into a failed consult.
+    drifted = "\n".join([
+        json.dumps({"type": "item.completed", "item": "not-a-dict"}),
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": 12345}}),
+        json.dumps({"type": "item.completed"}),  # no item at all
+        json.dumps(["not", "an", "object"]),  # non-dict JSON line
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}),
+    ])
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda cmd, **kw: (drifted, ""))
+    monkeypatch.setattr(consult_ai, "_codex_configured_model", lambda: "gpt-5.5")
+
+    text, usage = consult_ai.consult_codex("prompt")
+
+    # No usable agent_message text → degrade to the raw stream, never raise.
+    assert text == drifted
+    # Usage parsing is independent of the drifted text events and still succeeds.
+    assert usage.tokens_in == 10 and usage.tokens_out == 5
+
+
+def test_codex_agent_text_reads_stderr_too():
+    # @cw-trace verifies CTR-fh-012
+    stderr = json.dumps({"type": "item.completed",
+                         "item": {"type": "agent_message", "text": "FROM-STDERR"}})
+    assert consult_ai._codex_agent_text("no json here", stderr) == "FROM-STDERR"
+
+
+def test_codex_string_token_counts_are_coerced(monkeypatch):
+    # P3 regression: numeric strings coerce to ints; junk degrades to partial,
+    # never a crash and never a trusted non-int.
+    monkeypatch.setattr(consult_ai, "_codex_configured_model", lambda: None)
+    ok = json.dumps({"type": "turn.completed",
+                     "usage": {"input_tokens": "12844", "output_tokens": "19"}})
+    usage = consult_ai._parse_codex_usage(ok, "", None)
+    assert usage.tokens_in == 12844 and usage.tokens_out == 19
+
+    junk = json.dumps({"type": "turn.completed",
+                       "usage": {"input_tokens": "lots", "output_tokens": 19}})
+    usage = consult_ai._parse_codex_usage(junk, "", None)
+    assert usage.usage_status == "partial"
+    assert usage.tokens_in is None and usage.tokens_out is None
+
+
 def test_codex_model_override_takes_precedence_over_config(monkeypatch):
     monkeypatch.setattr(consult_ai, "_codex_configured_model", lambda: "gpt-5.5")
     stdout = _read("codex_ok.stdout.jsonl")
@@ -748,6 +794,46 @@ def test_gemini_usage_reads_stderr_when_stdout_lacks_it():
     assert usage.tokens_in == 450 and usage.tokens_out == 12
 
 
+def test_gemini_envelope_parses_but_stats_drift_keeps_answer_text(monkeypatch):
+    # @cw-trace verifies CTR-fh-011
+    # P2 regression (PR #195 review): when the envelope parses but stats.models
+    # drifts, the caller previously received the raw JSON envelope instead of
+    # the answer. Malformed usage must degrade ONLY the usage.
+    for drifted_stats in (
+        "not-a-dict",                                  # stats itself drifted
+        {"models": "oops"},                            # models not a dict
+        {"models": {"gemini-3.1-pro-preview": "hi"}},  # model entry not a dict
+        {"models": {"gemini-3.1-pro-preview": {"tokens": "hi"}}},  # tokens not a dict
+    ):
+        envelope = json.dumps({"session_id": "s", "response": "PONG", "stats": drifted_stats})
+        text, usage = consult_ai._parse_gemini_output(envelope, "")
+        assert text == "PONG", f"answer lost for drifted stats {drifted_stats!r}"
+        assert usage.usage_status == "unavailable"
+        assert usage.tokens_in is None and usage.tokens_out is None
+
+
+def test_gemini_non_string_response_degrades_to_empty_not_raw_envelope():
+    envelope = json.dumps({"session_id": "s", "response": 42, "stats": {}})
+    text, usage = consult_ai._parse_gemini_output(envelope, "")
+    assert text == ""
+    assert usage.usage_status == "unavailable"
+
+
+def test_gemini_string_token_counts_are_coerced():
+    # P3 regression: numeric-string counts coerce; junk degrades to partial.
+    envelope = json.dumps({"response": "PONG", "stats": {"models": {
+        "gemini-3.1-pro-preview": {"tokens": {"prompt": "450", "candidates": "12"}}}}})
+    text, usage = consult_ai._parse_gemini_output(envelope, "")
+    assert text == "PONG"
+    assert usage.tokens_in == 450 and usage.tokens_out == 12
+
+    envelope = json.dumps({"response": "PONG", "stats": {"models": {
+        "gemini-3.1-pro-preview": {"tokens": {"prompt": "many", "candidates": 12}}}}})
+    _text, usage = consult_ai._parse_gemini_output(envelope, "")
+    assert usage.usage_status == "partial"
+    assert usage.tokens_in is None and usage.tokens_out is None
+
+
 def test_claude_usage_ok_resolves_tokens_and_single_model():
     # @cw-trace verifies CTR-fh-010 CTR-fh-013
     stdout = _read("claude_ok.stdout.json")
@@ -789,6 +875,45 @@ def test_claude_usage_falls_back_to_model_override_when_unresolvable():
     stdout = json.dumps({"result": "PONG", "usage": {"input_tokens": 1, "output_tokens": 2}})
     _text, usage = consult_ai._parse_claude_output(stdout, "", "claude-sonnet-5")
     assert usage.resolved_model == "claude-sonnet-5"
+
+
+def test_claude_envelope_parses_but_usage_drift_keeps_answer_text():
+    # @cw-trace verifies CTR-fh-011
+    # P2 regression (PR #195 review): when the envelope parses but the
+    # usage/modelUsage sections drift, the caller previously received the raw
+    # JSON envelope instead of the answer.
+    for drifted in (
+        {"result": "PONG", "usage": "not-a-dict"},
+        {"result": "PONG", "usage": {"input_tokens": 1, "output_tokens": 2},
+         "modelUsage": "not-a-dict"},
+        {"result": "PONG", "usage": {"input_tokens": 1, "output_tokens": 2},
+         "modelUsage": {"claude-fable-5": "not-a-dict", "claude-haiku-4-5": "also-not"}},
+    ):
+        text, usage = consult_ai._parse_claude_output(json.dumps(drifted), "", None)
+        assert text == "PONG", f"answer lost for drifted envelope {drifted!r}"
+        # usage degrades (unavailable or tokens preserved with fallback model)
+        # but the consult's product is never replaced by the raw envelope.
+        assert usage.usage_status in ("provider-json", "unavailable")
+
+
+def test_claude_non_string_result_degrades_to_empty_not_raw_envelope():
+    envelope = json.dumps({"result": {"nested": "oops"}, "usage": {}})
+    text, usage = consult_ai._parse_claude_output(envelope, "", None)
+    assert text == ""
+    assert usage.usage_status == "unavailable"
+
+
+def test_claude_string_token_counts_are_coerced():
+    # P3 regression: numeric-string counts coerce; junk degrades to partial.
+    stdout = json.dumps({"result": "PONG", "usage": {"input_tokens": "2", "output_tokens": "14"}})
+    text, usage = consult_ai._parse_claude_output(stdout, "", None)
+    assert text == "PONG"
+    assert usage.tokens_in == 2 and usage.tokens_out == 14
+
+    stdout = json.dumps({"result": "PONG", "usage": {"input_tokens": "junk", "output_tokens": 14}})
+    _text, usage = consult_ai._parse_claude_output(stdout, "", None)
+    assert usage.usage_status == "partial"
+    assert usage.tokens_in is None and usage.tokens_out is None
 
 
 class _FakeUsageMetadata:

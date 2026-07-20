@@ -257,6 +257,25 @@ def cost_for(model: str, tokens_in: int, tokens_out: int, pricing: dict | None =
     return round((tokens_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
 
 
+def _coerce_token(value) -> int | None:
+    """Coerce an untrusted token count to ``int``; anything unusable (bool, junk
+    string, list, non-integral float, ...) is ``None`` — a malformed count must
+    degrade the record's usage, never crash the emit (which would vanish the
+    whole telemetry event inside a best-effort caller)."""
+    if isinstance(value, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _pricing_version(path: Path = PRICING_PATH) -> str | None:
     """Hash of config/model_pricing.json's raw text (chief_wiggum.hashing.stable_hash),
     recorded on each consult so a historical run can be re-priced later by replaying
@@ -278,12 +297,17 @@ def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
     ``usage_status`` names the TRUE source of the usage data (``provider-json``
     | ``sdk-metadata`` | ``partial`` | ``unavailable``) and is never silently
     implied (INV-fh-011); an unrecognised value is dropped to unset rather than
-    trusted. Both-tokens-or-null: a one-sided token count (only one of
-    tokens_in/tokens_out known) is recorded as NO usage rather than half-priced
-    — both are nulled, and a status that claimed a real source downgrades to
-    'partial'. ``model`` (the resolved billed model id) must never be a bare
-    CLI/tool alias (CTR-fh-013) — that's a caller bug, not a degraded-usage
-    case, so it raises rather than silently recording a wrong id.
+    trusted. Both-tokens-or-null: a one-sided OR malformed token count (only
+    one of tokens_in/tokens_out usable as an int) is recorded as NO usage
+    rather than half-priced — both are nulled, and a status that claimed a
+    real source downgrades to 'partial'. Malformed usage degrades the EVENT,
+    it never vanishes it: token values are coerced at this boundary
+    (``_coerce_token``) and cost derivation is exception-proof, so a drifted
+    payload can't raise inside a best-effort caller and silently drop the
+    whole record. ``model`` (the resolved billed model id) must never be a
+    bare CLI/tool alias (CTR-fh-013) — that's a caller bug, not a
+    degraded-usage case, so it raises rather than silently recording a wrong
+    id.
 
     cost_usd is computed ONLY here, from config/model_pricing.json and the two
     (both-or-null) recorded token counts (INV-fh-002) — never author-supplied,
@@ -300,13 +324,22 @@ def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
         )
     if usage_status is not None and usage_status not in CONSULT_USAGE_STATUSES:
         usage_status = None
-    if (tokens_in is None) != (tokens_out is None):
-        # One-sided payload: both-tokens-or-null (INV-fh-011) — never a
-        # half-priced record.
+    coerced_in, coerced_out = _coerce_token(tokens_in), _coerce_token(tokens_out)
+    malformed = (tokens_in is not None and coerced_in is None) or (
+        tokens_out is not None and coerced_out is None
+    )
+    tokens_in, tokens_out = coerced_in, coerced_out
+    if malformed or (tokens_in is None) != (tokens_out is None):
+        # One-sided or malformed payload: both-tokens-or-null (INV-fh-011) —
+        # never a half-priced record, never a crashed emit.
         tokens_in = tokens_out = None
         if usage_status in ("provider-json", "sdk-metadata"):
             usage_status = "partial"
-    cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
+    try:
+        cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
+    except Exception:
+        # A broken pricing row must degrade cost to null, not vanish the event.
+        cost = None
     return emit(CONSULT, provider=provider, adapter=adapter, requested_model=requested_model,
                 name=model, usage_status=usage_status, tokens_in=tokens_in, tokens_out=tokens_out,
                 cost_usd=cost, pricing_version=_pricing_version(), repo=repo, ticket=ticket)

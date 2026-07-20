@@ -207,6 +207,53 @@ def test_emit_consult_unavailable_status_records_no_tokens_no_cost(tmp_path, mon
     assert "tokens_in" not in rec and "cost_usd" not in rec
 
 
+def test_emit_consult_coerces_string_token_counts(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-014 INV-fh-002
+    # P3 regression (PR #195 review): numeric-string counts from a drifted
+    # provider payload are coerced at the boundary and priced normally.
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("claude", "claude-opus-4-8", "1000000", "1000000",
+                             usage_status="provider-json")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["tokens_in"] == 1_000_000 and rec["tokens_out"] == 1_000_000
+    assert rec["cost_usd"] == 30.0
+
+
+def test_emit_consult_malformed_tokens_degrade_event_never_vanish_it(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-015 INV-fh-011
+    # P3 regression: a malformed (non-numeric) token count must degrade the
+    # EVENT (tokens nulled, status downgraded to partial) — never raise, which
+    # would silently drop the whole record inside _emit_consult_telemetry's
+    # swallow-all wrapper.
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("codex", "gpt-5.5", "lots", 19, usage_status="provider-json")
+    rec = json.loads(log.read_text().splitlines()[0])  # event WAS emitted
+    assert rec["event"] == "consult"
+    assert "tokens_in" not in rec and "tokens_out" not in rec
+    assert rec["usage_status"] == "partial"
+    assert "cost_usd" not in rec
+
+
+def test_emit_consult_cost_for_exception_degrades_cost_never_vanishes_event(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-015 INV-fh-011
+    # P3 regression: a raising cost derivation (e.g. a broken pricing row) must
+    # yield cost_usd null on an otherwise-complete record, not a lost event.
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+
+    def broken_cost_for(model, tin, tout, pricing=None):
+        raise RuntimeError("pricing table corrupted")
+
+    monkeypatch.setattr(factory_log, "cost_for", broken_cost_for)
+    factory_log.emit_consult("claude", "claude-opus-4-8", 1000, 500, usage_status="provider-json")
+    rec = json.loads(log.read_text().splitlines()[0])  # event WAS emitted
+    assert rec["tokens_in"] == 1000 and rec["tokens_out"] == 500
+    assert rec["usage_status"] == "provider-json"
+    assert "cost_usd" not in rec
+
+
 def test_emit_consult_resolved_but_unpriced_model_still_records_tokens(tmp_path, monkeypatch):
     # @cw-trace verifies CTR-fh-014 INV-fh-002
     # ADR-fh-05: a resolved-but-unpriced model (e.g. codex's live-resolved gpt-*
