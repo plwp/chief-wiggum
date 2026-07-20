@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
@@ -107,6 +109,7 @@ def test_cost_for_cross_provider_grounded():
 
 
 def test_emit_consult_records_tokens_and_grounded_cost(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-014 INV-fh-002
     log = tmp_path / "f.jsonl"
     monkeypatch.setenv("CW_FACTORY_LOG", str(log))
     factory_log.emit_consult("anthropic", "claude-opus-4-8", 1_000_000, 1_000_000, repo="acme/app")
@@ -116,21 +119,105 @@ def test_emit_consult_records_tokens_and_grounded_cost(tmp_path, monkeypatch):
 
 
 def test_emit_consult_omits_cost_when_unpriced(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-014 INV-fh-002
     log = tmp_path / "f.jsonl"
     monkeypatch.setenv("CW_FACTORY_LOG", str(log))
-    factory_log.emit_consult("openai", "codex", 1000, 500)  # codex model unmapped -> unpriced
+    factory_log.emit_consult("openai", "gpt-5.9-unmapped", 1000, 500)  # resolved but unpriced model
     rec = json.loads(log.read_text().splitlines()[0])
     assert rec["tokens_in"] == 1000
     assert "cost_usd" not in rec  # unpriced -> no fabricated dollar figure
 
 
 def test_emit_consult_without_tokens_records_frequency(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-015 INV-fh-011
     log = tmp_path / "f.jsonl"
     monkeypatch.setenv("CW_FACTORY_LOG", str(log))
     factory_log.emit_consult("codex", None, repo="dogeared-coach")  # CLI provider, usage not surfaced
     rec = json.loads(log.read_text().splitlines()[0])
     assert rec["event"] == "consult" and rec["provider"] == "codex" and rec["repo"] == "dogeared-coach"
     assert "tokens_in" not in rec and "cost_usd" not in rec  # no fabricated count/cost
+
+
+# --- ConsultUsageRecord honesty invariants (chief-wiggum#134) ---------------
+
+
+def test_emit_consult_rejects_bare_cli_alias_as_resolved_model(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-013
+    # 'codex'/'gemini'/'claude'/'claude-interactive'/'gemini-vertex'
+    # are tool labels, never a billed model id — a caller passing one has failed
+    # to resolve the model, and that must not silently become an unpriced-looking
+    # record (indistinguishable from a genuinely unpriced model).
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    for alias in ("codex", "gemini", "claude", "claude-interactive", "gemini-vertex"):
+        with pytest.raises(ValueError):
+            factory_log.emit_consult("codex", alias, 100, 50)
+    assert not log.exists() or log.read_text() == ""
+
+
+def test_emit_consult_both_tokens_or_null_downgrades_partial(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-015 INV-fh-011
+    # a one-sided token count (only one of in/out known) must never
+    # be half-priced — both null out, and a claimed real source downgrades to
+    # 'partial'.
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("claude", "claude-sonnet-5", 100, None, usage_status="provider-json")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert "tokens_in" not in rec and "tokens_out" not in rec
+    assert rec["usage_status"] == "partial"
+    assert "cost_usd" not in rec
+
+
+def test_emit_consult_records_adapter_usage_status_requested_model_and_pricing_version(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-015 INV-fh-002
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult(
+        "claude", "claude-sonnet-5", 1000, 500, usage_status="provider-json",
+        adapter="claude-cli", requested_model=None, repo="acme/app", ticket="42",
+    )
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["adapter"] == "claude-cli"
+    assert rec["usage_status"] == "provider-json"
+    assert rec["ticket"] == "42"
+    assert rec["pricing_version"] == factory_log.stable_hash(factory_log.PRICING_PATH.read_text())
+    assert "requested_model" not in rec  # None omitted, same as any other field
+
+
+def test_emit_consult_unknown_usage_status_is_dropped_not_trusted(tmp_path, monkeypatch):
+    # @cw-trace verifies INV-fh-011
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("claude", "claude-sonnet-5", 100, 50, usage_status="made-up-status")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert "usage_status" not in rec
+    # tokens/cost are unaffected — only the bogus status label is dropped
+    assert rec["tokens_in"] == 100 and rec["cost_usd"] is not None
+
+
+def test_emit_consult_unavailable_status_records_no_tokens_no_cost(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-015 INV-fh-011
+    # IT-fh-05: usage-absent sample -> tokens=None, cost=None, usage_status='unavailable'.
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("claude-interactive", None, usage_status="unavailable", repo="acme/app")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["usage_status"] == "unavailable"
+    assert "tokens_in" not in rec and "cost_usd" not in rec
+
+
+def test_emit_consult_resolved_but_unpriced_model_still_records_tokens(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-014 INV-fh-002
+    # ADR-fh-05: a resolved-but-unpriced model (e.g. codex's live-resolved gpt-*
+    # id before that row exists) still records real tokens with cost_usd null —
+    # the honest degradation, never a skipped record.
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    factory_log.emit_consult("codex", "gpt-5.9-not-yet-priced", 12844, 19, usage_status="provider-json")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["tokens_in"] == 12844 and rec["tokens_out"] == 19
+    assert "cost_usd" not in rec
 
 
 def test_ingest_claude_code_folds_api_requests(tmp_path, monkeypatch):

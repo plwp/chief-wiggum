@@ -25,14 +25,15 @@ One JSON object per line. Each call site fills what it **knows** and omits the r
 
 ```
 {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
- provider?, tokens_in?, tokens_out?, cost_usd?,
+ provider?, adapter?, requested_model?, usage_status?, pricing_version?,
+ tokens_in?, tokens_out?, cost_usd?,
  summary?, severity?, missed_by?, found_in?, invariant?, fixed?, details?}
 ```
 
 | event | who emits | key fields |
 |--|--|--|
 | `gate` | a gate script | `name`, `result` (pass/fail/error), `duration_ms`, `caught` |
-| `consult` | an AI consultation | `provider`, `tokens_in`, `tokens_out`, `cost_usd` |
+| `consult` | an AI consultation | `provider`, `adapter`, `name` (resolved billed model), `usage_status`, `tokens_in`, `tokens_out`, `cost_usd` |
 | `worker` | a sub-agent run | `name`/role, tokens/cost if the harness surfaces them |
 | `skill` | a workflow step | `name`, `result` |
 | `escape` | an agent that manually found a bug | `summary`, `severity`, `missed_by`, `found_in`, `ticket?`, `invariant?`, `fixed?`, `seed_class?` |
@@ -94,16 +95,39 @@ just missed once. A passing `expected: "no-fire"` trial (a certified
 non-coverage boundary, e.g. `vendor/` exclusion) never grounds a demotion —
 see `factory_log.demotion_check` and `docs/gate-validation.md`.
 
-Token counts come from the provider's own usage summary — every consult provider
-surfaces one (the CLIs via their `--output-format json` mode, the SDKs via the
-response `usage`), so a `consult` event should carry `tokens_in`/`tokens_out`.
+Token counts come from the provider's own usage summary, where one exists —
+`scripts/consult_ai.py` switches every CLI provider to its usage-bearing output
+mode (`codex exec --json`'s event stream, `gemini --output-format json`,
+`claude -p --output-format json`) and the Vertex SDK path reads
+`response.usage_metadata` directly. Each parser's shape was verified against a
+real captured sample, not guessed (chief-wiggum#134). `claude-interactive` has
+no usage-bearing transport at all — its RESULT file never carries token
+counts — so it is always `usage_status: 'unavailable'` by construction.
+
+Every `consult` record now carries `adapter` (which parser produced the usage:
+`codex-cli` | `gemini-cli` | `vertex-sdk` | `claude-cli` | `claude-interactive`)
+and `usage_status` (`provider-json` | `sdk-metadata` | `partial` | `unavailable`
+— never silent, INV-fh-011). **Both-tokens-or-null:** a provider that only
+surfaces one of the two counts records `tokens_in`/`tokens_out` as both `None`
+(usage_status downgrades to `partial`) rather than half-pricing the call.
+Pre-#134 records simply lack `adapter`/`usage_status` — tolerate their absence,
+don't assume a value.
+
 **Cost is computed, not logged raw:** `emit_consult(provider, model, tokens_in,
-tokens_out)` multiplies the tokens by the grounded per-model rate in
-[`config/model_pricing.json`](../config/model_pricing.json) (`factory_log.cost_for`).
-That table is fetched from each vendor's live pricing page and refreshed by
-`/update` — never keyed from memory. `cost_usd` is omitted (not `0`) when a model
-has no price in the table, so an un-priced call still records its tokens without a
-fabricated dollar figure.
+tokens_out, ...)` multiplies the tokens by the grounded per-model rate in
+[`config/model_pricing.json`](../config/model_pricing.json) (`factory_log.cost_for`)
+— this is the ONLY place a consult's `cost_usd` is derived (INV-fh-002); no
+consult path computes or stores a dollar figure itself. That table is fetched
+from each vendor's live pricing page and refreshed by `/update` — never keyed
+from memory. `cost_usd` is omitted (not `0`) when a model has no price in the
+table, so an un-priced call still records its tokens without a fabricated
+dollar figure. The resolved `name` is always the BILLED model id — never a
+bare CLI/tool alias (`'codex'`/`'gemini'`/`'claude'`/`'claude-interactive'`),
+which `emit_consult` rejects outright (a mis-resolved alias would otherwise be
+indistinguishable from a genuinely unpriced model). `codex exec` bills
+whichever real `gpt-*` model is locally configured — its adapter resolves that
+id from `$CODEX_HOME/config.toml` when `--model` wasn't passed, rather than a
+fixed alias row.
 
 ## Emitting
 

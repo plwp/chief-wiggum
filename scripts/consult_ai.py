@@ -6,15 +6,23 @@ Secrets are fetched from the system keyring at call time and passed directly
 to SDK constructors — never set as env vars, never printed.
 
 Usage:
-    python3 consult_ai.py <tool> <prompt_file> [--output <file>] [--context <file>] [--model <model_id>]
-    python3 consult_ai.py --role <role> <prompt_file> --output-dir <dir>
+    python3 consult_ai.py <tool> <prompt_file> [--output <file>] [--context <file>] [--model <model_id>] [--ticket <n>]
+    python3 consult_ai.py --role <role> <prompt_file> --output-dir <dir> [--ticket <n>]
 
-Tools: codex, gemini, gemini-vertex, claude
+Tools: codex, gemini, gemini-vertex, claude, claude-interactive
+
+Each consult_* function returns ``(text, Usage)`` — the response text plus a
+best-effort per-provider token/model usage summary (chief-wiggum#134). A
+successful consult always emits a ``factory_log`` 'consult' telemetry event
+(no-op unless CW_TELEMETRY/CW_FACTORY_LOG is set) carrying that usage; cost is
+derived exclusively inside ``factory_log.emit_consult`` from
+``config/model_pricing.json`` — never computed here.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -22,6 +30,8 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 # Allow importing keychain from the same directory
@@ -68,6 +78,31 @@ DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
 MIN_PROMPT_BYTES = 200
 
 
+@dataclass
+class Usage:
+    """Per-consult usage summary threaded from a provider parser to
+    ``factory_log.emit_consult`` (chief-wiggum#134).
+
+    ``tokens_in``/``tokens_out`` obey both-tokens-or-null (INV-fh-011): a
+    parser that only recovered ONE of the two counts must return both as
+    ``None`` (never fabricate/estimate the other) and use ``usage_status``
+    ``'partial'``. ``resolved_model`` is the BILLED model id — precedence
+    payload id > ``--model`` override > configured default — and must never
+    be a bare CLI alias (``'codex'``/``'gemini'``/``'claude'``/
+    ``'claude-interactive'``); a mis-resolution there is indistinguishable
+    from an unpriced model and silently nulls cost (CTR-fh-013).
+    ``usage_status`` is one of ``provider-json`` | ``sdk-metadata`` |
+    ``partial`` | ``unavailable`` and is NEVER left implicit — every
+    consult_* function below returns a ``Usage``, even on the fully
+    unavailable path (INV-fh-011).
+    """
+
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    resolved_model: str | None = None
+    usage_status: str = "unavailable"
+
+
 def _kill_group(proc: subprocess.Popen) -> None:
     """SIGTERM then SIGKILL the child's whole process group, so the provider CLI **and
     any subprocesses it spawned** die — not just the direct child. This is the crux of
@@ -92,8 +127,13 @@ def _kill_group(proc: subprocess.Popen) -> None:
 def _run_capture(
     cmd: list[str], *, input_text: str | None, timeout: int, cwd: str | None, tool: str,
     check: bool = True,
-) -> str:
-    """Run a provider CLI, capturing stdout, with a HARD timeout that actually fires.
+) -> tuple[str, str]:
+    """Run a provider CLI, capturing BOTH stdout and stderr, with a HARD timeout that
+    actually fires.
+
+    Returns ``(stdout, stderr)`` — some provider CLIs print their usage-bearing JSON
+    payload to stderr rather than stdout, and a stdout-only capture silently loses it
+    (CTR-fh-012, chief-wiggum#134).
 
     ``subprocess.run(timeout=...)`` kills only the direct child; if the CLI spawned
     grandchildren holding the stdout pipe open, the follow-up ``communicate()`` blocks
@@ -105,6 +145,8 @@ def _run_capture(
 
     Raises ``subprocess.TimeoutExpired`` / ``subprocess.CalledProcessError`` to preserve
     the previous ``subprocess.run(check=True, timeout=...)`` contract.
+
+    @cw-trace guards CTR-fh-012
     """
     proc = subprocess.Popen(
         cmd,
@@ -136,17 +178,96 @@ def _run_capture(
         stop.set()
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd, output=out, stderr=err)
-    return out
+    return out, err
 
 
-def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
+def _codex_configured_model() -> str | None:
+    """Best-effort read of codex exec's configured default model from
+    ``$CODEX_HOME/config.toml`` (default ``~/.codex/config.toml``).
+
+    Verified live against the installed codex-cli 0.142.5: ``codex exec --json``'s
+    JSONL event stream carries NO model field anywhere (only ``turn.completed.usage``
+    token counts) — only the plain (non-JSON) banner prints ``model: <id>``, and that
+    mode loses the separate input/output token counts we need. So when the caller
+    didn't pass ``--model``, this config read is the only real lead on which model
+    was actually billed — not a hardcoded guess. Returns ``None`` (honest unresolved,
+    per ADR-fh-05) when the file is absent, unparseable, or has no top-level ``model``
+    key; callers must NOT fall back to the literal string ``'codex'`` (CTR-fh-013).
+    """
+    home = os.environ.get("CODEX_HOME")
+    config_path = (Path(home).expanduser() if home else Path.home() / ".codex") / "config.toml"
+    try:
+        with config_path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    model = data.get("model")
+    return model if isinstance(model, str) and model.strip() else None
+
+
+def _codex_agent_text(stdout: str) -> str:
+    """Reconstruct the plain response text from ``codex exec --json``'s event
+    stream: the concatenation of ``agent_message`` ``item.completed`` events, in
+    order — equivalent to what plain (non-JSON) ``codex exec`` printed as its final
+    answer (verified against a live probe of codex-cli 0.142.5)."""
+    parts: list[str] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "item.completed":
+            item = event.get("item") or {}
+            if item.get("type") == "agent_message" and "text" in item:
+                parts.append(item["text"])
+    return "\n".join(parts)
+
+
+def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> Usage:
+    """Parse ``codex exec --json``'s JSONL event stream (``turn.completed.usage``)
+    for tokens. Scans BOTH stdout and stderr (CTR-fh-012) even though a live probe
+    against codex-cli 0.142.5 showed the payload lands on stdout only — a future
+    CLI version moving it to stderr must not silently lose it."""
+    resolved = model_override or _codex_configured_model()
+    for stream in (stdout, stderr):
+        for line in stream.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "turn.completed":
+                continue
+            usage = event.get("usage") or {}
+            tin, tout = usage.get("input_tokens"), usage.get("output_tokens")
+            if tin is None and tout is None:
+                continue
+            if tin is None or tout is None:
+                # one-sided payload: both-tokens-or-null (INV-fh-011)
+                return Usage(usage_status="partial", resolved_model=resolved)
+            return Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
+                         resolved_model=resolved)
+    return Usage(usage_status="unavailable", resolved_model=resolved)
+
+
+def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
     """Call codex CLI in read-only sandbox. Uses its own auth session.
 
     Passes prompt via stdin (``-``) to avoid shell argument length issues
-    and to match how codex exec expects large prompts.
+    and to match how codex exec expects large prompts. Uses ``--json`` (the
+    JSONL event stream, verified via ``codex exec --help`` and a live probe)
+    so usage is available at all — codex's plain-text mode only prints a
+    single combined token total, which fails both-tokens-or-null.
 
     Overrides reasoning effort to ``high`` (instead of user's default which
     may be ``xhigh``) to keep response times reasonable for consultations.
+
+    @cw-trace guards CTR-fh-010
     """
     cmd = [
         "codex", "exec", "--sandbox", "read-only",
@@ -154,30 +275,108 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
     ]
     if model:
         cmd.extend(["--model", model])
-    cmd.append("-")  # read prompt from stdin
-    return _run_capture(
+    cmd.extend(["--json", "-"])  # JSON event stream; read prompt from stdin
+    out, err = _run_capture(
         cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
         cwd=cwd, tool="codex",
     )
+    text = _codex_agent_text(out)
+    # @cw-trace guards CTR-fh-011 — usage parsing is best-effort; a parse
+    # failure never fails the consult itself. The text output above is
+    # produced independently and is unaffected.
+    try:
+        usage = _parse_codex_usage(out, err, model)
+    except Exception:
+        usage = Usage(usage_status="unavailable", resolved_model=model)
+    return text, usage
 
 
-def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
+def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str, Usage]:
+    """Parse ``gemini --output-format json``'s single JSON object: ``{session_id,
+    response, stats:{models:{<id>:{tokens:{prompt,candidates,...}}}}}`` (shape
+    verified from the installed @google/gemini-cli 0.36.0 bundle's
+    ``JsonFormatter``/``UiTelemetryService``). Falls back to the raw stdout as the
+    response text if neither stream parses as that payload — a usage-capture
+    problem never loses the consult's actual output (CTR-fh-011). Both stdout and
+    stderr are checked (CTR-fh-012)."""
+    for stream in (stdout, stderr):
+        stripped = stream.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if "response" not in payload:
+            continue
+        response_text = payload.get("response") or ""
+        models = ((payload.get("stats") or {}).get("models")) or {}
+        if not models:
+            return response_text, Usage(usage_status="unavailable")
+        # A session can bill more than one model (e.g. a router/tool-loop turn);
+        # the one with the most output tokens produced the final answer.
+        model_id, model_stats = max(
+            models.items(),
+            key=lambda kv: (kv[1].get("tokens") or {}).get("candidates") or 0,
+        )
+        t = model_stats.get("tokens") or {}
+        tin, tout = t.get("prompt"), t.get("candidates")
+        if tin is None and tout is None:
+            return response_text, Usage(usage_status="unavailable", resolved_model=model_id)
+        if tin is None or tout is None:
+            return response_text, Usage(usage_status="partial", resolved_model=model_id)
+        return response_text, Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
+                                    resolved_model=model_id)
+    # Neither stream parsed as the expected JSON payload — degrade to the raw
+    # stdout as the response text (matches the pre-#134 text-mode contract).
+    return stdout, Usage(usage_status="unavailable")
+
+
+def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
     """Call gemini CLI. Uses its own auth session.
 
     Passes prompt via stdin to avoid shell argument length issues.
     Uses --yolo to auto-approve all tool use (required for non-interactive
     subprocess execution — without it gemini blocks on approval prompts).
+    Uses ``--output-format json`` (rather than ``text``) so usage is
+    available at all.
+
+    @cw-trace guards CTR-fh-010
     """
-    cmd = ["gemini", "--yolo", "--output-format", "text", "-p", ""]
+    cmd = ["gemini", "--yolo", "--output-format", "json", "-p", ""]
     if model:
         cmd.extend(["-m", model])
-    return _run_capture(
+    out, err = _run_capture(
         cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
         cwd=cwd, tool="gemini",
     )
+    # @cw-trace guards CTR-fh-011 — a usage-parsing exception never fails
+    # the consult; fall back to the raw stdout as the response text.
+    try:
+        return _parse_gemini_output(out, err)
+    except Exception:
+        return out, Usage(usage_status="unavailable")
 
 
-def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
+def _parse_vertex_usage(response, requested_model: str) -> Usage:
+    """Wire ``response.usage_metadata`` (google-genai SDK — field names verified
+    against the installed package's ``GenerateContentResponseUsageMetadata``):
+    ``prompt_token_count``/``candidates_token_count``. This is the #134 gap this
+    adapter previously discarded entirely. ``response.model_version`` is the
+    resolved billed model id when the SDK surfaces one."""
+    resolved = getattr(response, "model_version", None) or requested_model
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return Usage(usage_status="unavailable", resolved_model=resolved)
+    tin, tout = meta.prompt_token_count, meta.candidates_token_count
+    if tin is None and tout is None:
+        return Usage(usage_status="unavailable", resolved_model=resolved)
+    if tin is None or tout is None:
+        return Usage(usage_status="partial", resolved_model=resolved)
+    return Usage(tokens_in=tin, tokens_out=tout, usage_status="sdk-metadata", resolved_model=resolved)
+
+
+def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
     """Call Gemini via Vertex AI (google-genai SDK). Fetches credentials from keyring.
 
     Gemini 3.x text models generate only via the `global` location on Vertex,
@@ -195,26 +394,93 @@ def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None
     # Import here so the dependency is only needed for this path
     from google import genai  # type: ignore
 
+    requested_model = model or DEFAULT_VERTEX_MODEL
     client = genai.Client(vertexai=True, project=project, location=location)
-    response = client.models.generate_content(
-        model=model or DEFAULT_VERTEX_MODEL, contents=prompt
-    )
-    return response.text or ""
+    response = client.models.generate_content(model=requested_model, contents=prompt)
+    text = response.text or ""
+    # @cw-trace guards CTR-fh-010 CTR-fh-011 — response.usage_metadata is a
+    # usage-bearing source by construction; parsing failures never fail the
+    # consult (the text above was already produced independently).
+    try:
+        usage = _parse_vertex_usage(response, requested_model)
+    except Exception:
+        usage = Usage(usage_status="unavailable", resolved_model=requested_model)
+    return text, usage
 
 
-def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
-    """Call claude CLI. Uses its own auth session."""
-    cmd = ["claude", "-p", "--output-format", "text"]
+def _parse_claude_output(stdout: str, stderr: str, model_override: str | None) -> tuple[str, Usage]:
+    """Parse ``claude -p --output-format json``'s result envelope (shape verified
+    live against Claude Code 2.1.210): ``{result, usage:{input_tokens,output_tokens,
+    ...}, modelUsage:{<model-id>:{inputTokens,outputTokens,...}}}``.
+
+    Top-level ``usage`` reflects the LAST/primary turn; ``modelUsage`` breaks
+    totals out per model (a session can bill more than one, e.g. a cheap
+    title-generation call) — the entry whose token counts match top-level
+    ``usage`` is the one that produced ``result``, so its key is the resolved
+    billed model id (never the bare CLI alias ``'claude'``, CTR-fh-013). Both
+    stdout and stderr are checked (CTR-fh-012)."""
+    for stream in (stdout, stderr):
+        stripped = stream.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if "result" not in payload:
+            continue
+        text = payload.get("result") or ""
+        usage = payload.get("usage") or {}
+        tin, tout = usage.get("input_tokens"), usage.get("output_tokens")
+        model_usage = payload.get("modelUsage") or {}
+        resolved = None
+        if len(model_usage) == 1:
+            resolved = next(iter(model_usage))
+        else:
+            for mid, mu in model_usage.items():
+                if mu.get("inputTokens") == tin and mu.get("outputTokens") == tout:
+                    resolved = mid
+                    break
+        resolved = resolved or model_override
+        if tin is None and tout is None:
+            return text, Usage(usage_status="unavailable", resolved_model=resolved)
+        if tin is None or tout is None:
+            return text, Usage(usage_status="partial", resolved_model=resolved)
+        return text, Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
+                           resolved_model=resolved)
+    return stdout, Usage(usage_status="unavailable", resolved_model=model_override)
+
+
+def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+    """Call claude CLI. Uses its own auth session. Uses ``--output-format json``
+    (rather than ``text``) so usage is available at all.
+
+    @cw-trace guards CTR-fh-010
+    """
+    cmd = ["claude", "-p", "--output-format", "json"]
     if model:
         cmd.extend(["--model", model])
-    return _run_capture(
+    out, err = _run_capture(
         cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("claude", TIMEOUT),
         cwd=cwd, tool="claude",
     )
+    # @cw-trace guards CTR-fh-011
+    try:
+        return _parse_claude_output(out, err, model)
+    except Exception:
+        return out, Usage(usage_status="unavailable", resolved_model=model)
 
 
-def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str | None = None) -> str:
-    """Delegate to the interactive Claude tmux provider."""
+def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+    """Delegate to the interactive Claude tmux provider.
+
+    The RESULT file the delegate writes carries no usage data by construction
+    (``skills/claude-interactive-delegate/scripts/claude_delegate.py`` never
+    writes token counts) — this adapter is ALWAYS ``usage_status='unavailable'``,
+    per ADR-fh-05.
+
+    @cw-trace guards CTR-fh-010
+    """
     if model:
         print("Warning: --model is ignored for claude-interactive", file=sys.stderr)
     script = Path(__file__).resolve().parents[1] / "skills" / "claude-interactive-delegate" / "scripts" / "claude_delegate.py"
@@ -233,7 +499,7 @@ def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str |
         ]
         if cwd:
             cmd.extend(["--cwd", cwd])
-        stdout = _run_capture(
+        stdout, _stderr = _run_capture(
             cmd, input_text=None, timeout=TOOL_TIMEOUTS["claude-interactive"],
             cwd=None, tool="claude-interactive",
         )
@@ -241,7 +507,7 @@ def consult_claude_interactive(prompt: str, model: str | None = None, cwd: str |
             if line.startswith("RESULT="):
                 result_path = Path(line.removeprefix("RESULT="))
                 if result_path.exists():
-                    return result_path.read_text()
+                    return result_path.read_text(), Usage(usage_status="unavailable")
                 raise RuntimeError(f"claude-interactive result path does not exist: {result_path}")
         raise RuntimeError(f"claude-interactive completed without RESULT line: {stdout}")
     finally:
@@ -257,10 +523,24 @@ TOOLS = {
 }
 
 
-def _emit_consult_telemetry(provider_label: str, model: str | None, cwd: str | None) -> None:
+# Which parser produced a consult's usage (ConsultUsageRecord.adapter, #134).
+ADAPTER_BY_TOOL = {
+    "codex": "codex-cli",
+    "gemini": "gemini-cli",
+    "gemini-vertex": "vertex-sdk",
+    "claude": "claude-cli",
+    "claude-interactive": "claude-interactive",
+}
+
+
+def _emit_consult_telemetry(
+    provider_label: str, model: str | None, cwd: str | None, usage: Usage,
+    *, ticket: str | None = None,
+) -> None:
     """Best-effort factory telemetry for a consult. No-op unless telemetry is enabled
-    (CW_TELEMETRY / CW_FACTORY_LOG); never breaks the consult. Records provider +
-    model + repo now; per-provider token/cost capture is tracked in chief-wiggum#134.
+    (CW_TELEMETRY / CW_FACTORY_LOG); never breaks the consult (CTR-fh-011). Carries
+    real per-provider token usage + the resolved billed model id (#134) — cost is
+    computed exclusively inside ``factory_log.emit_consult`` (INV-fh-002).
     """
     try:
         import os
@@ -270,24 +550,31 @@ def _emit_consult_telemetry(provider_label: str, model: str | None, cwd: str | N
             _sys.path.insert(0, _here)
         import factory_log
         repo = os.path.basename(os.path.abspath(cwd)) if cwd else None
-        factory_log.emit_consult(provider_label, model, repo=repo)
+        factory_log.emit_consult(
+            provider_label, usage.resolved_model, usage.tokens_in, usage.tokens_out,
+            usage_status=usage.usage_status, adapter=ADAPTER_BY_TOOL.get(provider_label),
+            requested_model=model, repo=repo, ticket=ticket,
+        )
     except Exception:
         pass
 
 
-def consult_provider(provider: Provider, prompt: str, model: str | None, cwd: str | None) -> str:
+def consult_provider(
+    provider: Provider, prompt: str, model: str | None, cwd: str | None,
+    *, ticket: str | None = None,
+) -> str:
     if provider.type == "tool":
         if not provider.tool or provider.tool not in TOOLS:
             raise ValueError(f"unsupported tool provider: {provider.name}")
-        result = TOOLS[provider.tool](prompt, model=model, cwd=cwd)
-        _emit_consult_telemetry(provider.tool, model, cwd)
-        return result
+        text, usage = TOOLS[provider.tool](prompt, model=model, cwd=cwd)
+        _emit_consult_telemetry(provider.tool, model, cwd, usage, ticket=ticket)
+        return text
     if provider.type == "delegate":
         if provider.delegate != "claude-interactive":
             raise ValueError(f"unsupported delegate provider: {provider.name}")
-        result = consult_claude_interactive(prompt, model=model, cwd=cwd)
-        _emit_consult_telemetry("claude-interactive", model, cwd)
-        return result
+        text, usage = consult_claude_interactive(prompt, model=model, cwd=cwd)
+        _emit_consult_telemetry("claude-interactive", model, cwd, usage, ticket=ticket)
+        return text
     raise ValueError(f"unsupported provider type: {provider.type}")
 
 
@@ -302,6 +589,7 @@ def main():
     parser.add_argument("--context", help="Optional context file to append")
     parser.add_argument("--model", help="Override model ID for this call")
     parser.add_argument("--cwd", help="Working directory for the AI tool (e.g., target repo path)")
+    parser.add_argument("--ticket", help="Issue/ticket number this consult is for (cost-by-ticket telemetry, #134)")
     parser.add_argument("--role", help="Provider role to consult from config/providers.json")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Provider config path")
     parser.add_argument(
@@ -395,7 +683,7 @@ def main():
         # appended (chief-wiggum#163) — the shared body itself never changes.
         def execute(provider: Provider) -> str:
             provider_prompt = prompt_for_provider(plan.role, provider.name, prompt, lenses)
-            return consult_provider(provider, provider_prompt, args.model, args.cwd)
+            return consult_provider(provider, provider_prompt, args.model, args.cwd, ticket=args.ticket)
 
         manifest = run_role_quorum(
             plan,
@@ -428,7 +716,8 @@ def main():
         # success OR failure message — never fails with FileNotFoundError.
         out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        output = fn(prompt, model=args.model, cwd=args.cwd)
+        output, usage = fn(prompt, model=args.model, cwd=args.cwd)
+        _emit_consult_telemetry(target, args.model, args.cwd, usage, ticket=args.ticket)
         if out_path:
             out_path.write_text(output)
             print(f"OK: {target} response written to {args.output}")
@@ -441,7 +730,10 @@ def main():
         print(msg, file=sys.stderr)
         sys.exit(1)
     except subprocess.CalledProcessError as e:
-        msg = f"Error calling {target}: {e.stderr or e}"
+        # In --json mode a provider CLI can report its error via stdout (e.g.
+        # codex exec --json emits an {"type":"error",...} event there, not on
+        # stderr) — fall back to stdout so the message is never blank.
+        msg = f"Error calling {target}: {e.stderr or e.output or e}"
         if out_path:
             out_path.write_text(msg)
         print(msg, file=sys.stderr)

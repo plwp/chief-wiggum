@@ -12,11 +12,19 @@ exists.
 
 Event schema (one JSON object per line):
     {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
-     provider?, tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
+     provider?, adapter?, requested_model?, usage_status?, pricing_version?,
+     tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
      missed_by?, found_in?, invariant?, fixed?, seed_class?, details?,
      verb?, path?, hit_count?}
 
   event: "gate" | "consult" | "worker" | "skill" | "escape" | "demotion" | "query"
+  A consult record's `adapter`/`usage_status`/`pricing_version` are chief-wiggum#134
+  additions — pre-#134 records simply lack them (readers must tolerate their
+  absence, not assume a value). `adapter` names which parser produced the usage
+  (codex-cli|gemini-cli|vertex-sdk|claude-cli|claude-interactive); `usage_status`
+  is provider-json|sdk-metadata|partial|unavailable (never silent, INV-fh-011);
+  `requested_model` is the --model override/provider default, distinct from
+  `name` (the RESOLVED billed model id — never a bare CLI alias, CTR-fh-013).
   A gate records name/result/duration_ms/caught; a consult records
   provider/tokens/cost; an **escape** records a manually-found bug — especially
   one that slipped PAST a gate and was caught later (`missed_by` the gate/stage
@@ -52,8 +60,23 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from chief_wiggum.hashing import stable_hash  # noqa: E402
+
 DEFAULT_LOG = Path.home() / ".chief-wiggum" / "factory-log.jsonl"
 PRICING_PATH = Path(__file__).resolve().parent.parent / "config" / "model_pricing.json"
+
+# ConsultUsageRecord.usage_status (chief-wiggum#134 / ADR-fh-05). Pre-#134
+# records simply lack this field — readers must tolerate its absence rather
+# than assume a value.
+CONSULT_USAGE_STATUSES = ("provider-json", "sdk-metadata", "partial", "unavailable")
+
+# A resolved billed model id must never be the bare CLI/tool name a consult
+# was invoked with — that's indistinguishable from an unpriced model and
+# silently nulls cost (CTR-fh-013). Enforced here, the single write path for
+# ConsultUsageRecord (INV-fh-002).
+_BARE_CLI_ALIASES = frozenset({"codex", "gemini", "gemini-vertex", "claude", "claude-interactive"})
 
 GATE = "gate"
 CONSULT = "consult"
@@ -234,21 +257,59 @@ def cost_for(model: str, tokens_in: int, tokens_out: int, pricing: dict | None =
     return round((tokens_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
 
 
-def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
-                 tokens_out: int | None = None, *, repo: str | None = None,
-                 ticket: str | None = None) -> bool:
-    """Record an AI consultation, with token usage + grounded cost when known.
+def _pricing_version(path: Path = PRICING_PATH) -> str | None:
+    """Hash of config/model_pricing.json's raw text (chief_wiggum.hashing.stable_hash),
+    recorded on each consult so a historical run can be re-priced later by replaying
+    cost_for over its recorded tokens against whichever pricing table version was
+    live at record time. None (never raises) when the file is unreadable."""
+    try:
+        return stable_hash(path.read_text())
+    except OSError:
+        return None
 
-    When token counts are known, cost is computed from config/model_pricing.json
-    (omitted when the model is unpriced — never logged as $0). When tokens are
-    unknown (a CLI provider that didn't surface a usage summary), the event still
-    records that a consult happened, for whom, in which repo — honest frequency
-    telemetry without a fabricated token count.
+
+def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
+                 tokens_out: int | None = None, *, usage_status: str | None = None,
+                 adapter: str | None = None, requested_model: str | None = None,
+                 repo: str | None = None, ticket: str | None = None) -> bool:
+    """Record an AI consultation, with token usage + grounded cost when known
+    (ConsultUsageRecord, chief-wiggum#134).
+
+    ``usage_status`` names the TRUE source of the usage data (``provider-json``
+    | ``sdk-metadata`` | ``partial`` | ``unavailable``) and is never silently
+    implied (INV-fh-011); an unrecognised value is dropped to unset rather than
+    trusted. Both-tokens-or-null: a one-sided token count (only one of
+    tokens_in/tokens_out known) is recorded as NO usage rather than half-priced
+    — both are nulled, and a status that claimed a real source downgrades to
+    'partial'. ``model`` (the resolved billed model id) must never be a bare
+    CLI/tool alias (CTR-fh-013) — that's a caller bug, not a degraded-usage
+    case, so it raises rather than silently recording a wrong id.
+
+    cost_usd is computed ONLY here, from config/model_pricing.json and the two
+    (both-or-null) recorded token counts (INV-fh-002) — never author-supplied,
+    never a fabricated 0; omitted (null) when the model is unpriced or tokens
+    are unknown. ``pricing_version`` lets a historical record be re-priced by
+    replaying cost_for against whichever pricing table was live at emit time.
+
+    @cw-trace ensures CTR-fh-013 CTR-fh-014 CTR-fh-015 INV-fh-002 INV-fh-011
     """
+    if model in _BARE_CLI_ALIASES:
+        raise ValueError(
+            f"emit_consult: resolved model {model!r} is a bare CLI alias, not a "
+            "billed model id (CTR-fh-013) — the caller failed to resolve it."
+        )
+    if usage_status is not None and usage_status not in CONSULT_USAGE_STATUSES:
+        usage_status = None
+    if (tokens_in is None) != (tokens_out is None):
+        # One-sided payload: both-tokens-or-null (INV-fh-011) — never a
+        # half-priced record.
+        tokens_in = tokens_out = None
+        if usage_status in ("provider-json", "sdk-metadata"):
+            usage_status = "partial"
     cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
-    return emit(CONSULT, provider=provider, name=model,
-                tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost,
-                repo=repo, ticket=ticket)
+    return emit(CONSULT, provider=provider, adapter=adapter, requested_model=requested_model,
+                name=model, usage_status=usage_status, tokens_in=tokens_in, tokens_out=tokens_out,
+                cost_usd=cost, pricing_version=_pricing_version(), repo=repo, ticket=ticket)
 
 
 class gate_timer:
