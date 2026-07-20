@@ -118,14 +118,46 @@ An un-annotated handler still gets a real answer:
   fixed during validation), and `ui/orders/page.tsx` does not inherit
   `/api/v1/orders/:id/confirm` just for matching "orders" — "confirm" must
   match too (regression-tested).
-- **Known limitation, disclosed not hidden**: this is a lexical heuristic, not
-  symbol resolution (tree-sitter/refs-lite is explicitly out of phase 1). A
-  file whose name word-covers all of an unrelated operation's literal words
-  can still over-match. These facts are always labeled
-  `"relation": "inferred"` and ranked below any `direct` (annotation or
-  `code_locations`-exact) match — real annotations remain the precise path
-  when a file's governing contract must be unambiguous. Tracked for a future
-  precision pass: [chief-wiggum#185](https://github.com/plwp/chief-wiggum/issues/185).
+- **Fixed by #185 — corpus-derived word specificity**: an all-words match is
+  necessary but no longer sufficient. Each literal word is weighted by its
+  **document frequency across the epic's own operation-paths + ui routes**
+  (no external corpus, no network — recomputed live from the same `contracts.json`/
+  `ui-spec.json` already loaded for this query, so it stays fully reproducible
+  and stdlib-only): a word present in more than 40% of the epic's own
+  path/route "documents" carries **zero binding weight**. At least one of the
+  pattern's literal words must clear that bar, or the match is rejected
+  outright — even though the all-words guard alone would have accepted it.
+  **Small-corpus bypass**: with fewer than 5 documents the DF bar is skipped
+  entirely (every word counts as specific) — document frequency over a tiny
+  corpus is noise, and without the floor a one-operation epic would reject
+  *itself* (its own path's words ARE the whole corpus at df=1.0), as would
+  the two-document shape of an operation plus its UI route sharing the
+  entity word. Threshold interaction: at ≥5 documents, "common" requires
+  presence in >40% of them — at least 3 of 5 — so a shared entity word needs
+  real recurrence before it loses binding weight.
+  This is the mechanical fix for the real over-match found validating against
+  dogeared-coach: `ui/src/providers/auth-provider.tsx` word-matched dozens of
+  operations that reduce to the bare word `providers` once params are
+  stripped, because "provider" is that epic's own primary tenant entity name
+  and recurs across most of its operations. An entity+verb combination (e.g.
+  a file whose path also contains "verify" for a `.../providers/:id/verify`
+  operation) still binds — only the entity word alone, when it's corpus-common,
+  no longer does (regression-tested: `tests/test_code_query.py`'s
+  `test_common_entity_word_alone_does_not_bind` /
+  `test_entity_verb_combination_still_binds_despite_common_entity_word`).
+- **Known limitation, still disclosed not hidden**: this remains a lexical
+  heuristic, not symbol resolution (tree-sitter/refs-lite is explicitly out of
+  phase 1). A file whose name word-covers all of an unrelated operation's
+  literal words, where at least one of those words is ALSO specific by the
+  document-frequency measure (not just corpus-common), can still over-match —
+  the fix narrows the false-positive surface to genuinely rare word
+  collisions, it does not eliminate lexical matching's inherent ceiling. These
+  facts are always labeled `"relation": "inferred"` and ranked below any
+  `direct` fact via `_rank_key`'s **leading relation-tier element**
+  (`direct=0 < inferred=1 < measured=2` — the third tier is reserved for the
+  #187 hotspot fact, forward-compatible as of #185 with no producer yet) —
+  real annotations remain the precise path when a file's governing contract
+  must be unambiguous.
 
 ## Validation
 

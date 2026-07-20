@@ -15,6 +15,7 @@ small "checkout" epic with:
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -414,13 +415,174 @@ def test_inferred_binding_requires_all_literal_words():
     # Positive: src/orders/confirm.py covers ALL literal words of
     # /api/v1/orders/:id/confirm ({orders, confirm}) -> bound.
     env = code_query.cmd_orient(FIXTURE, "src/orders/confirm.py", "checkout")
-    assert any(f["kind"] == "contract_operation" for f in env["facts"])
+    op_names = {f["statement"] for f in env["facts"] if f["kind"] == "contract_operation"}
+    assert any("Confirm Order" in s for s in op_names)
 
     # Negative: ui/orders/page.tsx matches "orders" but NOT "confirm" -> must
-    # NOT inherit the confirm operation (it still gets its ui-spec page).
+    # NOT inherit the confirm operation specifically (it still gets its
+    # ui-spec page, and — #185 fixture addition — its OWN "List Orders"
+    # bare-entity operation, which is a genuine "orders" binding, not an
+    # over-match: "orders" clears the corpus-specificity bar (CTR-fh-050)
+    # because the fixture corpus also contains four unrelated "Provider"
+    # operations that never mention it).
     env = code_query.cmd_orient(FIXTURE, "ui/orders/page.tsx", "checkout")
-    assert not any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+    op_names = {f["statement"] for f in env["facts"] if f["kind"] == "contract_operation"}
+    assert not any("Confirm Order" in s for s in op_names), op_names
+    assert any("List Orders" in s for s in op_names), op_names
     assert any(f["kind"] == "ui_component" for f in env["facts"])
+
+
+# --- corpus-derived word specificity (#185 precision fix) -----------------------------
+#
+# Real-world trigger (dogeared-coach): `ui/src/providers/auth-provider.tsx` word-matched
+# ~30 unrelated operations purely because "provider" is the entity name and recurs
+# across nearly every Provider operation. The fixture's Provider entity (4 operations,
+# 3 of which share ONLY the bare word "providers") + ui-spec route reproduces the same
+# shape at small scale: "providers" clears >40% document-frequency in the fixture's own
+# 8-document corpus (contracts.json operations + ui-spec.json routes), so it carries no
+# binding weight on its own (CTR-fh-050/051, INV-fh-012).
+
+
+def test_common_entity_word_alone_does_not_bind():
+    """
+    @cw-trace verifies CTR-fh-050 INV-fh-012
+    """
+    env = code_query.cmd_orient(FIXTURE, "ui/src/providers/auth-provider.tsx", "checkout")
+    assert not any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+    assert not any(f["kind"] == "ui_component" for f in env["facts"]), env["facts"]
+
+
+def test_entity_verb_combination_still_binds_despite_common_entity_word():
+    """
+    @cw-trace verifies CTR-fh-050 INV-fh-012
+    """
+    # "verify" is a specific (low document-frequency) word in the fixture corpus, so
+    # the entity+verb combination still clears the specificity bar even though
+    # "providers" alone would not.
+    env = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
+    op_names = {f["statement"] for f in env["facts"] if f["kind"] == "contract_operation"}
+    assert any("Verify Provider" in s for s in op_names), op_names
+    # The bare "List Providers"/"Provider Plan"/"Schedule Provider" operations must
+    # NOT also leak in just because "providers" happens to match too.
+    assert not any("List Providers" in s for s in op_names), op_names
+
+
+def test_orient_inferred_binding_is_deterministic_across_runs():
+    """CTR-fh-051: same epic artifacts + same file => identical fact set and
+    ordering across repeated calls (no dict/set-iteration-order dependence).
+
+    @cw-trace verifies CTR-fh-051
+    """
+    first = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
+    for _ in range(5):
+        again = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
+        assert again == first
+
+
+def _write_mini_epic(root: Path, slug: str, *, contracts: dict | None = None, ui_spec: dict | None = None):
+    mdir = root / "docs" / "epics" / slug / "models"
+    mdir.mkdir(parents=True)
+    if contracts is not None:
+        (mdir / "contracts.json").write_text(json.dumps(contracts))
+    if ui_spec is not None:
+        (mdir / "ui-spec.json").write_text(json.dumps(ui_spec))
+
+
+def test_small_corpus_bypasses_the_specificity_bar_one_doc_epic(tmp_path):
+    """Codex P1 regression (PR #192): a one-operation epic's own path words ARE
+    the whole corpus (df=1.0 > threshold), so a pure-ratio rule rejects the
+    epic's ONLY operation for the file it genuinely governs. Below
+    `_MIN_CORPUS_DOCS` documents the DF bar is bypassed (DF over a tiny corpus
+    is noise) and the pre-#185 all-words behavior decides alone.
+
+    @cw-trace verifies CTR-fh-050
+    """
+    _write_mini_epic(tmp_path, "mini", contracts={"entities": [{"name": "Order", "operations": [
+        {"name": "List Orders", "method": "GET", "path": "/api/v1/orders"}]}]})
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "orders.py").write_text("def list_orders():\n    ...\n")
+    env = code_query.cmd_orient(tmp_path, "src/orders.py", "mini")
+    assert any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+
+
+def test_small_corpus_bypasses_the_specificity_bar_two_doc_epic(tmp_path):
+    """Two-document flavor of the same P1: an operation plus its UI route both
+    reduce to the shared entity word ('orders', df=1.0 in each) — a small
+    epic's most natural shape — and must still infer-bind on both sides.
+
+    @cw-trace verifies CTR-fh-050
+    """
+    _write_mini_epic(
+        tmp_path, "mini2",
+        contracts={"entities": [{"name": "Order", "operations": [
+            {"name": "List Orders", "method": "GET", "path": "/api/v1/orders"}]}]},
+        ui_spec={"pages": {"/orders/:id": {"route": "/orders/:id", "title": "Order Detail"}}},
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "orders.py").write_text("...")
+    (tmp_path / "ui").mkdir()
+    (tmp_path / "ui" / "orders.tsx").write_text("...")
+    env_src = code_query.cmd_orient(tmp_path, "src/orders.py", "mini2")
+    env_ui = code_query.cmd_orient(tmp_path, "ui/orders.tsx", "mini2")
+    assert any(f["kind"] == "contract_operation" for f in env_src["facts"]), env_src["facts"]
+    assert any(f["kind"] == "ui_component" for f in env_ui["facts"]), env_ui["facts"]
+
+
+def test_word_document_frequency_is_empty_below_min_corpus_and_real_at_or_above():
+    """The bypass seam itself: below `_MIN_CORPUS_DOCS` the DF map is empty
+    (every lookup misses -> maximally specific); at/above it, real ratios.
+
+    @cw-trace verifies CTR-fh-050
+    """
+    small = [frozenset({"orders"})] * (code_query._MIN_CORPUS_DOCS - 1)
+    assert code_query._word_document_frequency(small) == {}
+    full = [frozenset({"orders"})] * code_query._MIN_CORPUS_DOCS
+    assert code_query._word_document_frequency(full) == {"orders": 1.0}
+
+
+# --- relation-tier-first rank key (CTR-fh-052/053, INV-fh-007/012) --------------------
+
+
+def test_rank_key_relation_tier_is_leading_and_orders_direct_inferred_measured():
+    """Unit-level guard on `_rank_key` itself: direct < inferred < measured,
+    and this leading element dominates `exact` — a `measured` fact (the future
+    #187 hotspot tier; no producer exists yet, only the tier) must never
+    outrank a `direct` or `inferred` fact even when `exact=True`.
+
+    @cw-trace verifies CTR-fh-052 CTR-fh-053 INV-fh-007
+    """
+    direct = code_query.Fact(
+        kind="contract", id="CTR-x", statement="s", handle="h", epic="e",
+        extra={"relation": "direct"}, exact=True, proximity=0,
+    )
+    inferred = code_query.Fact(
+        kind="contract_operation", id=None, statement="s", handle="h", epic="e",
+        extra={"relation": "inferred"}, exact=False, proximity=1,
+    )
+    measured = code_query.Fact(
+        kind="hotspot", id=None, statement="s", handle="h", epic="e",
+        extra={"relation": "measured"}, exact=True, proximity=1,
+    )
+    assert code_query._rank_key(direct, "orient")[0] == 0
+    assert code_query._rank_key(inferred, "orient")[0] == 1
+    assert code_query._rank_key(measured, "orient")[0] == 2
+
+    ranked = code_query.rank_facts([measured, inferred, direct], "orient")
+    assert ranked == [direct, inferred, measured]
+
+
+def test_orient_ranks_direct_before_inferred_for_the_same_file():
+    """Property/regression test (IT-fh-03-style, direct-vs-inferred tier
+    boundary): src/orders/confirm_direct.py carries BOTH a direct @cw-trace
+    annotation AND an artifact-derived inferred match on the same Confirm
+    Order operation. `orient` must rank the direct fact first.
+
+    @cw-trace verifies CTR-fh-052 INV-fh-007
+    """
+    env = code_query.cmd_orient(FIXTURE, "src/orders/confirm_direct.py", "checkout")
+    relations = [f.get("relation") for f in env["facts"]]
+    assert "direct" in relations and "inferred" in relations, env["facts"]
+    assert relations.index("direct") < relations.index("inferred")
 
 
 # --- every handle round-trips through show (review issue 3) ---------------------------

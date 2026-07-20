@@ -216,11 +216,35 @@ class Fact:
         return d
 
 
+# Leading rank-key element (CTR-fh-052/053, INV-fh-007/012): direct facts
+# always sort before inferred, which always sort before measured. `measured`
+# is forward-compat for the #187 hotspot tier — no producer of `measured`
+# facts exists in this ticket, only the tier, so #187 doesn't have to touch
+# ranking again.
+_RELATION_TIER = {"direct": 0, "inferred": 1, "measured": 2}
+
+
+def _relation_tier(f: Fact) -> int:
+    """The leading `_rank_key` element. Facts that predate the `relation` tag
+    (e.g. `writer` facts, or `field_contract` facts from `governs <field>`
+    mode, neither of which set `extra["relation"]`) fall back to their
+    `exact` flag — exactly how they already sorted before this key was added,
+    so this is additive for verbs that never emit `inferred`/`measured`
+    facts."""
+    relation = f.extra.get("relation")
+    if relation in _RELATION_TIER:
+        return _RELATION_TIER[relation]
+    return 0 if f.exact else 1
+
+
 def _rank_key(f: Fact, verb: str) -> tuple:
+    """
+    @cw-trace guards CTR-fh-052 CTR-fh-053 INV-fh-007
+    """
     prod_rank = 0 if f.prod else 1
     if verb == "verifies":
         prod_rank = 1 - prod_rank  # tests-first: that IS the point of `verifies`
-    return (0 if f.exact else 1, 0 if f.violation else 1, f.proximity, prod_rank)
+    return (_relation_tier(f), 0 if f.exact else 1, 0 if f.violation else 1, f.proximity, prod_rank)
 
 
 def rank_facts(facts: list[Fact], verb: str) -> list[Fact]:
@@ -376,17 +400,123 @@ def _fuzzy_word_match(a: str, b: str) -> bool:
     return a in b or b in a  # tolerate simple stemming (order/orders, confirm/confirmed)
 
 
-def _path_matches_literal_segments(pattern: str, rel: str) -> bool:
+# --- corpus-derived word specificity (CTR-fh-050/051, INV-fh-012) -------------
+#
+# #185: the all-words guard above (kept — see ERROR CASES) still over-matches
+# when a pattern's literal words are ALL common: an entity name that recurs
+# across dozens of an epic's own operations (dogeared-coach's "provider" was
+# the real-world trigger — a file named `auth-provider.tsx` word-matched ~30
+# unrelated provider operations, because many of them reduce to the bare word
+# "providers" once params are stripped). The fix stays lexical and stdlib-only
+# (tree-sitter/symbol resolution is explicitly out of phase 1, per #159):
+# weight each literal word by how common it is across the EPIC'S OWN corpus of
+# operation-paths + ui routes — no external corpus, no network, so the same
+# epic artifacts always yield the same weights — and require at least one
+# word that ISN'T ubiquitous before accepting an all-words match.
+
+# A word present in MORE than this fraction of the epic's own operation-paths/
+# routes carries zero binding weight — it's domain boilerplate for this epic,
+# not a signal that a specific file is about THIS specific operation. This is
+# a deliberately generous majority-ish line, not a tight percentile: it must
+# still treat a moderately-shared word (a handful of an epic's operations
+# mentioning "orders") as specific enough to bind, while catching a word a
+# true plurality of operations share (the "provider" case). Tuned and
+# revalidated against a real, previously-shipped repo (see docs/code-query.md).
+_MAX_COMMON_WORD_DF = 0.4
+# Below this many corpus documents, document frequency is statistical noise
+# and the DF bar is bypassed entirely (every word counts as specific — the
+# pre-#185 all-words behavior). Without this floor, a one-operation epic
+# rejects ITSELF: its own path's words are the whole corpus (df=1.0 > 0.4),
+# so `orient` would return nothing for the file that operation genuinely
+# governs; a two-document epic (an operation plus its UI route sharing the
+# entity word) self-blocks the same way at df=1.0. Threshold interaction:
+# at total_docs >= 5, a word must appear in >40% of documents to be common —
+# i.e. at least 3 of 5 — so a genuinely-shared entity word still needs real
+# recurrence before it loses binding weight, while the dogeared-coach
+# "provider" case (5 of 8 documents) stays blocked.
+_MIN_CORPUS_DOCS = 5
+
+
+def _epic_path_documents(epic: Epic) -> list[frozenset[str]]:
+    """One 'document' (word set) per `contracts.json` operation path and per
+    `ui-spec.json` page route declared by THIS epic — the closed corpus that
+    word document-frequency is computed over. Deliberately scoped to a single
+    epic's own artifacts: an operation is only "common" relative to what this
+    epic itself declares, so the metric can't be diluted or gamed by an
+    unrelated epic's vocabulary."""
+    docs: list[frozenset[str]] = []
+    contracts = epic.models.get("contracts.json")
+    if contracts:
+        for entity in contracts.get("entities", []):
+            for op in entity.get("operations", []):
+                words = _literal_words(op.get("path", ""))
+                if words:
+                    docs.append(frozenset(words))
+    ui_spec = epic.models.get("ui-spec.json")
+    if ui_spec:
+        for route in (ui_spec.get("pages") or {}):
+            words = _literal_words(route)
+            if words:
+                docs.append(frozenset(words))
+    return docs
+
+
+def _word_document_frequency(docs: list[frozenset[str]]) -> dict[str, float]:
+    """word -> fraction of `docs` that contain it, or `{}` when the corpus has
+    fewer than `_MIN_CORPUS_DOCS` documents — DF over a tiny corpus is noise,
+    and returning an empty map makes every `_has_specific_word` lookup miss
+    (df=0.0, maximally specific), i.e. small epics keep the pre-#185
+    all-words-only behavior instead of self-blocking (a one-operation epic's
+    own words are the entire corpus at df=1.0). Deterministic across runs
+    (CTR-fh-051): built by iterating `docs` in the epic artifacts' own JSON
+    list order (stable across runs/platforms), and dict iteration order in
+    CPython is insertion order, not hash order — so this never depends on
+    Python's per-process randomized string hashing, even though the `frozenset`
+    documents themselves are hash-ordered internally. Nothing here reads a
+    set's iteration order; only membership/count, which hashing doesn't
+    affect."""
+    total = len(docs)
+    if total < _MIN_CORPUS_DOCS:
+        return {}
+    counts: dict[str, int] = {}
+    for doc in docs:
+        for w in doc:
+            counts[w] = counts.get(w, 0) + 1
+    return {w: c / total for w, c in counts.items()}
+
+
+def _has_specific_word(literals: set[str], doc_freq: dict[str, float]) -> bool:
+    """At least one of `literals` must clear the specificity bar (CTR-fh-050).
+    A word absent from the map is a lookup miss treated as maximally specific
+    (df=0.0) — which is also how the small-corpus bypass arrives here:
+    `_word_document_frequency` returns an empty map below `_MIN_CORPUS_DOCS`,
+    so every word of a small epic misses and the all-words guard alone
+    decides, exactly as before #185."""
+    return any(doc_freq.get(w, 0.0) <= _MAX_COMMON_WORD_DF for w in literals)
+
+
+def _path_matches_literal_segments(pattern: str, rel: str, doc_freq: dict[str, float]) -> bool:
     """Best-effort, inferred binding: EVERY non-generic literal word of
     `pattern` (a ui-spec route or contracts.json operation path) must
-    word-match the target file's own path. All-words (not any-word) keeps
-    precision: `/api/v1/orders/:id/confirm` requires both "orders" AND
-    "confirm" among the file's path words, so `ui/orders/page.tsx` does not
-    inherit the confirm operation just for living in an `orders/` directory.
-    Heuristic by design (no file-level binding field exists in the schemas) —
-    labeled `inferred`, never `exact`, in the facts this produces."""
+    word-match the target file's own path, AND at least one of those literal
+    words must be specific (not corpus-common per `_has_specific_word`).
+    All-words-but-not-all-common keeps precision on two fronts:
+    `/api/v1/orders/:id/confirm` requires both "orders" AND "confirm" among
+    the file's path words, so `ui/orders/page.tsx` does not inherit the
+    confirm operation just for living in an `orders/` directory (all-words);
+    and a file that shares ONLY a ubiquitous entity word with a bare
+    single-word operation (e.g. "providers") does not bind either, even
+    though that one word technically satisfies all-words on its own
+    (specificity). Heuristic by design (no file-level binding field exists in
+    the schemas) — labeled `inferred`, never `exact`, in the facts this
+    produces.
+
+    @cw-trace guards CTR-fh-050 CTR-fh-051 INV-fh-012
+    """
     literals = _literal_words(pattern)
     if not literals:
+        return False
+    if not _has_specific_word(literals, doc_freq):
         return False
     file_words = _path_words(rel)
     return all(any(_fuzzy_word_match(lw, fw) for fw in file_words) for lw in literals)
@@ -440,6 +570,11 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
 
     facts: list[Fact] = []
     for epic in epics:
+        # Corpus-derived word specificity (CTR-fh-050/051): computed once per
+        # epic, live from THIS epic's own artifacts, and reused by both
+        # inferred-binding call sites (c)/(d) below.
+        doc_freq = _word_document_frequency(_epic_path_documents(epic))
+
         # (a) Direct: @cw-trace annotations in THIS file targeting a defined ID.
         for ann in direct_anns:
             if ann.target not in epic.defined:
@@ -512,7 +647,7 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
         if contracts:
             for entity in contracts.get("entities", []):
                 for op in entity.get("operations", []):
-                    if not _path_matches_literal_segments(op.get("path", ""), rel):
+                    if not _path_matches_literal_segments(op.get("path", ""), rel, doc_freq):
                         continue
                     # Locator discipline (two-plane): counts + IDs only — the
                     # REQUIRES/ENSURES/error bodies stay in Plane A; deref the
@@ -540,7 +675,7 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
         ui_spec = epic.models.get("ui-spec.json")
         if ui_spec:
             for route, page in (ui_spec.get("pages") or {}).items():
-                if not route or not _path_matches_literal_segments(route, rel):
+                if not route or not _path_matches_literal_segments(route, rel, doc_freq):
                     continue
                 facts.append(Fact(
                     kind="ui_component",
