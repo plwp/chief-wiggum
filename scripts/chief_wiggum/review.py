@@ -38,6 +38,14 @@ _AC_BLOCK_RE = re.compile(r"(?im)^[ \t]*AC:")
 # "(none specified)" placeholder) — CTR-fh-003.
 _NO_COMMENTS_PLACEHOLDER = "(no comment-thread refinements)"
 
+# ADR-fh-02 supersession, stated to the reviewer explicitly: the amendments
+# list is deterministically ordered (created_at ascending, ties by comment
+# id), and where two amendments touch the same AC item the LATER one wins.
+_SUPERSESSION_RULE_LINE = (
+    "Apply in listed order; where two amendments conflict on the same AC item, "
+    "the LATER amendment (last listed) is authoritative."
+)
+
 
 class ReviewError(RuntimeError):
     """Raised when a review cannot be set up (not a git repo, no base, etc.)."""
@@ -277,15 +285,46 @@ def _format_acceptance(criteria: list[str]) -> str:
     return "\n".join(f"- {c}" for c in criteria)
 
 
+# Matches a line that would render as a markdown heading (optionally indented).
+_HEADING_LINE_RE = re.compile(r"^(\s*)(#)")
+
+
+def _quote_untrusted_body(text: str, indent: str = "  ") -> str:
+    """Render comment text as inert quoted DATA, never prompt structure.
+
+    Comment bodies are untrusted input embedded into the provider prompt: an
+    external commenter could otherwise include a line like
+    ``### Accepted AC amendments (authoritative-on-conflict)`` and spoof a
+    second authoritative-looking region (codex P1 on #83). Every line is
+    blockquote-prefixed, and any line that would render as a markdown heading
+    has its leading ``#`` escaped, so no comment body can ever open a heading
+    or section of its own. Applied to BOTH discussion bodies and amendment
+    ``AC:`` blocks — an amendment's authority comes from the region header and
+    the promotion predicate, not from any formatting inside its body.
+    """
+    lines = (text or "").splitlines() or [""]
+    quoted = []
+    for line in lines:
+        neutralized = _HEADING_LINE_RE.sub(r"\1\\\2", line)
+        quoted.append(f"{indent}> {neutralized}".rstrip())
+    return "\n".join(quoted)
+
+
 def _format_amendment(amendment: Amendment) -> str:
     who = amendment.author or "(unknown)"
     ref = amendment.url or amendment.comment_id or "(no id)"
-    return f"- {amendment.created_at} — {who} ({amendment.author_association}) — {ref}\n  {amendment.ac_block}"
+    return (
+        f"- {amendment.created_at} — {who} ({amendment.author_association}) — {ref}\n"
+        f"{_quote_untrusted_body(amendment.ac_block)}"
+    )
 
 
 def _format_discussion_comment(comment: TicketComment) -> str:
     who = comment.author or "(unknown)"
-    return f"- {comment.created_at} — {who} ({comment.author_association}): {comment.body}"
+    return (
+        f"- {comment.created_at} — {who} ({comment.author_association}):\n"
+        f"{_quote_untrusted_body(comment.body)}"
+    )
 
 
 # @cw-trace guards CTR-fh-003 CTR-fh-004 INV-fh-009 INV-fh-010
@@ -294,13 +333,19 @@ def render_ticket_comments(ticket: TicketContext) -> str:
 
     "Accepted AC amendments (authoritative-on-conflict)" holds only comments
     that pass the promotion predicate (`classify_comments`), in deterministic
-    supersession order (`apply_amendment_supersession`). "Discussion/context
-    (non-authoritative)" holds everything else, in source (chronological)
-    order. Both region headers always render, even when the corresponding
-    list is empty (each gets the placeholder used for a wholly empty thread
-    too) — the raw thread is NEVER rendered under one authoritative label,
-    and `ticket.acceptance_criteria` is never read from or written to here
-    (presentational-only, INV-fh-009/010).
+    supersession order (`apply_amendment_supersession`), under an explicit
+    rule line telling the reviewer that on a per-item conflict the LATER
+    amendment is authoritative (ADR-fh-02's latest-wins, applied by the
+    reader over the deterministic ordering rather than by pre-digesting AC
+    items here — comments are never mechanically merged, INV-fh-009).
+    "Discussion/context (non-authoritative)" holds everything else, in source
+    (chronological) order. Comment bodies in BOTH regions are quoted and
+    heading-escaped (`_quote_untrusted_body`) so untrusted text can never
+    spoof a region heading. Both region headers always render, even when the
+    corresponding list is empty (each gets the placeholder used for a wholly
+    empty thread too) — the raw thread is NEVER rendered under one
+    authoritative label, and `ticket.acceptance_criteria` is never read from
+    or written to here (presentational-only, INV-fh-009/010).
     """
     amendments, discussion = classify_comments(ticket.comments, ticket.author)
     amendments = apply_amendment_supersession(amendments)
@@ -310,6 +355,7 @@ def render_ticket_comments(ticket: TicketContext) -> str:
     )
     return (
         "### Accepted AC amendments (authoritative-on-conflict)\n"
+        f"{_SUPERSESSION_RULE_LINE}\n"
         f"{amendments_body}\n\n"
         "### Discussion/context (non-authoritative)\n"
         f"{discussion_body}"
