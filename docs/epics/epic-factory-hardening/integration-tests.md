@@ -153,6 +153,22 @@ a value-equality accident).
 
 **Files.** `tests/test_check_gate_validation.py`, `tests/test_ratchet.py`.
 
+**Status.** Covered (chief-wiggum#198). `check_gate_validation.py` gained
+`check_and_transition`/`compute_transition`/`failure_kind` implementing the
+Gate Blocking-Authority Lifecycle's auto-demotion edges, plus a persisted
+`<gate>.authority.json` sidecar tracking `previous_authority`;
+`factory_log.emit_stale_demotion` emits the generic `DEMOTION` event
+(`details='stale'|'record_missing'`, no `seed_class`). Covering tests:
+`test_stale_while_blocking_auto_demotes`,
+`test_record_missing_while_blocking_demotes`,
+`test_schema_invalid_while_blocking_demotes_as_record_missing`,
+`test_stale_while_merely_validated_downgrades_not_demotes`,
+`test_recovery_re_derives_back_to_validated_never_straight_to_blocking`
+(`tests/test_check_gate_validation.py`), plus
+`test_it_fh_06_real_journal_corroborates_stale_while_blocking_demotion`
+(`tests/test_ratchet.py`, through the real `ratchet.py record` CLI rather than
+a hand-written journal fixture).
+
 ## IT-fh-07 — architecture ↔ system-contracts cross-ref resolution (#174)
 
 **Scenario.** A clean voice-agent `architecture.json` plus a

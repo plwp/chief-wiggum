@@ -243,6 +243,60 @@ recorded band files (`tests/fixtures/gate_validation/quality_slop_gate_clean/`)
 fed to its pure verdict functions — a record validated against a prod URL or a
 live AI band could never be re-verified.
 
+## Auto-demotion: a blocking gate's record going stale (chief-wiggum#198)
+
+The demotion rule below fires on a **production escape**. A gate can also
+lose blocking authority with no escape at all — its validation record simply
+rotted while the gate was still wired `--gate`: a scanner edit bumped
+`--scanner-version` out from under it, the ratchet journal's hash chain broke,
+or the record was deleted/regressed to `status != "passed"`. `INV-fh-003` ("no
+blocking without a passing record") already made `check_gate_validation`
+report `passing == false` in this case; #198 closed the remaining gap — the
+system must not just report `false`, it must actively **track and surface**
+that a gate that WAS blocking no longer is.
+
+`check_gate_validation.py --wire` records that a gate is now wired `--gate` in
+its workflow (only when its record currently passes) into a persisted
+`<gate>.authority.json` sidecar beside the validation record. Every ordinary
+check thereafter re-derives the authority transition
+(`compute_transition`/`check_and_transition`, mirroring
+`docs/epics/epic-factory-hardening/models/state-machines.json`'s Gate
+Blocking-Authority Lifecycle):
+
+- **Blocking + record goes stale or missing/invalid** → auto-demotes to
+  `demoted` (fail-to-report-only, ADR-fh-04), emits the GENERIC `DEMOTION`
+  event via `factory_log.emit_stale_demotion(gate, reason,
+  previous_authority="blocking")` with `reason` `"stale"` (scanner_version/
+  journal-chain drift, otherwise clean) or `"record_missing"` (missing/
+  schema-invalid/forged/failed) — never `emit_demotion`, which requires a
+  `seed_class` this path never has (nothing escaped in production; the record
+  itself just went bad).
+- **Merely `validated` (never wired) + record goes stale or invalid** →
+  downgrades to `report_only` — no demotion event, since nothing was
+  blocking.
+- **Recovery**: re-authoring and re-journaling a `demoted` (or downgraded)
+  record restores `validated` once `passing == true` again — never straight
+  back to `blocking` (the model's `invalid_transitions` explicitly forbid
+  `demoted -> blocking`); an explicit `--wire` re-promotes it.
+
+The actual enforcement point stays exactly where it already was: a workflow
+only passes `--gate coverage` onward when `check_gate_validation.py --gate`
+exits 0, so a demoted/downgraded gate is already refused blocking authority by
+that existing guard (INV-fh-003). `check_and_transition`'s job is telemetry
+and bookkeeping — making the demotion visible and recording
+`previous_authority` — not re-implementing the refusal.
+
+```bash
+python3 "$CW_HOME/scripts/check_gate_validation.py" ratchet \
+  --validation-dir "$CW_HOME/docs/quality/validation" --wire   # first promotion
+# ... later, after a scanner edit bumps ratchet's --scanner-version ...
+python3 "$CW_HOME/scripts/check_gate_validation.py" ratchet \
+  --validation-dir "$CW_HOME/docs/quality/validation" --format json
+# {"passing": false, ..., "authority": {"previous_state": "blocking",
+#  "new_state": "demoted", "demoted": true, "demotion_reason": "stale",
+#  "previous_authority": "blocking", "instruction": "DEMOTE ratchet ..."}}
+```
+
 ## Demotion: an escape a seed class should have caught
 
 The live confusion matrix (`factory_log.py`'s `gate`/`escape` events,

@@ -137,6 +137,8 @@ python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --valida
 
 **If either exits non-zero (no record, a stale/forged one, or a failing one), do not pass `--gate coverage` to that checker in the corresponding step below** — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
 
+If a checker that was previously wired blocking (`check_gate_validation.py ... --wire` was run for it earlier) shows `"authority": {"demoted": true, ...}` in this step's JSON output, its record went stale or missing/invalid WHILE blocking — surface the printed `DEMOTION` instruction (`previous_authority`/`demotion_reason`) verbatim in the close report alongside the coverage finding above (see `docs/gate-validation.md`'s "Auto-demotion" section, chief-wiggum#198); this is the same instruction-surfacing pattern as the escape-driven `demotion_check` in "Demotion: an escape a seed class should have caught," just triggered by staleness instead of a production escape.
+
 ### Step 2d: Traceability coverage gate
 
 Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`). Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_traceability --gate` passed; otherwise drop `--gate coverage` and report the finding instead:

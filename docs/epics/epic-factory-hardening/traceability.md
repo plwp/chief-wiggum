@@ -73,15 +73,21 @@ follow-up in the retrospective.
 | Journaled via `ratchet record --event gate-validation` | CTR-fh-043 | `test_ratchet` journal corroboration | passing |
 | **Fixture harnesses for saas_gate (recorded target) + quality_slop_gate (pinned band) — explicit AC, BLOCKER for those two records** | CTR-fh-044 | `test_saas_gate` / `test_quality_slop_gate` fixture-target runs | passing |
 | Record for #174's check_architecture in same pass, AFTER CHECKS freezes | INV-fh-003, ADR-fh-06 | IT-fh-04 (one seed per `CHECKS` entry; early-record negative) | passing |
-| Stale record auto-demotes when blocking; downgrades to report_only when not [^stale-gap] | INV-fh-003, INV-fh-005 | IT-fh-06 (blocking→stale→demoted; validated→stale→report_only) | missing |
+| Stale record auto-demotes when blocking; downgrades to report_only when not [^stale-gap] | INV-fh-003, INV-fh-005 | IT-fh-06 (blocking→stale→demoted; validated→stale→report_only) | passing |
 | Single `DEFAULT_VALIDATION_DIR` (import from factory_log, not a second definition) | INV-fh-004 | `test_validation_dir_is_defined_once_and_imported` | passing |
 
-[^stale-gap]: Never implemented. `check_gate_validation.py`/`factory_log.py` carry no
+[^stale-gap]: **Resolved by chief-wiggum#198.** Was never implemented at epic
+close (`check_gate_validation.py`/`factory_log.py` carried no
 `previous_authority`, no distinct `demoted` state, and no generic
 `emit(DEMOTION, gate=gate, details='stale')` path — only a `passing: bool`
-collapse, plus the unrelated escape-driven `demotion_check(missed_by, seed_class)`.
-IT-fh-06 was never written (no `IT-fh-06` marker anywhere in `tests/`). This is a
-real, unclosed gap from this epic — see `retrospective.md`.
+collapse, plus the unrelated escape-driven `demotion_check(missed_by,
+seed_class)`; `IT-fh-06` had no test anywhere in `tests/`). #198 implemented the
+decision the model already specified: `check_gate_validation.py` gained
+`check_and_transition` (persisted `<gate>.authority.json` sidecar tracking
+`authority`/`previous_authority`, `--wire`/`--unwire` CLI flags) and
+`factory_log.emit_stale_demotion` (the generic `DEMOTION` event, `details=`
+`'stale'` or `'record_missing'`, no `seed_class`). `IT-fh-06` is now covered —
+see `integration-tests.md`'s Status line and `retrospective.md`'s addendum.
 
 ## #185 — code_query orient inferred-binding over-match (BR-fh-005)
 

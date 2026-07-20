@@ -48,6 +48,23 @@ coverage`` through to ``check_traceability.py`` / ``check_single_writer.py``
 
 Exit codes: 0 = ok (or report-only), 1 = gate violation (missing/failing
 record) under ``--gate``, 2 = usage error.
+
+**Blocking-authority tracking (chief-wiggum#198/IT-fh-06).** A passing record
+answers "may this gate block right now" — it says nothing about whether the
+gate is CURRENTLY wired ``--gate`` in a workflow, so a plain envelope can't
+tell "this just failed its first validation" apart from "this just went stale
+WHILE ALREADY BLOCKING", and only the latter is an auto-demotion. ``--wire``
+records that a gate is now wired ``--gate`` (only when it currently passes);
+``--unwire`` records an intentional un-wiring. Every check (wired or not)
+persists a ``<gate>.authority.json`` sidecar beside the record once the gate
+reaches any real authority state, and on each subsequent run recomputes the
+transition (``check_and_transition``/``compute_transition``): a BLOCKING
+gate's record going stale (scanner_version/journal drift) or missing/invalid
+auto-demotes (fail-to-report-only, ADR-fh-04) and emits the generic
+``factory_log.emit_stale_demotion`` event; the same finding against a gate
+that was only ``validated`` (never wired) merely downgrades to
+``report_only`` — no demotion event, since nothing was blocking. See
+docs/gate-validation.md's "Auto-demotion" section.
 """
 
 from __future__ import annotations
@@ -328,7 +345,230 @@ def check(
     return report
 
 
-def render_text(report: GateValidationReport) -> str:
+# --- Gate Blocking-Authority Lifecycle (docs/epics/epic-factory-hardening/
+# models/state-machines.json, #198/IT-fh-06) ----------------------------------
+#
+# The five REACHABLE resting states of the "Gate Blocking-Authority Lifecycle"
+# machine. "stale" is modeled there too, but it is a TRANSIENT classification a
+# single stateless CLI invocation resolves immediately into its terminal edge
+# (blocking->stale->demoted or validated->stale->report_only collapse into one
+# hop here — see `compute_transition`) — it is never a value persisted to the
+# authority sidecar.
+AUTHORITY_STATES = ("unknown", "report_only", "validated", "blocking", "demoted")
+
+# Provenance-error substrings that mean "this record WOULD pass except it went
+# stale" (G-005/G-006: scanner_version drift or a broken ratchet hash chain) —
+# distinct from a record that is forged/copied/never-journaled/schema-invalid,
+# which is "missing or invalid" (G-012/G-014), never merely "stale".
+_STALE_PROVENANCE_MARKERS = ("scanner_version mismatch", "chain broken")
+
+
+def _authority_path(gate: str, validation_dir: str | Path) -> Path:
+    return Path(validation_dir) / f"{gate}.authority.json"
+
+
+def read_authority(gate: str, validation_dir: str | Path) -> dict:
+    """The persisted blocking-authority state for `gate` — `previous_authority`
+    lives here so a later re-derived/re-journaled record can be told whether it
+    is recovering from a demotion or a mere downgrade. Defaults to 'unknown'
+    (never tracked before) when no sidecar exists or it is unreadable/corrupt —
+    fails closed to the least-privileged state, never invents 'blocking'."""
+    path = _authority_path(gate, validation_dir)
+    if not path.is_file():
+        return {"gate": gate, "authority": "unknown", "previous_authority": None}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"gate": gate, "authority": "unknown", "previous_authority": None}
+    if data.get("authority") not in AUTHORITY_STATES:
+        return {"gate": gate, "authority": "unknown", "previous_authority": None}
+    return data
+
+
+def _write_authority(gate: str, validation_dir: str | Path, authority: str,
+                     previous_authority: str | None) -> None:
+    path = _authority_path(gate, validation_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(
+        {"gate": gate, "authority": authority, "previous_authority": previous_authority},
+        indent=2, sort_keys=True,
+    ) + "\n")
+
+
+def failure_kind(report: GateValidationReport) -> str | None:
+    """Classify why a non-passing report failed, for authority-transition
+    purposes. Returns ``None`` when it passes; ``"stale"`` when the record
+    would otherwise pass but its scanner_version drifted or the ratchet hash
+    chain broke (G-005/G-006 — the ONLY thing wrong is provenance staleness);
+    ``"invalid"`` for everything else (no record, schema-invalid, forged/failed
+    trials or clean runs, wrong status, a copied/unjournaled record) — the
+    G-012/G-014 "record_missing_or_invalid" edge.
+    @cw-trace guards INV-fh-003 INV-fh-005"""
+    if report.passing:
+        return None
+    if not report.record_found or report.schema_errors:
+        return "invalid"
+    stale_errs = [e for e in report.provenance_errors
+                  if any(m in e for m in _STALE_PROVENANCE_MARKERS)]
+    other_errs = [e for e in report.provenance_errors if e not in stale_errs]
+    otherwise_clean = (
+        not other_errs
+        and not report.missing_seed_classes
+        and not report.failed_trials
+        and not report.failed_clean_runs
+        and report.status_field == "passed"
+    )
+    if stale_errs and otherwise_clean:
+        return "stale"
+    return "invalid"
+
+
+@dataclass
+class AuthorityTransition:
+    """One hop of the Gate Blocking-Authority Lifecycle, computed for a single
+    `check_gate_validation` run. `demoted=True` is the fail-to-report-only edge
+    (ADR-fh-04): a gate that was BLOCKING lost that authority because its
+    record went stale or missing/invalid — never silently kept blocking, per
+    INV-fh-003. `previous_authority` is set whenever the gate is coming DOWN
+    from a higher-authority state (demoted or downgraded), so a later
+    re-validated record can report what it is being restored from."""
+    gate: str
+    previous_state: str
+    new_state: str
+    event: str
+    demoted: bool = False
+    demotion_reason: str | None = None  # 'stale' | 'record_missing'
+    previous_authority: str | None = None
+    instruction: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "previous_state": self.previous_state,
+            "new_state": self.new_state,
+            "event": self.event,
+            "demoted": self.demoted,
+            "demotion_reason": self.demotion_reason,
+            "previous_authority": self.previous_authority,
+            "instruction": self.instruction,
+        }
+
+
+def _demotion_instruction(gate: str, reason: str) -> str:
+    return (
+        f"DEMOTE {gate} to report-only (drop --gate from its workflow wiring) — "
+        f"its gate-validation record went {reason.replace('_', ' ')} WHILE BLOCKING "
+        "(check_gate_validation --format json reports passing==false; INV-fh-003: "
+        "no blocking without a passing record). File a tracking ticket to re-derive "
+        "and re-journal the record; re-run with --wire to restore blocking once it "
+        "passes again (never demoted -> blocking directly)."
+    )
+
+
+def compute_transition(gate: str, report: GateValidationReport, current: dict) -> AuthorityTransition:
+    """Compute the next blocking-authority state from the CURRENT persisted
+    state + this run's `GateValidationReport` (state-machines.json's Gate
+    Blocking-Authority Lifecycle). This is the auto-demotion path IT-fh-06
+    exercises: a gate found BLOCKING whose record just went stale or
+    missing/invalid is demoted (fail-to-report-only); the same finding against
+    a gate that was only 'validated' (never wired) merely downgrades to
+    'report_only' — no demotion event, nothing was blocking.
+    @cw-trace guards INV-fh-003"""
+    prev = current.get("authority", "unknown")
+    kind = failure_kind(report)
+
+    if kind is None:  # passing == True
+        if prev == "blocking":
+            return AuthorityTransition(gate, prev, "blocking", "steady_state")
+        event = "re_derive_and_rejournal" if prev == "demoted" else "author_record"
+        return AuthorityTransition(gate, prev, "validated", event)
+
+    if prev == "blocking":
+        reason = "stale" if kind == "stale" else "record_missing"
+        event = "auto_demote" if kind == "stale" else "record_missing_or_invalid"
+        return AuthorityTransition(
+            gate, prev, "demoted", event, demoted=True, demotion_reason=reason,
+            previous_authority=prev, instruction=_demotion_instruction(gate, reason),
+        )
+
+    if prev == "demoted":
+        # Already demoted, still not passing — stays put; carry the ORIGINAL
+        # previous_authority forward rather than losing it to this no-op hop.
+        return AuthorityTransition(gate, prev, "demoted", "no_change",
+                                    previous_authority=current.get("previous_authority"))
+
+    if not report.record_found and prev in ("unknown", "report_only"):
+        event = "record_removed" if prev == "report_only" else "no_change"
+        return AuthorityTransition(gate, prev, "unknown", event, previous_authority=prev)
+
+    event = "downgrade_nonblocking_stale" if kind == "stale" else (
+        "run_without_record" if prev == "unknown" else "record_missing_or_invalid")
+    return AuthorityTransition(gate, prev, "report_only", event, previous_authority=prev)
+
+
+def check_and_transition(
+    gate: str,
+    validation_dir: str | Path,
+    schema: dict | None = None,
+    scripts_dir: str | Path | None = None,
+    *,
+    wire: bool = False,
+    unwire: bool = False,
+) -> tuple[GateValidationReport, AuthorityTransition]:
+    """`check()` plus the persisted blocking-authority transition. Detects a
+    record that went stale or missing/invalid WHILE BLOCKING and auto-demotes
+    it to report-only (fail-to-report-only, ADR-fh-04), tracking
+    `previous_authority` so a later re-derived/re-journaled record is restored
+    to 'validated' (never straight back to 'blocking' — that requires an
+    explicit `--wire`, mirroring the model's invalid_transitions:
+    demoted->blocking would skip re-derivation). This is the enforcement
+    surface IT-fh-06 exercises end-to-end. Emits the GENERIC `DEMOTION` event
+    via `factory_log.emit_stale_demotion` — NOT `emit_demotion`, which requires
+    a `seed_class` a staleness/missing-record demotion never has.
+
+    Report-only-safe (docs/gate-rollout.md): checking a gate that has no
+    record at all (or one that never progresses past 'unknown') writes
+    NOTHING — an ad-hoc report-only query (e.g. a gate name that doesn't exist
+    yet) must not leave stray `<gate>.authority.json` state behind in what may
+    be a SHARED validation dir. Once a gate reaches any REAL authority state
+    (validated/blocking/report_only/demoted), or was already being tracked,
+    its sidecar is written/kept current so later staleness is detectable.
+    @cw-trace guards INV-fh-003"""
+    report = check(gate, validation_dir, schema=schema, scripts_dir=scripts_dir)
+    already_tracked = _authority_path(gate, validation_dir).is_file()
+    current = read_authority(gate, validation_dir)
+    prev_state = current.get("authority", "unknown")
+
+    if wire:
+        if not report.passing:
+            transition = AuthorityTransition(
+                gate, prev_state, prev_state, "wire_rejected",
+                previous_authority=current.get("previous_authority"),
+                instruction=f"cannot wire {gate} --gate: its record does not currently pass "
+                            "(INV-fh-003 — blocking is unreachable without a passing record).",
+            )
+        else:
+            transition = AuthorityTransition(gate, prev_state, "blocking", "wire_gate")
+    elif unwire:
+        new_state = "validated" if report.passing else "report_only"
+        transition = AuthorityTransition(gate, prev_state, new_state, "unwire_gate")
+    else:
+        transition = compute_transition(gate, report, current)
+
+    if transition.new_state != "unknown" or already_tracked:
+        _write_authority(gate, validation_dir, transition.new_state, transition.previous_authority)
+
+    if transition.demoted:
+        try:
+            from factory_log import emit_stale_demotion  # noqa: PLC0415
+            emit_stale_demotion(gate, transition.demotion_reason,
+                                previous_authority=transition.previous_authority)
+        except Exception:
+            pass
+
+    return report, transition
+
+
+def render_text(report: GateValidationReport, transition: AuthorityTransition | None = None) -> str:
     lines = [
         f"# Gate Validation — {report.gate}",
         "",
@@ -353,6 +593,13 @@ def render_text(report: GateValidationReport) -> str:
                    for r in report.failed_clean_runs]
     if report.record_found and not report.schema_errors:
         lines += ["", f"Record status field: {report.status_field}"]
+    if transition is not None:
+        lines += ["", f"Blocking authority: {transition.previous_state} -> {transition.new_state}"
+                       f" ({transition.event})"]
+        if transition.demoted:
+            lines += ["", "## STALE-WHILE-BLOCKING DEMOTION", "", f"- {transition.instruction}"]
+        elif transition.instruction:
+            lines += ["", f"- {transition.instruction}"]
     return "\n".join(lines) + "\n"
 
 
@@ -372,6 +619,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gate", dest="gate_mode", action="store_true",
                         help="Fail (exit 1) when the named gate lacks a passing validation record")
     parser.add_argument("--format", choices=["text", "json"], default="text")
+    wiring = parser.add_mutually_exclusive_group()
+    wiring.add_argument(
+        "--wire", action="store_true",
+        help="Record that this gate is now wired --gate (blocking) in its workflow — "
+             "only when the record currently passes (INV-fh-003); persists the "
+             "blocking-authority state so a later staleness/regression can be detected "
+             "as an auto-demotion, not just a downgrade.",
+    )
+    wiring.add_argument(
+        "--unwire", action="store_true",
+        help="Record that this gate is no longer wired --gate (an intentional un-wiring, "
+             "not a demotion) — moves the tracked authority to 'validated' if the record "
+             "still passes, else 'report_only'.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -380,12 +641,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: cannot load gate-validation schema: {exc}", file=sys.stderr)
         return 2
 
-    report = check(args.gate, args.validation_dir, schema=schema)
+    report, transition = check_and_transition(
+        args.gate, args.validation_dir, schema=schema, wire=args.wire, unwire=args.unwire,
+    )
 
     if args.format == "json":
-        print(json.dumps(report.to_dict(), indent=2))
+        out = report.to_dict()
+        out["authority"] = transition.to_dict()
+        print(json.dumps(out, indent=2))
     else:
-        print(render_text(report))
+        print(render_text(report, transition))
+
+    if transition.demoted:
+        print(f"check_gate_validation: DEMOTION — {transition.instruction}", file=sys.stderr)
 
     try:  # factory telemetry; no-op unless enabled, never breaks the gate
         from factory_log import emit_gate  # noqa: PLC0415

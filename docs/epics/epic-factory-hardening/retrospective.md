@@ -315,7 +315,7 @@ mistakes before merge (visible in PR review threads and the ratchet journal):
 | IT-fh-03 | Hotspot fact does not regress #185 (golden) | `tests/test_code_query_golden.py` (cases a–d) | PASS |
 | IT-fh-04 | Table-driven #184 records for all five gates | `tests/test_gate_validation_184.py` | PASS |
 | IT-fh-05 | Consult degradation matrix per adapter (#134) | `tests/test_consult_ai.py` | PASS |
-| IT-fh-06 | Stale-record auto-demotion end-to-end (#184) | none — **not implemented** | **MISSING** (→ #198) |
+| IT-fh-06 | Stale-record auto-demotion end-to-end (#184) | `tests/test_check_gate_validation.py`, `tests/test_ratchet.py` | PASS — implemented via #198 (see Addendum below) |
 | IT-fh-07 | architecture ↔ system-contracts cross-ref resolution (#174) | `tests/test_check_architecture.py` | PASS |
 | IT-fh-08 | Hotspot determinism (#187) | `tests/test_hotspots.py` | PASS (2 assertions skip without `lizard`, same as CI) |
 | IT-fh-09 | Report-only vs `--gate` exit-mode semantics (#174, #184) | `tests/test_check_architecture.py`, `tests/test_check_gate_validation.py` | PASS |
@@ -333,3 +333,65 @@ real product decision (implement it, or deliberately retire the AC via
 close, and does not block the milestone if the team prefers to retire it.
 Everything else (integration tests, single-writer, ratchet, full suite,
 AI-slop signals, CI) is green.
+
+## Addendum (2026-07-20, follow-up) — #198: IT-fh-06 implemented
+
+The decision this retrospective flagged as open — implement the modeled
+stale-while-blocking auto-demotion, or deliberately retire it — was made:
+**implement**. The committed `state-machines.json` already declared the
+`stale`/`demoted` states, the `previous_authority` context field, and the
+`auto_demote`/`downgrade_nonblocking_stale`/`record_missing_or_invalid`
+transitions; retiring them would have meant discarding a design the model
+itself said was correct, with no new information arguing otherwise.
+
+What shipped in #198:
+
+- `scripts/check_gate_validation.py` gained `failure_kind` (classifies a
+  non-passing report as `"stale"` — scanner_version/journal-chain drift only,
+  otherwise clean — vs `"invalid"` — missing record, schema errors, forged/
+  failed trials, wrong status), `compute_transition` (the Gate
+  Blocking-Authority Lifecycle's edges), and `check_and_transition` (wraps
+  `check()` with the transition + a persisted `<gate>.authority.json` sidecar
+  recording `authority`/`previous_authority`). New `--wire`/`--unwire` CLI
+  flags record the operator's own wiring intent (`wire_gate`/`unwire_gate`,
+  G-004/G-013) — the prerequisite for the machine to know a subsequent
+  staleness finding is a demotion (was blocking) rather than a mere downgrade
+  (was only validated).
+- `scripts/factory_log.py` gained `emit_stale_demotion(gate, reason,
+  previous_authority=...)` — the generic `DEMOTION` event
+  (`details='stale'|'record_missing'`) the model called for, distinct from
+  the pre-existing escape-driven `emit_demotion` (which requires a
+  `seed_class` a staleness demotion never has).
+- The model's transient `stale` state is resolved atomically within a single
+  `check_gate_validation` invocation (a stateless per-process CLI can't rest
+  in an intermediate state across calls) — `blocking → stale → demoted` and
+  `validated → stale → report_only` each collapse to one hop, with the
+  `event` name (`auto_demote`, `downgrade_nonblocking_stale`,
+  `record_missing_or_invalid`) and `previous_authority` still recording which
+  path was taken. This is the one deliberate elaboration beyond the literal
+  model — the model didn't specify how a stateless CLI persists authority
+  across invocations at all, so `check_and_transition`'s sidecar file is new
+  design within #198's scope, not a rendering of an existing spec.
+- Per the model's own `invalid_transitions` (`demoted -> blocking` is
+  explicitly forbidden), recovery always lands on `validated`
+  (`re_derive_and_rejournal`/`re_derive_record`), never straight back to
+  `blocking` — an explicit `--wire` is required to re-promote, same as first
+  promotion.
+- Tests: `tests/test_check_gate_validation.py` covers both demotion variants
+  (stale scanner/journal drift, and record-missing/schema-invalid) while
+  blocking, the downgrade-only path while merely validated, recovery back to
+  `validated`, `--wire`/`--unwire` semantics, and that the emitted telemetry
+  is the generic `DEMOTION` shape (no `seed_class`).
+  `tests/test_ratchet.py` adds an end-to-end run through the REAL
+  `ratchet.py record` CLI (not a hand-written journal fixture) to prove the
+  journal-corroboration path holds for the new auto-demotion, not just the
+  original `passing` check. `tests/test_factory_log.py` covers
+  `emit_stale_demotion` directly (generic shape, both reasons, no-op without
+  telemetry enabled, rejects unknown reasons).
+- `docs/epics/epic-factory-hardening/traceability.md`'s stale-record row is
+  now `passing`; `docs/epics/epic-factory-hardening/integration-tests.md`'s
+  IT-fh-06 section carries a `Status: Covered` line.
+
+No other epic ticket's contracts or invariants were touched. Full suite,
+ratchet, and single-writer coverage re-verified green on this follow-up
+branch (see PR #198's own description for exact counts).
