@@ -78,18 +78,28 @@ Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-exp
 
 Write findings to `$CW_TMP/codebase-context.md`.
 
+**Hotspot + coupling context (measured, not declared — #187).** Refresh `docs/quality/hotspots.json` so architectural scrutiny concentrates where change-risk is *measured* from git history, not guessed:
+
+```bash
+python3 "$CW_HOME/scripts/hotspot_discovery.py" --repo "$TARGET_REPO" \
+  --out "$TARGET_REPO/docs/quality/hotspots.json" --format text
+```
+
+This is a report-only composer — it degrades gracefully (no lizard, no history, empty repo all produce a well-formed but empty/noted record) and **never gates `/architect`**. Note the top-decile files and their `coupled_with` partners that overlap the epic's touched areas; fold that list into the Step 3 consultation prompt below. `docs/quality/hotspots.json` itself carries no stable IDs and is never referenced by `@cw-trace` — it's a measured, rebuildable artifact, not a contract (INV-fh-007).
+
 ### Step 3: Multi-AI architectural consultation
 
 Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
 - Epic goal and ticket list with acceptance criteria
 - Codebase context from Step 2
+- Hotspot + change-coupling context (`docs/quality/hotspots.json`, if present): the top-decile files this epic touches, their churn/complexity scores, and their coupled partners — a measured risk *prior*, not a defect finding, and absence of rank is not evidence of health
 - Cross-cutting concerns identified by `/plan-epic`
 - Specific questions:
   1. What is the canonical data model for the entities this epic touches? Define the single source of truth.
   2. What state machines exist? Define all valid states and transitions.
   3. What invariants must hold across the full epic? (e.g., "an order always has a customer_id after confirmation")
   4. What are the API contracts — preconditions, postconditions, error cases?
-  5. Where are the integration risks and how should we test them?
+  5. Where are the integration risks and how should we test them? Cross-reference the hotspot/coupling context above — a file this epic touches that's ALSO a measured top-decile hotspot (or tightly coupled to one) deserves deeper contract scrutiny than the hotspot report alone would suggest; the absence of a hotspot entry is not a reason to skip scrutiny elsewhere.
   6. What could go wrong between tickets? (dual sources of truth, race conditions, inconsistent reads)
 
 Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation). Every provider gets the **identical** prompt above — the value is in natural divergence, not roleplay — but `config/providers.json` may additionally assign each provider a bounded **review lens** (`role.lenses`, e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters live in `config/lenses.json`). When a lens is assigned, `consult_ai.py` appends that provider's charter as a clearly-delimited `## Your charter` section — the shared prompt itself never changes. This decorrelates the reviewers on purpose: a soundness-refuter and a completeness-checker reading the *same* context reliably surface disjoint findings instead of converging on the same top issue three times:
