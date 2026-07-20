@@ -1,0 +1,6 @@
+# Marks a pytest suite so ratchet's detect_suites() autodetects it.
+# Deliberately carries NO [tool.pytest.ini_options]: this nested fixture must
+# not perturb the parent chief-wiggum repo's pytest rootdir/config discovery.
+[project]
+name = "gv-ratchet-fixture"
+version = "0.0.0"

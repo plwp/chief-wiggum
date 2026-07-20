@@ -1,0 +1,80 @@
+{
+  "gate": "ci_scaffold",
+  "protocol_version": "1",
+  "scanner_version": "258f49acedd08d580b8d4ba997f8865497151965460f479532afd28ce2e76dcc",
+  "telemetry_dependent": false,
+  "concurrency_applicable": false,
+  "concurrency_note": "ci_scaffold's detect_ci is a static filesystem presence check at a point in time (does .github/workflows/ hold any *.yml/*.yaml file); there is no concurrent/racing dimension in the artifact to evade.",
+  "authority_boundary": {
+    "proves": "over a target repo working tree, detect_ci reports ci_present=false (a finding) exactly when .github/workflows/ contains no top-level file whose suffix is .yml or .yaml, and ci_present=true otherwise; a missing-CI finding is derived mechanically as (0 if report.ci_present else 1)",
+    "artifact": "a target repo working tree (its .github/workflows/ directory and language-stack marker files: go.mod / package.json / pyproject.toml / setup.py / requirements.txt)",
+    "assumptions": [
+      "CI presence is a GitHub Actions notion only: workflow files under .github/workflows/ with a .yml/.yaml suffix. A repo whose CI lives in another system (GitLab CI, CircleCI, Jenkins) is out of scope and would be reported ci_present=false",
+      "the check is PRESENCE-only: it never reads workflow CONTENT, so a syntactically-present but no-op workflow (a valid-extension file that runs no build/test) is accepted as ci_present=true — a documented under-sampling boundary, not a bug",
+      "wf_dir.iterdir() is non-recursive: only top-level files directly under .github/workflows/ are considered; a workflow nested in a subdirectory is not a valid GitHub Actions workflow and is correctly not counted",
+      "the suffix comparison p.suffix in (\".yml\", \".yaml\") is exact; the detector does not require a specific filename (any .yml/.yaml is accepted)"
+    ]
+  },
+  "seeded_defect_trials": [
+    {
+      "seed_id": "ci-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "sha": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": "the only workflow (.github/workflows/ci.yml) is deleted — the textbook 'no CI on main' state; detect_ci returns ci_present=false",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "ci-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "sha": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": ".github/workflows/ exists but the ci.yml is replaced with a non-workflow README.md (no .yml/.yaml suffix). The directory is present but holds no workflow — still MISSING by the detector's own definition, so it fires",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "ci-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "sha": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": "the workflow is renamed ci.yml -> deploy-then-test.yaml (a real, valid, differently-named workflow). The detector requires SOME .yml/.yaml under .github/workflows/, not a specific filename, so a legitimately-named workflow correctly does NOT trip a false 'missing CI' finding",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    },
+    {
+      "seed_id": "ci-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "sha": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": ".github/workflows/ci.yml is present with a valid suffix but its CONTENT is a no-op workflow that runs no build or tests. detect_ci is presence+extension only and never reads content, so it accepts it as ci_present=true — a documented under-sampling boundary (the gate proves a workflow file EXISTS, not that it runs a real build/test)",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    }
+  ],
+  "clean_corpus_runs": [
+    {
+      "repo": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "sha": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "findings": 0,
+      "coverage": {
+        "workflows_found": 1,
+        "stacks_detected": 1
+      },
+      "passed": true
+    }
+  ],
+  "status": "passed",
+  "validated_at": "2026-07-20T04:41:50Z",
+  "validated_by": "chief-wiggum#184",
+  "ratchet_record_id": "rec-00009"
+}
