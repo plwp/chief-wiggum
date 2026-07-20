@@ -724,23 +724,39 @@ SCANNER_VERSION_GATES = (
 )
 
 _CW_IMPORT_RE = re.compile(
-    r"^from chief_wiggum(?:\.(\w+))? import (.+)$|^import chief_wiggum\.(\w+)", re.M)
+    r"^\s*from chief_wiggum(?:\.(\w+))? import (.+)$|^\s*import chief_wiggum\.(\w+)", re.M)
+# The local `quality` engine package (scripts/quality/) is a finding-affecting
+# dependency exactly like chief_wiggum — quality_slop_gate's verdicts and
+# ratchet's quality_regressions are shaped by its modules. Lazy (indented,
+# in-function) imports count: they still execute on the finding path.
+_QUALITY_IMPORT_RE = re.compile(
+    r"^\s*from quality(?:\.(\w+))? import (.+)$|^\s*import quality\.(\w+)", re.M)
 
 
-def _chief_wiggum_deps(source: str) -> set[str]:
-    """Every chief_wiggum submodule a gate script imports (both `from
-    chief_wiggum.X import ...` and `from chief_wiggum import X` forms)."""
+def _module_deps(source: str, pattern: re.Pattern) -> set[str]:
+    """Every submodule of a local package a gate script imports (both
+    `from pkg.X import ...` and `from pkg import X [as alias], Y` forms,
+    top-level or lazily inside a function)."""
     deps: set[str] = set()
-    for m in _CW_IMPORT_RE.finditer(source):
+    for m in pattern.finditer(source):
         if m.group(1):
             deps.add(m.group(1))
         elif m.group(3):
             deps.add(m.group(3))
         else:
-            # `from chief_wiggum import X [as alias], Y` — the names ARE modules
-            names = m.group(2).split(",")
-            deps.update(n.strip().split(" as ")[0].strip() for n in names)
+            # `from pkg import X [as alias], Y  # comment` — the names ARE modules
+            names = m.group(2).split("#")[0].split(",")
+            deps.update(n.strip().split(" as ")[0].strip().rstrip(")")
+                        for n in names if n.strip())
     return deps
+
+
+def _chief_wiggum_deps(source: str) -> set[str]:
+    return _module_deps(source, _CW_IMPORT_RE)
+
+
+def _quality_deps(source: str) -> set[str]:
+    return _module_deps(source, _QUALITY_IMPORT_RE)
 
 
 def _scanner_version_hash_inputs(source: str) -> str:
@@ -753,19 +769,22 @@ def _scanner_version_hash_inputs(source: str) -> str:
 
 @pytest.mark.parametrize("gate", SCANNER_VERSION_GATES)
 def test_scanner_version_dep_list_is_complete(gate):
-    """INV-fh-005 / CTR-fh-041: for every finding-affecting `chief_wiggum`
-    module a gate imports, that module's file must be among its
-    --scanner-version hash inputs — an omitted dep is silent staleness (a
-    change to the dep never invalidates the gate's validation record). This
-    caught a real defect: check_traceability imported trace_links (suspect-link
-    /sidecar/justification logic) without hashing it."""
+    """INV-fh-005 / CTR-fh-041: for every finding-affecting local module a gate
+    imports — the `chief_wiggum` package AND the `quality` engine package —
+    that module's file must be among its --scanner-version hash inputs; an
+    omitted dep is silent staleness (a change to the dep never invalidates the
+    gate's validation record). This caught two real defects:
+    check_traceability imported trace_links (suspect-link/sidecar/justification
+    logic) without hashing it, and quality_slop_gate/ratchet executed the
+    quality engines (survival/duplication; churn/complexity) without hashing
+    them."""
     # @cw-trace verifies CTR-fh-041
     source = (SCRIPTS / f"{gate}.py").read_text()
-    deps = _chief_wiggum_deps(source)
-    assert deps, f"{gate} imports no chief_wiggum modules?"
+    deps = _chief_wiggum_deps(source) | _quality_deps(source)
+    assert deps, f"{gate} imports no chief_wiggum/quality modules?"
     block = _scanner_version_hash_inputs(source)
     missing = sorted(d for d in deps if f'"{d}.py"' not in block)
     assert not missing, (
-        f"{gate}'s _scanner_version omits imported chief_wiggum module(s) "
+        f"{gate}'s _scanner_version omits imported local module(s) "
         f"{missing} from its hash inputs — an edit there would never mark the "
         "validation record stale (CTR-fh-041)")

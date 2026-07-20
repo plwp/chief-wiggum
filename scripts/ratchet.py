@@ -751,17 +751,23 @@ def cmd_protected(args) -> int:
 
 def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
-    ``chief_wiggum`` dependencies (hashing.py for stable_hash/hash_epic_definitions,
-    trace_ids.py for the shared stable-ID grammar, trace_links.py for
-    suspect-link propagation). No hand-bumped constant to forget (INV-fh-005).
+    finding-affecting local dependencies (hashing.py for
+    stable_hash/hash_epic_definitions, trace_ids.py for the shared stable-ID
+    grammar, trace_links.py for suspect-link propagation, and the lazily
+    imported quality engines churn.py/complexity.py that shape the
+    quality_regressions findings ``check`` reports). No hand-bumped constant to
+    forget (INV-fh-005).
     @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
+    q_dir = here.parent / "quality"
     return scanner_version(
         here,
         cw_dir / "hashing.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",
+        q_dir / "churn.py",
+        q_dir / "complexity.py",
     )
 
 
