@@ -423,6 +423,18 @@ def _fuzzy_word_match(a: str, b: str) -> bool:
 # true plurality of operations share (the "provider" case). Tuned and
 # revalidated against a real, previously-shipped repo (see docs/code-query.md).
 _MAX_COMMON_WORD_DF = 0.4
+# Below this many corpus documents, document frequency is statistical noise
+# and the DF bar is bypassed entirely (every word counts as specific — the
+# pre-#185 all-words behavior). Without this floor, a one-operation epic
+# rejects ITSELF: its own path's words are the whole corpus (df=1.0 > 0.4),
+# so `orient` would return nothing for the file that operation genuinely
+# governs; a two-document epic (an operation plus its UI route sharing the
+# entity word) self-blocks the same way at df=1.0. Threshold interaction:
+# at total_docs >= 5, a word must appear in >40% of documents to be common —
+# i.e. at least 3 of 5 — so a genuinely-shared entity word still needs real
+# recurrence before it loses binding weight, while the dogeared-coach
+# "provider" case (5 of 8 documents) stays blocked.
+_MIN_CORPUS_DOCS = 5
 
 
 def _epic_path_documents(epic: Epic) -> list[frozenset[str]]:
@@ -450,7 +462,12 @@ def _epic_path_documents(epic: Epic) -> list[frozenset[str]]:
 
 
 def _word_document_frequency(docs: list[frozenset[str]]) -> dict[str, float]:
-    """word -> fraction of `docs` that contain it. Deterministic across runs
+    """word -> fraction of `docs` that contain it, or `{}` when the corpus has
+    fewer than `_MIN_CORPUS_DOCS` documents — DF over a tiny corpus is noise,
+    and returning an empty map makes every `_has_specific_word` lookup miss
+    (df=0.0, maximally specific), i.e. small epics keep the pre-#185
+    all-words-only behavior instead of self-blocking (a one-operation epic's
+    own words are the entire corpus at df=1.0). Deterministic across runs
     (CTR-fh-051): built by iterating `docs` in the epic artifacts' own JSON
     list order (stable across runs/platforms), and dict iteration order in
     CPython is insertion order, not hash order — so this never depends on
@@ -459,7 +476,7 @@ def _word_document_frequency(docs: list[frozenset[str]]) -> dict[str, float]:
     set's iteration order; only membership/count, which hashing doesn't
     affect."""
     total = len(docs)
-    if not total:
+    if total < _MIN_CORPUS_DOCS:
         return {}
     counts: dict[str, int] = {}
     for doc in docs:
@@ -470,10 +487,11 @@ def _word_document_frequency(docs: list[frozenset[str]]) -> dict[str, float]:
 
 def _has_specific_word(literals: set[str], doc_freq: dict[str, float]) -> bool:
     """At least one of `literals` must clear the specificity bar (CTR-fh-050).
-    A word absent from the corpus (lookup miss — e.g. the corpus is empty
-    because this epic declares only one operation) is treated as maximally
-    specific (df=0.0), so an epic with nothing else to compare against never
-    spuriously blocks its own only operation."""
+    A word absent from the map is a lookup miss treated as maximally specific
+    (df=0.0) — which is also how the small-corpus bypass arrives here:
+    `_word_document_frequency` returns an empty map below `_MIN_CORPUS_DOCS`,
+    so every word of a small epic misses and the all-words guard alone
+    decides, exactly as before #185."""
     return any(doc_freq.get(w, 0.0) <= _MAX_COMMON_WORD_DF for w in literals)
 
 

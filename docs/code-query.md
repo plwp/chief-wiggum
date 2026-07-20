@@ -127,6 +127,14 @@ An un-annotated handler still gets a real answer:
   path/route "documents" carries **zero binding weight**. At least one of the
   pattern's literal words must clear that bar, or the match is rejected
   outright — even though the all-words guard alone would have accepted it.
+  **Small-corpus bypass**: with fewer than 5 documents the DF bar is skipped
+  entirely (every word counts as specific) — document frequency over a tiny
+  corpus is noise, and without the floor a one-operation epic would reject
+  *itself* (its own path's words ARE the whole corpus at df=1.0), as would
+  the two-document shape of an operation plus its UI route sharing the
+  entity word. Threshold interaction: at ≥5 documents, "common" requires
+  presence in >40% of them — at least 3 of 5 — so a shared entity word needs
+  real recurrence before it loses binding weight.
   This is the mechanical fix for the real over-match found validating against
   dogeared-coach: `ui/src/providers/auth-provider.tsx` word-matched dozens of
   operations that reduce to the bare word `providers` once params are

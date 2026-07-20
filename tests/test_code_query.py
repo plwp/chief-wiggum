@@ -15,6 +15,7 @@ small "checkout" epic with:
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -476,6 +477,67 @@ def test_orient_inferred_binding_is_deterministic_across_runs():
     for _ in range(5):
         again = code_query.cmd_orient(FIXTURE, "ui/src/providers/verify-provider.tsx", "checkout")
         assert again == first
+
+
+def _write_mini_epic(root: Path, slug: str, *, contracts: dict | None = None, ui_spec: dict | None = None):
+    mdir = root / "docs" / "epics" / slug / "models"
+    mdir.mkdir(parents=True)
+    if contracts is not None:
+        (mdir / "contracts.json").write_text(json.dumps(contracts))
+    if ui_spec is not None:
+        (mdir / "ui-spec.json").write_text(json.dumps(ui_spec))
+
+
+def test_small_corpus_bypasses_the_specificity_bar_one_doc_epic(tmp_path):
+    """Codex P1 regression (PR #192): a one-operation epic's own path words ARE
+    the whole corpus (df=1.0 > threshold), so a pure-ratio rule rejects the
+    epic's ONLY operation for the file it genuinely governs. Below
+    `_MIN_CORPUS_DOCS` documents the DF bar is bypassed (DF over a tiny corpus
+    is noise) and the pre-#185 all-words behavior decides alone.
+
+    @cw-trace verifies CTR-fh-050
+    """
+    _write_mini_epic(tmp_path, "mini", contracts={"entities": [{"name": "Order", "operations": [
+        {"name": "List Orders", "method": "GET", "path": "/api/v1/orders"}]}]})
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "orders.py").write_text("def list_orders():\n    ...\n")
+    env = code_query.cmd_orient(tmp_path, "src/orders.py", "mini")
+    assert any(f["kind"] == "contract_operation" for f in env["facts"]), env["facts"]
+
+
+def test_small_corpus_bypasses_the_specificity_bar_two_doc_epic(tmp_path):
+    """Two-document flavor of the same P1: an operation plus its UI route both
+    reduce to the shared entity word ('orders', df=1.0 in each) — a small
+    epic's most natural shape — and must still infer-bind on both sides.
+
+    @cw-trace verifies CTR-fh-050
+    """
+    _write_mini_epic(
+        tmp_path, "mini2",
+        contracts={"entities": [{"name": "Order", "operations": [
+            {"name": "List Orders", "method": "GET", "path": "/api/v1/orders"}]}]},
+        ui_spec={"pages": {"/orders/:id": {"route": "/orders/:id", "title": "Order Detail"}}},
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "orders.py").write_text("...")
+    (tmp_path / "ui").mkdir()
+    (tmp_path / "ui" / "orders.tsx").write_text("...")
+    env_src = code_query.cmd_orient(tmp_path, "src/orders.py", "mini2")
+    env_ui = code_query.cmd_orient(tmp_path, "ui/orders.tsx", "mini2")
+    assert any(f["kind"] == "contract_operation" for f in env_src["facts"]), env_src["facts"]
+    assert any(f["kind"] == "ui_component" for f in env_ui["facts"]), env_ui["facts"]
+
+
+def test_word_document_frequency_is_empty_below_min_corpus_and_real_at_or_above():
+    """The bypass seam itself: below `_MIN_CORPUS_DOCS` the DF map is empty
+    (every lookup misses -> maximally specific); at/above it, real ratios.
+
+    @cw-trace verifies CTR-fh-050
+    """
+    small = [frozenset({"orders"})] * (code_query._MIN_CORPUS_DOCS - 1)
+    assert code_query._word_document_frequency(small) == {}
+    full = [frozenset({"orders"})] * code_query._MIN_CORPUS_DOCS
+    assert code_query._word_document_frequency(full) == {"orders": 1.0}
 
 
 # --- relation-tier-first rank key (CTR-fh-052/053, INV-fh-007/012) --------------------
