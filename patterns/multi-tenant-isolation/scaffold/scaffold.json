@@ -1,0 +1,19 @@
+{
+  "$comment": "Scaffold manifest for multi-tenant-isolation. apply_pattern.py stamps each file into the target repo with parameters bound. This is the CODE half of the pattern (the seams that realize INV-MTI), complementing the contract-pack (invariants.md) half. Templating convention: occurrences of {{param}} in both the target path and the file body are replaced with the bound parameter value (from --param / the manifest schema). A file whose target already exists is SKIPPED (never clobbered) unless --force is passed. See docs/patterns-registry.md#scaffold-layout.",
+  "scaffold_version": 1,
+  "pattern": "multi-tenant-isolation",
+  "files": [
+    {
+      "template": "tenant_resolver.go.tmpl",
+      "target": "internal/tenant/resolver.go",
+      "realizes": ["INV-MTI-001"],
+      "desc": "Server-only tenant resolution: derive the tenant from the authenticated principal, reject client-supplied hints, 404 (not 403) on a cross-tenant probe."
+    },
+    {
+      "template": "tenant_scoped_repo.go.tmpl",
+      "target": "internal/tenant/scoped_repo.go",
+      "realizes": ["INV-MTI-002"],
+      "desc": "Fail-closed tenant-scoped repository: every query is scoped by {{tenant_key}}; there is no unscoped path and the raw {{store}} handle stays unexported."
+    }
+  ]
+}

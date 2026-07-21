@@ -1,0 +1,55 @@
+// Package tenant — stamped from the multi-tenant-isolation registry pattern.
+//
+// Realizes INV-MTI-001 (server-only tenant resolution). The tenant is derived
+// from the authenticated principal ({{resolver}}), NEVER from a client-supplied
+// header, query param, or body field — a request that tries to name its own
+// tenant is treated as a probe and answered with 404 (indistinguishable from
+// "no such resource"), not 403 (which would confirm the resource exists).
+//
+// SCAFFOLD SEAM: wire ResolveTenant into your auth middleware and replace the
+// principalTenant lookup with your real {{resolver}} implementation. Do not add
+// a code path that reads the tenant from the request.
+package tenant
+
+import (
+	"errors"
+	"net/http"
+)
+
+// TenantKey is the scoping field for this product: {{tenant_key}}.
+const TenantKey = "{{tenant_key}}"
+
+// ErrNoTenant is returned when no tenant can be resolved from the principal.
+// Callers MUST fail closed (404) — never fall back to an unscoped view.
+var ErrNoTenant = errors.New("tenant: unresolved for principal")
+
+// Principal is the authenticated identity. It is populated by trusted auth
+// middleware, never from client-controlled request fields.
+type Principal struct {
+	Subject string
+	// resolver = {{resolver}}: the tenant is carried here (claim) or looked up
+	// from this subject (membership-lookup). Fill in per your resolver.
+	tenant string
+}
+
+// ResolveTenant derives the tenant id from the authenticated principal.
+// resolver strategy: {{resolver}}.
+//
+// It must never consult the *http.Request for the tenant. The request is passed
+// only so the seam can 404 a cross-tenant probe uniformly; do not read a tenant
+// hint out of it.
+func ResolveTenant(p *Principal) (string, error) {
+	if p == nil || p.tenant == "" {
+		// SCAFFOLD: for resolver "membership-lookup", replace this with a lookup
+		// keyed by p.Subject against your {{store}} membership records.
+		return "", ErrNoTenant
+	}
+	return p.tenant, nil
+}
+
+// ProbeResponse is the uniform answer to a request that cannot be scoped to the
+// principal's tenant (or names a foreign tenant): 404, never 403 — a 403 leaks
+// that the foreign resource exists.
+func ProbeResponse(w http.ResponseWriter) {
+	http.Error(w, "not found", http.StatusNotFound)
+}

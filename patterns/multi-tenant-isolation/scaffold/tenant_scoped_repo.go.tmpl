@@ -1,0 +1,74 @@
+// Package tenant — stamped from the multi-tenant-isolation registry pattern.
+//
+// Realizes INV-MTI-002 (fail-closed tenant-scoped repository). Every read and
+// write is scoped by {{tenant_key}}. There is NO unscoped path: the raw {{store}}
+// handle is unexported, so no caller can reach around the scoping. A filter that
+// arrives already carrying a {{tenant_key}} is rejected (not overridden) so a
+// caller can never widen its own scope.
+//
+// SCAFFOLD SEAM: replace the filter/exec bodies with your real {{store}} driver
+// calls. Keep the guards — they are the invariant. Do not export `store` and do
+// not add a method that queries without calling scope().
+package tenant
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// ErrScopeConflict is returned when a caller-supplied filter already constrains
+// {{tenant_key}} — a sign the caller is trying to choose its own tenant. The repo
+// REJECTS rather than overrides, so a widening attempt fails closed.
+var ErrScopeConflict = errors.New("scoped_repo: caller filter must not set " + TenantKey)
+
+// ScopedRepo wraps the raw {{store}} handle. The handle is unexported: the only
+// way to query is through the scope-enforcing methods below.
+type ScopedRepo struct {
+	store any // {{store}} — unexported on purpose; never surface a raw handle
+}
+
+// NewScopedRepo binds a raw {{store}} handle behind the scoping guard.
+func NewScopedRepo(store any) *ScopedRepo {
+	return &ScopedRepo{store: store}
+}
+
+// scope injects {{tenant_key}} == tenant into a filter, rejecting any filter that
+// already constrains it. This is the single chokepoint every query passes.
+func scope(tenant string, filter map[string]any) (map[string]any, error) {
+	if tenant == "" {
+		return nil, ErrNoTenant
+	}
+	if filter == nil {
+		filter = map[string]any{}
+	}
+	if _, present := filter[TenantKey]; present {
+		return nil, ErrScopeConflict
+	}
+	filter[TenantKey] = tenant
+	return filter, nil
+}
+
+// Find scopes the query to the caller's tenant. There is deliberately no Find
+// that skips scope().
+func (r *ScopedRepo) Find(ctx context.Context, tenant string, filter map[string]any) ([]map[string]any, error) {
+	scoped, err := scope(tenant, filter)
+	if err != nil {
+		return nil, fmt.Errorf("scoped find: %w", err)
+	}
+	// SCAFFOLD: execute `scoped` against r.store ({{store}}) and return results.
+	_ = scoped
+	return nil, nil
+}
+
+// Update scopes the mutation to the caller's tenant, same chokepoint as Find.
+func (r *ScopedRepo) Update(ctx context.Context, tenant string, filter, set map[string]any) error {
+	scoped, err := scope(tenant, filter)
+	if err != nil {
+		return fmt.Errorf("scoped update: %w", err)
+	}
+	// SCAFFOLD: execute the scoped update against r.store ({{store}}).
+	_ = scoped
+	_ = set
+	return nil
+}

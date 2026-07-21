@@ -56,7 +56,7 @@ patterns/
 ├── improvement-loop/             # specified pattern
 │   ├── pattern.md                # the spec: what / when-to-apply / mechanism / parameters
 │   ├── manifest.json             # machine-readable: params, installs[], protected_paths, trust
-│   └── scaffold/                 # (future) the templated files stamped into the target app
+│   └── scaffold/                 # the templated code seams stamped into the target app (see #scaffold-layout)
 ├── engagement-instrumentation/   # specified pattern — the signal tier that feeds the loop
 │   ├── pattern.md
 │   └── manifest.json
@@ -69,6 +69,25 @@ patterns/
         ├── bindings/             # pattern × this-stack → concrete recipe (one .md per bound pattern)
         └── skills/               # runnable stand-up playbooks ("the skills to use them")
 ```
+
+<a id="scaffold-layout"></a>
+A pattern MAY also ship a **`scaffold/`** — the code half. Where the contract pack
+(`manifest.json`'s invariant cluster) declares *what must hold*, the scaffold is
+the *starting code that holds it*: the seams and guards realizing the cluster,
+stamped into the target repo by `apply_pattern.py`. Layout:
+
+- **`scaffold/scaffold.json`** — the scaffold manifest: `files[]`, each mapping a
+  `template` (a file under `scaffold/`) to a `target` (a repo-relative path in the
+  stamped app), with `realizes` (the `INV-*` ids it satisfies) and a `desc`.
+- **`scaffold/<name>.tmpl`** — a template file. Every `{{param}}` in both the
+  `target` path and the file body is replaced with the bound parameter value.
+
+Stamping rules (mechanically enforced by `apply_pattern.py`): a target that
+already exists is **skipped, never clobbered**, unless `--force` is passed (so
+hand-edits to a stamped seam survive re-application); stamping needs every
+**required** param bound, else the contract pack still installs and the scaffold
+is skipped with a note. `multi-tenant-isolation` is the first pattern to ship a
+scaffold (`internal/tenant/{resolver,scoped_repo}.go`, realizing INV-MTI-001/002).
 
 Each specified pattern is a directory. Two files are the contract:
 
@@ -97,8 +116,9 @@ A pattern is installed into a target repo by a thin workflow
 /apply-pattern owner/repo --pattern fetch-on-webhook-reconcile --param resource=subscription
 ```
 
-Mechanically — the **contract-pack** steps (1, 2, 4, 5) are **built**; scaffold
-stamping (3) is deferred until patterns ship a `scaffold/`:
+Mechanically — the **contract-pack** steps (1, 2, 4, 5) and scaffold stamping (3)
+are all **built** (`multi-tenant-isolation` is the first pattern to ship a
+`scaffold/`; see [Scaffold layout](#scaffold-layout)):
 
 1. **Resolve** the target repo (`scripts/repo.py`, as every workflow does). ✅
 2. **Bind parameters** — read `manifest.json`'s parameter schema and resolve each
@@ -106,8 +126,10 @@ stamping (3) is deferred until patterns ship a `scaffold/`:
    its model family, its protected paths). Unresolved **required** params become
    `TBD:` markers in the installed contract pack, gated exactly like every other
    CW artifact (`scripts/check_unresolved.py`). ✅
-3. **Stamp** the scaffold into the target repo with parameters bound. ⏳ *(deferred
-   — no pattern ships a `scaffold/` yet.)*
+3. **Stamp** the scaffold into the target repo with parameters bound. ✅ *(when the
+   pattern ships a `scaffold/`; idempotent — an existing target file is skipped,
+   never clobbered, unless `--force`. Needs every required param bound, else the
+   contract pack still installs and the scaffold is skipped with a note.)*
 4. **Register protected paths** — add `docs/patterns/**` (the installed contract
    pack) to the product's `docs/quality/ratchet.json`, so the adopted cluster
    becomes a goalpost the app's autonomous machinery cannot move (reuses the
