@@ -261,3 +261,22 @@ def test_cli_apply_stamps_scaffold(tmp_path):
         capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (tmp_path / "internal/tenant/resolver.go").is_file()
+
+
+def test_scaffold_rejects_path_traversal_target(tmp_path, monkeypatch):
+    # a pattern/param that renders a target escaping the repo must fail closed
+    import apply_pattern as ap
+    orig = ap.load_scaffold
+    monkeypatch.setattr(ap, "load_scaffold", lambda pid, base=ap.ROOT: {
+        "files": [{"template": "tenant_resolver.go.tmpl", "target": "../evil.go"}]})
+    with pytest.raises(ap.ApplyError, match="repo-relative path"):
+        ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    monkeypatch.setattr(ap, "load_scaffold", orig)
+
+
+def test_scaffold_rejects_absolute_target(tmp_path, monkeypatch):
+    import apply_pattern as ap
+    monkeypatch.setattr(ap, "load_scaffold", lambda pid, base=ap.ROOT: {
+        "files": [{"template": "tenant_resolver.go.tmpl", "target": "/etc/evil.go"}]})
+    with pytest.raises(ap.ApplyError, match="repo-relative path"):
+        ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)

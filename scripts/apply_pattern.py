@@ -37,7 +37,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
@@ -206,6 +206,12 @@ def _render_scaffold(pattern_id: str, scaffold: dict, bound: dict[str, str],
         rel = _render(target, bound)
         if _PLACEHOLDER.search(rel):
             raise ApplyError(f"scaffold target path has an unbound placeholder: {rel}")
+        # Fail closed on a target that would escape the target repo. Scaffold
+        # manifests (and any param bound into a path) are stamped into a real
+        # checkout — an absolute path or a `..` segment must never write outside it.
+        pp = PurePosixPath(rel)
+        if pp.is_absolute() or ".." in pp.parts or rel != pp.as_posix():
+            raise ApplyError(f"scaffold target must be a repo-relative path without '..': {rel!r}")
         out[rel] = _render(tpath.read_text(), bound)
     return out
 
