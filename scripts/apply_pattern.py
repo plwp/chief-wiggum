@@ -17,8 +17,13 @@ does the mechanical, scaffold-independent half of `/apply-pattern`:
      protected paths, so the adopted contract pack becomes a goalpost workers
      can't move.
 
-Scaffold stamping (the pattern's `scaffold/` files) is deliberately out of scope
-until scaffolds exist — this installs the contract pack, not the code.
+  6. Stamps the pattern's `scaffold/` code (the seams that realize the cluster)
+     into the target repo with parameters bound, when the pattern ships one.
+     Scaffold files are code, so stamping is idempotent: an existing target is
+     skipped (never clobbered) unless `--force` is passed. Templating replaces
+     `{{param}}` in both the target path and the file body with the bound value.
+     Scaffold stamping needs every REQUIRED param bound; if any is unresolved the
+     contract pack still installs and the scaffold is skipped with a note.
 
     python3 scripts/apply_pattern.py fetch-on-webhook-reconcile \\
         --target-dir /path/to/repo --param resource=subscription --param projected_field=plan
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,6 +51,9 @@ REGISTRY = ROOT / "patterns" / "registry.json"
 ADOPTED_REL = "docs/patterns/adopted.json"
 RATCHET_REL = "docs/quality/ratchet.json"
 PATTERN_GLOB = "docs/patterns/**"
+SCAFFOLD_DIR = "scaffold"
+SCAFFOLD_MANIFEST = "scaffold.json"
+_PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
 
 class ApplyError(Exception):
@@ -55,7 +64,9 @@ class ApplyError(Exception):
 class Plan:
     pattern_id: str
     version: int
-    files: dict[str, str] = field(default_factory=dict)   # repo-rel path -> content
+    files: dict[str, str] = field(default_factory=dict)   # repo-rel path -> content (contract pack; regenerated, overwrite ok)
+    scaffold_files: dict[str, str] = field(default_factory=dict)  # repo-rel path -> rendered code (idempotent, never clobbered without --force)
+    scaffold_skipped: str = ""                            # note when scaffold stamping was skipped
     ratchet_add: list[str] = field(default_factory=list)  # globs to merge into protected_paths
     bound: dict[str, str] = field(default_factory=dict)
     unresolved: list[str] = field(default_factory=list)   # required params with no value
@@ -160,6 +171,45 @@ def _invariants_doc(manifest: dict, cluster: list[dict], bound: dict, unresolved
     return "\n".join(lines)
 
 
+def _render(text: str, bound: dict[str, str]) -> str:
+    """Substitute {{param}} with its bound value. An unknown placeholder is left
+    verbatim (build_plan only renders when every required param is bound, so a
+    surviving placeholder is an optional param the author referenced)."""
+    return _PLACEHOLDER.sub(lambda m: bound.get(m.group(1), m.group(0)), text)
+
+
+def load_scaffold(pattern_id: str, base: Path = ROOT) -> dict | None:
+    """Read a pattern's scaffold/scaffold.json, or None if it ships no scaffold."""
+    path = base / "patterns" / pattern_id / SCAFFOLD_DIR / SCAFFOLD_MANIFEST
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ApplyError(f"malformed scaffold manifest {path}: {exc}") from exc
+
+
+def _render_scaffold(pattern_id: str, scaffold: dict, bound: dict[str, str],
+                     base: Path = ROOT) -> dict[str, str]:
+    """Render each scaffold template into {target-relpath -> content}, params bound
+    in both the target path and the body."""
+    out: dict[str, str] = {}
+    scaffold_dir = base / "patterns" / pattern_id / SCAFFOLD_DIR
+    for entry in scaffold.get("files", []):
+        tmpl = entry.get("template")
+        target = entry.get("target")
+        if not tmpl or not target:
+            raise ApplyError(f"scaffold file entry needs template+target: {entry}")
+        tpath = scaffold_dir / tmpl
+        if not tpath.is_file():
+            raise ApplyError(f"scaffold template missing: {tpath}")
+        rel = _render(target, bound)
+        if _PLACEHOLDER.search(rel):
+            raise ApplyError(f"scaffold target path has an unbound placeholder: {rel}")
+        out[rel] = _render(tpath.read_text(), bound)
+    return out
+
+
 def build_plan(pattern_id: str, provided: dict[str, str],
                registry_path: Path = REGISTRY, base: Path = ROOT,
                now: str | None = None) -> Plan:
@@ -174,6 +224,19 @@ def build_plan(pattern_id: str, provided: dict[str, str],
                 ratchet_add=[PATTERN_GLOB])
     plan.files[f"docs/patterns/{pattern_id}/invariants.md"] = _invariants_doc(
         manifest, cluster, bound, unresolved)
+
+    # Scaffold (the pattern's code seams). Needs every required param bound, since
+    # the templates reference them; if any is unresolved the contract pack still
+    # installs and the scaffold is skipped with a note.
+    scaffold = load_scaffold(pattern_id, base)
+    if scaffold is not None:
+        if unresolved:
+            plan.scaffold_skipped = (
+                "scaffold not stamped — unbound required param(s): "
+                + ", ".join(sorted(unresolved))
+            )
+        else:
+            plan.scaffold_files = _render_scaffold(pattern_id, scaffold, bound, base)
     plan._adoption = {  # stashed for the adopted.json merge in apply_plan
         "version": plan.version,
         "applied_at": now or datetime.now(timezone.utc).isoformat(),
@@ -214,7 +277,7 @@ def _merge_ratchet(target: Path, add: list[str]) -> tuple[str | None, list[str]]
     return json.dumps(cfg, indent=2) + "\n", added
 
 
-def apply_plan(plan: Plan, target: Path, write: bool = True) -> list[str]:
+def apply_plan(plan: Plan, target: Path, write: bool = True, force: bool = False) -> list[str]:
     actions: list[str] = []
     for rel, content in plan.files.items():
         actions.append(f"write {rel}")
@@ -222,6 +285,21 @@ def apply_plan(plan: Plan, target: Path, write: bool = True) -> list[str]:
             path = target / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
+
+    # Scaffold code: idempotent. An existing target is skipped (never clobbered)
+    # unless --force, so hand-edits to stamped seams survive re-application.
+    for rel, content in plan.scaffold_files.items():
+        path = target / rel
+        if path.exists() and not force:
+            actions.append(f"skip scaffold {rel} (exists — use --force to re-stamp)")
+            continue
+        verb = "re-stamp" if path.exists() else "stamp"
+        actions.append(f"{verb} scaffold {rel}")
+        if write:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+    if plan.scaffold_skipped:
+        actions.append(plan.scaffold_skipped)
 
     adopted = _merge_adopted(target, plan.pattern_id, plan._adoption)
     actions.append(f"record adoption in {ADOPTED_REL}")
@@ -317,6 +395,8 @@ def main() -> int:
                         help="List the target's adopted patterns + clusters (for /architect) and exit")
     parser.add_argument("--now", help="ISO timestamp for the adoption record (testing)")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without writing")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-stamp scaffold files that already exist (default: skip, never clobber)")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args()
 
@@ -364,7 +444,7 @@ def main() -> int:
 
     try:
         plan = build_plan(args.pattern_id, provided, now=args.now)
-        actions = apply_plan(plan, args.target_dir, write=not args.dry_run)
+        actions = apply_plan(plan, args.target_dir, write=not args.dry_run, force=args.force)
     except ApplyError as exc:
         print(f"apply_pattern: {exc}", file=sys.stderr)
         return 2
