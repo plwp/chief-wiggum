@@ -172,47 +172,64 @@ def _invariants_doc(manifest: dict, cluster: list[dict], bound: dict, unresolved
 
 
 def _render(text: str, bound: dict[str, str]) -> str:
-    """Substitute {{param}} with its bound value. An unknown placeholder is left
-    verbatim (build_plan only renders when every required param is bound, so a
-    surviving placeholder is an optional param the author referenced)."""
+    """Substitute {{param}} with its bound value, leaving an unbound placeholder
+    verbatim. Callers (_render_scaffold) then fail closed on any survivor, so a
+    template referencing a param that isn't bound is a hard error, not silent
+    {{param}} leaking into stamped code."""
     return _PLACEHOLDER.sub(lambda m: bound.get(m.group(1), m.group(0)), text)
 
 
 def load_scaffold(pattern_id: str, base: Path = ROOT) -> dict | None:
-    """Read a pattern's scaffold/scaffold.json, or None if it ships no scaffold."""
+    """Read + structurally validate a pattern's scaffold/scaffold.json, or None if
+    it ships no scaffold. A malformed manifest is a clear ApplyError, never an
+    uncaught AttributeError (which would abort the contract-pack install too)."""
     path = base / "patterns" / pattern_id / SCAFFOLD_DIR / SCAFFOLD_MANIFEST
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text())
+        scaffold = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         raise ApplyError(f"malformed scaffold manifest {path}: {exc}") from exc
+    if not isinstance(scaffold, dict):
+        raise ApplyError(f"scaffold manifest {path} must be a JSON object")
+    files = scaffold.get("files")
+    if not isinstance(files, list) or not files:
+        raise ApplyError(f"scaffold manifest {path} needs a non-empty 'files' array")
+    for entry in files:
+        if not isinstance(entry, dict) or not entry.get("template") or not entry.get("target"):
+            raise ApplyError(f"scaffold file entry needs string 'template'+'target': {entry!r}")
+    return scaffold
 
 
 def _render_scaffold(pattern_id: str, scaffold: dict, bound: dict[str, str],
                      base: Path = ROOT) -> dict[str, str]:
     """Render each scaffold template into {target-relpath -> content}, params bound
-    in both the target path and the body."""
+    in both the target path and the body. Fails closed if any {{param}} survives
+    the render (a template referencing a param that isn't bound)."""
     out: dict[str, str] = {}
     scaffold_dir = base / "patterns" / pattern_id / SCAFFOLD_DIR
-    for entry in scaffold.get("files", []):
-        tmpl = entry.get("template")
-        target = entry.get("target")
-        if not tmpl or not target:
-            raise ApplyError(f"scaffold file entry needs template+target: {entry}")
+    for entry in scaffold["files"]:  # structure validated in load_scaffold
+        tmpl = entry["template"]
+        target = entry["target"]
         tpath = scaffold_dir / tmpl
         if not tpath.is_file():
             raise ApplyError(f"scaffold template missing: {tpath}")
         rel = _render(target, bound)
-        if _PLACEHOLDER.search(rel):
-            raise ApplyError(f"scaffold target path has an unbound placeholder: {rel}")
         # Fail closed on a target that would escape the target repo. Scaffold
         # manifests (and any param bound into a path) are stamped into a real
         # checkout — an absolute path or a `..` segment must never write outside it.
         pp = PurePosixPath(rel)
+        if _PLACEHOLDER.search(rel):
+            raise ApplyError(f"scaffold target path has an unbound placeholder: {rel}")
         if pp.is_absolute() or ".." in pp.parts or rel != pp.as_posix():
             raise ApplyError(f"scaffold target must be a repo-relative path without '..': {rel!r}")
-        out[rel] = _render(tpath.read_text(), bound)
+        body = _render(tpath.read_text(), bound)
+        leftover = _PLACEHOLDER.search(body)
+        if leftover:
+            raise ApplyError(
+                f"scaffold template {tmpl} references unbound param "
+                f"{{{{{leftover.group(1)}}}}} — bind it or give it a manifest default")
+        out[rel] = body
     return out
 
 
@@ -294,8 +311,15 @@ def apply_plan(plan: Plan, target: Path, write: bool = True, force: bool = False
 
     # Scaffold code: idempotent. An existing target is skipped (never clobbered)
     # unless --force, so hand-edits to stamped seams survive re-application.
+    target_root = target.resolve()
     for rel, content in plan.scaffold_files.items():
         path = target / rel
+        # Defense in depth beyond the pure-path guard in _render_scaffold: resolve
+        # the destination (following any symlink) and confirm it stays inside the
+        # target repo, so a symlinked path component can't redirect the write out.
+        resolved_parent = path.parent.resolve()
+        if resolved_parent != target_root and target_root not in resolved_parent.parents:
+            raise ApplyError(f"scaffold target escapes the repo via symlink: {rel!r}")
         if path.exists() and not force:
             actions.append(f"skip scaffold {rel} (exists — use --force to re-stamp)")
             continue

@@ -280,3 +280,33 @@ def test_scaffold_rejects_absolute_target(tmp_path, monkeypatch):
         "files": [{"template": "tenant_resolver.go.tmpl", "target": "/etc/evil.go"}]})
     with pytest.raises(ap.ApplyError, match="repo-relative path"):
         ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+
+
+def test_scaffold_fails_closed_on_unbound_body_placeholder(tmp_path, monkeypatch):
+    import apply_pattern as ap
+    # a template body referencing an unbound param must fail, not leak {{param}}
+    (tmp_path / "s").mkdir()
+    monkeypatch.setattr(ap, "ROOT", tmp_path)
+    pdir = tmp_path / "patterns" / MTI / "scaffold"
+    pdir.mkdir(parents=True)
+    (pdir / "t.tmpl").write_text("package x // {{unbound_param}}\n")
+    (pdir / "scaffold.json").write_text(json.dumps(
+        {"files": [{"template": "t.tmpl", "target": "x.go"}]}))
+    with pytest.raises(ap.ApplyError, match="unbound param"):
+        ap._render_scaffold(MTI, ap.load_scaffold(MTI, base=tmp_path), {}, base=tmp_path)
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ("[]", "must be a JSON object"),
+    ('{"files": {}}', "non-empty 'files'"),
+    ('{"files": []}', "non-empty 'files'"),
+    ('{"files": ["x"]}', "'template'\\+'target'"),
+    ('{"files": [{"template": "t.tmpl"}]}', "'template'\\+'target'"),
+])
+def test_malformed_scaffold_manifest_is_clean_apply_error(tmp_path, bad, msg):
+    import apply_pattern as ap
+    pdir = tmp_path / "patterns" / MTI / "scaffold"
+    pdir.mkdir(parents=True)
+    (pdir / "scaffold.json").write_text(bad)
+    with pytest.raises(ap.ApplyError, match=msg):
+        ap.load_scaffold(MTI, base=tmp_path)
