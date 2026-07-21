@@ -300,10 +300,38 @@ def test_scaffold_fails_closed_on_unbound_body_placeholder(tmp_path, monkeypatch
     ("[]", "must be a JSON object"),
     ('{"files": {}}', "non-empty 'files'"),
     ('{"files": []}', "non-empty 'files'"),
-    ('{"files": ["x"]}', "'template'\\+'target'"),
-    ('{"files": [{"template": "t.tmpl"}]}', "'template'\\+'target'"),
+    ('{"files": ["x"]}', "must be an object"),
+    ('{"files": [{"template": "t.tmpl"}]}', "string 'template'"),
 ])
 def test_malformed_scaffold_manifest_is_clean_apply_error(tmp_path, bad, msg):
+    import apply_pattern as ap
+    pdir = tmp_path / "patterns" / MTI / "scaffold"
+    pdir.mkdir(parents=True)
+    (pdir / "scaffold.json").write_text(bad)
+    with pytest.raises(ap.ApplyError, match=msg):
+        ap.load_scaffold(MTI, base=tmp_path)
+
+
+def test_scaffold_refuses_symlink_target(tmp_path):
+    import apply_pattern as ap
+    plan = ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    # a symlink at the final target path must be refused (write_text would follow it)
+    (tmp_path / "internal" / "tenant").mkdir(parents=True)
+    outside = tmp_path / "outside.go"
+    outside.write_text("// outside\n")
+    (tmp_path / "internal" / "tenant" / "resolver.go").symlink_to(outside)
+    with pytest.raises(ap.ApplyError, match="symlink"):
+        ap.apply_plan(plan, tmp_path, write=True, force=True)
+    assert outside.read_text() == "// outside\n"  # untouched
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ('{"files": [{"template": ["x"], "target": "x.go"}]}', "string 'template'"),
+    ('{"files": [{"template": "t.tmpl", "target": 123}]}', "string 'template'"),
+    ('{"files": [{"template": "../t.tmpl", "target": "x.go"}]}', "under scaffold/"),
+    ('{"files": [{"template": "/abs.tmpl", "target": "x.go"}]}', "under scaffold/"),
+])
+def test_scaffold_manifest_rejects_bad_template_types_and_paths(tmp_path, bad, msg):
     import apply_pattern as ap
     pdir = tmp_path / "patterns" / MTI / "scaffold"
     pdir.mkdir(parents=True)

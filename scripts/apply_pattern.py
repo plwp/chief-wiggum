@@ -196,8 +196,14 @@ def load_scaffold(pattern_id: str, base: Path = ROOT) -> dict | None:
     if not isinstance(files, list) or not files:
         raise ApplyError(f"scaffold manifest {path} needs a non-empty 'files' array")
     for entry in files:
-        if not isinstance(entry, dict) or not entry.get("template") or not entry.get("target"):
-            raise ApplyError(f"scaffold file entry needs string 'template'+'target': {entry!r}")
+        if not isinstance(entry, dict):
+            raise ApplyError(f"scaffold file entry must be an object: {entry!r}")
+        tmpl, target = entry.get("template"), entry.get("target")
+        if not isinstance(tmpl, str) or not tmpl or not isinstance(target, str) or not target:
+            raise ApplyError(f"scaffold file entry needs non-empty string 'template'+'target': {entry!r}")
+        tp = PurePosixPath(tmpl)
+        if tp.is_absolute() or ".." in tp.parts or tmpl != tp.as_posix():
+            raise ApplyError(f"scaffold 'template' must be a path under scaffold/ (no '..'/absolute): {tmpl!r}")
     return scaffold
 
 
@@ -314,9 +320,13 @@ def apply_plan(plan: Plan, target: Path, write: bool = True, force: bool = False
     target_root = target.resolve()
     for rel, content in plan.scaffold_files.items():
         path = target / rel
-        # Defense in depth beyond the pure-path guard in _render_scaffold: resolve
-        # the destination (following any symlink) and confirm it stays inside the
-        # target repo, so a symlinked path component can't redirect the write out.
+        # Defense in depth beyond the pure-path guard in _render_scaffold: a
+        # scaffold target must never be a symlink (write_text follows it — a live
+        # or dangling symlink at the final path would redirect the write out of
+        # the repo, incl. under --force), and its resolved parent must stay inside
+        # the repo (so a symlinked directory component can't redirect it either).
+        if path.is_symlink():
+            raise ApplyError(f"scaffold target is a symlink (refusing to follow): {rel!r}")
         resolved_parent = path.parent.resolve()
         if resolved_parent != target_root and target_root not in resolved_parent.parents:
             raise ApplyError(f"scaffold target escapes the repo via symlink: {rel!r}")
