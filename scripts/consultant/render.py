@@ -111,6 +111,9 @@ def render_pricing_md(result: dict) -> str:
             if e["worst_case_unbounded"]:
                 worst_cell = "**UNBOUNDED**"
                 underwater = "**UNBOUNDED** (uncapped meter)"
+            elif e["worst_case_indeterminate"]:
+                worst_cell = "**INDETERMINATE**"
+                underwater = "**INDETERMINATE** (cap not declared)"
             else:
                 worst_cell = _fmt_usd(e["worst_case_cost"])
                 underwater = "n/a (no price bound)" if e["underwater"] is None else ("**YES**" if e["underwater"] else "no")
@@ -123,17 +126,19 @@ def render_pricing_md(result: dict) -> str:
             if e["unbounded_meters"]:
                 meters = ", ".join(f"`{x}`" for x in sorted(set(e["unbounded_meters"])))
                 lines.append(
-                    f"- `{e['tier']}`: **unbounded worst-case** — {meters} "
-                    "has a `-1` unlimited cap on this tier; a single heavy tenant "
-                    "can cost an arbitrary amount, so worst-case cost / margin / "
+                    f"- `{e['tier']}`: **unbounded worst-case (uncapped by design)** — {meters} "
+                    "has an unlimited (`-1`) or `capped_by: null` cap on this tier; a single "
+                    "heavy tenant can cost an arbitrary amount, so worst-case cost / margin / "
                     "break-even are uncomputable, not $0."
                 )
             if e["no_cap_declared_meters"]:
                 meters = ", ".join(f"`{x}`" for x in sorted(set(e["no_cap_declared_meters"])))
                 lines.append(
-                    f"- `{e['tier']}`: **no cap declared** for {meters} — the meter's "
-                    "`capped_by` field is absent from this tier's matrix. It may not apply "
-                    "to this tier, but confirm: a missing cap is not the same as a $0 cost."
+                    f"- `{e['tier']}`: **indeterminate worst-case (cap not declared / unparseable — "
+                    f"fix your cost inputs)** — {meters} has no usable cap for this tier (the "
+                    "`capped_by` field is absent from the matrix, or its value can't be parsed). "
+                    "The cost may be bounded, but the inputs don't say, so worst-case cost / "
+                    "margin / break-even are suppressed — a missing cap is not a $0 cost."
                 )
             other_excluded = sorted(
                 set(e["worst_case_excluded_meters"])
@@ -163,6 +168,10 @@ def render_pricing_md(result: dict) -> str:
                 margin_cell = "**UNBOUNDED**"
                 margin_pct_cell = "**UNBOUNDED**"
                 be = "unbounded (uncapped meter — no finite break-even)"
+            elif b["indeterminate"]:
+                margin_cell = "**INDETERMINATE**"
+                margin_pct_cell = "**INDETERMINATE**"
+                be = "indeterminate (cap not declared — no finite break-even)"
             else:
                 margin_cell = _fmt_usd(b["gross_margin_per_tenant"])
                 margin_pct_cell = _fmt_pct(b["gross_margin_pct"])

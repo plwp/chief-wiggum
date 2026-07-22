@@ -90,6 +90,9 @@ def _summarize_text(result: dict) -> str:
         if e["worst_case_unbounded"]:
             worst = "UNBOUNDED (uncapped meter)"
             flag = "  ** UNBOUNDED WORST-CASE **"
+        elif e["worst_case_indeterminate"]:
+            worst = "INDETERMINATE (cap not declared / unparseable)"
+            flag = "  ** INDETERMINATE WORST-CASE -- fix your cost inputs **"
         else:
             worst = f"${e['worst_case_cost']:.2f}"
             flag = "  ** UNDERWATER **" if e["underwater"] is True else ""
@@ -100,6 +103,9 @@ def _summarize_text(result: dict) -> str:
     for b in result["breakeven"]:
         if b["unbounded"]:
             lines.append(f"  break-even {b['tier']}: unbounded (uncapped meter — no finite break-even)")
+            continue
+        if b["indeterminate"]:
+            lines.append(f"  break-even {b['tier']}: indeterminate (cap not declared — no finite break-even)")
             continue
         be = b["breakeven_tenants"] if b["breakeven_tenants"] is not None else "never"
         lines.append(f"  break-even {b['tier']}: {be} tenant(s), margin {b['gross_margin_pct']}%")

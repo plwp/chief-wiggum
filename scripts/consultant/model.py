@@ -52,16 +52,28 @@ class TierEconomics:
     the underwater check is then also None (cannot flag underwater without a
     price to compare against).
 
-    A tier whose matrix leaves a metered line UNCAPPED — either an unlimited
-    (`-1`) sentinel on that field, or a globally-uncapped meter (`capped_by:
-    null`) — has an UNBOUNDED worst case: a single heavy tenant can cost an
-    arbitrary amount. In that case `worst_case_unbounded` is True and
-    `worst_case_cost` is None (NOT $0). Presenting an uncapped tier as $0
-    worst-case / 100%-margin is exactly the founder-misleads-himself failure
-    this deriver exists to prevent, so the unbounded state is explicit and
-    never collapses to a definitive-looking number. `typical_cost` is still
-    estimated from the BOUNDED meters (labeled typical-not-worst by the
-    renderer) but excludes the unbounded meters (no cap to estimate against).
+    A tier's worst case is NOT definitively computable — so `worst_case_cost`,
+    `underwater`, and (in derive_breakeven) margin/break-even are ALL suppressed
+    to None — whenever ANY meter's cost on that tier cannot be bounded. There are
+    two reasons, rendered differently but with the SAME economic effect (never a
+    finite worst-case that silently omits a cost we couldn't bound):
+
+    - **unbounded (uncapped by design):** an unlimited (`-1` / `"-1"`) sentinel,
+      or a globally-uncapped meter (`capped_by: null`). A single heavy tenant can
+      cost an arbitrary amount. Flagged `worst_case_unbounded`, meters in
+      `unbounded_meters`.
+    - **indeterminate (data gap):** a meter's cap field is absent from this
+      tier's matrix, or its cap value is unparseable (e.g. `"lots"`). The cost
+      *might* be bounded, but the cost inputs don't say — so we can't compute a
+      worst case and must not pretend the meter is free. Flagged
+      `worst_case_indeterminate`, meters in `no_cap_declared_meters`.
+
+    Presenting either as a finite $0-inclusive worst-case / 100%-margin is the
+    founder-misleads-himself failure this deriver exists to prevent. `typical_cost`
+    is still estimated from the BOUNDED meters (labeled typical-not-worst by the
+    renderer) but excludes the unbounded/indeterminate meters (no cap to estimate
+    against). `price` is None if the matrix carries no recognizable price field —
+    the underwater check is then also None regardless of the cost side.
     """
 
     tier: str
@@ -73,7 +85,14 @@ class TierEconomics:
     underwater: bool | None
     worst_case_unbounded: bool = False
     unbounded_meters: list[str] = field(default_factory=list)   # -1 sentinel OR globally-uncapped, on this tier
-    no_cap_declared_meters: list[str] = field(default_factory=list)  # declared meter, cap key absent from this tier's matrix
+    worst_case_indeterminate: bool = False
+    no_cap_declared_meters: list[str] = field(default_factory=list)  # cap field absent OR unparseable for this tier
+
+    @property
+    def worst_case_computable(self) -> bool:
+        """True only when the tier's worst case is a definitive number — neither
+        unbounded (uncapped by design) nor indeterminate (data gap)."""
+        return not (self.worst_case_unbounded or self.worst_case_indeterminate)
 
 
 @dataclass
@@ -83,11 +102,12 @@ class Breakeven:
     recovers its typical cost (margin <= 0 — priced underwater at typical
     usage, not just worst case).
 
-    When the tier's worst case is unbounded (an uncapped metered line), margin
-    and break-even are UNCOMPUTABLE, not a definitive number: `unbounded` is
-    True and `gross_margin_per_tenant` / `gross_margin_pct` / `breakeven_tenants`
-    are all None. A tenant on an uncapped tier can cost arbitrarily much, so no
-    finite break-even or margin can be guaranteed."""
+    When the tier's worst case is not definitively computable — unbounded (an
+    uncapped metered line) OR indeterminate (a missing/unparseable cap) — margin
+    and break-even are UNCOMPUTABLE, not a definitive number:
+    `gross_margin_per_tenant` / `gross_margin_pct` / `breakeven_tenants` are all
+    None. `unbounded` and `indeterminate` mirror the tier's economics so the
+    renderer can distinguish the two while both suppress definitive numbers."""
 
     tier: str
     price: float
@@ -96,6 +116,7 @@ class Breakeven:
     gross_margin_pct: float | None
     breakeven_tenants: int | None
     unbounded: bool = False
+    indeterminate: bool = False
 
 
 def first_fixed_step_jump(stack_manifest: dict, cost_inputs: dict) -> dict | None:
@@ -155,29 +176,25 @@ def derive_unit_economics(
     """Worst-case (matrix cap x rate, summed over every capped meter) + typical
     (a documented `typical_fraction` of that same worst case) cost per tier.
 
-    A metered line leaves a tier's worst case UNBOUNDED (not $0) when its plan
-    matrix cap is the `-1` unlimited sentinel. This is the dangerous, INVISIBLE
-    case: the field IS in the matrix (so the tier looks capped) but the cap is
-    unlimited, so the old behavior collapsed it to a $0 line and the tier read as
-    underwater=False / 100% margin / a finite break-even — the precise
-    founder-misleads-himself failure this deriver exists to prevent. Such meters
-    go in `unbounded_meters` and force `worst_case_unbounded=True` with
-    `worst_case_cost=None`, surfaced explicitly, never as a safe-looking number.
+    If a tier has ANY meter whose cost cannot be bounded, its worst case is NOT
+    definitively computable and `worst_case_cost` / `underwater` are suppressed to
+    None (and derive_breakeven suppresses margin/break-even) — never a finite
+    subtotal from the OTHER meters that silently omits a cost we couldn't bound.
+    Two reasons, rendered differently but with the SAME economic suppression:
 
-    A globally-uncapped meter (`capped_by: null`) is excluded from the per-tier
-    worst case as before — it is uncapped for EVERY tier equally and is already
-    headlined in the cost-shape section as "the largest uncapped meter", so it's
-    a named, visible risk rather than an invisible one; it's still listed in each
-    tier's excluded-meters note.
+    - **unbounded (uncapped by design):** the matrix cap is a `-1`/`"-1"` unlimited
+      sentinel, or the meter is globally uncapped (`capped_by: null`). A single
+      heavy tenant can cost an arbitrary amount. -> `unbounded_meters`,
+      `worst_case_unbounded=True`.
+    - **indeterminate (data gap):** the meter's cap field is absent from this
+      tier's matrix, or its cap value is unparseable (e.g. `"lots"`). The cost
+      might be bounded, but the inputs don't say — so we can't compute a worst
+      case and must not pretend the meter is free. -> `no_cap_declared_meters`,
+      `worst_case_indeterminate=True`.
 
-    A declared meter whose cap FIELD is simply absent from a tier's matrix goes
-    in `no_cap_declared_meters` — it may genuinely not apply to this tier, but a
-    missing cap must be shown (via the renderer), never silently omitted in a way
-    that improves the economics.
-
-    `typical_cost` is still estimated from the BOUNDED meters (the renderer
-    labels it typical-not-worst); unbounded / uncapped / no-cap-declared meters
-    are excluded from it too, since there's no cap to base an estimate on.
+    `typical_cost` is still estimated from the BOUNDED meters (the renderer labels
+    it typical-not-worst); unbounded / indeterminate meters are excluded from it
+    too, since there's no cap to base an estimate on.
     """
     out: list[TierEconomics] = []
     for tier in tiers:
@@ -201,14 +218,16 @@ def derive_unit_economics(
             if cap_key is None:
                 # Globally uncapped meter (capped_by: null): the worst case for
                 # this meter is literally unbounded — no matrix key limits it — so
-                # it forces the same unbounded state as a -1 sentinel, not a silent
-                # exclusion that leaves a finite-looking worst-case subtotal.
+                # it forces the unbounded state, not a silent exclusion that leaves
+                # a finite-looking worst-case subtotal.
                 unbounded_meters.append(mid)
                 worst_excluded.append(mid)
                 typical_excluded.append(mid)
                 continue
             if cap_key not in caps:
-                # Cap field not declared for this tier: surface it, never omit silently.
+                # Cap field not declared for this tier: a data gap. Surface it AND
+                # suppress definitive economics (indeterminate) — never omit it in
+                # a way that leaves a finite worst-case from the other meters.
                 no_cap_declared.append(mid)
                 worst_excluded.append(mid)
                 typical_excluded.append(mid)
@@ -216,8 +235,8 @@ def derive_unit_economics(
             cap = _cap_number(caps[cap_key])
             if cap is None:
                 # Unparseable cap (e.g. a non-numeric string): cannot bound the
-                # meter, so surface it as undeclared rather than coercing it into
-                # a definitive (possibly negative) cost.
+                # meter, so it's a data gap (indeterminate), not a coerced cost and
+                # not an unlimited sentinel.
                 no_cap_declared.append(mid)
                 worst_excluded.append(mid)
                 typical_excluded.append(mid)
@@ -231,9 +250,12 @@ def derive_unit_economics(
             worst += cap * rate
             typical += cap * rate * typical_fraction
         unbounded = bool(unbounded_meters)
-        if unbounded:
+        indeterminate = bool(no_cap_declared)
+        if unbounded or indeterminate:
+            # Either reason makes the worst case non-computable -> suppress the
+            # definitive worst-case cost and underwater flag alike.
             worst_case_cost: float | None = None
-            underwater: bool | None = None  # cannot flag underwater against an unbounded cost
+            underwater: bool | None = None
         else:
             worst_case_cost = round(worst, 4)
             underwater = (price < worst) if price is not None else None
@@ -248,6 +270,7 @@ def derive_unit_economics(
                 underwater=underwater,
                 worst_case_unbounded=unbounded,
                 unbounded_meters=unbounded_meters,
+                worst_case_indeterminate=indeterminate,
                 no_cap_declared_meters=no_cap_declared,
             )
         )
@@ -260,16 +283,16 @@ def derive_breakeven(flat_nut: float, economics: list[TierEconomics]) -> list[Br
     tiers contribute no break-even coverage and are skipped — they can't recover
     a flat cost on zero revenue.
 
-    A tier with an unbounded worst case (an uncapped metered line) has no
-    guaranteeable margin or break-even: a single heavy tenant can cost an
-    arbitrary amount. Such a tier is emitted with `unbounded=True` and
-    None margin/break-even, never a definitive number computed from the
-    (bounded) typical cost alone."""
+    A tier whose worst case is not definitively computable — unbounded (an
+    uncapped metered line) OR indeterminate (a missing/unparseable cap) — has no
+    guaranteeable margin or break-even, since a cost we couldn't bound might
+    swamp the (bounded) typical estimate. Such a tier is emitted with the matching
+    flag set and None margin/break-even, never a definitive number."""
     out: list[Breakeven] = []
     for e in economics:
         if e.price is None or e.price <= 0:
             continue
-        if e.worst_case_unbounded:
+        if not e.worst_case_computable:
             out.append(
                 Breakeven(
                     tier=e.tier,
@@ -278,7 +301,8 @@ def derive_breakeven(flat_nut: float, economics: list[TierEconomics]) -> list[Br
                     gross_margin_per_tenant=None,
                     gross_margin_pct=None,
                     breakeven_tenants=None,
-                    unbounded=True,
+                    unbounded=e.worst_case_unbounded,
+                    indeterminate=e.worst_case_indeterminate,
                 )
             )
             continue

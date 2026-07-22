@@ -103,12 +103,15 @@ This derives, purely mechanically (no AI consultation, no network calls):
 2. **Unit economics per tier** — worst-case (matrix cap × meter rate) + typical
    (a documented fraction of worst-case) per tier, flagging any tier priced
    **underwater** (price below worst-case cost — most commonly the free tier,
-   since a free tier's worst-case cost isn't automatically near-zero). A tier
-   with an **unlimited (`-1`) cap on a metered line** is reported as
-   **unbounded worst-case** (uncomputable, never a safe-looking $0 / 100% margin
-   / finite break-even) — a single heavy tenant can cost arbitrarily much. A
-   declared meter with **no cap field** in a tier's matrix is surfaced as
-   `no cap declared`, never silently dropped.
+   since a free tier's worst-case cost isn't automatically near-zero). If a tier
+   has **any meter whose cost can't be bounded**, its worst-case /
+   underwater / margin / break-even are all **suppressed** (never a safe-looking
+   $0 / 100% margin / finite break-even that omits a cost we couldn't bound) —
+   in one of two forms the report distinguishes:
+   **UNBOUNDED (uncapped by design)** for an unlimited (`-1` / `"-1"`) or
+   `capped_by: null` meter (a heavy tenant can cost arbitrarily much), and
+   **INDETERMINATE (cap not declared / unparseable — fix your cost inputs)** for
+   a missing or unparseable matrix cap (a data gap, not a $0 cost).
 3. **Break-even** — paying tenants of each tier needed to cover the flat nut,
    plus gross margin at typical usage; **unbounded** for any tier whose
    worst-case is uncapped.

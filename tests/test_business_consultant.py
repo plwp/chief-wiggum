@@ -282,10 +282,11 @@ def test_render_surfaces_unbounded_tier_never_as_dollar_zero():
     assert "$0.00 | 100" not in section  # never a safe-looking 100% margin row
 
 
-def test_unit_economics_missing_cap_field_is_surfaced_not_silently_omitted():
-    """P2 regression: a declared meter whose cap key is absent from a tier's
-    matrix must be surfaced (no_cap_declared_meters), never silently contribute
-    $0 and vanish from the report."""
+def test_unit_economics_missing_cap_field_is_indeterminate_not_finite():
+    """A declared meter whose cap key is absent from a tier's matrix is a DATA
+    GAP: it must be surfaced (no_cap_declared_meters) AND suppress the tier's
+    definitive economics (worst_case_indeterminate), never silently contribute
+    $0 and leave a finite worst-case from the other meters."""
     # a matrix that caps NOTHING the email_send meter needs
     matrix = {"pro": {"seats": 5, "price_monthly_usd": 40}}
     meters = [{"id": "email_send", "unit": "send", "rate": 0.002, "unit_desc": "d",
@@ -295,12 +296,23 @@ def test_unit_economics_missing_cap_field_is_surfaced_not_silently_omitted():
     e = econ[0]
     assert "email_send" in e.no_cap_declared_meters
     assert "email_send" in e.worst_case_excluded_meters
+    # a missing cap suppresses definitive economics — never a finite number
+    assert e.worst_case_indeterminate is True
+    assert e.worst_case_unbounded is False
+    assert e.worst_case_cost is None
+    assert e.underwater is None
+    b = model.derive_breakeven(45.0, econ)[0]
+    assert b.indeterminate is True
+    assert b.unbounded is False
+    assert b.gross_margin_per_tenant is None
+    assert b.breakeven_tenants is None
     md = render.render_pricing_md({
         **_sample_result(),
         "economics": [asdict(e)],
-        "breakeven": [],
+        "breakeven": [asdict(b)],
     })
-    assert "no cap declared" in md
+    assert "INDETERMINATE" in md
+    assert "cap not declared" in md
     assert "email_send" in md
 
 
@@ -342,10 +354,11 @@ def test_string_minus_one_cap_is_unbounded_not_negative_cost():
     assert e.worst_case_cost is None
 
 
-def test_unparseable_cap_is_surfaced_as_no_cap_declared_not_coerced():
-    """A non-numeric cap value ("lots") can't bound the meter, so it is surfaced
-    as no-cap-declared rather than coerced into a definitive (possibly bogus)
-    number — and is NOT mistaken for an unlimited sentinel."""
+def test_unparseable_cap_is_indeterminate_not_coerced_and_not_finite_zero():
+    """A non-numeric cap value ("lots") can't bound the meter: it is surfaced as a
+    data gap (no_cap_declared_meters + worst_case_indeterminate) — NOT coerced
+    into a number, NOT mistaken for an unlimited sentinel, and NOT collapsed to a
+    finite $0 worst-case that would let underwater/margin/break-even compute."""
     matrix = {"pro": {"emails_per_month": "lots", "price_monthly_usd": 25}}
     meters = [{"id": "email_send", "unit": "send", "rate": 0.002, "unit_desc": "d",
                "capped_by": "emails_per_month", "provenance": "operator-verified", "verified_date": "2026-07-01"}]
@@ -353,10 +366,54 @@ def test_unparseable_cap_is_surfaced_as_no_cap_declared_not_coerced():
     e = econ[0]
     assert "email_send" in e.no_cap_declared_meters
     assert "email_send" not in e.unbounded_meters
+    assert e.worst_case_indeterminate is True
     assert e.worst_case_unbounded is False
-    assert e.worst_case_cost == pytest.approx(0.0)  # no bounded meter contributed
-    md = render.render_pricing_md({**_sample_result(), "economics": [asdict(e)], "breakeven": []})
-    assert "no cap declared" in md
+    assert e.worst_case_cost is None  # NOT 0.0 — the cost couldn't be bounded
+    assert e.underwater is None
+    b = model.derive_breakeven(45.0, econ)[0]
+    assert b.indeterminate is True
+    assert b.gross_margin_per_tenant is None
+    assert b.breakeven_tenants is None
+    md = render.render_pricing_md({**_sample_result(), "economics": [asdict(e)], "breakeven": [asdict(b)]})
+    assert "INDETERMINATE" in md
+    assert "unparseable" in md or "cap not declared" in md
+
+
+def test_unbounded_and_indeterminate_render_differently_but_both_suppress_economics():
+    """Both non-computable states suppress definitive worst-case/underwater/margin/
+    break-even, but the renderer distinguishes them: UNBOUNDED (uncapped by
+    design) vs INDETERMINATE (a data gap to fix). Each reason is isolated in its
+    own single-meter derivation so a tier carries exactly one."""
+    meter_uncapped = [{"id": "media", "unit": "hour", "rate": 0.06, "unit_desc": "d",
+                       "capped_by": None, "provenance": "operator-verified", "verified_date": "2026-07-01"}]
+    meter_missing = [{"id": "email", "unit": "send", "rate": 0.002, "unit_desc": "d",
+                      "capped_by": "emails_per_month", "provenance": "operator-verified", "verified_date": "2026-07-01"}]
+    unbnd = model.derive_unit_economics(
+        ["unbnd"], {"unbnd": {"price_monthly_usd": 30}}, meter_uncapped)[0]
+    indet = model.derive_unit_economics(
+        ["indet"], {"indet": {"seats": 3, "price_monthly_usd": 30}}, meter_missing)[0]
+    # distinct flags...
+    assert unbnd.worst_case_unbounded is True and unbnd.worst_case_indeterminate is False
+    assert indet.worst_case_indeterminate is True and indet.worst_case_unbounded is False
+    # ...but the SAME suppression of definitive economics
+    for e in (unbnd, indet):
+        assert e.worst_case_cost is None
+        assert e.underwater is None
+        assert e.worst_case_computable is False
+    breakeven = model.derive_breakeven(45.0, [unbnd, indet])
+    for b in breakeven:
+        assert b.gross_margin_per_tenant is None
+        assert b.breakeven_tenants is None
+    md = render.render_pricing_md({
+        **_sample_result(),
+        "economics": [asdict(unbnd), asdict(indet)],
+        "breakeven": [asdict(b) for b in breakeven],
+    })
+    # rendered differently
+    assert "UNBOUNDED" in md
+    assert "INDETERMINATE" in md
+    assert "uncapped by design" in md
+    assert "fix your cost inputs" in md
 
 
 # --- model.py: break-even + gross margin -------------------------------------
