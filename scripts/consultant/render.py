@@ -105,21 +105,45 @@ def render_pricing_md(result: dict) -> str:
             "a documented assumption, not measured usage; replace with real telemetry once live."
         )
         lines.append("")
-        lines.append("| Tier | Price/mo | Worst-case cost | Typical cost | Underwater? |")
+        lines.append("| Tier | Price/mo | Worst-case cost | Typical (not worst) cost | Underwater? |")
         lines.append("|--|--|--|--|--|")
         for e in economics:
-            underwater = "n/a (no price bound)" if e["underwater"] is None else ("**YES**" if e["underwater"] else "no")
+            if e["worst_case_unbounded"]:
+                worst_cell = "**UNBOUNDED**"
+                underwater = "**UNBOUNDED** (uncapped meter)"
+            else:
+                worst_cell = _fmt_usd(e["worst_case_cost"])
+                underwater = "n/a (no price bound)" if e["underwater"] is None else ("**YES**" if e["underwater"] else "no")
             lines.append(
-                f"| `{e['tier']}` | {_fmt_usd(e['price'])} | {_fmt_usd(e['worst_case_cost'])} | "
+                f"| `{e['tier']}` | {_fmt_usd(e['price'])} | {worst_cell} | "
                 f"{_fmt_usd(e['typical_cost'])} | {underwater} |"
             )
         lines.append("")
         for e in economics:
-            excluded = sorted(set(e["worst_case_excluded_meters"]))
-            if excluded:
+            if e["unbounded_meters"]:
+                meters = ", ".join(f"`{x}`" for x in sorted(set(e["unbounded_meters"])))
                 lines.append(
-                    f"- `{e['tier']}`: excluded from worst-case/typical (uncapped, not applicable, "
-                    f"or `-1` unlimited in this tier): {', '.join(f'`{x}`' for x in excluded)}"
+                    f"- `{e['tier']}`: **unbounded worst-case** — {meters} "
+                    "has a `-1` unlimited cap on this tier; a single heavy tenant "
+                    "can cost an arbitrary amount, so worst-case cost / margin / "
+                    "break-even are uncomputable, not $0."
+                )
+            if e["no_cap_declared_meters"]:
+                meters = ", ".join(f"`{x}`" for x in sorted(set(e["no_cap_declared_meters"])))
+                lines.append(
+                    f"- `{e['tier']}`: **no cap declared** for {meters} — the meter's "
+                    "`capped_by` field is absent from this tier's matrix. It may not apply "
+                    "to this tier, but confirm: a missing cap is not the same as a $0 cost."
+                )
+            other_excluded = sorted(
+                set(e["worst_case_excluded_meters"])
+                - set(e["unbounded_meters"])
+                - set(e["no_cap_declared_meters"])
+            )
+            if other_excluded:
+                lines.append(
+                    f"- `{e['tier']}`: excluded from worst-case/typical: "
+                    f"{', '.join(f'`{x}`' for x in other_excluded)}"
                 )
         lines.append("")
 
@@ -135,10 +159,17 @@ def render_pricing_md(result: dict) -> str:
         lines.append("| Tier | Price/mo | Typical cost | Margin/tenant | Margin % | Break-even tenants |")
         lines.append("|--|--|--|--|--|--|")
         for b in breakeven:
-            be = "never (margin <= 0 at typical usage)" if b["breakeven_tenants"] is None else str(b["breakeven_tenants"])
+            if b["unbounded"]:
+                margin_cell = "**UNBOUNDED**"
+                margin_pct_cell = "**UNBOUNDED**"
+                be = "unbounded (uncapped meter — no finite break-even)"
+            else:
+                margin_cell = _fmt_usd(b["gross_margin_per_tenant"])
+                margin_pct_cell = _fmt_pct(b["gross_margin_pct"])
+                be = "never (margin <= 0 at typical usage)" if b["breakeven_tenants"] is None else str(b["breakeven_tenants"])
             lines.append(
                 f"| `{b['tier']}` | {_fmt_usd(b['price'])} | {_fmt_usd(b['typical_cost'])} | "
-                f"{_fmt_usd(b['gross_margin_per_tenant'])} | {_fmt_pct(b['gross_margin_pct'])} | {be} |"
+                f"{margin_cell} | {margin_pct_cell} | {be} |"
             )
         lines.append("")
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import jsonschema
@@ -218,12 +219,70 @@ def test_unit_economics_no_price_field_is_not_flagged_underwater():
     assert econ[0].underwater is None
 
 
-def test_unit_economics_unlimited_sentinel_excluded_from_worst_case():
+def test_unit_economics_unlimited_sentinel_is_unbounded_not_zero():
+    """P1 regression: a -1 (unlimited) cap on a metered line must make the tier's
+    worst-case UNBOUNDED, never a safe-looking $0 / 100%-margin / finite
+    break-even. This is the invisible danger the deriver exists to catch."""
     matrix = {"enterprise": {"emails_per_month": -1, "price_monthly_usd": 500}}
     econ = model.derive_unit_economics(["enterprise"], matrix, _fixture_cost_inputs()["meters"])
     e = econ[0]
+    assert e.worst_case_unbounded is True
+    assert "email_send" in e.unbounded_meters
+    assert e.worst_case_cost is None  # NOT 0.0
+    assert e.underwater is None  # cannot flag underwater against an unbounded cost
+
+
+def test_breakeven_unbounded_tier_has_no_finite_margin_or_breakeven():
+    """P1 regression: an unbounded (uncapped-metered) paying tier yields no
+    definitive margin/break-even — a heavy tenant can cost arbitrarily much."""
+    matrix = {"enterprise": {"emails_per_month": -1, "price_monthly_usd": 500}}
+    econ = model.derive_unit_economics(["enterprise"], matrix, _fixture_cost_inputs()["meters"])
+    breakeven = model.derive_breakeven(45.0, econ)
+    b = breakeven[0]
+    assert b.unbounded is True
+    assert b.gross_margin_per_tenant is None
+    assert b.gross_margin_pct is None
+    assert b.breakeven_tenants is None
+
+
+def test_render_surfaces_unbounded_tier_never_as_dollar_zero():
+    """P1 regression at the render layer: the unbounded state reaches the report
+    as UNBOUNDED, not $0.00 / 100%."""
+    matrix = {"free": {"emails_per_month": -1, "price_monthly_usd": 0},
+              "paid": {"emails_per_month": -1, "price_monthly_usd": 100}}
+    result = derive.run(
+        target_dir=".", cost_inputs_path=str(FIXTURES / "cost-inputs.json"),
+        stack_id="fixture-stack", now=FIXED_NOW, base=FIXTURE_BASE,
+    )
+    econ = model.derive_unit_economics(["paid"], matrix, _fixture_cost_inputs()["meters"])
+    result["economics"] = [asdict(e) for e in econ]
+    result["breakeven"] = [asdict(b) for b in model.derive_breakeven(45.0, econ)]
+    md = render.render_pricing_md(result)
+    assert "UNBOUNDED" in md
+    section = md.split("## 2.")[1].split("## 4.")[0]
+    assert "$0.00 | 100" not in section  # never a safe-looking 100% margin row
+
+
+def test_unit_economics_missing_cap_field_is_surfaced_not_silently_omitted():
+    """P2 regression: a declared meter whose cap key is absent from a tier's
+    matrix must be surfaced (no_cap_declared_meters), never silently contribute
+    $0 and vanish from the report."""
+    # a matrix that caps NOTHING the email_send meter needs
+    matrix = {"pro": {"seats": 5, "price_monthly_usd": 40}}
+    meters = [{"id": "email_send", "unit": "send", "rate": 0.002, "unit_desc": "d",
+               "capped_by": "emails_per_month", "provenance": "operator-verified",
+               "verified_date": "2026-07-01"}]
+    econ = model.derive_unit_economics(["pro"], matrix, meters)
+    e = econ[0]
+    assert "email_send" in e.no_cap_declared_meters
     assert "email_send" in e.worst_case_excluded_meters
-    assert e.worst_case_cost == 0.0  # only email_send was capped, and it's -1 here
+    md = render.render_pricing_md({
+        **_sample_result(),
+        "economics": [asdict(e)],
+        "breakeven": [],
+    })
+    assert "no cap declared" in md
+    assert "email_send" in md
 
 
 # --- model.py: break-even + gross margin -------------------------------------
@@ -333,15 +392,22 @@ def _sample_result() -> dict:
             "largest_uncapped_meter": _fixture_cost_inputs()["meters"][0],
             "first_step_jump": {"from": "T1", "to": "T2", "trigger": "cold starts", "add": "min-instances=1", "monthly_usd": 40.0},
         },
+        # Built from the real dataclasses via asdict so the sample never drifts
+        # from the model's field schema.
         "economics": [
-            {"tier": "free", "price": 0.0, "worst_case_cost": 0.2, "worst_case_excluded_meters": ["media_delivery_hour"],
-             "typical_cost": 0.06, "typical_excluded_meters": ["media_delivery_hour"], "underwater": True},
-            {"tier": "pro", "price": 25.0, "worst_case_cost": 10.0, "worst_case_excluded_meters": ["media_delivery_hour"],
-             "typical_cost": 3.0, "typical_excluded_meters": ["media_delivery_hour"], "underwater": False},
+            asdict(model.TierEconomics(
+                tier="free", price=0.0, worst_case_cost=0.2,
+                worst_case_excluded_meters=["media_delivery_hour"], typical_cost=0.06,
+                typical_excluded_meters=["media_delivery_hour"], underwater=True)),
+            asdict(model.TierEconomics(
+                tier="pro", price=25.0, worst_case_cost=10.0,
+                worst_case_excluded_meters=["media_delivery_hour"], typical_cost=3.0,
+                typical_excluded_meters=["media_delivery_hour"], underwater=False)),
         ],
         "breakeven": [
-            {"tier": "pro", "price": 25.0, "typical_cost": 3.0, "gross_margin_per_tenant": 22.0,
-             "gross_margin_pct": 88.0, "breakeven_tenants": 3},
+            asdict(model.Breakeven(
+                tier="pro", price=25.0, typical_cost=3.0, gross_margin_per_tenant=22.0,
+                gross_margin_pct=88.0, breakeven_tenants=3)),
         ],
         "typical_fraction": 0.3,
         "pricing_fit": pricing_fit.fit(pricing_fit.PER_UNIT_RECURRING),
@@ -435,6 +501,57 @@ def test_derive_run_against_the_real_gcp_stack_illustrative_seed(tmp_path):
     assert result["used_illustrative_seed"] is True
     assert result["caveat"]
     assert result["cost_shape"]["largest_uncapped_meter"]["id"] == "media_delivery_hour"
+
+
+def test_derive_run_explicit_seed_still_surfaces_caveat(tmp_path):
+    """P2 regression: passing the illustrative seed EXPLICITLY via --cost-inputs
+    must still surface the caveat — the caveat is a property of the data, not the
+    auto-fallback code path."""
+    seed = FIXTURE_BASE / "patterns" / "stacks" / "fixture-stack" / "cost-inputs.illustrative.json"
+    result = derive.run(
+        target_dir=tmp_path, cost_inputs_path=str(seed),
+        stack_id="fixture-stack", now=FIXED_NOW, base=FIXTURE_BASE,
+    )
+    assert result["used_illustrative_seed"] is True
+    assert "FIXTURE ILLUSTRATIVE" in result["caveat"]
+
+
+def test_derive_run_illustrative_meter_provenance_surfaces_caveat(tmp_path):
+    """P2 regression: even an operator file with no top-level $caveat surfaces a
+    caveat if ANY meter is marked provenance:'illustrative'."""
+    ci = tmp_path / "ci.json"
+    ci.write_text(json.dumps({
+        "flat_monthly": 1.0, "tier_fixed": {},
+        "meters": [{"id": "m", "unit": "u", "rate": 0.01, "unit_desc": "d",
+                    "capped_by": None, "provenance": "illustrative", "verified_date": "2026-01-01"}],
+    }))
+    result = derive.run(
+        target_dir=tmp_path, cost_inputs_path=str(ci),
+        stack_id="fixture-stack", now=FIXED_NOW, base=FIXTURE_BASE,
+    )
+    assert result["used_illustrative_seed"] is True
+    assert result["caveat"]  # the default illustrative caveat
+
+
+def test_derive_run_auto_uses_target_docs_cost_inputs_over_seed(tmp_path):
+    """P2 regression: with no --cost-inputs, the target's own
+    docs/cost-inputs.json is preferred over the stack's illustrative seed."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "cost-inputs.json").write_text((FIXTURES / "cost-inputs.json").read_text())
+    result = derive.run(
+        target_dir=tmp_path, cost_inputs_path=None,
+        stack_id="fixture-stack", now=FIXED_NOW, base=FIXTURE_BASE,
+    )
+    assert result["used_illustrative_seed"] is False  # operator-verified, not the seed
+    assert result["cost_inputs_source"].endswith("docs/cost-inputs.json")
+
+
+def test_is_illustrative_helper_detects_caveat_and_provenance():
+    assert inputs.is_illustrative({"$caveat": "x", "meters": []}) is True
+    assert inputs.is_illustrative({"meters": [{"provenance": "illustrative"}]}) is True
+    assert inputs.is_illustrative({"meters": [{"provenance": "operator-verified"}]}) is False
+    assert inputs.is_illustrative({"meters": []}) is False
 
 
 # --- schema validation of the illustrative seed ------------------------------

@@ -25,7 +25,24 @@ def run(
     base: Path = inputs.ROOT,
 ) -> dict:
     adopted = inputs.load_adopted(target_dir)
-    cost_inputs, used_illustrative, source = inputs.load_cost_inputs(cost_inputs_path, stack_id, base)
+
+    # With no explicit --cost-inputs, prefer the target's OWN operator-authored
+    # docs/cost-inputs.json over the stack's illustrative seed (the seed is a
+    # last-resort fallback, per its own $comment + the skill workflow).
+    if not cost_inputs_path:
+        own = Path(target_dir) / inputs.TARGET_COST_INPUTS_REL
+        if own.is_file():
+            cost_inputs_path = str(own)
+
+    cost_inputs, seed_fallback, source = inputs.load_cost_inputs(cost_inputs_path, stack_id, base)
+
+    # The illustrative caveat is a property of the DATA, not the code path: it
+    # surfaces whenever the loaded cost-inputs is illustrative (its own $caveat,
+    # or any meter marked provenance:"illustrative") — including when an operator
+    # explicitly passes the seed via --cost-inputs. Never let an illustrative
+    # rate render as if it were a verified quote just because of how it arrived.
+    is_illustrative = seed_fallback or inputs.is_illustrative(cost_inputs)
+    caveat = cost_inputs.get("$caveat") or (inputs.DEFAULT_ILLUSTRATIVE_CAVEAT if is_illustrative else "")
 
     try:
         stack_manifest = inputs.load_stack_manifest(stack_id, base)
@@ -50,8 +67,8 @@ def run(
         "analysis_date": analysis_date,
         "stack_id": stack_id,
         "cost_inputs_source": source,
-        "used_illustrative_seed": used_illustrative,
-        "caveat": cost_inputs.get("$caveat", "") if used_illustrative else "",
+        "used_illustrative_seed": is_illustrative,
+        "caveat": caveat,
         "adopted_patterns": sorted(adopted.keys()),
         "cost_shape": asdict(cost_shape),
         "economics": [asdict(e) for e in economics],

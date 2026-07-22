@@ -34,6 +34,28 @@ from apply_pattern import ADOPTED_REL  # noqa: E402
 ROOT = SCRIPTS.parent
 DEFAULT_STACK = "gcp-serverless-saas"
 
+# Where a target repo keeps its OWN operator-authored cost inputs (preferred over
+# a stack's illustrative seed when no explicit --cost-inputs is passed).
+TARGET_COST_INPUTS_REL = "docs/cost-inputs.json"
+
+DEFAULT_ILLUSTRATIVE_CAVEAT = (
+    "ILLUSTRATIVE -- these cost inputs carry illustrative (unverified) rates, "
+    "not verified vendor prices. Verify against live vendor pricing before "
+    "quoting a customer or setting a real price floor."
+)
+
+
+def is_illustrative(cost_inputs: dict) -> bool:
+    """A cost-inputs document is illustrative — and its caveat must surface,
+    however it was supplied — if it declares a top-level ``$caveat`` or ANY
+    meter is marked ``provenance: "illustrative"``. This is a property of the
+    DATA, so passing an illustrative seed explicitly via ``--cost-inputs`` still
+    surfaces the caveat (a rate doesn't become verified by how the file arrived).
+    """
+    if cost_inputs.get("$caveat"):
+        return True
+    return any(m.get("provenance") == "illustrative" for m in cost_inputs.get("meters", []) or [])
+
 
 class ConsultantInputError(Exception):
     """A required input (adopted.json, cost-inputs, stack manifest) is missing or malformed."""

@@ -87,14 +87,20 @@ def _summarize_text(result: dict) -> str:
         j = result["cost_shape"]["first_step_jump"]
         lines.append(f"  first fixed step-jump: {j['from']} -> {j['to']} (+${j['monthly_usd']:.2f}/mo)")
     for e in result["economics"]:
-        flag = ""
-        if e["underwater"] is True:
-            flag = "  ** UNDERWATER **"
+        if e["worst_case_unbounded"]:
+            worst = "UNBOUNDED (uncapped meter)"
+            flag = "  ** UNBOUNDED WORST-CASE **"
+        else:
+            worst = f"${e['worst_case_cost']:.2f}"
+            flag = "  ** UNDERWATER **" if e["underwater"] is True else ""
         lines.append(
-            f"  tier {e['tier']}: price={e['price']} worst_case=${e['worst_case_cost']:.2f} "
+            f"  tier {e['tier']}: price={e['price']} worst_case={worst} "
             f"typical=${e['typical_cost']:.2f}{flag}"
         )
     for b in result["breakeven"]:
+        if b["unbounded"]:
+            lines.append(f"  break-even {b['tier']}: unbounded (uncapped meter — no finite break-even)")
+            continue
         be = b["breakeven_tenants"] if b["breakeven_tenants"] is not None else "never"
         lines.append(f"  break-even {b['tier']}: {be} tenant(s), margin {b['gross_margin_pct']}%")
     lines.append(f"  pricing-model fit: {result['pricing_fit']['model_family']} (shape={result['pricing_fit']['cost_shape']})")

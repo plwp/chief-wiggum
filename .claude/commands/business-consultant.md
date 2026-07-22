@@ -79,15 +79,20 @@ cost-shape + pricing-model-fit section, but unit economics per tier will be
 empty until the pattern is applied (`/apply-pattern <owner/repo> --pattern
 tiered-subscription ...`).
 
-Check whether the target repo has its own `docs/cost-inputs.json`. If not, the
-deriver falls back to the stack's illustrative seed automatically — no action
-needed, but expect (and keep) the loud caveat in the rendered report.
+Check whether the target repo has its own `docs/cost-inputs.json`. With no
+`--cost-inputs` flag the deriver **auto-uses** `<target>/docs/cost-inputs.json`
+when it exists, and only falls back to the stack's illustrative seed when it
+doesn't — so you rarely need to pass the flag. Whenever illustrative rates are
+used (the seed, or any meter marked `provenance: "illustrative"`, however the
+file was supplied), the loud caveat is surfaced in the report — it rides on the
+data, not the code path.
 
 ### Step 3: Run the deriver
 
 ```bash
-python3 "$CW_HOME/scripts/business_consultant.py" --repo "$TARGET_REPO" \
-  --cost-inputs "$TARGET_REPO/docs/cost-inputs.json"   # omit if the repo has none yet
+python3 "$CW_HOME/scripts/business_consultant.py" --repo "$TARGET_REPO"
+# auto-uses $TARGET_REPO/docs/cost-inputs.json if present, else the illustrative seed;
+# pass --cost-inputs <path> only to point at a non-default location
 ```
 
 This derives, purely mechanically (no AI consultation, no network calls):
@@ -98,9 +103,15 @@ This derives, purely mechanically (no AI consultation, no network calls):
 2. **Unit economics per tier** — worst-case (matrix cap × meter rate) + typical
    (a documented fraction of worst-case) per tier, flagging any tier priced
    **underwater** (price below worst-case cost — most commonly the free tier,
-   since a free tier's worst-case cost isn't automatically near-zero).
+   since a free tier's worst-case cost isn't automatically near-zero). A tier
+   with an **unlimited (`-1`) cap on a metered line** is reported as
+   **unbounded worst-case** (uncomputable, never a safe-looking $0 / 100% margin
+   / finite break-even) — a single heavy tenant can cost arbitrarily much. A
+   declared meter with **no cap field** in a tier's matrix is surfaced as
+   `no cap declared`, never silently dropped.
 3. **Break-even** — paying tenants of each tier needed to cover the flat nut,
-   plus gross margin at typical usage.
+   plus gross margin at typical usage; **unbounded** for any tier whose
+   worst-case is uncapped.
 4. **Market-comparable floor** — an explicit `UNRESOLVED:` marker (rollout step
    3, not built).
 5. **Pricing-model fit** — a model *family* recommendation
