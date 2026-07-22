@@ -13,6 +13,23 @@ DEFAULT_PRICE_FIELD = "price_monthly_usd"
 DEFAULT_TYPICAL_FRACTION = 0.3  # documented assumption: "typical" = 30% of a tier's worst-case cap
 
 
+def _cap_number(cap: object) -> float | None:
+    """Normalize a matrix cap to a number so the unlimited sentinel is caught
+    regardless of representation. Accepts int/float and numeric strings (so a
+    hand-authored ``"-1"`` reads as unlimited, not ``float("-1")*rate`` negative
+    cost); returns None for a non-numeric value the caller must not coerce."""
+    if isinstance(cap, bool):  # bool is an int subclass — never a cap
+        return None
+    if isinstance(cap, (int, float)):
+        return float(cap)
+    if isinstance(cap, str):
+        try:
+            return float(cap.strip())
+        except ValueError:
+            return None
+    return None
+
+
 @dataclass
 class CostShape:
     """The flat nut + per-tenant variable shape (issue #122, deriver bullet a)."""
@@ -182,7 +199,11 @@ def derive_unit_economics(
             rate = float(m.get("rate", 0))
             mid = m.get("id", "?")
             if cap_key is None:
-                # Globally uncapped meter: excluded + named in section 1.
+                # Globally uncapped meter (capped_by: null): the worst case for
+                # this meter is literally unbounded — no matrix key limits it — so
+                # it forces the same unbounded state as a -1 sentinel, not a silent
+                # exclusion that leaves a finite-looking worst-case subtotal.
+                unbounded_meters.append(mid)
                 worst_excluded.append(mid)
                 typical_excluded.append(mid)
                 continue
@@ -192,15 +213,23 @@ def derive_unit_economics(
                 worst_excluded.append(mid)
                 typical_excluded.append(mid)
                 continue
-            cap = caps[cap_key]
-            if cap == -1:
-                # Unlimited sentinel on a metered line -> unbounded worst case.
+            cap = _cap_number(caps[cap_key])
+            if cap is None:
+                # Unparseable cap (e.g. a non-numeric string): cannot bound the
+                # meter, so surface it as undeclared rather than coercing it into
+                # a definitive (possibly negative) cost.
+                no_cap_declared.append(mid)
+                worst_excluded.append(mid)
+                typical_excluded.append(mid)
+                continue
+            if cap < 0:
+                # -1 (or any negative sentinel), incl. the string "-1" -> unlimited.
                 unbounded_meters.append(mid)
                 worst_excluded.append(mid)
                 typical_excluded.append(mid)
                 continue
-            worst += float(cap) * rate
-            typical += float(cap) * rate * typical_fraction
+            worst += cap * rate
+            typical += cap * rate * typical_fraction
         unbounded = bool(unbounded_meters)
         if unbounded:
             worst_case_cost: float | None = None
