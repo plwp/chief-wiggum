@@ -1,0 +1,30 @@
+{
+  "$comment": "Synthetic cost-inputs fixture for tests/test_business_consultant.py -- controlled numbers, not a real vendor quote.",
+  "as_of": "2026-07-01",
+  "currency": "USD",
+  "flat_monthly": 5.0,
+  "tier_fixed": {
+    "T1": 0.0,
+    "T2": 40.0
+  },
+  "meters": [
+    {
+      "id": "media_delivery_hour",
+      "unit": "hour",
+      "rate": 0.05,
+      "unit_desc": "fixture media delivery, per hour",
+      "capped_by": null,
+      "provenance": "operator-verified",
+      "verified_date": "2026-07-01"
+    },
+    {
+      "id": "email_send",
+      "unit": "send",
+      "rate": 0.002,
+      "unit_desc": "fixture transactional email, per send",
+      "capped_by": "emails_per_month",
+      "provenance": "operator-verified",
+      "verified_date": "2026-07-01"
+    }
+  ]
+}

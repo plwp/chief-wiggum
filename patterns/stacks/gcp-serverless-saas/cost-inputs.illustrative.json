@@ -1,0 +1,41 @@
+{
+  "$comment": "Illustrative cost-inputs seed for the gcp-serverless-saas stack (templates/cost-inputs-schema.json). Ballparks mined loosely from the stack's own cost_tiers/graduation_triggers prose (manifest.json) -- NOT a live vendor quote. business_consultant.py falls back to this file only when a target repo has no operator-authored docs/cost-inputs.json, and always surfaces $caveat + each meter's provenance/verified_date in the rendered report. Region, billing mode, and committed-use discounts all move these numbers -- re-verify against live vendor pricing before treating any rate here as real.",
+  "$caveat": "ILLUSTRATIVE -- every rate in this file is a placeholder, not a verified vendor price. Region, billing mode, committed-use discounts, and vendor pricing changes all move these numbers. Verify against live vendor pricing pages before quoting a customer or setting a real price floor. This file exists so the deriver has *something* mechanical to run against before step 3 (live market-comparables lookup, chief-wiggum#122) ships -- it is a documented fallback, never an authority.",
+  "as_of": "2026-07-19",
+  "currency": "USD",
+  "flat_monthly": 5.0,
+  "tier_fixed": {
+    "T0": 0.0,
+    "T1": 0.0,
+    "T2": 55.0
+  },
+  "meters": [
+    {
+      "id": "media_delivery_hour",
+      "unit": "hour",
+      "rate": 0.06,
+      "unit_desc": "provider-neutral media delivery (Cloudflare Stream exemplar), per hour watched",
+      "capped_by": null,
+      "provenance": "illustrative",
+      "verified_date": "2026-07-19"
+    },
+    {
+      "id": "email_send",
+      "unit": "send",
+      "rate": 0.001,
+      "unit_desc": "Resend transactional email, per send",
+      "capped_by": "emails_per_month",
+      "provenance": "illustrative",
+      "verified_date": "2026-07-19"
+    },
+    {
+      "id": "object_storage_gb_month",
+      "unit": "gb-month",
+      "rate": 0.02,
+      "unit_desc": "Firestore/Atlas + Cloud Storage, per GB stored per month",
+      "capped_by": "storage_gb",
+      "provenance": "illustrative",
+      "verified_date": "2026-07-19"
+    }
+  ]
+}

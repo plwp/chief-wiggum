@@ -507,6 +507,16 @@ trigger** (the concrete signal that says "now add this"). The single most import
 number a profile surfaces is the **first real fixed-cost jump** and the **only
 uncapped variable cost** — so a builder knows exactly what they're signing up for.
 
+The `cost_tiers`/`graduation_triggers` prose above is deliberately illustrative,
+not a set of structured per-unit rates (real rates are region/billing-mode
+dependent). `/business-consultant` (chief-wiggum#122) is the advisory layer that
+turns them into a decision: it derives unit economics + a pricing-model-family
+recommendation from a product's adopted `tiered-subscription` matrix plus a
+structured `cost-inputs.json` (`templates/cost-inputs-schema.json`) — either
+operator-authoritative, or a stack's own loudly-caveated illustrative seed
+(`patterns/stacks/<id>/cost-inputs.illustrative.json`) as a documented fallback,
+never presented as a quote. See `.claude/commands/business-consultant.md`.
+
 ### First profile: `gcp-serverless-saas`
 
 The house stack behind every CW-built app so far — **Firebase Hosting + Cloud Run
