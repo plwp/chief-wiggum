@@ -34,7 +34,20 @@ def _fixture_adopted() -> dict:
 
 
 def _fixture_cost_inputs() -> dict:
+    """The media-UNCAPPED fixture (media_delivery_hour has capped_by: null) — used
+    by the section-1 'largest uncapped meter' tests and the unbounded-state tests."""
     return json.loads((FIXTURES / "cost-inputs.json").read_text())
+
+
+def _fixture_capped_adopted() -> dict:
+    """A fully-matrix-capped adoption record: the matrix caps BOTH meters in
+    cost-inputs-capped.json, so every tier's worst-case is finite/computable."""
+    return json.loads((FIXTURES / "adopted-capped.json").read_text())["patterns"]
+
+
+def _fixture_capped_cost_inputs() -> dict:
+    """The fully-matrix-capped cost-inputs (every meter capped_by a matrix key)."""
+    return json.loads((FIXTURES / "cost-inputs-capped.json").read_text())
 
 
 def _fixture_stack_manifest() -> dict:
@@ -174,48 +187,54 @@ def test_first_fixed_step_jump_none_when_every_transition_is_zero_cost():
 
 
 def test_unit_economics_worst_case_is_matrix_cap_times_rate():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    # Fully-capped fixture: BOTH meters are bounded by the matrix, so worst-case
+    # is finite and computable. free = 100 emails * $0.002 + 2 media-hrs * $0.06
+    #                               = $0.20 + $0.12 = $0.32
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"])
     free = next(e for e in econ if e.tier == "free")
-    # only email_send applies (media is globally uncapped -> excluded);
-    # free cap 100 emails * $0.002/send = $0.20
-    assert free.worst_case_cost == pytest.approx(0.20)
-    assert "media_delivery_hour" in free.worst_case_excluded_meters
+    assert free.worst_case_unbounded is False
+    assert free.worst_case_cost == pytest.approx(0.32)
+    assert free.worst_case_excluded_meters == []  # nothing excluded — all capped
 
 
 def test_unit_economics_underwater_tier_is_flagged():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"])
     free = next(e for e in econ if e.tier == "free")
-    # free tier is priced at $0 but its worst-case cost is $0.20 -> underwater
+    # free is priced at $0 but its worst-case cost is $0.32 -> underwater
     assert free.price == 0.0
     assert free.underwater is True
 
 
 def test_unit_economics_non_underwater_tier():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"])
     pro = next(e for e in econ if e.tier == "pro")
-    # pro cap 5000 emails * $0.002 = $10 worst case, priced at $25 -> not underwater
-    assert pro.worst_case_cost == pytest.approx(10.0)
+    # pro = 5000 emails * $0.002 + 50 media-hrs * $0.06 = $10 + $3 = $13 worst
+    # case, priced at $25 -> not underwater
+    assert pro.worst_case_cost == pytest.approx(13.0)
     assert pro.underwater is False
 
 
 def test_unit_economics_typical_is_documented_fraction_of_worst_case():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"], typical_fraction=0.3)
     pro = next(e for e in econ if e.tier == "pro")
     assert pro.typical_cost == pytest.approx(pro.worst_case_cost * 0.3)
 
 
 def test_unit_economics_no_price_field_is_not_flagged_underwater():
-    matrix = {"mystery": {"emails_per_month": 100}}  # no price_monthly_usd
-    econ = model.derive_unit_economics(["mystery"], matrix, _fixture_cost_inputs()["meters"])
+    # No price field AND a finite (fully-capped) worst case, so underwater is None
+    # only because there's no price to compare against — not because of unbounded.
+    matrix = {"mystery": {"emails_per_month": 100, "media_hours_per_month": 2}}
+    econ = model.derive_unit_economics(["mystery"], matrix, _fixture_capped_cost_inputs()["meters"])
     assert econ[0].price is None
+    assert econ[0].worst_case_unbounded is False
     assert econ[0].underwater is None
 
 
@@ -285,43 +304,104 @@ def test_unit_economics_missing_cap_field_is_surfaced_not_silently_omitted():
     assert "email_send" in md
 
 
+def test_capped_by_null_meter_forces_unbounded_not_finite_zero():
+    """A genuinely-uncapped meter (capped_by: null, e.g. media delivery) makes
+    the TIER's worst-case UNBOUNDED — it must not be silently excluded to leave a
+    finite email-only subtotal that reads as safe."""
+    matrix = {"pro": {"emails_per_month": 5000, "price_monthly_usd": 25}}
+    meters = [
+        {"id": "email_send", "unit": "send", "rate": 0.002, "unit_desc": "d",
+         "capped_by": "emails_per_month", "provenance": "operator-verified", "verified_date": "2026-07-01"},
+        {"id": "media_delivery_hour", "unit": "hour", "rate": 0.06, "unit_desc": "d",
+         "capped_by": None, "provenance": "operator-verified", "verified_date": "2026-07-01"},
+    ]
+    econ = model.derive_unit_economics(["pro"], matrix, meters)
+    e = econ[0]
+    assert e.worst_case_unbounded is True
+    assert "media_delivery_hour" in e.unbounded_meters
+    assert e.worst_case_cost is None  # NOT $10 (email-only) and NOT $0
+    assert e.underwater is None
+    b = model.derive_breakeven(45.0, econ)[0]
+    assert b.unbounded is True
+    assert b.gross_margin_per_tenant is None
+    assert b.breakeven_tenants is None
+    md = render.render_pricing_md({**_sample_result(), "economics": [asdict(e)], "breakeven": [asdict(b)]})
+    assert "UNBOUNDED" in md
+
+
+def test_string_minus_one_cap_is_unbounded_not_negative_cost():
+    """A matrix cap authored as the STRING "-1" must read as unlimited
+    (unbounded), never coerced to float('-1') * rate = a negative 'cost'."""
+    matrix = {"pro": {"emails_per_month": "-1", "price_monthly_usd": 25}}
+    meters = [{"id": "email_send", "unit": "send", "rate": 0.002, "unit_desc": "d",
+               "capped_by": "emails_per_month", "provenance": "operator-verified", "verified_date": "2026-07-01"}]
+    econ = model.derive_unit_economics(["pro"], matrix, meters)
+    e = econ[0]
+    assert e.worst_case_unbounded is True
+    assert "email_send" in e.unbounded_meters
+    assert e.worst_case_cost is None
+
+
+def test_unparseable_cap_is_surfaced_as_no_cap_declared_not_coerced():
+    """A non-numeric cap value ("lots") can't bound the meter, so it is surfaced
+    as no-cap-declared rather than coerced into a definitive (possibly bogus)
+    number — and is NOT mistaken for an unlimited sentinel."""
+    matrix = {"pro": {"emails_per_month": "lots", "price_monthly_usd": 25}}
+    meters = [{"id": "email_send", "unit": "send", "rate": 0.002, "unit_desc": "d",
+               "capped_by": "emails_per_month", "provenance": "operator-verified", "verified_date": "2026-07-01"}]
+    econ = model.derive_unit_economics(["pro"], matrix, meters)
+    e = econ[0]
+    assert "email_send" in e.no_cap_declared_meters
+    assert "email_send" not in e.unbounded_meters
+    assert e.worst_case_unbounded is False
+    assert e.worst_case_cost == pytest.approx(0.0)  # no bounded meter contributed
+    md = render.render_pricing_md({**_sample_result(), "economics": [asdict(e)], "breakeven": []})
+    assert "no cap declared" in md
+
+
 # --- model.py: break-even + gross margin -------------------------------------
 
 
 def test_breakeven_count_covers_the_flat_nut():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"])
     shape = model.derive_cost_shape(ci, "T2", _fixture_stack_manifest())
     breakeven = model.derive_breakeven(shape.flat_nut, econ)
     pro = next(b for b in breakeven if b.tier == "pro")
-    # margin = 25 - (10 * 0.3) = 22; ceil(45 / 22) = 3
-    assert pro.gross_margin_per_tenant == pytest.approx(22.0)
+    # pro typical = $13 * 0.3 = $3.90; margin = 25 - 3.90 = $21.10;
+    # ceil(45 / 21.10) = 3
+    assert pro.gross_margin_per_tenant == pytest.approx(21.10)
     assert pro.breakeven_tenants == 3
 
 
 def test_breakeven_skips_free_zero_price_tiers():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"])
     breakeven = model.derive_breakeven(45.0, econ)
     assert {b.tier for b in breakeven} == {"pro"}
 
 
 def test_breakeven_never_when_margin_non_positive():
-    matrix = {"paid": {"emails_per_month": 100, "price_monthly_usd": 0.05}}
-    econ = model.derive_unit_economics(["paid"], matrix, _fixture_cost_inputs()["meters"])
+    # Fully-capped so the tier's worst case is FINITE — this exercises the
+    # genuine margin<=0 path (break-even None because unrecoverable at typical
+    # usage), NOT the unbounded path.
+    matrix = {"paid": {"emails_per_month": 100, "media_hours_per_month": 2, "price_monthly_usd": 0.05}}
+    econ = model.derive_unit_economics(["paid"], matrix, _fixture_capped_cost_inputs()["meters"])
+    assert econ[0].worst_case_unbounded is False
     breakeven = model.derive_breakeven(45.0, econ)
-    assert breakeven[0].breakeven_tenants is None
+    assert breakeven[0].unbounded is False
+    assert breakeven[0].breakeven_tenants is None  # margin <= 0 at typical usage
 
 
 def test_gross_margin_pct_is_margin_over_price():
-    tiers, matrix = inputs.tiered_subscription_binding(_fixture_adopted())
-    ci = _fixture_cost_inputs()
+    tiers, matrix = inputs.tiered_subscription_binding(_fixture_capped_adopted())
+    ci = _fixture_capped_cost_inputs()
     econ = model.derive_unit_economics(tiers, matrix, ci["meters"])
     breakeven = model.derive_breakeven(45.0, econ)
     pro = next(b for b in breakeven if b.tier == "pro")
-    assert pro.gross_margin_pct == pytest.approx(22.0 / 25.0 * 100, rel=1e-6)
+    assert pro.gross_margin_pct == pytest.approx(21.10 / 25.0 * 100, rel=1e-6)
 
 
 # --- pricing_fit.py: decision-table lookup ------------------------------------
@@ -462,13 +542,15 @@ def test_render_names_uncapped_meter_and_step_jump():
 
 
 def test_derive_run_end_to_end_with_operator_cost_inputs(tmp_path):
+    # Fully-capped adopted + cost-inputs, so the per-tier economics are finite
+    # and the free tier's underwater flag is legitimately computable.
     docs = tmp_path / "docs" / "patterns"
     docs.mkdir(parents=True)
-    (docs / "adopted.json").write_text(json.dumps({"patterns": _fixture_adopted()}))
+    (docs / "adopted.json").write_text(json.dumps({"patterns": _fixture_capped_adopted()}))
 
     result = derive.run(
         target_dir=tmp_path,
-        cost_inputs_path=str(FIXTURES / "cost-inputs.json"),
+        cost_inputs_path=str(FIXTURES / "cost-inputs-capped.json"),
         stack_id="fixture-stack",
         now=FIXED_NOW,
         base=FIXTURE_BASE,
@@ -478,6 +560,8 @@ def test_derive_run_end_to_end_with_operator_cost_inputs(tmp_path):
     assert result["cost_shape"]["flat_nut"] == 45.0
     assert result["pricing_fit"]["cost_shape"] == pricing_fit.PER_UNIT_RECURRING
     free = next(e for e in result["economics"] if e["tier"] == "free")
+    assert free["worst_case_unbounded"] is False
+    assert free["worst_case_cost"] == pytest.approx(0.32)
     assert free["underwater"] is True
 
 

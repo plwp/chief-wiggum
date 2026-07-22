@@ -1,0 +1,21 @@
+{
+  "$comment": "Synthetic FULLY-MATRIX-CAPPED fixture for tests/test_business_consultant.py -- every meter in cost-inputs-capped.json is capped_by a key present in this matrix (emails_per_month + media_hours_per_month), so each tier's worst-case is finite and legitimately computable. NOT a real product's adoption record.",
+  "patterns": {
+    "tiered-subscription": {
+      "version": 1,
+      "applied_at": "2026-07-01T00:00:00Z",
+      "provenance": {"registry": "chief-wiggum", "manifest": "patterns/tiered-subscription/manifest.json"},
+      "parameters": {
+        "tiers": ["free", "pro"],
+        "matrix": {
+          "free": {"emails_per_month": 100, "media_hours_per_month": 2, "price_monthly_usd": 0},
+          "pro": {"emails_per_month": 5000, "media_hours_per_month": 50, "price_monthly_usd": 25}
+        },
+        "billing_provider": "stripe"
+      },
+      "unresolved": [],
+      "invariants": ["INV-TSB-001", "INV-TSB-002"],
+      "protected_path_intents": []
+    }
+  }
+}
