@@ -1,0 +1,30 @@
+{
+  "$comment": "Synthetic fixture for tests/test_business_consultant.py -- NOT a real product's adoption record.",
+  "patterns": {
+    "tiered-subscription": {
+      "version": 1,
+      "applied_at": "2026-07-01T00:00:00Z",
+      "provenance": {"registry": "chief-wiggum", "manifest": "patterns/tiered-subscription/manifest.json"},
+      "parameters": {
+        "tiers": ["free", "pro"],
+        "matrix": {
+          "free": {"emails_per_month": 100, "price_monthly_usd": 0},
+          "pro": {"emails_per_month": 5000, "price_monthly_usd": 25}
+        },
+        "billing_provider": "stripe"
+      },
+      "unresolved": [],
+      "invariants": ["INV-TSB-001", "INV-TSB-002"],
+      "protected_path_intents": []
+    },
+    "multi-tenant-isolation": {
+      "version": 1,
+      "applied_at": "2026-07-01T00:00:00Z",
+      "provenance": {"registry": "chief-wiggum", "manifest": "patterns/multi-tenant-isolation/manifest.json"},
+      "parameters": {},
+      "unresolved": [],
+      "invariants": ["INV-MTI-001"],
+      "protected_path_intents": []
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/cost-inputs.json",
+  "title": "Cost Inputs",
+  "description": "Operator-authoritative structured cost-model inputs consumed by scripts/business_consultant.py to derive unit economics + a pricing-model fit (see docs/patterns-registry.md#the-cost-axis-is-first-class). Distinct from a stack profile's cost_tiers/graduation_triggers (patterns/stacks/*/manifest.json), which are deliberately prose/illustrative -- region- and billing-mode-dependent, not structured invariants. A product's own docs/cost-inputs.json (this schema) is the operator-authoritative source of per-unit rates; a stack may ship a cost-inputs.illustrative.json seed (same schema, every meter provenance:\"illustrative\") as a documented, loudly-caveated fallback when the operator hasn't supplied one yet.",
+  "type": "object",
+  "required": ["flat_monthly", "meters", "tier_fixed"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": {
+      "type": "string",
+      "description": "Free-text note about this cost-inputs document's origin/scope."
+    },
+    "$caveat": {
+      "type": "string",
+      "description": "Present + non-empty on an illustrative seed: a loud, human-readable warning that every number here is a placeholder, unverified against live vendor pricing, and must never be presented as an authoritative quote."
+    },
+    "as_of": {
+      "type": "string",
+      "description": "ISO date this cost-inputs snapshot was assembled/last verified. Stamped into the rendered pricing.md analysis date."
+    },
+    "currency": {
+      "type": "string",
+      "default": "USD",
+      "description": "ISO currency code every rate/flat cost is denominated in."
+    },
+    "flat_monthly": {
+      "type": "number",
+      "minimum": 0,
+      "description": "The baseline flat platform nut before any cost-tier step-jump or per-tenant meter -- e.g. always-on base hosting."
+    },
+    "tier_fixed": {
+      "type": "object",
+      "description": "Additional fixed monthly cost that switches on when a stack cost tier (e.g. T0/T1/T2 from a stack profile's cost_tiers) becomes active for this product -- e.g. the Cloud Run min-instances=1 jump at T2. Keyed by cost-tier id. The deriver adds the bound-in active tier's amount (if any) to flat_monthly.",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "meters": {
+      "type": "array",
+      "description": "Per-tenant variable-cost meters -- one line per billed unit of usage-based spend.",
+      "items": { "$ref": "#/$defs/meter" }
+    }
+  },
+  "$defs": {
+    "meter": {
+      "type": "object",
+      "required": ["id", "unit", "rate", "unit_desc", "capped_by", "provenance", "verified_date"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable meter id, e.g. 'media_delivery_hour'."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The billed unit, e.g. 'hour', 'send', 'write', 'gb-month'."
+        },
+        "rate": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Cost per unit, in `currency`."
+        },
+        "unit_desc": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable description of what one unit is (for the rendered report)."
+        },
+        "capped_by": {
+          "type": ["string", "null"],
+          "description": "The tiered-subscription `matrix` key (patterns/tiered-subscription/manifest.json) that bounds this meter's per-tenant usage, or null if no plan cap bounds it. A null capped_by is the dangerous case the deriver names explicitly -- an uncapped meter has no plan-enforced ceiling on worst-case cost."
+        },
+        "provenance": {
+          "type": "string",
+          "enum": ["operator-verified", "illustrative"],
+          "description": "'operator-verified': a human confirmed this rate against live vendor pricing. 'illustrative': a shipped seed's placeholder number -- never presented as a quote."
+        },
+        "verified_date": {
+          "type": "string",
+          "description": "ISO date this rate was last checked against live vendor pricing."
+        }
+      }
+    }
+  }
+}

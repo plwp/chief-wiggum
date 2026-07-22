@@ -1,0 +1,49 @@
+{
+  "$comment": "Machine-readable cost-shape -> pricing-model decision table + reusable pricing tactics. Consumed by scripts/business_consultant.py (patterns/pricing-models/reference.md is the human-facing spec). This is a KNOWLEDGE BASE, not an installable registry pattern -- it carries no invariants/parameters/manifest and is deliberately absent from patterns/registry.json, so scripts/check_patterns.py does not (and should not) validate it against the invariant-cluster model.",
+  "version": 1,
+
+  "cost_shape_to_model": [
+    {
+      "cost_shape": "flat-cost",
+      "model_family": "subscription-or-seat",
+      "rationale": "Marginal cost per additional tenant/seat is ~0 (no metered variable cost scales with usage); price on value delivered per seat/account, not consumption.",
+      "never": [],
+      "notes": "Founding-member grandfathering and annual-prepay work cleanly here since the provider's own cost floor doesn't move with usage."
+    },
+    {
+      "cost_shape": "per-unit-recurring",
+      "model_family": "usage-based-or-subscription",
+      "rationale": "A recurring per-tenant variable cost (a metered vendor bill that keeps charging every month the tenant stays active) means the provider's cost never stops -- price must recur too, tracking or capping usage. A one-time price guarantees the provider eventually pays more to serve a long-lived customer than that customer ever paid.",
+      "never": ["lifetime-deal", "one-time-purchase"],
+      "notes": "This is the load-bearing rule the skill exists to enforce: recurring infra cost implies recurring price. Cap usage per tier (the tiered-subscription `matrix`) so an underwater tenant is bounded, not just probable."
+    },
+    {
+      "cost_shape": "marketplace",
+      "model_family": "take-rate",
+      "rationale": "The provider's cost and revenue both scale with transaction volume flowing through the platform, not with a fixed subscriber count -- price as a percentage of the transaction, matching cost to volume automatically.",
+      "never": ["flat-per-seat-only"],
+      "notes": "A flat subscription fee alongside the take-rate is fine for a supply-side seat (e.g. a vendor dashboard seat) as long as the transaction-volume-linked cost itself is still take-rate priced."
+    }
+  ],
+
+  "tactics": [
+    {
+      "id": "founding-member-grandfathering",
+      "one_liner": "Early customers keep their original price/terms even as list price rises later.",
+      "applies_when": "any cost shape; strongest signal when the product isn't yet proven and early adopters are taking real risk.",
+      "guardrail": "Grandfathering must never extend to raising the effective cost floor underneath them (e.g. adding a metered feature they didn't sign up for) without also grandfathering its cost -- see tiered-subscription's non-destructive-degradation invariant (INV-TSB-005) for the general principle: changes must not silently worsen a customer's existing deal."
+    },
+    {
+      "id": "annual-two-months-free",
+      "one_liner": "Annual plan priced at ~10x monthly (roughly 2 months free) rather than a deeper discount.",
+      "applies_when": "subscription-or-seat or usage-based-or-subscription model families with a stable, predictable per-tenant cost (so a year of prepaid revenue doesn't undercut a year of accruing variable cost).",
+      "guardrail": "Do not offer annual prepay on a cost shape with an uncapped meter (capped_by=null) unless that meter's actual usage is separately metered and billed on top -- prepaying flat for unbounded variable cost reproduces the lifetime-deal risk one billing cycle at a time."
+    },
+    {
+      "id": "free-tier-bounded-loss-leader",
+      "one_liner": "A free tier is a deliberate, capped loss leader for acquisition/activation -- never an unbounded cost sink.",
+      "applies_when": "any cost shape; most load-bearing on per-unit-recurring, where a free tier's variable-cost exposure must be tightly capped by the tiered-subscription matrix (the free tier's `matrix` entry should have the tightest caps, never -1/unlimited on a metered field).",
+      "guardrail": "The unit-economics check (worst-case matrix caps x meter rates) applies to the free tier too -- if a free tier's worst-case cost isn't near-zero, the loss leader isn't bounded, it's just a loss."
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "$comment": "Synthetic stack manifest fixture for tests/test_business_consultant.py -- deterministic cost_tiers/graduation_triggers/bindings, not a real stack.",
+  "id": "fixture-stack",
+  "cost_tiers": [
+    {"id": "T0", "name": "Static"},
+    {"id": "T1", "name": "Thin serverless"},
+    {"id": "T2", "name": "Full production"}
+  ],
+  "graduation_triggers": [
+    {"from": "T0", "to": "T1", "trigger": "need server logic", "add": "Compute"},
+    {"from": "T1", "to": "T2", "trigger": "cold starts hurt UX", "add": "min-instances=1"}
+  ],
+  "bindings": {
+    "tiered-subscription": {"tier": "T2", "vendor": "fixture-billing"}
+  }
+}
