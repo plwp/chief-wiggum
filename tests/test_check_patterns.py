@@ -167,3 +167,29 @@ def test_candidate_malformed_cluster_is_error(tmp_path):
     }
     path = _write(tmp_path, reg, {})
     assert any("malformed invariant id" in e.message for e in _errors(check_patterns.validate(path)))
+
+
+# --- referral-invite-loop promotion (#139) ----------------------------------
+
+def test_real_registry_passes_check_patterns():
+    """The shipped registry (incl. the promoted referral-invite-loop) validates."""
+    findings = check_patterns.validate()
+    assert _errors(findings) == [], _errors(findings)
+
+
+def test_referral_invite_loop_is_specified_with_grounded_cluster():
+    reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
+    entry = next((e for e in reg["patterns"] if e["id"] == "referral-invite-loop"), None)
+    assert entry is not None, "referral-invite-loop must be a specified pattern, not a candidate"
+    assert entry["status"] == "specified"
+    assert entry.get("depends_on") == "elevated-access-session"
+    assert not any(c["id"] == "referral-invite-loop" for c in reg.get("candidates", []))
+    manifest = json.loads(
+        (SCRIPTS.parent / "patterns" / "referral-invite-loop" / "manifest.json").read_text())
+    cluster = check_patterns.cluster_entries(manifest["invariants"])
+    ids = [e["id"] for e in cluster]
+    assert ids == [f"INV-RIL-00{n}" for n in range(1, 7)]
+    # the token-discipline invariants cite the in-repo elevated-access-session grounding
+    grounded = [e for e in cluster if isinstance(e.get("realized_as"), dict)
+                and "elevated-access-session" in e["realized_as"].get("code", "")]
+    assert {e["id"] for e in grounded} == {"INV-RIL-001", "INV-RIL-002", "INV-RIL-003"}
