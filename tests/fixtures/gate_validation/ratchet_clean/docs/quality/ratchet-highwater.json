@@ -7,5 +7,9 @@
     "pytest::test_ratchet_fixture_smoke::test_widget_addition",
     "pytest::test_ratchet_fixture_smoke::test_widget_identity"
   ],
-  "quality": {}
+  "quality": {},
+  "verifier_test_hashes": {
+    "test_ratchet_fixture_smoke.py::test_widget_addition": "a8fb730202323daae6284f0c9e42a37872763af7f41ef6546466692082cf8910",
+    "test_ratchet_fixture_smoke.py::test_widget_identity": "6c98bffa773f213921fadf683b7ef43a7968af139e24341048aa180e59477565"
+  }
 }
