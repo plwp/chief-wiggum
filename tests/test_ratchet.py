@@ -249,7 +249,9 @@ def test_run_suite_namespaces_cases(tmp_path):
     cfg = make_repo(tmp_path, suites=[
         {"name": "smoke", "cmd": "printf 'PASS one\\nPASS two\\n'", "cwd": ".", "parser": "pass-fail-lines"},
     ])
-    assert ratchet.run_suite(cfg, cfg.suites[0]) == {"smoke::one", "smoke::two"}
+    ids, files = ratchet.run_suite(cfg, cfg.suites[0])
+    assert ids == {"smoke::one", "smoke::two"}
+    assert files == {}  # pass-fail-lines carries no file info — unresolved, not guessed
 
 
 # ---- protected pathset -------------------------------------------------------------
