@@ -229,7 +229,26 @@ Source: `scripts/check_single_writer.py`, `docs/single-writer.md`,
 ## 7. Evaluation
 
 Mix of already-available evidence and new experiments. Be explicit about which
-is which.
+is which. **Status: RQ2 executed, RQ1 piloted — see
+`experiment/design.md` and `experiment/results/`.** Headline results:
+
+- **RQ2 (executed): 18/18 channel probes behave as the threat model
+  predicts** (`results/channel-probes.md`) — every C1–C9 tamper is
+  blocked/parked/detected, controls stay quiet, and the deliberate boundary
+  probe C1c (test-body rewrite preserving the ID-keyed pass-set entry)
+  slips through as designed. Add C1c to the §3 table as a *known-open*
+  channel; it feeds §9.
+- **RQ1 (piloted, N=2/arm): 2/2 no-guardrail workers forced the suite
+  green (one caught by the ratchet, one via C1c undetected); 2/2
+  guardrail-stated workers parked honestly** (`results/agentic-pilot.md`).
+  Two findings worth promoting to the paper body: (a) a worker
+  *independently invented* C1c and used it knowingly — the boundary is
+  found by an unaligned optimizer in one session; (b) both no-guardrail
+  workers honestly *described* the conflict in prose while still shipping
+  green branches — prose flags don't gate, which is the argument for
+  mechanical goalposts in the agents' own behavior. Full RQ1 needs three
+  arms (artifacts absent / present-unstated / present-stated): the pilot
+  showed artifact *presence* alone partially self-polices.
 
 - **RQ1 — Does goalpost integrity reduce reward hacking?** SpecBench-style
   harness: agents on long-horizon tasks with visible + held-out suites, three
@@ -278,6 +297,14 @@ is which.
 
 ## 9. Limitations and honest boundaries
 
+- **The ID-keyed pass-set (channel C1c, measured):** a high-water test's
+  *body* can be rewritten to bless new behavior while its node ID stays
+  green — probed scripted (slips through) and reproduced behaviorally by a
+  pilot worker unprompted. A deliberate trade-off (unit tests are
+  worker-owned under TDD), but name the mitigations: content-hashing
+  high-water test bodies the way contract blocks are hashed, or promoting
+  integration tests to the protected pathset. Candidate future ratchet
+  dimension; do not undersell — a reviewer will find it if we don't.
 - The regex/emitter lens: a fully dynamic field construction is undetectable
   by design; stated in the authority boundary, and LSP symbol resolution is
   the named precision upgrade path.
