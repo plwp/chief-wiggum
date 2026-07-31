@@ -1,19 +1,24 @@
 {
   "gate": "ratchet",
   "protocol_version": "1",
-  "scanner_version": "34bc1a05e3b9050313ce62af95e934e6b4cd56bbb5adbd7da40c140ec2646014",
+  "scanner_version": "28627be1d5e82de2f0c124a4bb72907e9c1705bcfdf97a16cd8cf998eb6aac6c",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "ratchet check is a single-pass fold over checked-in test results (the scorecard's pass_set) and epic-doc contract-definition hashes at a fixed scorecard/journal snapshot. There is no concurrent/racing-writer channel in the artifact to evade; the tamper concern (a racing edit of the journal itself) is addressed by the append-only hash chain, not by a concurrency seed (see assumptions).",
   "authority_boundary": {
-    "proves": "over a target repo's checked-in test scorecard + epic docs (docs/epics/**/*.md and *.json), a contract/invariant whose stable-ID block content changed since it entered the high-water mark is reported as weakened_contracts, one that no longer resolves under the configured epic_docs scan root is reported as removed_contracts, and a high-water test case no longer in the pass_set is reported as missing_tests; the high-water mark itself is derived from a hash-chained journal that fails closed on tamper",
+    "proves": "over a target repo's checked-in test scorecard + epic docs (docs/epics/**/*.md and *.json), a contract/invariant whose stable-ID block content changed since it entered the high-water mark is reported as weakened_contracts, one that no longer resolves under the configured epic_docs scan root is reported as removed_contracts, and a high-water test case no longer in the pass_set is reported as missing_tests; the high-water mark itself is derived from a hash-chained journal that fails closed on tamper; additionally (#206), a test function annotated `@cw-trace verifies <ID>` whose body hash changed since entering the high-water mark is reported as weakened_verifier_tests, and one whose ref vanished as removed_verifier_tests — REPORT-ONLY findings unless check is invoked with --gate-verifier-tests",
     "artifact": "a target repo working tree: its ratchet state (docs/quality/ratchet.json config, ratchet-journal.jsonl hash chain, ratchet-scorecard.json) plus the epic-doc contract definitions under the configured epic_docs root",
     "assumptions": [
-      "contract-definition hashing normalizes only TRAILING per-line whitespace and surrounding blank lines (hash_markdown_defs rstrip/strip) \u2014 a pure trailing/surrounding-blank reformat does NOT read as weakening, but a wording change to the REQUIRES/ENSURES text does; note that inserting INTERNAL blank lines inside a block is not normalized and would read as a change",
-      "structured JSON contract blocks (models/*.json objects carrying an ID_RE-matching \"id\") are hashed via walk_json_ids exactly like markdown-declared blocks \u2014 the JSON declaration path is not a coverage gap",
+      "contract-definition hashing normalizes only TRAILING per-line whitespace and surrounding blank lines (hash_markdown_defs rstrip/strip) — a pure trailing/surrounding-blank reformat does NOT read as weakening, but a wording change to the REQUIRES/ENSURES text does; note that inserting INTERNAL blank lines inside a block is not normalized and would read as a change",
+      "structured JSON contract blocks (models/*.json objects carrying an ID_RE-matching \"id\") are hashed via walk_json_ids exactly like markdown-declared blocks — the JSON declaration path is not a coverage gap",
       "the docs/epics/**/justifications/ subtree is EXCLUDED by design (chief_wiggum.trace_links.is_justification_path): a waiver's own \"id\" names the CTR/INV it waives and must never be misread as a new declaration, so a contract block placed there is a certified NON-coverage boundary, not a detectable definition",
-      "the journal is an append-only stable_hash chain; load_journal raises TamperError (fail-closed, exit 4) on any broken link, so the high-water mark cannot be silently lowered by editing state \u2014 this is exercised by tests/test_ratchet.py::test_journal_tamper_fails_closed rather than by a seed_class trial (a tamper is an exit-4 fail-closed, not a findings-based fire/no-fire outcome)",
-      "the pass_set is only meaningful for suites the target repo actually configures and runs; a test channel with no configured suite contributes no high-water cases to protect"
+      "the journal is an append-only stable_hash chain; load_journal raises TamperError (fail-closed, exit 4) on any broken link, so the high-water mark cannot be silently lowered by editing state — this is exercised by tests/test_ratchet.py::test_journal_tamper_fails_closed rather than by a seed_class trial (a tamper is an exit-4 fail-closed, not a findings-based fire/no-fire outcome)",
+      "the pass_set is only meaningful for suites the target repo actually configures and runs; a test channel with no configured suite contributes no high-water cases to protect",
+      "verifier-test hashing (#206) covers the annotated test function's OWN source span only: assertions relocated into a shared helper/fixture the test calls are a certified NON-coverage boundary (rt-verifier-config-indirection-01)",
+      "verifier annotations are read from Python comment tokens and function docstrings only — an annotation inside a string literal (e.g. a test that WRITES an annotated fixture) never pins the writing test; documentation formats (.md/.rst/.txt) are out of scope by design (syntax examples, not tests)",
+      "only Python is extracted in v1; a verifies annotation in any other language is surfaced by score as verifier_unscanned, never silently dropped (rt-verifier-sampling-gap-01)",
+      "verifier-test hashing keys refs by class-qualified name; a duplicate qualified name (function redefined under a conditional, a shadowed class) is ambiguous and surfaced as unscanned + refused, never recorded as a single overwritten hash (#206 soundness review)",
+      "amending a CONTRACT never silently blesses its verifier tests' changed bodies — a changed verifier body must be named with --amend-verifier explicitly or the amend is refused, so a body rewrite cannot ride along on a contract-wording amend (channel C1c)"
     ]
   },
   "seeded_defect_trials": [
@@ -22,8 +27,8 @@
       "seed_class": "direct",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
-      "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
-      "injected": "docs/epics/gv-ratchet/contracts.md: the REQUIRES wording of CTR-rt-001 is changed (name bound 'no longer than 64 characters' -> 'of any length whatsoever') \u2014 a genuine definition change, not a whitespace reformat",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "docs/epics/gv-ratchet/contracts.md: the REQUIRES wording of CTR-rt-001 is changed (name bound 'no longer than 64 characters' -> 'of any length whatsoever') — a genuine definition change, not a whitespace reformat",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -33,8 +38,8 @@
       "seed_class": "evasion-omission",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
-      "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
-      "injected": "docs/epics/gv-ratchet/models/contracts.json: CTR-rt-002's ensures text is changed (soft-delete -> hard-delete). The weakening is expressed as a STRUCTURED JSON contract block rather than markdown prose; hash_epic_definitions walks JSON via walk_json_ids, so the JSON declaration path is hashed too \u2014 an omission only if it were not",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "docs/epics/gv-ratchet/models/contracts.json: CTR-rt-002's ensures text is changed (soft-delete -> hard-delete). The weakening is expressed as a STRUCTURED JSON contract block rather than markdown prose; hash_epic_definitions walks JSON via walk_json_ids, so the JSON declaration path is hashed too — an omission only if it were not",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -44,8 +49,8 @@
       "seed_class": "evasion-config-indirection",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
-      "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
-      "injected": "the whole docs/epics/gv-ratchet/ tree is MOVED to docs/archive/gv-ratchet/ (outside the configured epic_docs scan root) rather than deleting a block outright \u2014 indirection through directory/config restructuring. CTR-rt-001 and CTR-rt-002 no longer resolve under docs/epics, so both are reported as removed_contracts",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "the whole docs/epics/gv-ratchet/ tree is MOVED to docs/archive/gv-ratchet/ (outside the configured epic_docs scan root) rather than deleting a block outright — indirection through directory/config restructuring. CTR-rt-001 and CTR-rt-002 no longer resolve under docs/epics, so both are reported as removed_contracts",
       "expected": "fire",
       "result": "fired",
       "passed": true
@@ -55,8 +60,52 @@
       "seed_class": "evasion-sampling-gap",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
-      "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
-      "injected": "a CONFLICTING redefinition of CTR-rt-001 (REQUIRES/ENSURES gutted to 'nothing') is placed in docs/epics/gv-ratchet/justifications/waiver.md. If the subtree were scanned, the combined definition hash would change and the weakened_contracts gate would fire; hash_epic_definitions excludes justifications/ by design (is_justification_path \u2014 a waiver's own id names the contract it waives, never a new declaration) \u2014 a certified NON-coverage boundary, so the ratchet correctly does not fire",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "a CONFLICTING redefinition of CTR-rt-001 (REQUIRES/ENSURES gutted to 'nothing') is placed in docs/epics/gv-ratchet/justifications/waiver.md. If the subtree were scanned, the combined definition hash would change and the weakened_contracts gate would fire; hash_epic_definitions excludes justifications/ by design (is_justification_path — a waiver's own id names the contract it waives, never a new declaration) — a certified NON-coverage boundary, so the ratchet correctly does not fire",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    },
+    {
+      "seed_id": "rt-verifier-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ratchet_clean",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "test_ratchet_fixture_smoke.py: the annotated verifier test test_widget_addition's assertion is inverted (assert _sum_holds(1,1,2) -> assert True) while its test ID stays green — the exact C1c tamper from the goalpost-integrity experiment (docs/paper/experiment/): pass-set unchanged, contracts unchanged, only the verifier body hash moves. weakened_verifier_tests must fire (#206)",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "rt-verifier-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ratchet_clean",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "test_ratchet_fixture_smoke.py: the weakened check hides inside a nested lambda scope WITHIN the annotated test function rather than as a bare assertion — still inside the hashed function span, so the body hash moves and weakened_verifier_tests must fire",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
+      "seed_id": "rt-verifier-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ratchet_clean",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "test_ratchet_fixture_smoke.py: the shared helper _sum_holds the annotated test calls is weakened (return True) while the test's own span is untouched. The v1 hash covers the annotated function's own source span ONLY, so this is a certified NON-coverage boundary — the dimension correctly does not fire, and the boundary is stated in the authority assumptions rather than silently claimed as covered",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true
+    },
+    {
+      "seed_id": "rt-verifier-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/ratchet_clean",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "widget_test.go: an annotated verifier test in a language the v1 extractor does not cover. No fire — and `score` SURFACES the file as unscanned (verifier_unscanned) rather than staying silent; the surfacing behavior is asserted by tests/test_verifier_hashes.py::test_scan_surfaces_unhashable_annotations",
       "expected": "no-fire",
       "result": "not-fired",
       "passed": true
@@ -65,17 +114,18 @@
   "clean_corpus_runs": [
     {
       "repo": "tests/fixtures/gate_validation/ratchet_clean",
-      "sha": "sha256:68dc568e0955cc19154b4698b8c390f2beda5a7ad62c6857eba07e02fad9062a",
+      "sha": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
       "findings": 0,
       "coverage": {
         "pass_set_size": 2,
-        "contracts_hashed": 2
+        "contracts_hashed": 2,
+        "verifier_tests_hashed": 2
       },
       "passed": true
     }
   ],
   "status": "passed",
-  "validated_at": "2026-07-20T05:45:00Z",
-  "validated_by": "chief-wiggum#184 (re-validated after merging main's #187 hotspot changes to quality/churn.py + quality/complexity.py \u2014 hashed deps moved, so the record went stale exactly as INV-fh-005 intends)",
-  "ratchet_record_id": "rec-00016"
+  "validated_at": "2026-07-28T00:00:00Z",
+  "validated_by": "chief-wiggum#208 (re-authored for the verifier-test-hash dimension #206: scanner_version moved with the ratchet.py/verifier_hashes.py changes, fixture re-baked with annotated smoke tests, four verifier seed trials added; prior validation was chief-wiggum#184)",
+  "ratchet_record_id": "rec-00021"
 }

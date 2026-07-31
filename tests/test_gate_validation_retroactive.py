@@ -404,7 +404,13 @@ def test_fh184_nondeterministic_gates_name_fixture_targets(gate):
 
 
 def _rt_outcome(corpus: Path) -> str:
-    """Re-score the mutated fixture repo, then read `ratchet check`'s JSON."""
+    """Re-score the mutated fixture repo, then read `ratchet check`'s JSON.
+
+    Counts the verifier-test findings (#206) alongside the original three —
+    one uniform outcome for every ratchet seed, so a verifier seed "fires"
+    exactly when the new dimension reports it and the config-indirection
+    no-fire seed proves the helper boundary is REALLY quiet (no finding of
+    any class)."""
     subprocess.run(
         [sys.executable, str(SCRIPTS / "ratchet.py"), "score",
          "--repo", str(corpus), "--no-quality"],
@@ -417,7 +423,9 @@ def _rt_outcome(corpus: Path) -> str:
     )
     rep = json.loads(proc.stdout)
     findings = (len(rep["missing_tests"]) + len(rep["weakened_contracts"])
-                + len(rep["removed_contracts"]))
+                + len(rep["removed_contracts"])
+                + len(rep["weakened_verifier_tests"])
+                + len(rep["removed_verifier_tests"]))
     return "fired" if findings else "not-fired"
 
 
@@ -459,11 +467,55 @@ def _rt_seed_sampling_gap(corpus: Path) -> None:
         "REQUIRES: nothing.\nENSURES: nothing.\n")
 
 
+_RT_SMOKE = "test_ratchet_fixture_smoke.py"
+
+
+def _rt_seed_verifier_direct(corpus: Path) -> None:
+    """The C1c move from the goalpost-integrity experiment (#206): the
+    annotated test's ASSERTION is inverted while its test ID stays green —
+    body hash changes, weakened_verifier_tests must fire."""
+    p = corpus / _RT_SMOKE
+    p.write_text(p.read_text().replace(
+        "assert _sum_holds(1, 1, 2)", "assert True  # blessed"))
+
+
+def _rt_seed_verifier_omission(corpus: Path) -> None:
+    """The weakened check hides inside a nested scope WITHIN the annotated
+    test — still inside the hashed function span, so it must fire."""
+    p = corpus / _RT_SMOKE
+    p.write_text(p.read_text().replace(
+        "assert _sum_holds(1, 1, 2)",
+        "check = lambda: True\n    assert check()"))
+
+
+def _rt_seed_verifier_config_indirection(corpus: Path) -> None:
+    """The shared HELPER the annotated test calls is weakened; the test's own
+    span is untouched. Expected NO-FIRE: this is the dimension's documented
+    v1 authority boundary (the hash covers the test function's own source
+    span), proven here rather than silently claimed."""
+    p = corpus / _RT_SMOKE
+    p.write_text(p.read_text().replace(
+        "return a + b == expected", "return True  # weakened helper"))
+
+
+def _rt_seed_verifier_sampling_gap(corpus: Path) -> None:
+    """An annotated verifier test in a language the extractor doesn't cover
+    (.go). Expected NO-FIRE — and `score` surfaces it as unscanned rather
+    than staying silent (asserted by tests/test_verifier_hashes.py)."""
+    (corpus / "widget_test.go").write_text(
+        "// @cw-trace verifies CTR-rt-001\n"
+        "func TestWidgetAddition(t *testing.T) {}\n")
+
+
 RT_EXECUTORS = {
     "rt-direct-01": _rt_seed_direct,
     "rt-omission-01": _rt_seed_omission,
     "rt-config-indirection-01": _rt_seed_config_indirection,
     "rt-sampling-gap-01": _rt_seed_sampling_gap,
+    "rt-verifier-direct-01": _rt_seed_verifier_direct,
+    "rt-verifier-omission-01": _rt_seed_verifier_omission,
+    "rt-verifier-config-indirection-01": _rt_seed_verifier_config_indirection,
+    "rt-verifier-sampling-gap-01": _rt_seed_verifier_sampling_gap,
 }
 
 
@@ -619,7 +671,8 @@ def test_ratchet_clean_corpus_run_is_backed_by_live_execution(tmp_path):
     assert _rt_outcome(corpus) == "not-fired"
     sc = json.loads((corpus / "docs" / "quality" / "ratchet-scorecard.json").read_text())
     live_coverage = {"pass_set_size": len(sc["pass_set"]),
-                     "contracts_hashed": len(sc["contract_hashes"])}
+                     "contracts_hashed": len(sc["contract_hashes"]),
+                     "verifier_tests_hashed": len(sc["verifier_test_hashes"])}
     assert run["findings"] == 0
     assert run["coverage"] == live_coverage, (
         f"ratchet clean-corpus coverage {run['coverage']} does not match live {live_coverage}")

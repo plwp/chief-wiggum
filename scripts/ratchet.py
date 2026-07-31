@@ -18,6 +18,16 @@ Three ratcheted quantities, all project-agnostic:
   contract whose hash changed was *weakened* (or silently rewritten); one that
   disappeared was *removed*. Both block, unless a human deliberately journals
   an ``--amend``/``--retire``.
+- **Verifier-test body hashes (report-only, #206)** — the pass-set is keyed by
+  test ID, so a test's BODY can be rewritten to bless new behavior while its
+  node ID stays green (goalpost channel C1c — demonstrated scripted AND by an
+  unprompted pilot worker; docs/paper/experiment/). Tests annotated
+  ``@cw-trace verifies <ID>`` are the executable expression of a contract, so
+  their function bodies are hashed and ratcheted like contract definitions
+  (``--amend-verifier``/``--retire-verifier`` to revise; amending a contract
+  re-baselines its verifier tests). NEW dimension, so per docs/gate-rollout.md
+  it is REPORT-ONLY until validated: ``check`` prints weakened/removed
+  verifier tests but blocks only under ``--gate-verifier-tests``.
 - **Protected pathset** — contracts, invariants, integration-test specs, formal
   models, and the ratchet's own state are the goalposts. ``protected`` flags a
   branch diff that touches them so the orchestrator parks the change for human
@@ -33,7 +43,12 @@ Three ratcheted quantities, all project-agnostic:
 
 Tamper-evidence: the journal is an append-only HASH CHAIN. The high-water mark
 is DERIVED from the verified chain, not read from a separately-editable file —
-so lowering the bar by editing state is detectable and fails closed.
+so lowering the bar by editing state is detectable and fails closed. Boundary
+(#209): the chain detects INTERIOR rewrites; the TAIL record has no next link,
+so a tail tamper with a recomputed hash verifies — that blind spot is covered
+by the layers outside the chain (``protected`` parks any worker branch touching
+docs/quality/**, and git history anchors the default branch). See
+docs/ratchet.md "Trust boundary".
 
 State lives in the target repo (committed, like all epic artifacts):
 
@@ -90,6 +105,7 @@ from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F
 from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
 from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE  # noqa: E402,F401
 from chief_wiggum.trace_links import SIDECAR_RELPATH, find_suspect_links, load_sidecar  # noqa: E402
+from chief_wiggum.verifier_hashes import scan_verifier_hashes  # noqa: E402
 
 CONFIG_NAME = "ratchet.json"
 JOURNAL_NAME = "ratchet-journal.jsonl"
@@ -265,17 +281,93 @@ def parse_pass_fail_lines(stdout: str) -> set[str]:
     return passed - failed
 
 
-def run_suite(cfg: Config, suite: Suite) -> set[str]:
-    """Run one suite and return its passing case IDs, namespaced by suite name.
+def junit_case_files(cfg: Config, suite: Suite, xml_text: str) -> dict[str, str]:
+    """Map junit case IDs to repo-relative source files (#207).
+
+    Prefers the testcase ``file`` attribute (xunit1); falls back to resolving
+    the dotted ``classname`` against the suite's cwd (``tests.test_widget`` ->
+    ``tests/test_widget.py``, trying with the trailing class segment dropped).
+    Cases that resolve to no existing file are simply absent from the map —
+    ``score`` counts them in ``test_files_unresolved``.
+    """
+    root = ET.fromstring(xml_text)
+    out: dict[str, str] = {}
+    base = (cfg.repo / suite.cwd).resolve()
+    for case in root.iter("testcase"):
+        cls = case.get("classname") or case.get("file") or ""
+        cid = f"{suite.name}::{cls}::{case.get('name', '')}"
+        fattr = case.get("file")
+        candidates = [base / fattr] if fattr else []
+        if cls:
+            parts = cls.split(".")
+            candidates.append(base.joinpath(*parts).with_suffix(".py"))
+            if len(parts) > 1:  # trailing segment may be a test class
+                candidates.append(base.joinpath(*parts[:-1]).with_suffix(".py"))
+        for cand in candidates:
+            if cand.is_file():
+                try:
+                    out[cid] = cand.resolve().relative_to(cfg.repo.resolve()).as_posix()
+                except ValueError:  # outside the repo — leave unresolved
+                    pass
+                break
+    return out
+
+
+def go_case_dirs(cfg: Config, suite: Suite, stdout: str) -> dict[str, str]:
+    """Map go-test-json case IDs to repo-relative package DIRECTORIES (#207).
+
+    Go's import path prefixes the module name, which the parser doesn't know;
+    progressively shorter suffixes of the package path are tried as
+    directories under the suite cwd, then the repo root. Unmatched packages
+    stay unresolved (counted by ``score``), never guessed.
+    """
+    out: dict[str, str] = {}
+    pkg_dirs: dict[str, str | None] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        test, pkg = ev.get("Test"), ev.get("Package", "")
+        if not test or not pkg:
+            continue
+        if pkg not in pkg_dirs:
+            pkg_dirs[pkg] = None
+            parts = pkg.split("/")
+            for i in range(len(parts)):
+                rel = "/".join(parts[i:])
+                for root in (cfg.repo / suite.cwd, cfg.repo):
+                    if (root / rel).is_dir():
+                        pkg_dirs[pkg] = (
+                            (root / rel).resolve().relative_to(cfg.repo.resolve()).as_posix()
+                        )
+                        break
+                if pkg_dirs[pkg]:
+                    break
+        if pkg_dirs[pkg]:
+            out[f"{suite.name}::{pkg}::{test}"] = pkg_dirs[pkg]
+    return out
+
+
+def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
+    """Run one suite; return (passing case IDs, case-ID -> source file/dir map),
+    both namespaced by suite name.
 
     A non-zero exit is expected when tests fail — the parsed per-case results
-    are the signal, not the exit code.
+    are the signal, not the exit code. The file map (#207) feeds `protected`'s
+    report-only high-water-test-file cue; unresolvable cases are absent here
+    and surfaced by ``score`` as ``test_files_unresolved``.
     """
     proc = subprocess.run(
         suite.cmd, shell=True, cwd=cfg.repo / suite.cwd, capture_output=True, text=True
     )
+    files: dict[str, str] = {}
     if suite.parser == "go-test-json":
         passed = parse_go_test_json(proc.stdout)
+        files = go_case_dirs(cfg, suite, proc.stdout)
     elif suite.parser == "junit-xml":
         if not suite.report:
             raise RatchetError(f"suite {suite.name!r}: junit-xml parser needs `report`")
@@ -286,6 +378,7 @@ def run_suite(cfg: Config, suite: Suite) -> set[str]:
                 f"{proc.stderr[-2000:]}"
             )
         passed = parse_junit_xml(report.read_text())
+        files = junit_case_files(cfg, suite, report.read_text())
     elif suite.parser == "pass-fail-lines":
         passed = parse_pass_fail_lines(proc.stdout)
     else:
@@ -295,7 +388,8 @@ def run_suite(cfg: Config, suite: Suite) -> set[str]:
             f"ratchet: suite {suite.name!r} produced no passing cases "
             f"(exit {proc.returncode}):\n{proc.stderr[-2000:]}\n"
         )
-    return {f"{suite.name}::{cid}" for cid in passed}
+    ids = {f"{suite.name}::{cid}" for cid in passed}
+    return ids, {cid: f for cid, f in files.items() if cid in ids}
 
 
 # ---- complexity + churn snapshot (report-only dimension) -----------------------
@@ -561,19 +655,30 @@ def derive_highwater(records: list[dict]) -> dict:
     compare identically across the change."""
     pass_set: set[str] = set()
     contract_hashes: dict[str, str] = {}
+    verifier_hashes: dict[str, str] = {}
     for rec in records:
         if rec.get("merged"):
             sc = rec.get("scorecard", {}) or {}
             pass_set.update(sc.get("pass_set", []) or [])
             for cid, h in (sc.get("contract_hashes", {}) or {}).items():
                 contract_hashes.setdefault(canonical_id(cid), h)
+            # Verifier-test hashes (#206): same first-entry-wins semantics.
+            # Journals written before the dimension existed carry no field and
+            # contribute nothing — tolerated unchanged, like `quality`.
+            for ref, h in (sc.get("verifier_test_hashes", {}) or {}).items():
+                verifier_hashes.setdefault(ref, h)
         for cid, h in (rec.get("amended", {}) or {}).items():
             contract_hashes[canonical_id(cid)] = h
         for cid in rec.get("retired", []) or []:
             contract_hashes.pop(canonical_id(cid), None)
+        for ref, h in (rec.get("amended_verifiers", {}) or {}).items():
+            verifier_hashes[ref] = h
+        for ref in rec.get("retired_verifiers", []) or []:
+            verifier_hashes.pop(ref, None)
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
+        "verifier_test_hashes": verifier_hashes,
         "quality": derive_quality_highwater(records),
     }
 
@@ -591,7 +696,25 @@ def violations(scorecard: dict, highwater: dict) -> dict:
             removed.append(cid)
         elif cur_defs[cid] != h:
             weakened.append(cid)
-    return {"missing_tests": missing, "weakened_contracts": weakened, "removed_contracts": removed}
+    # Verifier-test bodies (#206): a high-water verifier test whose body hash
+    # changed was rewritten behind its still-green test ID (channel C1c); one
+    # that vanished was removed. Verifier refs are file::function keys, not
+    # stable IDs — no canonicalization. Highwater caches written before the
+    # dimension existed lack the key; tolerate them.
+    cur_v = scorecard.get("verifier_test_hashes", {}) or {}
+    vweakened, vremoved = [], []
+    for ref, h in sorted((highwater.get("verifier_test_hashes", {}) or {}).items()):
+        if ref not in cur_v:
+            vremoved.append(ref)
+        elif cur_v[ref] != h:
+            vweakened.append(ref)
+    return {
+        "missing_tests": missing,
+        "weakened_contracts": weakened,
+        "removed_contracts": removed,
+        "weakened_verifier_tests": vweakened,
+        "removed_verifier_tests": vremoved,
+    }
 
 
 # ---- subcommands ---------------------------------------------------------------
@@ -657,19 +780,38 @@ def cmd_score(args) -> int:
     cfg = load_config(repo_root(args.repo))
     contract_hashes = load_contract_hashes(cfg)
     pass_set: set[str] = set()
-    if not args.no_tests:
-        for suite in cfg.suites:
-            pass_set |= run_suite(cfg, suite)
+    test_files: dict[str, str] = {}
+    for suite in cfg.suites:
+        if args.no_tests:
+            break
+        ids, files = run_suite(cfg, suite)
+        pass_set |= ids
+        test_files.update(files)
     quality = {"skipped": "quality metrics disabled (--no-quality)"}
     if not args.no_quality:
         quality = score_quality(cfg, venv=args.venv, gobin=args.gobin)
+    # Verifier-test body hashes (#206): tests annotated `@cw-trace verifies`
+    # are goalposts — their bodies are hashed and ratcheted like contract
+    # definitions. Files the extractor cannot hash are SURFACED, not dropped.
+    vscan = scan_verifier_hashes(cfg.repo)
     sc = {
         "passed": len(pass_set),
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
+        "verifier_test_hashes": vscan.hashes,
+        "verifier_targets": vscan.targets,
+        "test_files": test_files,
+        "test_files_unresolved": sorted(cid for cid in pass_set if cid not in test_files),
         "tests_run": not args.no_tests,
         "quality": quality,
     }
+    if vscan.unscanned:
+        sc["verifier_unscanned"] = vscan.unscanned
+        sys.stderr.write(
+            "ratchet: verifier annotations the extractor could not hash "
+            "(see docs/ratchet.md — surfaced, never silently dropped):\n"
+            + "".join(f"  {reason}: {n}\n" for reason, n in sorted(vscan.unscanned.items()))
+        )
     _write_json(cfg.scorecard, sc)
     if "skipped" in quality:
         qmsg = f"quality={quality['skipped']}"
@@ -681,7 +823,8 @@ def cmd_score(args) -> int:
         )
     print(
         f"ratchet: scored — {len(pass_set)} passing case(s), "
-        f"{len(contract_hashes)} contract definition(s); {qmsg}"
+        f"{len(contract_hashes)} contract definition(s), "
+        f"{len(vscan.hashes)} verifier test hash(es); {qmsg}"
     )
     return 0
 
@@ -716,9 +859,25 @@ def cmd_check(args) -> int:
     )
     susp = suspect_links_for(cfg, sc)
     hard = {k: v[k] for k in ("missing_tests", "weakened_contracts", "removed_contracts")}
+    # Verifier-test findings (#206) are a NEW dimension: report-only per
+    # docs/gate-rollout.md until validated, blocking only under the opt-in
+    # --gate-verifier-tests flag (mirroring --gate-quality's rollout).
+    vfind = {k: v[k] for k in ("weakened_verifier_tests", "removed_verifier_tests")}
+    gate_verifier = getattr(args, "gate_verifier_tests", False)
     if args.format == "json":
-        print(json.dumps({**hard, "quality_regressions": qregs, "suspect_links": susp}, indent=2))
+        print(json.dumps(
+            {**hard, **vfind, "quality_regressions": qregs, "suspect_links": susp}, indent=2))
     else:
+        if any(vfind.values()):
+            tag = "VIOLATED (gated)" if gate_verifier else "report-only"
+            sys.stderr.write(
+                f"ratchet: verifier-test body changes [{tag}] — a `@cw-trace verifies` "
+                "test was rewritten/removed behind its test ID (channel C1c; "
+                "see docs/ratchet.md):\n")
+            for ref in vfind["weakened_verifier_tests"]:
+                sys.stderr.write(f"  weakened: {ref}\n")
+            for ref in vfind["removed_verifier_tests"]:
+                sys.stderr.write(f"  removed:  {ref}\n")
         if qregs:
             tag = "VIOLATED (gated)" if args.gate_quality else "report-only"
             sys.stderr.write(f"ratchet: complexity/churn regressions [{tag}]:\n")
@@ -742,6 +901,8 @@ def cmd_check(args) -> int:
                 f" weakened_contracts={hard['weakened_contracts']}"
                 f" removed_contracts={hard['removed_contracts']}\n"
             )
+        return 1
+    if gate_verifier and any(vfind.values()):
         return 1
     if args.gate_quality and qregs:
         return 1
@@ -781,6 +942,52 @@ def cmd_record(args) -> int:
         if cid not in sc.get("contract_hashes", {}):
             raise RatchetError(f"--amend {cid}: not defined in the current epic docs")
         amended[cid] = sc["contract_hashes"][cid]
+    # Verifier-test re-baselining (#206): --amend-verifier moves one test's
+    # body baseline (a deliberate refactor).
+    cur_v = sc.get("verifier_test_hashes", {}) or {}
+    v_targets = sc.get("verifier_targets", {}) or {}
+    hw_v = prev_hw.get("verifier_test_hashes", {}) or {}
+    amended_verifiers = {}
+    for ref in args.amend_verifier or []:
+        if ref not in cur_v:
+            raise RatchetError(
+                f"--amend-verifier {ref}: no `@cw-trace verifies` test with that "
+                "ref in the current scorecard (run `score` first; ref form is "
+                "<relpath>::<function>)")
+        amended_verifiers[ref] = cur_v[ref]
+    # Amending a CONTRACT does NOT silently bless its verifier tests' new
+    # bodies (#206 soundness review): that would let a C1c rewrite ride along
+    # invisibly on an unrelated contract-wording amend. Instead, a verifier
+    # test of an amended contract whose body CHANGED vs the high-water mark
+    # must be acknowledged EXPLICITLY with --amend-verifier — so every blessed
+    # body change is a named, journaled, operator-visible act. (An unchanged
+    # body needs nothing: its hash already matches, no violation to clear.)
+    needs_explicit = []
+    for cid in amended:
+        for ref, targets in v_targets.items():
+            if cid not in targets or ref not in cur_v:
+                continue
+            if ref in hw_v and cur_v[ref] != hw_v[ref] and ref not in amended_verifiers:
+                needs_explicit.append(ref)
+    if needs_explicit:
+        raise RatchetError(
+            "--amend of a contract whose verifier test body ALSO changed must "
+            "bless that test explicitly (channel C1c — a body rewrite must not "
+            "ride along invisibly on a contract amend). Re-run adding: "
+            + " ".join(f"--amend-verifier {r}" for r in sorted(set(needs_explicit))))
+    # --retire-verifier removes a ref from the high-water mark (its test was
+    # legitimately deleted). Validate against the high-water — you can only
+    # retire what is actually tracked — so a typo'd ref is SURFACED, not a
+    # silent no-op (docs/gate-rollout.md doctrine). A ref absent from
+    # high-water is either a typo or an already-retired ref; either way the
+    # human should know their retire did nothing.
+    retired_verifiers = sorted(set(args.retire_verifier or []))
+    hw_v = prev_hw.get("verifier_test_hashes", {}) or {}
+    for ref in retired_verifiers:
+        if ref not in hw_v:
+            raise RatchetError(
+                f"--retire-verifier {ref}: not in the current high-water mark "
+                "(nothing to retire — check the ref, form is <relpath>::<function>)")
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
         "event": args.event,
@@ -790,6 +997,8 @@ def cmd_record(args) -> int:
         "scorecard": sc,
         "amended": amended,
         "retired": sorted(canonical_id(c) for c in (args.retire or [])),
+        "amended_verifiers": amended_verifiers,
+        "retired_verifiers": retired_verifiers,
         "ratchet_status": status,
         "notes": args.notes,
     }
@@ -853,6 +1062,50 @@ def protected_hits(cfg: Config, changed: list[str]) -> list[str]:
     return sorted(f for f in changed if any(p.match(f) for p in patterns))
 
 
+def highwater_test_file_cue(cfg: Config, changed: list[str]) -> None:
+    """Report-only scrutiny cue (#207): note when the branch diff modifies a
+    file (or go package dir) hosting high-water pass-set tests. NEVER affects
+    the exit code — the blocking answer to test-body rewrites is the
+    verifier-hash dimension (#206); this is the day-one reviewer cue for
+    everything else. Degrades gracefully and VISIBLY: a broken journal chain
+    or missing scorecard says so instead of silently skipping."""
+    try:
+        hw_pass = set(derive_highwater(load_journal(cfg))["pass_set"])
+    except TamperError:
+        sys.stderr.write(
+            "ratchet: note — journal chain broken; high-water test-file cue "
+            "unavailable (run `check` for the failing record)\n")
+        return
+    if not hw_pass:
+        return
+    if not cfg.scorecard.is_file():
+        sys.stderr.write(
+            "ratchet: note — no scorecard; high-water test-file cue unavailable "
+            "(run `score` first)\n")
+        return
+    sc = json.loads(cfg.scorecard.read_text())
+    tf = sc.get("test_files", {}) or {}
+    hosts: dict[str, list[str]] = {}
+    for cid in sorted(hw_pass):
+        f = tf.get(cid)
+        if f:
+            hosts.setdefault(f, []).append(cid)
+    touched: dict[str, list[str]] = {}
+    for f in changed:
+        for host, cids in hosts.items():
+            if f == host or f.startswith(host.rstrip("/") + "/"):
+                touched.setdefault(host, cids)
+    if touched:
+        sys.stderr.write(
+            f"ratchet: note — {len(touched)} high-water test file(s) modified on "
+            "this branch; scrutinize the test diffs before merge (a body rewrite "
+            "keeps its test ID green — see docs/ratchet.md, channel C1c):\n")
+        for host, cids in sorted(touched.items()):
+            sys.stderr.write(f"  {host}\n")
+            for cid in cids:
+                sys.stderr.write(f"    hosts high-water case {cid}\n")
+
+
 def cmd_protected(args) -> int:
     cfg = load_config(repo_root(args.repo))
     proc = subprocess.run(
@@ -861,7 +1114,9 @@ def cmd_protected(args) -> int:
     )
     if proc.returncode != 0:
         raise RatchetError(f"git diff failed: {proc.stderr.strip()}")
-    hits = protected_hits(cfg, proc.stdout.splitlines())
+    changed = proc.stdout.splitlines()
+    hits = protected_hits(cfg, changed)
+    highwater_test_file_cue(cfg, changed)
     if hits:
         sys.stderr.write(
             "ratchet: PROTECTED PATHS TOUCHED — park for human review, do not merge:\n"
@@ -889,6 +1144,7 @@ def _scanner_version() -> str:
         cw_dir / "hashing.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",
+        cw_dir / "verifier_hashes.py",
         q_dir / "churn.py",
         q_dir / "complexity.py",
     )
@@ -937,6 +1193,9 @@ def main() -> int:
         common(sp)
         if name == "check":
             sp.add_argument("--format", choices=["text", "json"], default="text")
+            sp.add_argument("--gate-verifier-tests", action="store_true",
+                            help="ALSO exit 1 on weakened/removed verifier-test bodies "
+                                 "(#206; report-only by default per docs/gate-rollout.md)")
             sp.add_argument("--gate-quality", action="store_true",
                             help="also block on complexity/churn regressions "
                                  "(off by default — report-only, see docs/gate-rollout.md)")
@@ -956,6 +1215,11 @@ def main() -> int:
     sp.add_argument("--gate", default="pass", choices=["pass", "fail"])
     sp.add_argument("--merged", action="store_true", help="the change reached the default branch")
     sp.add_argument("--notes", default="")
+    sp.add_argument("--amend-verifier", action="append", metavar="TESTREF",
+                    help="re-baseline one verifier test's body hash "
+                         "(<relpath>::<function>; a deliberate, journaled refactor)")
+    sp.add_argument("--retire-verifier", action="append", metavar="TESTREF",
+                    help="drop a verifier test ref from the high-water mark")
     sp.add_argument("--amend", action="append", metavar="ID",
                     help="accept ID's current definition hash as the new baseline (human-approved)")
     sp.add_argument("--retire", action="append", metavar="ID",

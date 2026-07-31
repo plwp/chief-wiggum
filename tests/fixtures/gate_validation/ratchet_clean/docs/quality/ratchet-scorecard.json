@@ -11,5 +11,22 @@
   "quality": {
     "skipped": "quality metrics disabled (--no-quality)"
   },
-  "tests_run": true
+  "test_files": {
+    "pytest::test_ratchet_fixture_smoke::test_widget_addition": "test_ratchet_fixture_smoke.py",
+    "pytest::test_ratchet_fixture_smoke::test_widget_identity": "test_ratchet_fixture_smoke.py"
+  },
+  "test_files_unresolved": [],
+  "tests_run": true,
+  "verifier_targets": {
+    "test_ratchet_fixture_smoke.py::test_widget_addition": [
+      "CTR-rt-001"
+    ],
+    "test_ratchet_fixture_smoke.py::test_widget_identity": [
+      "CTR-rt-002"
+    ]
+  },
+  "verifier_test_hashes": {
+    "test_ratchet_fixture_smoke.py::test_widget_addition": "a8fb730202323daae6284f0c9e42a37872763af7f41ef6546466692082cf8910",
+    "test_ratchet_fixture_smoke.py::test_widget_identity": "6c98bffa773f213921fadf683b7ef43a7968af139e24341048aa180e59477565"
+  }
 }
