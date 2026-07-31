@@ -138,6 +138,19 @@
       "manifest": "patterns/immutable-assignment-snapshot/manifest.json"
     },
     {
+      "id": "referral-invite-loop",
+      "title": "Referral / Invite Growth Loop",
+      "category": "process-loop",
+      "status": "specified",
+      "trust_class": "reward-and-copy-are-end-user-signal-driven-protected-path",
+      "summary": "Invite -> signed, single-use, expiring token -> server-trusted attribution on accept -> grant-only idempotent two-sided reward. The token discipline (un-forgeable at the signing root, TTL against the token's own iat, fail-closed consume-once) is REUSED from elevated-access-session; attribution/reward/fraud invariants are design-derived. A self-serve growth loop the improvement loop can propose tuning for (reward size/copy) under admin gating. Promoted from candidate; INV-RIL-001..006.",
+      "invariants": "INV-RIL-001..006",
+      "depends_on": "elevated-access-session",
+      "feeds": "improvement-loop",
+      "spec": "patterns/referral-invite-loop/pattern.md",
+      "manifest": "patterns/referral-invite-loop/manifest.json"
+    },
+    {
       "id": "build-test-floor",
       "title": "Language-Agnostic Build/Test Floor",
       "category": "gate",
@@ -160,7 +173,6 @@
   "candidates": [
     {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
     {"id": "transactional-email-and-dunning", "title": "Transactional Email & Dunning Lifecycle", "category": "process-loop", "status": "candidate", "summary": "Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge (fires if a signed-up user hasn't hit the activation event), re-engagement, and a failed-payment dunning sequence with bounded retries before degrade. Send-once keys prevent duplicate sends across retries. Recovery outcomes are conversion/retention signal.", "reusability": "high"},
-    {"id": "referral-invite-loop", "title": "Referral / Invite Growth Loop", "category": "process-loop", "status": "candidate", "summary": "Invite -> signed invite token (server-trusted, single-use, expiring) -> attribution on accept -> reward both sides. Reuses the signed-token discipline; attribution is trust-tagged signal. A self-serve growth loop the improvement loop can optimize (reward size/copy) under admin gating.", "reusability": "medium-high"},
     {"id": "feature-entitlements", "title": "Feature Entitlements Read-Model", "category": "saas-infra", "status": "candidate", "summary": "A single entitlement resolver deriving capability flags from tier + per-account overrides + grandfathering, consumed identically by backend gates and the frontend (one source of 'what can this account do'). Distinct from the tier matrix: it layers overrides and is the read model onboarding + UI both query.", "reusability": "medium-high"},
     {"id": "self-serve-billing-portal", "title": "Self-Serve Billing Portal", "category": "saas-infra", "status": "candidate", "summary": "Let users manage plan, payment method, and seats without support -- provider-hosted portal session minted server-side + a local mirror of plan/seat state kept authoritative via billing webhooks. Removes the #1 support-ticket class for tiered SaaS.", "reusability": "medium"}
   ],
