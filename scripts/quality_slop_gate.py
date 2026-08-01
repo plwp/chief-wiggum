@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -43,8 +44,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts  # noqa: E402 — #213 meta-location resolver (debt.json lookup)
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from quality import duplication, survival  # noqa: E402
+from quality import duplication, survival, test_health  # noqa: E402
 
 # GitClear [VENDOR] reference bands — direction is credible, exact multiples are
 # framing-dependent (corroborated directionally by DORA 2024, not independently
@@ -191,6 +193,68 @@ def format_report(sv: dict, dup: dict) -> str:
     return "\n".join(lines)
 
 
+def load_debt(target: str) -> dict | None:
+    """The #214 debt inventory for this target, read from the resolver-
+    determined quality dir. Missing/unparsable -> None (the block reports its
+    absence honestly; it never fabricates emptiness). A malformed election/
+    scope (the resolver's ValueError) NEVER propagates — the gate's exit must
+    stay a pure slop verdict — it comes back as ``{"config_error": ...}`` for
+    the report-only block to state."""
+    try:
+        p = artifacts.Resolver.resolve(target).quality_dir() / "debt.json"
+    except ValueError as exc:
+        return {"config_error": str(exc)}
+    if not p.is_file():
+        return None
+    try:
+        doc = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def format_debt_block(debt: dict | None) -> str:
+    """Report-only #214 debt-inventory signal block. NEVER contributes to
+    ``has_findings`` or the ``--gate`` exit code — debt items are addressable
+    work, not slop-band regressions; promotion (if ever) goes through its own
+    docs/gate-validation.md record."""
+    lines = ["### Debt inventory (report-only signal — never affects this gate's exit)"]
+    if debt is None:
+        lines.append(
+            "- no debt.json in the resolver-determined quality dir — run "
+            "scripts/debt_inventory.py to generate it (absence of the inventory "
+            "is not evidence of health)"
+        )
+        lines.append("")
+        return "\n".join(lines)
+    if debt.get("config_error"):
+        lines.append(
+            f"- debt inventory unavailable: {debt['config_error']} — config "
+            "needs repair"
+        )
+        lines.append("")
+        return "\n".join(lines)
+    counts = debt.get("counts") or {}
+    total = sum(sum(v.values()) for v in counts.values())
+    lines.append(f"- {total} item(s) at target_sha {debt.get('target_sha')}")
+    for engine, sevs in sorted(counts.items()):
+        parts = ", ".join(f"{sevs[s]} {s}" for s in ("high", "medium", "low") if s in sevs)
+        lines.append(f"  - {engine}: {parts}")
+    uns = debt.get("unscanned_languages") or {}
+    if uns:
+        lines.append(
+            "  - unscanned languages (dead_code): "
+            + ", ".join(f"{k}: {v} file(s)" for k, v in sorted(uns.items()))
+        )
+    gap = test_health.assertion_scan_gap(debt.get("engines") or {})
+    if gap:
+        lines.append(f"  - {gap}")
+    if debt.get("authority"):
+        lines.append(f"- authority: {debt['authority']}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _band_label(band: str) -> str:
     return {
         "better-than-pre-ai": "beats the pre-AI human baseline",
@@ -235,6 +299,9 @@ def run(args: argparse.Namespace) -> int:
     dup = evaluate_duplication(dup_raw)
 
     print(format_report(sv, dup))
+    # #214 debt inventory: a report-only signal block. Read-only, never a
+    # finding, never an exit-code input — even under --gate.
+    print(format_debt_block(load_debt(target)))
 
     findings = has_findings(sv, dup)
     if findings:
@@ -255,16 +322,21 @@ def _scanner_version() -> str:
     (INV-fh-005). The ``quality`` engine modules shape the verdicts ``run()``
     reports (survival/duplication result dicts feed the banding), so they are
     hash inputs — omitting them was the exact CTR-fh-041 silent-staleness class
-    this gate's own dep-completeness test polices.
+    this gate's own dep-completeness test polices. artifacts.py (#213/#214)
+    resolves WHERE the debt.json signal block is read from — a resolution
+    change changes what this gate prints, so it versions too. test_health.py
+    supplies the shared assertion-scan-gap line the debt block prints (#214).
     @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     q_dir = here.parent / "quality"
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         cw_dir / "hashing.py",
         q_dir / "survival.py",
         q_dir / "duplication.py",
+        q_dir / "test_health.py",
     )
 
 

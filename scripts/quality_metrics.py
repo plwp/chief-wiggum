@@ -69,6 +69,21 @@ def _write(out_dir: str, name: str, data: dict) -> None:
         json.dump(data, fh, indent=2)
 
 
+def _load_debt(target: str) -> dict | None:
+    """The #214 debt inventory (debt.json) from the resolver-determined
+    quality dir, or None when absent/unparsable — the debt section only
+    renders when an inventory exists."""
+    import artifacts  # local import: resolver only needed for this lookup
+    p = artifacts.Resolver.resolve(target).quality_dir() / "debt.json"
+    if not p.is_file():
+        return None
+    try:
+        doc = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def run(args: argparse.Namespace) -> str:
     target = resolve_target(args.owner_repo, args.repo)
     if args.out:
@@ -121,6 +136,12 @@ def run(args: argparse.Namespace) -> str:
             target, workdir=os.path.join(out_dir, "dup"),
         )
     _write(out_dir, "duplication", engines["duplication"])
+
+    # #214 debt inventory: read (never generated here) from the resolver-
+    # determined quality dir; the report renders a debt section when present.
+    debt = _load_debt(target)
+    if debt is not None:
+        engines["debt"] = debt
 
     print("[code-metrics] report...", file=sys.stderr)
     report_path = report.write_report(engines, out_dir)

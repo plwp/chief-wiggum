@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import os
 
+from . import test_health
+
 
 def _weighted_complexity(battery: dict) -> dict:
     """Aggregate cyclomatic/cognitive across languages, weighted by function count."""
@@ -303,6 +305,41 @@ def render_markdown(engines: dict, combined: dict, charts: list[str]) -> str:
                  "duplication up, reuse down) is corroborated by DORA 2024, but the exact multiples "
                  "are framing-dependent — treat bands as reference, not verdicts.")
     lines.append("")
+
+    # --- debt inventory (#214) — only when a debt.json was found ---
+    debt = engines.get("debt")
+    if debt:
+        counts = debt.get("counts") or {}
+        total = sum(sum(v.values()) for v in counts.values())
+        lines.append("## Debt inventory (report-only, #214)")
+        lines.append("")
+        lines.append(
+            f"{total} addressable item(s) with `DEBT-` stable IDs at target_sha "
+            f"`{debt.get('target_sha')}` (see `debt.json`; docs/debt-inventory.md)."
+        )
+        for engine, sevs in sorted(counts.items()):
+            parts = ", ".join(f"{sevs[s]} {s}" for s in ("high", "medium", "low") if s in sevs)
+            lines.append(f"- {engine}: {parts}")
+        uns = debt.get("unscanned_languages") or {}
+        if uns:
+            lines.append("- unscanned languages (dead_code): "
+                         + ", ".join(f"{k}: {v} file(s)" for k, v in sorted(uns.items())))
+        gap = test_health.assertion_scan_gap(debt.get("engines") or {})
+        if gap:
+            lines.append(f"- {gap}")
+        top = (debt.get("items") or [])[:8]
+        if top:
+            lines.append("")
+            lines.append("Top items (severity-ranked):")
+            for item in top:
+                loc = item.get("locations", ["?"])[0]
+                lines.append(f"  - `{item.get('id')}` [{item.get('severity')}] "
+                             f"{item.get('engine')}/{item.get('kind')} `{loc}` — "
+                             f"{str(item.get('detail', ''))[:100]}")
+        if debt.get("authority"):
+            lines.append("")
+            lines.append(f"- Authority: {debt['authority']}")
+        lines.append("")
 
     if charts:
         lines.append("## Charts")
