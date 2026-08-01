@@ -503,3 +503,71 @@ def test_items_carry_target_sha_and_unknown_languages_surface(target, tmp_path):
         assert item["target_sha"] == inv["target_sha"]
     unscanned = inv["engines"]["dead_code"]["unscanned"]
     assert any("unknown-language (.lua)" in k for k in unscanned), unscanned
+
+
+# --- append-candidate (#216 found ≠ fixed) ------------------------------------
+
+
+def test_append_candidate_files_stable_manual_item(target, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    item, created = debt_inventory.append_candidate(
+        str(target), "manual", "lib.py:12", "duplicated retry loop, dedupe later",
+        "low", out_dir)
+    assert created
+    assert item["id"].startswith("DEBT-") and len(item["id"]) == 5 + 10
+    assert item["engine"] == "manual" and item["candidate"] is True
+    assert item["kind"] == "candidate"
+    assert item["locations"] == ["lib.py:12"]
+    doc = json.loads((out_dir / "debt.json").read_text())
+    assert [i["id"] for i in doc["items"]] == [item["id"]]
+    assert doc["counts"]["manual"]["low"] == 1
+
+
+def test_append_candidate_is_idempotent_on_same_note(target, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    a, created_a = debt_inventory.append_candidate(
+        str(target), "manual", "lib.py", "Dead   helper NEARBY", "low", out_dir)
+    b, created_b = debt_inventory.append_candidate(
+        str(target), "manual", "lib.py", "dead helper nearby", "low", out_dir)
+    assert created_a and not created_b
+    assert a["id"] == b["id"], "normalized note text is the content anchor"
+    doc = json.loads((out_dir / "debt.json").read_text())
+    assert len(doc["items"]) == 1
+    c, created_c = debt_inventory.append_candidate(
+        str(target), "manual", "lib.py", "a different observation", "low", out_dir)
+    assert created_c and c["id"] != a["id"]
+
+
+def test_append_candidate_into_existing_inventory_and_engine_rerun_preserves_it(
+        target, tmp_path):
+    out_dir = tmp_path / "out"
+    env1 = _run_inventory(target, tmp_path, out=out_dir)
+    n_engine_items = len(env1["items"])
+    item, _ = debt_inventory.append_candidate(
+        str(target), "manual", "app.py", "smell spotted mid-ticket", "medium", out_dir)
+    doc = json.loads((out_dir / "debt.json").read_text())
+    assert len(doc["items"]) == n_engine_items + 1
+
+    # a full engine re-run carries the candidate forward — filing it must not
+    # be undone by the next inventory build
+    env2 = _run_inventory(target, tmp_path, out=out_dir)
+    ids = {i["id"] for i in env2["items"]}
+    assert item["id"] in ids
+    kept = next(i for i in env2["items"] if i["id"] == item["id"])
+    assert kept["candidate"] is True and kept["engine"] == "manual"
+
+
+def test_append_candidate_cli_prints_id_and_writes_resolver_quality_dir(target, tmp_path):
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "debt_inventory.py"), "append-candidate",
+         "--repo", str(target), "--engine", "manual",
+         "--path", "lib.py:4", "--note", "clone of app.py loop"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "candidate DEBT-" in proc.stdout
+    doc = json.loads((target / "docs" / "quality" / "debt.json").read_text())
+    assert doc["items"][0]["candidate"] is True
+    assert "no engine scan has run" in doc["authority"]

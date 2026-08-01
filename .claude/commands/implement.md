@@ -238,7 +238,74 @@ Once all three approaches are ready, ensure the codebase deep-dive explorer work
 
 Present a concise summary to the user. If there are open questions that genuinely need user input (e.g., conflicting approaches with no clear winner), ask. Otherwise, proceed directly to Step 5.
 
+#### Declared touch plan (adopted repos — ALL ticket kinds)
+
+Brownfield scope discipline is a property of the **repo**, not the ticket: it
+switches on when the #215 adoption record exists. Detect it via the resolver:
+
+```bash
+CW_META=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json)
+ADOPTION_JSON="$(echo "$CW_META" | jq -r .meta_root)/adoption/adoption.json"
+QUALITY_DIR=$(echo "$CW_META" | jq -r .quality_dir)
+[ -f "$ADOPTION_JSON" ] && IS_ADOPTED=true || IS_ADOPTED=false
+```
+
+When `$IS_ADOPTED` is true, the implementation plan MUST end with a **declared
+pathset** — the files/globs this ticket expects to touch (including the tests
+that will move) — and the orchestrator writes it to `$TICKET_TMP/pathset.json`
+in the shape `ratchet.py pathset` consumes:
+
+- **`--from-debt` ticket** (body carries `DEBT-` ids and a plan reference):
+  derive it mechanically, adding collateral (callers/tests that must move) as
+  `--collateral` args:
+  ```bash
+  python3 "$CW_HOME/scripts/plan_from_debt.py" pathset \
+    --plan "$QUALITY_DIR/remediation-plan.json" --id RT-001 \
+    --collateral "tests/test_pricing.py" -o "$TICKET_TMP/pathset.json"
+  ```
+- **Any other ticket**: write the plan's declared paths yourself:
+  ```bash
+  printf '%s\n' '{"paths": ["pkg/orders/*.py", "tests/test_orders.py"], "source": "ticket #42 declared touch plan"}' > "$TICKET_TMP/pathset.json"
+  ```
+
+Step 7 flags any diff hunk outside this pathset into the review context, and
+Step 8 re-checks it (report-only for now, per `docs/gate-rollout.md` — teeth
+come only after a gate-validation record). "While I'm in here" is the dominant
+brownfield failure mode; the declared pathset is what makes it visible.
+
 ### Step 5: Test-first specification
+
+#### Ticket kinds: `refactor` inverts this step's objective
+
+For a **`kind: refactor`** ticket (any ticket created by `/plan-epic
+--from-debt`, or any ticket labeled `refactor`), Step 5's objective INVERTS.
+Instead of "write failing tests first", the worker writes
+**CHARACTERIZATION (golden-master) tests that pin CURRENT behavior BEFORE any
+code changes** — approval-test harness per stack (Python: pytest golden
+values or `approvaltests`/`syrupy` snapshots; Go: golden files with
+`-update`; JS/TS: Jest snapshots): capture the outputs the code produces
+TODAY for representative inputs and assert exactly those. All
+characterization tests must be **green before the refactor commit** (a red
+characterization test means you mis-captured current behavior, not that the
+code is wrong), committed as `test: characterization baseline for #[number]`.
+The refactor then proceeds against that pinned baseline — the objective is
+"change the structure, preserve every pinned behavior":
+
+- The **ratchet pass-set may not shrink** — already enforced by `ratchet.py
+  check` in Step 8/4b; the characterization tests join the high-water mark.
+- **Mutation testing scoped to the refactored files** where a mutation tool
+  exists (`mutmut` for Python, `go-mutesting` for Go, Stryker for JS/TS) —
+  best-effort: run it on the ticket's pathset files and report the score; when
+  no tool is available, STATE that mutation coverage was not measured rather
+  than staying silent.
+- **Behavior preservation is the FIRST review-checklist item** for this
+  ticket kind (see the checklist's "Behavior preservation" section).
+- **Goalposts**: a sanctioned refactor that must move protected artifacts
+  (contracts/specs/ratchet state) goes through the EXISTING human
+  `--amend`/`--retire` ratchet journal records (`docs/ratchet.md`) — no new
+  bypass exists for refactor tickets.
+
+For every other ticket kind, Step 5 proceeds as written below.
 
 **Write failing tests before writing implementation code.** This transforms the objective from "implement this feature" to "make these tests pass" — a more constrained and verifiable target.
 
@@ -289,6 +356,12 @@ Launch an **implementation worker** (contract: `docs/worker-contracts.md#impleme
 **HARD RULES for worker**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 11).
 - You are working in a **git worktree** (the same one from Step 5). Confirm isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- **Found ≠ fixed (adopted repos — `$IS_ADOPTED`)**: anything you discover mid-ticket that the ticket doesn't cover — dead code nearby, a clone, a smell, a stale comment — is filed **in the same turn** as a `DEBT-` candidate and left UNTOUCHED in the diff:
+  ```bash
+  python3 "$CW_HOME/scripts/debt_inventory.py" append-candidate --repo "$TARGET_REPO" \
+    --engine manual --path "pkg/orders/handler.py:88" --note "duplicate retry loop, clone of billing.py"
+  ```
+  (or file a tracker issue for anything bigger than a code smell). Scope discipline must not cost information — the inventory is the pressure valve. No opportunistic fixes, no drive-by formatting/renames outside the declared pathset: those hunks get flagged in review and parked.
 
 The worker should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**
@@ -357,7 +430,22 @@ The worker should:
    ```
    If any file is flagged, note it explicitly to the reviewer worker (e.g. append to the ticket context or mention it directly when reviewing) so the reviewer quorum spends more attention there — deeper review, not a different bar. This is advisory only: `docs/quality/hotspots.json` never gates, and its absence for a touched file is not evidence the file is safe (young files have no history yet).
 
-4. Perform its own review of the diff.
+3b. **Prevention signals (#216, report-only — NEVER blocking).** Run the diff-scoped slop signals and append the output to the review context as reviewer information: new duplication (this diff clones EXISTING code — clone-class join), dead code introduced (added exports unused anywhere), assertion-free tests added:
+   ```bash
+   python3 "$CW_HOME/scripts/prevention_signals.py" --repo "$(git rev-parse --show-toplevel)" \
+     --base "$DEFAULT_BRANCH" >> "$TICKET_TMP/reviews/review-context-extra.md"
+   ```
+   It always exits 0 and never gates — the findings are for the reviewers' eyes (promotion to a blocking gate would require the full `docs/gate-validation.md` protocol first).
+
+3c. **Out-of-pathset flagging (adopted repos — `$IS_ADOPTED`, report-only).** Check the diff against the declared touch plan from Step 4 and feed any escapes to the reviewers as a flagged section:
+   ```bash
+   python3 "$CW_HOME/scripts/ratchet.py" pathset --repo "$(git rev-parse --show-toplevel)" \
+     --base "$DEFAULT_BRANCH" --pathset-file "$TICKET_TMP/pathset.json" --report-only \
+     2>> "$TICKET_TMP/reviews/review-context-extra.md"
+   ```
+   Files outside the declared pathset — especially formatting-only hunks, renames, and style changes (collateral improvement is scope creep by definition, for EVERY ticket kind) — must be called out in the review summary: either the pathset declaration was wrong (fix the declaration, honestly) or the diff carries undeclared work (drop it, and file what it was fixing via `append-candidate`). This runs **report-only first** per `docs/gate-rollout.md`; wiring it as a blocker (the same park-for-human semantics as `ratchet.py protected`, per #213) requires a gate-validation record.
+
+4. Perform its own review of the diff, **including** `$TICKET_TMP/reviews/review-context-extra.md` (prevention signals + pathset escapes) when present. For `kind: refactor` tickets, behavior preservation is the FIRST checklist item: verify the characterization tests were committed green BEFORE the refactor and were not weakened by it.
 
 5. Synthesize using:
    ```bash
@@ -418,6 +506,12 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    ```bash
    python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" trace CTR-order-001
    ```
+4d. **Scope check after review fixes (adopted repos — `$IS_ADOPTED`, report-only)** — the fixes applied in this step can themselves creep out of scope; re-run the pathset check from Step 7 (3c) against the final diff:
+   ```bash
+   python3 "$CW_HOME/scripts/ratchet.py" pathset --repo "$(git rev-parse --show-toplevel)" \
+     --base "$DEFAULT_BRANCH" --pathset-file "$TICKET_TMP/pathset.json" --report-only
+   ```
+   Any file it names goes into the PR body under a "Out of declared pathset" section for the human's eyes — a legitimate late addition means updating the declaration WITH a one-line reason; an illegitimate one gets dropped and its motivation filed via `debt_inventory.py append-candidate` (found ≠ fixed). Report-only for now per `docs/gate-rollout.md`.
 5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait

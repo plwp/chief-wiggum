@@ -46,11 +46,26 @@ There is no ``--gate`` flag; promotion (if ever) requires a
 Usage:
     python3 scripts/debt_inventory.py [owner/repo] [--repo PATH]
         [--out DIR] [--workdir DIR] [--format text|json]
+    python3 scripts/debt_inventory.py append-candidate [owner/repo] [--repo PATH]
+        --engine manual --path FILE[:LINE] --note "..." [--severity low]
+        [--out DIR]
 
 ``--out DIR`` writes ``debt.json`` (and reads the previous one for
 first_seen/last_seen continuity) under DIR instead of the resolver-determined
 quality dir — for read-only validation runs against repos whose meta must not
 be written.
+
+**``append-candidate`` — found ≠ fixed (#216):** on adopted repos, anything
+discovered mid-ticket (dead code nearby, a clone, a smell) is filed in the
+SAME turn as a candidate item and left untouched in the diff — scope
+discipline must not cost information. The item uses the same stable-ID
+mechanics (``engine + normalized path + content anchor``, here the normalized
+note text), carries ``engine: manual`` and ``candidate: true``, and the next
+full engine run preserves it: candidates are hand-filed observations, not
+engine findings, so an engine re-run neither confirms nor removes them —
+resolving one means fixing it and deleting/superseding the candidate in a
+reviewed change (or a later engine finding at the same address making it
+redundant).
 """
 
 from __future__ import annotations
@@ -335,6 +350,23 @@ def _previous_seen(out_path: Path) -> dict[str, dict]:
     return out
 
 
+def _previous_candidates(out_path: Path) -> list[dict]:
+    """``candidate: true`` items from the previous debt.json. Candidates are
+    hand-filed observations (``append-candidate``, #216 found≠fixed), not
+    engine findings — an engine re-run neither confirms nor removes them, so
+    the inventory CARRIES them forward verbatim instead of silently dropping
+    them on rebuild. They exit the inventory only by an explicit act (fixed +
+    removed in a reviewed change)."""
+    if not out_path.is_file():
+        return []
+    try:
+        doc = json.loads(out_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [item for item in doc.get("items", []) or []
+            if isinstance(item, dict) and item.get("id") and item.get("candidate")]
+
+
 def build_inventory(repo: str, workdir: str, out_path: Path,
                     resolver: artifacts.Resolver | None = None,
                     now: str | None = None) -> dict:
@@ -384,6 +416,13 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
         # Per-item target_sha per the documented schema — the SHA the finding
         # was last observed at (envelope carries it too; items are quoted alone).
         item["target_sha"] = sha
+
+    # Manual candidates (#216 append-candidate) carried forward verbatim: an
+    # engine run cannot re-observe them, so their seen timestamps and
+    # target_sha stay as filed. An engine finding that lands on the same id
+    # (identical anchor) supersedes the candidate.
+    engine_ids = {item["id"] for item in items}
+    items += [c for c in _previous_candidates(out_path) if c["id"] not in engine_ids]
 
     # Grandfathered items (#215): marked, never removed — pre-adoption debt is
     # visible pressure, and expiry makes it LOUD, not amnestied.
@@ -545,7 +584,109 @@ def run(args: argparse.Namespace) -> int:
     return 0  # report-only, always
 
 
+def append_candidate(target: str, engine: str, path: str, note: str,
+                     severity: str, out_dir: Path,
+                     now: str | None = None) -> tuple[dict, bool]:
+    """Append (or refresh) a manual candidate item in ``debt.json`` — the
+    #216 found≠fixed hook. Same stable-ID mechanics as engine items: the
+    anchor is the NORMALIZED note text, so re-filing the same observation on
+    the same file is idempotent (one item, refreshed ``last_seen``), and a
+    reworded note is a different observation with a fresh id. Returns
+    ``(item, created)``."""
+    now = now or datetime.now(timezone.utc).isoformat()
+    file_part, _, line_part = path.partition(":")
+    location = f"{file_part}:{line_part or 0}"
+    iid = debt_id(engine, file_part, _norm_text(note))
+
+    out_path = out_dir / "debt.json"
+    if out_path.is_file():
+        envelope = json.loads(out_path.read_text())
+    else:
+        # No inventory yet: a minimal debt/1 envelope holding only candidates.
+        # It is NOT an engine run — the authority line says so.
+        envelope = {
+            "schema": SCHEMA,
+            "generated_at": now,
+            "authority": (
+                "manual candidate items only — no engine scan has run; run "
+                "scripts/debt_inventory.py to build the full inventory"
+            ),
+            "engines": {},
+            "unscanned_languages": {},
+            "counts": {},
+            "grandfather": {"file": None, "count": 0, "expired": []},
+            "items": [],
+        }
+
+    items = envelope.setdefault("items", [])
+    existing = next((i for i in items if isinstance(i, dict) and i.get("id") == iid), None)
+    if existing is not None:
+        existing["last_seen"] = now
+        if location not in existing.get("locations", []):
+            existing.setdefault("locations", []).append(location)
+        item, created = existing, False
+    else:
+        item = {
+            "id": iid,
+            "engine": engine,
+            "kind": "candidate",
+            "candidate": True,
+            "severity": severity,
+            "symbol": note[:60],
+            "locations": [location],
+            "detail": f"manual candidate: {note}",
+            "blast_radius": {"coupling_partners": [], "hotspot_decile": None},
+            "first_seen": now,
+            "last_seen": now,
+            "target_sha": artifacts.head_sha(target),
+        }
+        items.append(item)
+        created = True
+
+    # Keep the envelope's rollup honest: recompute counts over ALL items.
+    counts: dict[str, dict[str, int]] = {}
+    for i in items:
+        counts.setdefault(i["engine"], {})[i["severity"]] = (
+            counts.get(i["engine"], {}).get(i["severity"], 0) + 1
+        )
+    envelope["counts"] = counts
+    out_path.write_text(json.dumps(envelope, indent=2) + "\n")
+    return item, created
+
+
+def run_append_candidate(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="debt_inventory.py append-candidate",
+        description="file a mid-ticket discovery as a DEBT- candidate item "
+                    "(found ≠ fixed, chief-wiggum#216) — same turn, untouched diff",
+    )
+    parser.add_argument("owner_repo", nargs="?", default=None)
+    parser.add_argument("--repo", default=None, help="direct local repo path")
+    parser.add_argument("--engine", default="manual",
+                        help="producing engine tag (default: manual)")
+    parser.add_argument("--path", required=True, help="repo-relative FILE[:LINE]")
+    parser.add_argument("--note", required=True,
+                        help="what was found (the content anchor for the stable id)")
+    parser.add_argument("--severity", choices=list(SEVERITY_ORDER), default="low")
+    parser.add_argument("--out", default=None,
+                        help="directory holding debt.json (default: resolver quality dir)")
+    args = parser.parse_args(argv)
+
+    target = resolve_target(args.owner_repo, args.repo)
+    resolver = artifacts.Resolver.resolve(target)
+    out_dir = Path(args.out).expanduser() if args.out else resolver.quality_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    item, created = append_candidate(
+        target, args.engine, args.path, args.note, args.severity, out_dir)
+    verb = "filed" if created else "already filed (last_seen refreshed)"
+    print(f"debt_inventory: candidate {item['id']} {verb} — {args.path}: {args.note}")
+    print(f"  inventory: {out_dir / 'debt.json'}")
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "append-candidate":
+        return run_append_candidate(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="mechanical debt inventory (DEBT- stable IDs; report-only)",
     )

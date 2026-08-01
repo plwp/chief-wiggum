@@ -336,6 +336,7 @@ Run the integration check **on the staging branch, before promoting to main**:
      --changed-since "$DEFAULT_BRANCH" --format text
    ```
    Report-only: this is a fast wave-scoped signal, not the authoritative gate — `--changed-since` cannot see a stale writer/annotation outside this wave's diff. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic. Surface findings for the fixer; don't hard-block the wave on them here.
+7. **Prevention signals** (#216, report-only — NEVER blocking): `python3 "$CW_HOME/scripts/prevention_signals.py" --repo "$TARGET_REPO" --base "$DEFAULT_BRANCH"` over the merged staging diff — new duplication / dead code introduced / assertion-free tests added, appended to the wave report as reviewer information (same posture as `/implement` Step 7's 3b).
 
 If the integration check fails:
 - **Test failure caused by merge**: Fix it on the staging branch. Launch an implementation worker (contract: `docs/worker-contracts.md#implementation-worker`) to diagnose and fix.

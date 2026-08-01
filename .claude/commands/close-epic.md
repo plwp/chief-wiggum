@@ -279,6 +279,39 @@ If the repo has no `docs/tutorials/` (or no maintainer script), **skip and say s
 
 This is **report-only** — it never blocks the close (a stale tutorial is a follow-up, not a broken seam). Recommend `/tutorial-videos` to re-produce drifted ones and author the gaps, and **ticket the new-tutorial gaps** so they aren't lost. Do not attempt to record videos inside `/close-epic` — production needs a running instance and is its own workflow.
 
+### Step 2k: Remediation-epic acceptance — the inventory re-run (blocking)
+
+**Only for remediation epics** — epics whose ticket bodies carry `DEBT-` ids
+(planned by `/plan-epic --from-debt`; the plan lives at the resolver quality
+dir's `remediation-plan.json`). Skip and say so otherwise.
+
+**The inventory re-run IS this epic's acceptance test**: a remediation epic
+claims specific `DEBT-` ids are gone, and the same mechanical scan that
+minted them proves it. Re-run the inventory fresh (to a scratch dir, so the
+epic's own baseline isn't clobbered mid-audit), then hard-check every
+TICKETED id:
+
+```bash
+QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)
+python3 "$CW_HOME/scripts/debt_inventory.py" --repo "$TARGET_REPO" --out "$CW_TMP/close-epic/fresh-debt"
+python3 "$CW_HOME/scripts/plan_from_debt.py" verify \
+  --plan "$QUALITY_DIR/remediation-plan.json" \
+  --debt "$CW_TMP/close-epic/fresh-debt/debt.json"
+```
+
+`verify` exits 1 listing every ticketed `DEBT-` id still present in the fresh
+inventory — a **blocking** finding: the ticket that claimed it was not
+actually remediated (or the "fix" changed the code without removing the
+finding). Only **ticketed** ids are checked: budgeted-out leftovers and
+boundary referrals are the normal end state, never a close failure. An id may
+be **explicitly waived** instead of fixed — via the `adopt.py grandfather
+--extend` path (a loud operator act recording reason/owner/expiry;
+chief-wiggum#215) *after* planning; `verify` reports those as WAIVED and
+passes. A pre-plan grandfather does NOT waive (remediating it was the
+ticket's point), and an expired grandfather never waives. Once `verify`
+passes, refresh the real inventory in `$QUALITY_DIR` (run `debt_inventory.py`
+without `--out`) so the trend line records the drop.
+
 ### Step 3: Integration test execution
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.

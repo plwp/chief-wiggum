@@ -173,3 +173,14 @@ record — `/close-epic` refuses `--gate` to any checker without a passing
 record. Until then, findings feed remediation planning (#216), not gates. The
 validation corpus for the precision exercise is dogeared (CW-built, embedded)
 + mcprelay (organic, legacy), with per-finding triage recorded on the issue.
+
+## Consumption: remediation planning (#216)
+
+The inventory's primary consumer is `/plan-epic --from-debt`
+(`scripts/plan_from_debt.py`): `DEBT-` items are clustered (clone class →
+module → change-coupling) into budgeted refactor tickets, `/close-epic`
+re-runs this inventory as the remediation epic's acceptance test, and
+mid-ticket discoveries flow back in via `debt_inventory.py append-candidate`
+(`engine: manual`, `candidate: true` — carried forward across engine re-runs,
+since an engine can neither confirm nor remove a hand-filed observation). See
+[remediation.md](remediation.md).

@@ -86,15 +86,15 @@ See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 ### Epic Level
 | Skill | Purpose |
 |-------|---------|
-| `/plan-epic` | Group related issues into an epic with dependency graph and integration risks |
+| `/plan-epic` | Group related issues into an epic with dependency graph and integration risks; `--from-debt` plans a budgeted remediation epic from `debt.json` (refactor tickets carrying `DEBT-` ids, boundary referrals, excluded-items record — `docs/remediation.md`) |
 | `/architect` | Define contracts, invariants, state machines, ADRs, and integration tests for an epic |
 | `/implement-wave` | Implement an epic in dependency-ordered parallel waves |
-| `/close-epic` | Epic-level quality gate: integration tests, mutation testing, stitch-audit, retrospective |
+| `/close-epic` | Epic-level quality gate: integration tests, mutation testing, stitch-audit, retrospective; for remediation epics, re-runs the debt inventory and hard-checks every ticketed `DEBT-` id is gone (`plan_from_debt.py verify`) |
 
 ### Ticket Level
 | Skill | Purpose |
 |-------|---------|
-| `/implement` | TDD implementation loop: test-first → multi-AI consultation → structured review → verify |
+| `/implement` | TDD implementation loop: test-first → multi-AI consultation → structured review → verify; `refactor` tickets invert TDD (characterization tests pin current behavior first), and adopted repos get scope back-pressure (declared pathsets, found≠fixed candidate filing, prevention signals) |
 
 ### Supporting
 | Skill | Purpose |
@@ -151,7 +151,8 @@ graph TD
     E --> F
     X --> AD
     AD -->|"/architect per epic"| F
-    AD -->|"/plan-epic --from-debt"| E
+    AD -->|"debt.json → /plan-epic --from-debt<br/>(budgeted refactor tickets)"| E
+    H -->|"remediation epic: inventory re-run<br/>proves ticketed DEBT- ids gone"| AD
     N -.->|"docs/design/"| F
     F --> G
     F --> W
