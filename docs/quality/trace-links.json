@@ -107,15 +107,15 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "retrospective.md",
-      "line": 115,
+      "line": 134,
       "source_kind": "CTR",
       "target": "CTR-fh-043",
       "verb": "verifies"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "retrospective.md",
-      "line": 124,
+      "line": 143,
       "source_kind": "INV",
       "target": "INV-fh-005",
       "verb": "verifies"
@@ -209,7 +209,7 @@
       "verb": "guards"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "scripts/check_architecture.py",
       "line": 713,
       "source_kind": "code",
@@ -243,7 +243,7 @@
     {
       "definition_hash": "c767b287f1b86a94446bcb603c9a9fb87a969372baa285877787b412c37c132b",
       "file": "scripts/check_gate_validation.py",
-      "line": 72,
+      "line": 106,
       "source_kind": "code",
       "target": "INV-fh-004",
       "verb": "guards"
@@ -251,7 +251,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "scripts/check_gate_validation.py",
-      "line": 111,
+      "line": 151,
       "source_kind": "code",
       "target": "CTR-fh-043",
       "verb": "guards"
@@ -259,7 +259,7 @@
     {
       "definition_hash": "49d7ee5959cdaa121465af47572bb27eccf6aeafe94c127f19dc4325cec2db70",
       "file": "scripts/check_gate_validation.py",
-      "line": 111,
+      "line": 151,
       "source_kind": "code",
       "target": "INV-fh-003",
       "verb": "guards"
@@ -267,9 +267,41 @@
     {
       "definition_hash": "19fab6c8541622837566a8b13c1acea180221a560d7034687828c4cf0a648943",
       "file": "scripts/check_gate_validation.py",
-      "line": 159,
+      "line": 199,
       "source_kind": "code",
       "target": "CTR-fh-044",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "49d7ee5959cdaa121465af47572bb27eccf6aeafe94c127f19dc4325cec2db70",
+      "file": "scripts/check_gate_validation.py",
+      "line": 412,
+      "source_kind": "code",
+      "target": "INV-fh-003",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
+      "file": "scripts/check_gate_validation.py",
+      "line": 412,
+      "source_kind": "code",
+      "target": "INV-fh-005",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "49d7ee5959cdaa121465af47572bb27eccf6aeafe94c127f19dc4325cec2db70",
+      "file": "scripts/check_gate_validation.py",
+      "line": 489,
+      "source_kind": "code",
+      "target": "INV-fh-003",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "49d7ee5959cdaa121465af47572bb27eccf6aeafe94c127f19dc4325cec2db70",
+      "file": "scripts/check_gate_validation.py",
+      "line": 539,
+      "source_kind": "code",
+      "target": "INV-fh-003",
       "verb": "guards"
     },
     {
@@ -393,7 +425,7 @@
       "verb": "guards"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "scripts/ci_scaffold.py",
       "line": 173,
       "source_kind": "code",
@@ -483,7 +515,7 @@
     {
       "definition_hash": "010cecaff48457690d46a7bf6f18b7cce02f5986039a588d91fce233a88fbc23",
       "file": "scripts/consult_ai.py",
-      "line": 149,
+      "line": 158,
       "source_kind": "code",
       "target": "CTR-fh-012",
       "verb": "guards"
@@ -491,7 +523,7 @@
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "scripts/consult_ai.py",
-      "line": 307,
+      "line": 316,
       "source_kind": "code",
       "target": "CTR-fh-010",
       "verb": "guards"
@@ -499,39 +531,23 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "scripts/consult_ai.py",
-      "line": 320,
+      "line": 329,
       "source_kind": "code",
       "target": "CTR-fh-011",
       "verb": "guards"
     },
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
-      "file": "scripts/consult_ai.py",
-      "line": 413,
-      "source_kind": "code",
-      "target": "CTR-fh-010",
-      "verb": "guards"
-    },
-    {
-      "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "scripts/consult_ai.py",
       "line": 422,
       "source_kind": "code",
-      "target": "CTR-fh-011",
-      "verb": "guards"
-    },
-    {
-      "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
-      "file": "scripts/consult_ai.py",
-      "line": 473,
-      "source_kind": "code",
       "target": "CTR-fh-010",
       "verb": "guards"
     },
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "scripts/consult_ai.py",
-      "line": 473,
+      "line": 431,
       "source_kind": "code",
       "target": "CTR-fh-011",
       "verb": "guards"
@@ -539,31 +555,55 @@
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "scripts/consult_ai.py",
-      "line": 559,
+      "line": 482,
       "source_kind": "code",
       "target": "CTR-fh-010",
       "verb": "guards"
     },
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
+      "file": "scripts/consult_ai.py",
+      "line": 482,
+      "source_kind": "code",
+      "target": "CTR-fh-011",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "scripts/consult_ai.py",
       "line": 568,
       "source_kind": "code",
+      "target": "CTR-fh-010",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
+      "file": "scripts/consult_ai.py",
+      "line": 577,
+      "source_kind": "code",
       "target": "CTR-fh-011",
       "verb": "guards"
     },
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "scripts/consult_ai.py",
-      "line": 583,
+      "line": 601,
       "source_kind": "code",
       "target": "CTR-fh-010",
+      "verb": "guards"
+    },
+    {
+      "definition_hash": "49d7ee5959cdaa121465af47572bb27eccf6aeafe94c127f19dc4325cec2db70",
+      "file": "scripts/factory_log.py",
+      "line": 189,
+      "source_kind": "code",
+      "target": "INV-fh-003",
       "verb": "guards"
     },
     {
       "definition_hash": "d6b2bea7b99cf3a9ec7c27299d8dcc254db6c8acc97f40c8555e60cbfe277586",
       "file": "scripts/factory_log.py",
-      "line": 318,
+      "line": 345,
       "source_kind": "code",
       "target": "CTR-fh-013",
       "verb": "ensures"
@@ -571,7 +611,7 @@
     {
       "definition_hash": "b55b1d58e46f4cdac6a19d30cfba9c6c24b0303bf67973173436dced87f71a3a",
       "file": "scripts/factory_log.py",
-      "line": 318,
+      "line": 345,
       "source_kind": "code",
       "target": "CTR-fh-014",
       "verb": "ensures"
@@ -579,7 +619,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "scripts/factory_log.py",
-      "line": 318,
+      "line": 345,
       "source_kind": "code",
       "target": "CTR-fh-015",
       "verb": "ensures"
@@ -587,7 +627,7 @@
     {
       "definition_hash": "d4e17b16d54ff70ba8928454b225666deddf13e9b47fbe6fbfaac0f4943945c9",
       "file": "scripts/factory_log.py",
-      "line": 318,
+      "line": 345,
       "source_kind": "code",
       "target": "INV-fh-002",
       "verb": "ensures"
@@ -595,7 +635,7 @@
     {
       "definition_hash": "e0eb206f55b59636c9864620a46ca49987f6d4a2a785124acac03502f328da5e",
       "file": "scripts/factory_log.py",
-      "line": 318,
+      "line": 345,
       "source_kind": "code",
       "target": "INV-fh-011",
       "verb": "ensures"
@@ -697,7 +737,7 @@
       "verb": "guards"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "scripts/quality_slop_gate.py",
       "line": 259,
       "source_kind": "code",
@@ -707,7 +747,7 @@
     {
       "definition_hash": "74f150e9bcb2d8b01645f04043f8b350a1f85f630e42c60b3fde412736fc9220",
       "file": "scripts/ratchet.py",
-      "line": 760,
+      "line": 1138,
       "source_kind": "code",
       "target": "CTR-fh-040",
       "verb": "guards"
@@ -715,7 +755,7 @@
     {
       "definition_hash": "a6853ca1f03ce44ed888fdabd6f92662db122540964239a1182aed12d5903ae5",
       "file": "scripts/ratchet.py",
-      "line": 760,
+      "line": 1138,
       "source_kind": "code",
       "target": "CTR-fh-041",
       "verb": "guards"
@@ -723,15 +763,15 @@
     {
       "definition_hash": "7714e1acc6c363d534fc39154a212779c269f39d6c8c162e3fd7c4e0777ea00a",
       "file": "scripts/ratchet.py",
-      "line": 760,
+      "line": 1138,
       "source_kind": "code",
       "target": "CTR-fh-042",
       "verb": "guards"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "scripts/ratchet.py",
-      "line": 760,
+      "line": 1138,
       "source_kind": "code",
       "target": "INV-fh-005",
       "verb": "guards"
@@ -761,7 +801,7 @@
       "verb": "guards"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "scripts/saas_gate.py",
       "line": 365,
       "source_kind": "code",
@@ -913,7 +953,7 @@
       "verb": "verifies"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "tests/test_check_architecture.py",
       "line": 599,
       "source_kind": "test",
@@ -923,7 +963,7 @@
     {
       "definition_hash": "c767b287f1b86a94446bcb603c9a9fb87a969372baa285877787b412c37c132b",
       "file": "tests/test_check_gate_validation.py",
-      "line": 440,
+      "line": 886,
       "source_kind": "test",
       "target": "INV-fh-004",
       "verb": "verifies"
@@ -1115,7 +1155,7 @@
     {
       "definition_hash": "010cecaff48457690d46a7bf6f18b7cce02f5986039a588d91fce233a88fbc23",
       "file": "tests/test_consult_ai.py",
-      "line": 297,
+      "line": 548,
       "source_kind": "test",
       "target": "CTR-fh-012",
       "verb": "verifies"
@@ -1123,7 +1163,7 @@
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "tests/test_consult_ai.py",
-      "line": 655,
+      "line": 906,
       "source_kind": "test",
       "target": "CTR-fh-010",
       "verb": "verifies"
@@ -1131,7 +1171,7 @@
     {
       "definition_hash": "d6b2bea7b99cf3a9ec7c27299d8dcc254db6c8acc97f40c8555e60cbfe277586",
       "file": "tests/test_consult_ai.py",
-      "line": 655,
+      "line": 906,
       "source_kind": "test",
       "target": "CTR-fh-013",
       "verb": "verifies"
@@ -1139,7 +1179,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 667,
+      "line": 918,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1147,7 +1187,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 667,
+      "line": 918,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1155,7 +1195,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 676,
+      "line": 927,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1163,7 +1203,7 @@
     {
       "definition_hash": "010cecaff48457690d46a7bf6f18b7cce02f5986039a588d91fce233a88fbc23",
       "file": "tests/test_consult_ai.py",
-      "line": 685,
+      "line": 936,
       "source_kind": "test",
       "target": "CTR-fh-012",
       "verb": "verifies"
@@ -1171,7 +1211,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 696,
+      "line": 947,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1179,7 +1219,7 @@
     {
       "definition_hash": "010cecaff48457690d46a7bf6f18b7cce02f5986039a588d91fce233a88fbc23",
       "file": "tests/test_consult_ai.py",
-      "line": 719,
+      "line": 970,
       "source_kind": "test",
       "target": "CTR-fh-012",
       "verb": "verifies"
@@ -1187,7 +1227,7 @@
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "tests/test_consult_ai.py",
-      "line": 762,
+      "line": 1013,
       "source_kind": "test",
       "target": "CTR-fh-010",
       "verb": "verifies"
@@ -1195,7 +1235,7 @@
     {
       "definition_hash": "d6b2bea7b99cf3a9ec7c27299d8dcc254db6c8acc97f40c8555e60cbfe277586",
       "file": "tests/test_consult_ai.py",
-      "line": 762,
+      "line": 1013,
       "source_kind": "test",
       "target": "CTR-fh-013",
       "verb": "verifies"
@@ -1203,7 +1243,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 772,
+      "line": 1023,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1211,7 +1251,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 772,
+      "line": 1023,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1219,7 +1259,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 781,
+      "line": 1032,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1227,7 +1267,7 @@
     {
       "definition_hash": "010cecaff48457690d46a7bf6f18b7cce02f5986039a588d91fce233a88fbc23",
       "file": "tests/test_consult_ai.py",
-      "line": 789,
+      "line": 1040,
       "source_kind": "test",
       "target": "CTR-fh-012",
       "verb": "verifies"
@@ -1235,7 +1275,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 798,
+      "line": 1049,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1243,7 +1283,7 @@
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "tests/test_consult_ai.py",
-      "line": 838,
+      "line": 1089,
       "source_kind": "test",
       "target": "CTR-fh-010",
       "verb": "verifies"
@@ -1251,7 +1291,7 @@
     {
       "definition_hash": "d6b2bea7b99cf3a9ec7c27299d8dcc254db6c8acc97f40c8555e60cbfe277586",
       "file": "tests/test_consult_ai.py",
-      "line": 838,
+      "line": 1089,
       "source_kind": "test",
       "target": "CTR-fh-013",
       "verb": "verifies"
@@ -1259,7 +1299,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 848,
+      "line": 1099,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1267,7 +1307,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 848,
+      "line": 1099,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1275,7 +1315,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 857,
+      "line": 1108,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1283,7 +1323,7 @@
     {
       "definition_hash": "010cecaff48457690d46a7bf6f18b7cce02f5986039a588d91fce233a88fbc23",
       "file": "tests/test_consult_ai.py",
-      "line": 865,
+      "line": 1116,
       "source_kind": "test",
       "target": "CTR-fh-012",
       "verb": "verifies"
@@ -1291,7 +1331,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 881,
+      "line": 1132,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1299,7 +1339,7 @@
     {
       "definition_hash": "052593360edc7e4090c778bcad1fc7e0dbc20ed261d6059ec90a96d5669fccf9",
       "file": "tests/test_consult_ai.py",
-      "line": 932,
+      "line": 1183,
       "source_kind": "test",
       "target": "CTR-fh-010",
       "verb": "verifies"
@@ -1307,7 +1347,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 944,
+      "line": 1195,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1315,7 +1355,7 @@
     {
       "definition_hash": "36fa80db84f6fde5cfe613d735b08ef9365586f950a2d93eacd8fd3332473c53",
       "file": "tests/test_consult_ai.py",
-      "line": 952,
+      "line": 1203,
       "source_kind": "test",
       "target": "CTR-fh-015",
       "verb": "verifies"
@@ -1323,7 +1363,7 @@
     {
       "definition_hash": "d023df0a562b6452163baa2b1ed59bed768f34bbe7479ac1156f3199bcfa13e4",
       "file": "tests/test_consult_ai.py",
-      "line": 962,
+      "line": 1213,
       "source_kind": "test",
       "target": "CTR-fh-011",
       "verb": "verifies"
@@ -1587,7 +1627,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 347,
+      "line": 397,
       "source_kind": "test",
       "target": "CTR-fh-043",
       "verb": "verifies"
@@ -1595,7 +1635,7 @@
     {
       "definition_hash": "74f150e9bcb2d8b01645f04043f8b350a1f85f630e42c60b3fde412736fc9220",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 357,
+      "line": 407,
       "source_kind": "test",
       "target": "CTR-fh-040",
       "verb": "verifies"
@@ -1603,7 +1643,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 357,
+      "line": 407,
       "source_kind": "test",
       "target": "CTR-fh-043",
       "verb": "verifies"
@@ -1611,7 +1651,7 @@
     {
       "definition_hash": "19fab6c8541622837566a8b13c1acea180221a560d7034687828c4cf0a648943",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 367,
+      "line": 417,
       "source_kind": "test",
       "target": "CTR-fh-044",
       "verb": "verifies"
@@ -1619,7 +1659,7 @@
     {
       "definition_hash": "19fab6c8541622837566a8b13c1acea180221a560d7034687828c4cf0a648943",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 386,
+      "line": 436,
       "source_kind": "test",
       "target": "CTR-fh-044",
       "verb": "verifies"
@@ -1627,7 +1667,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 609,
+      "line": 711,
       "source_kind": "test",
       "target": "CTR-fh-043",
       "verb": "verifies"
@@ -1635,7 +1675,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 629,
+      "line": 732,
       "source_kind": "test",
       "target": "CTR-fh-043",
       "verb": "verifies"
@@ -1643,7 +1683,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 654,
+      "line": 757,
       "source_kind": "test",
       "target": "CTR-fh-043",
       "verb": "verifies"
@@ -1651,7 +1691,7 @@
     {
       "definition_hash": "4866d85ff18edd1f8d69625726524a9f84b39d4d9f5444b56ddc3d3ab785fb0e",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 694,
+      "line": 797,
       "source_kind": "test",
       "target": "CTR-fh-043",
       "verb": "verifies"
@@ -1659,15 +1699,15 @@
     {
       "definition_hash": "a6853ca1f03ce44ed888fdabd6f92662db122540964239a1182aed12d5903ae5",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 781,
+      "line": 884,
       "source_kind": "test",
       "target": "CTR-fh-041",
       "verb": "verifies"
     },
     {
-      "definition_hash": "be507cbc664cdc93032ffcc4cc9cf79b97ff29600fa97b6c9ddf4bef2e45345e",
+      "definition_hash": "62692a83df9e0fce3aaef6874cab7a9a15ca31beea7828a810f49b5ff251b6f8",
       "file": "tests/test_gate_validation_retroactive.py",
-      "line": 781,
+      "line": 884,
       "source_kind": "test",
       "target": "INV-fh-005",
       "verb": "verifies"
