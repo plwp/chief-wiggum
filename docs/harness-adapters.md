@@ -12,12 +12,13 @@ clearly when it has none — never silently inherit a broken Claude assumption.
 
 | Claude surface | Where | Portable concept |
 |----------------|-------|------------------|
-| `subagent_type: "general-purpose"` | `implement.md:166,202,238,266,294,472`; `close-epic.md:139,204,237`; `architect.md:86`; `seed.md:170`; `implement-wave.md:217` | A **worker** with a role, inputs, output artifact paths, and a write scope (see `AGENTS.md` → worker contracts). |
+| `subagent_type: "general-purpose"` | `implement.md:166,202,238,266,294,472`; `close-epic.md:139,204,237`; `architect.md:86`; `seed.md:170`; `implement-wave.md:217`; `ux-review.md:65,83` | A **worker** with a role, inputs, output artifact paths, and a write scope (see `AGENTS.md` → worker contracts). |
 | `subagent_type: "Explore"` + `thoroughness:` | `implement.md:171`; `architect.md:55`; `seed.md:43` | A **read-only explorer worker** that returns a findings artifact. |
-| `model: "opus" \| "sonnet"` | `implement.md:166,202,238,266,294,472`; `architect.md:86`; `close-epic.md:139,204,237`; `implement-wave.md:217` | A **provider role** (`config/providers.json`), not a hard-coded model name. Use roles where portability matters; the model tier is an adapter hint. |
+| `model: "opus" \| "sonnet"` | `implement.md:166,202,238,266,294,472`; `architect.md:86`; `close-epic.md:139,204,237`; `implement-wave.md:217`; `ux-review.md:65,83` | A **provider role** (`config/providers.json`), not a hard-coded model name. Use roles where portability matters; the model tier is an adapter hint. |
 | `isolation: "worktree"` | `implement.md:238,246,266`; `implement-wave.md:217` | A required **isolation behavior**: the worker writes only inside its own checkout, never the main checkout (enforce with `scripts/git_safety.py assert-worktree`). |
 | `run_in_background` + Agent completion notifications | `implement.md:171`; `implement-wave.md:217,244` | **Asynchronous worker completion** signalled through files / a harness-neutral status, not Claude's task-notification stream (see `scripts/delegates/`). |
 | `/keep-going`, `CronCreate`, `CronDelete` | `keep-going.md:7,26,35` | **Claude-only.** Session keep-alive via Claude Code cron. No portable equivalent is required; other harnesses run the loop their own way or omit it. |
+| Claude-in-Chrome tools (`form_input`, `read_page`) + Artifact publishing / `artifact-design` | `ux-review.md:39,65,87` | **Claude-only** browser driving and report rendering, marked as adapter notes in place. Portable concepts: drive the product's own Playwright/browser-use harness, and emit the report as markdown (`$UX_TMP/report.md`) when no artifact surface exists. |
 | Slash-command invocation (`/implement`, `/architect`, …) | all command files | The **Claude Code adapter's** invocation syntax. Portable skills are invoked by the host harness; workflow text describing portable behavior should not assume slash-command syntax. |
 
 ## Rules for keeping workflows portable

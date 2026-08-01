@@ -17,7 +17,7 @@ This is the product-level counterpart to `/close-epic` Step 6. That step walks t
 
 ## Autonomy
 
-Run the whole walk and the report to completion **without pausing** — it is read-only against the product (it drives the UI, it doesn't change product data beyond what a walk necessarily creates, and it never ships code). The report is the deliverable; the human decides what to act on. The **only** hard stops are the auth guardrails below — never route around them, and never block the user for something a seeded local stack solves.
+Run the whole walk and the report to completion **without pausing** — it never ships code, and it is **non-destructive, not literally read-only**: walking journeys necessarily creates walk data (a sign-up, a test booking). On a seeded local stack that's free. Against a deployed `--base-url`, confine every state-changing step to the documented demo/test account and never touch records the walk didn't create — if a journey can't be walked within that boundary, mark it not-walked rather than mutating real data. The report is the deliverable; the human decides what to act on. The **only** hard stops are the auth guardrails below — never route around them, and never block the user for something a seeded local stack solves.
 
 ## Key principles
 
@@ -36,7 +36,7 @@ Getting authenticated access is where this skill meets the safety rules. Hold th
 - **Prefer a seeded local stack** (Firebase Auth emulator / test DB) where "sign-in" uses seeded users and no real secret — it sidesteps the whole question and is reproducible. Stand it up (don't punt): reuse the repo's own `e2e`/`global-setup` harness to seed one user per role.
 - **Against a deployed env**, use only a **documented demo/test credential** (published in the repo, e.g. `docs/OPERATIONS.md`) — that's test-fixture data, not a personal/financial/production secret. Never type a user's real password to authenticate.
 - **Never self-grant access** — do not set an admin custom claim (or any role/permission) on an account to reach a gated surface. That's an access-control change and is off-limits. If a persona (e.g. admin) is only reachable via a claim you'd have to grant, walk it on the **local stack** (where seeding an admin is legitimate test setup), and note on the deployed env that it wasn't reachable.
-- **Browser tip:** a password-manager extension often hijacks field focus (errors like "Cannot access a chrome-extension:// URL"). Set fields via `form_input` (by element ref from `read_page`) instead of click-to-focus + type, then click the submit control by ref.
+- **Browser tip** (*Claude Code adapter — Claude-in-Chrome tools*): a password-manager extension often hijacks field focus (errors like "Cannot access a chrome-extension:// URL"). Set fields via `form_input` (by element ref from `read_page`) instead of click-to-focus + type, then click the submit control by ref. Other harnesses drive their own browser tooling; the portable requirement is only that sign-in is driven, not pasted around.
 
 ## Workflow
 
@@ -62,7 +62,7 @@ Prefer the local stack. Stand it up from the repo's own tooling; seed one user p
 
 ### Step 3: Walk every journey, screenshot every step
 
-Run inside a **verification-worker** (contract: `docs/worker-contracts.md#verification-worker`) — *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"` — driving the repo's Playwright/browser-use setup (or the Claude-in-Chrome tools for a deployed env). For each journey, from a clean session, follow every step and capture a screenshot at every **page nav, modal open/close, menu/dropdown, state transition, and empty/error state** to `"$UX_TMP/<persona>/<journey>/step-N.png"`. Record for each step: label, URL, screenshot path, and any console errors. Do not fake a step you couldn't reach — mark it not-walked with the reason (e.g. an external dependency with no local emulator; note how its failure path behaved, which is itself a data point).
+Run inside a **verification-worker** (contract: `docs/worker-contracts.md#verification-worker`) — *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, browser via the repo's Playwright/browser-use setup or the Claude-in-Chrome tools for a deployed env. For each journey, from a clean session, follow every step and capture a screenshot at every **page nav, modal open/close, menu/dropdown, state transition, and empty/error state** to `"$UX_TMP/<persona>/<journey>/step-N.png"`. The worker's output artifact is the **journey manifest** at `"$UX_TMP/manifest.json"`: one entry per step — persona, journey, label, URL, screenshot path, console errors, and `walked: true|false` with the reason when false. Do not fake a step you couldn't reach — mark it not-walked with the reason (e.g. an external dependency with no local emulator; note how its failure path behaved, which is itself a data point).
 
 For breadth and speed, split personas across parallel workers; the orchestrator still **looks at the screenshots itself** before writing findings.
 
@@ -80,11 +80,11 @@ For every journey, judge — citing the screenshot for each finding:
 8. **Responsive** — does the primary mobile journey hold up (especially if the product promises "on their phone")?
 9. **Expectation-setting** — does the funnel set expectations it later charges on (e.g. pricing/trial knowable *before* sign-up, not only in-app)?
 
-Synthesise via a **synthesis-worker** (contract: `docs/worker-contracts.md#synthesis-worker`) — *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"` — given the epic/product goal, the journey manifest, and screenshot paths. It rates each finding `high` / `medium` / `low` (impact-on-user), names the persona and screenshot, and proposes a concrete fix. It also lists **confirmed strengths**.
+Synthesise via a **synthesis-worker** (contract: `docs/worker-contracts.md#synthesis-worker`) — *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"` — given the epic/product goal, the journey manifest (`"$UX_TMP/manifest.json"`), and screenshot paths; it writes its findings to `"$UX_TMP/findings.md"`. It rates each finding `high` / `medium` / `low` (impact-on-user), names the persona and screenshot, and proposes a concrete fix. It also lists **confirmed strengths**.
 
 ### Step 5: Report
 
-Produce a severity-ranked report: a summary scoreboard (counts by severity + confirmed strengths), the **two root-cause patterns** with their instances grouped under them, a **Top-N in priority order**, then findings by severity (each: title, severity chip, persona/source, the defect, the fix), a **What's working** section, a one-paragraph maturity verdict, and a method/coverage appendix (which journeys were walked live vs not-walked and why). Render it as an **Artifact** (load the `artifact-design` skill first; ground it in the *product's own* brand, not a template) so it's shareable, or as markdown if no visual surface is warranted.
+Produce a severity-ranked report: a summary scoreboard (counts by severity + confirmed strengths), the **two root-cause patterns** with their instances grouped under them, a **Top-N in priority order**, then findings by severity (each: title, severity chip, persona/source, the defect, the fix), a **What's working** section, a one-paragraph maturity verdict, and a method/coverage appendix (which journeys were walked live vs not-walked and why). Render it as a shareable page when the harness supports one (*Claude Code adapter:* publish an Artifact, loading the harness's `artifact-design` skill first; ground it in the *product's own* brand, not a template); otherwise write it as markdown to `"$UX_TMP/report.md"` — the report content is the portable deliverable, the rendering surface is an adapter concern.
 
 **Offer, don't auto-do:** if the user wants the findings actioned, they become tickets (`/create-issue` or a seeded set) and then an epic (`/plan-epic` → `/architect` → `/implement-wave` → `/close-epic`). Don't file issues or fix code as part of the review unless asked.
 
