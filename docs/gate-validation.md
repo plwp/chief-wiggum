@@ -393,7 +393,12 @@ python3 "$CW_HOME/scripts/gate_validation_designer.py" mutate <gate> --max-mutan
   trials whose `seed_id` has no re-executable entry in the retroactive suite
   (`tests/test_gate_validation_retroactive.py` — a seed re-executed in a
   companion suite, e.g. `test_saas_gate.py`, is located and reported as
-  informational, not flagged); authority-boundary claims that name a limit
+  informational, not flagged; a seed counts as re-executable only when it
+  appears as a quote-delimited string literal — a bare or comment mention is
+  classified `mention-only:<file>` and flagged as missing); missing
+  applicability declarations (a record with no `telemetry_dependent` key, like
+  one with `concurrency_applicable: false` but no note, gets
+  `n/a-unjustified`, not a silent pass); authority-boundary claims that name a limit
   but have no no-fire trial proving the boundary (an **honest heuristic** —
   keyword overlap, every match labeled proven-confident/proven-uncertain and
   possibly wrong in both directions); clean-corpus runs whose coverage
@@ -410,7 +415,11 @@ python3 "$CW_HOME/scripts/gate_validation_designer.py" mutate <gate> --max-mutan
   instruction (revert to report-only + ticket to re-derive the seed class,
   per "Demotion" above); a certified `no-fire` boundary → consistent with the
   authority statement, no demotion, stated; an uncertified class or an
-  untagged escape → surfaced as such.
+  untagged escape → surfaced as such. A class certified BOTH caught and
+  no-fire still demotes (conservative, parity with `factory_log`) but carries
+  an explicit caveat: the event cannot distinguish the path — confirm the
+  escape traversed the certified-caught scenario before executing the
+  demotion.
 - **`extract-seeds <gate>|--all`** materializes the record's trials into
   `docs/quality/validation/seeds/<gate>.seeds.json` — **seeds versioned
   separately from gate code** made concrete: the seeds file carries
@@ -419,7 +428,11 @@ python3 "$CW_HOME/scripts/gate_validation_designer.py" mutate <gate> --max-mutan
   committed artifact: **re-authoring a record means re-running
   `extract-seeds` in the same change** — `audit` reports record-vs-seeds
   drift otherwise, and `tests/test_gate_validation_designer.py` pins the
-  shipped seeds files byte-for-byte against regeneration.
+  shipped seeds files byte-for-byte against regeneration. The seeds files
+  live in the ratchet-protected pathset (`docs/quality/**`): a branch
+  touching them parks for human review, so regenerate only alongside the
+  record change that motivates it (the CLI prints this reminder after
+  writing).
 - **`mutate <gate>`** is the best-effort mutation-testing leg: runs `mutmut`
   (when installed — it is NOT a project dependency; absent means
   skipped-with-instructions, never silent) scoped to the gate's script file
@@ -427,7 +440,11 @@ python3 "$CW_HOME/scripts/gate_validation_designer.py" mutate <gate> --max-mutan
   the gate's tests is detection logic no seed pins — each survivor is
   proposed as a new seed-class candidate. Runtime is bounded:
   `--max-mutants × --per-mutant-seconds` (defaults 20 × 30s) wall-time on
-  the run, and the candidate list is capped at `--max-mutants`.
+  the run, and the candidate list is capped at `--max-mutants`. A `mutmut
+  run` that exits nonzero is reported as **failed** with the stderr tail —
+  no mutation signal, never presented as a clean zero-survivor result. The
+  flags target the mutmut 2.x interface; 3.x moved to config-file setup —
+  verify your mutmut major version.
 
 **Promotion path (giving it teeth):** if a designer finding class proves
 precise in practice, the path is the same as every gate's — author a

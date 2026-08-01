@@ -174,6 +174,30 @@ def test_telemetry_dependent_gate_requires_instrumentation_deleted(toy_dirs):
         f["seed_class"] for f in _findings(audit, "missing-mandatory-class")]
 
 
+def test_missing_telemetry_dependent_key_is_na_unjustified(toy_dirs):
+    """A record that never DECLARES telemetry_dependent gets no free pass:
+    omission of the key is flagged, mirroring the concurrency handling."""
+    vdir, tests_dir = toy_dirs
+    record = _toy_record()
+    record.pop("telemetry_dependent")
+    audit = _audit(vdir, tests_dir, record)
+    entry = audit["proposed_matrix"]["instrumentation-deleted"]
+    assert entry["status"] == "n/a-unjustified"
+    assert "no telemetry_dependent key" in entry["why"]
+    assert "instrumentation-deleted" in [
+        f["seed_class"] for f in _findings(audit, "na-without-justification")]
+
+
+def test_explicit_telemetry_dependent_false_is_justified_na(toy_dirs):
+    """An explicit telemetry_dependent: false is a declaration — justified n/a,
+    no finding."""
+    vdir, tests_dir = toy_dirs
+    audit = _audit(vdir, tests_dir, _toy_record())  # fixture: explicit False
+    assert audit["proposed_matrix"]["instrumentation-deleted"]["status"] == "n/a"
+    assert "instrumentation-deleted" not in [
+        f.get("seed_class") for f in _findings(audit, "na-without-justification")]
+
+
 # --- (b) re-executable seeds ---------------------------------------------------
 
 
@@ -187,6 +211,38 @@ def test_audit_flags_a_seed_with_no_reexecutable_entry(toy_dirs):
     # the seeds that ARE in the retroactive suite are located, not flagged
     assert audit["seed_execution"]["toy-direct-01"] == "retroactive"
     assert audit["seed_execution"]["toy-ghost-99"] == "missing"
+
+
+def test_comment_mention_of_a_seed_is_mention_only_and_flagged(toy_dirs):
+    """A seed_id that appears only in a comment (or any bare, unquoted mention)
+    is NOT re-executable — classified mention-only:<file> and flagged missing
+    with the mention-only note."""
+    vdir, tests_dir = toy_dirs
+    retro = tests_dir / "test_gate_validation_retroactive.py"
+    retro.write_text(retro.read_text() + "# TODO: toy-planned-77 will be executed here\n")
+    record = _toy_record()
+    record["seeded_defect_trials"].append(_trial("toy-planned-77", "direct"))
+    audit = _audit(vdir, tests_dir, record)
+    assert audit["seed_execution"]["toy-planned-77"] == \
+        "mention-only:test_gate_validation_retroactive.py"
+    flagged = _findings(audit, "no-reexecutable-seed")
+    assert [f["seed_id"] for f in flagged] == ["toy-planned-77"]
+    assert "outside a string literal" in flagged[0]["detail"]
+    assert "bare/comment mention" in flagged[0]["detail"]
+
+
+def test_quoted_literal_seed_counts_as_reexecutable(toy_dirs):
+    """A quote-delimited seed_id (registry key / test argument) is the form
+    that counts — both double- and single-quoted."""
+    vdir, tests_dir = toy_dirs
+    (tests_dir / "test_toy_gate.py").write_text("RUN = ['toy-single-quoted-01']\n")
+    record = _toy_record()
+    record["seeded_defect_trials"].append(_trial("toy-single-quoted-01", "direct"))
+    audit = _audit(vdir, tests_dir, record)
+    # fixture seeds are double-quoted dict keys in the retroactive suite
+    assert audit["seed_execution"]["toy-direct-01"] == "retroactive"
+    assert audit["seed_execution"]["toy-single-quoted-01"] == "other:test_toy_gate.py"
+    assert not _findings(audit, "no-reexecutable-seed")
 
 
 def test_seed_reexecuted_outside_retroactive_suite_is_located_not_flagged(toy_dirs):
@@ -304,6 +360,18 @@ def test_audit_cross_checks_record_against_seeds_file(toy_dirs):
     assert drift and "toy-direct-01" in drift[0]["detail"]
 
 
+def test_extract_seeds_cli_prints_the_parking_note(toy_dirs):
+    """The seeds files live under docs/quality/** — the ratchet-protected
+    pathset — so the CLI must warn that a branch touching them parks."""
+    vdir, tests_dir = toy_dirs
+    _write_record(vdir, _toy_record())
+    res = _cli("extract-seeds", "toy_gate", "--validation-dir", str(vdir))
+    assert res.returncode == 0, res.stderr
+    assert "ratchet-protected pathset (docs/quality/**)" in res.stdout
+    assert "parks for human review" in res.stdout
+    assert "regenerate only alongside the record change that motivates it" in res.stdout
+
+
 def test_no_seeds_file_is_reported_but_not_drift(toy_dirs):
     vdir, tests_dir = toy_dirs
     audit = _audit(vdir, tests_dir, _toy_record())
@@ -352,6 +420,28 @@ def test_escape_matching_a_certified_caught_class_is_a_demotion(toy_dirs, tmp_pa
     instr = rows[0]["instruction"]
     assert "report-only" in instr and "tracking ticket" in instr
     assert "evasion-omission" in instr
+    assert "CAVEAT" not in instr  # unambiguous class: no both-certified caveat
+
+
+def test_escape_class_certified_both_caught_and_boundary_demotes_with_caveat(toy_dirs, tmp_path):
+    """A class with BOTH a passing caught trial and a passing no-fire boundary
+    trial still demotes (conservative, parity with factory_log) — but the
+    ambiguity is stated explicitly, never silent."""
+    vdir, tests_dir = toy_dirs
+    record = _toy_record()
+    record["seeded_defect_trials"].append(_trial(
+        "toy-omission-02", "evasion-omission", expected="no-fire", result="not-fired",
+        injected="an omission variant placed in an excluded subtree"))
+    _write_record(vdir, record)
+    log = _write_log(tmp_path, [
+        {"event": "escape", "missed_by": "toy_gate", "seed_class": "evasion-omission",
+         "summary": "ambiguous-path escape", "severity": "high"}])
+    rows = gvd.escapes_view(log, vdir)
+    assert rows[0]["verdict"] == "DEMOTION"
+    instr = rows[0]["instruction"]
+    assert ("class certified both caught and no-fire — the event cannot distinguish "
+            "the path; confirm the escape traversed the certified-caught scenario "
+            "before executing the demotion") in instr
 
 
 def test_escape_through_a_certified_boundary_does_not_demote(toy_dirs, tmp_path):
@@ -415,6 +505,43 @@ def test_mutate_without_mutmut_is_skipped_with_instructions(tmp_path):
     assert result["status"] == "skipped"
     assert "pip install mutmut" in result["instructions"]
     assert "mutate toy_gate" in result["instructions"]
+    # version caveat: the flags target the mutmut 2.x interface
+    assert "mutmut 2.x" in result["instructions"]
+    assert "3.x" in result["instructions"]
+
+
+def test_mutate_nonzero_run_exit_is_failed_not_clean(tmp_path):
+    """A mutmut run that exits nonzero produced no mutation signal — the result
+    is 'failed' with the stderr surfaced, results parsing skipped; it must
+    never read as a clean zero-survivor run."""
+    (tmp_path / "toy_gate.py").write_text("x = 1\n")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 2, stdout="", stderr="Error: no such option: --paths-to-mutate\n")
+
+    result = gvd.mutate_gate("toy_gate", scripts_dir=tmp_path, mutmut_available=True,
+                             runner=fake_run)
+    assert result["status"] == "failed"
+    assert "NOT a clean result" in result["detail"]
+    assert "no such option: --paths-to-mutate" in result["detail"]  # stderr tail surfaced
+    assert "mutmut 2.x" in result["detail"]  # version caveat on the failure path too
+    assert len(calls) == 1  # `mutmut results` was never invoked
+    rendered = gvd.render_mutate("toy_gate", result)
+    assert "status: failed" in rendered and "NOT a clean result" in rendered
+
+
+def test_cli_mutate_failed_run_still_exits_zero(monkeypatch, capsys):
+    """Report-only always: a failed mutmut run is reported, exit stays 0."""
+    monkeypatch.setattr(gvd, "mutate_gate", lambda *a, **k: {
+        "status": "failed",
+        "detail": "mutmut run failed — no mutation signal; NOT a clean result"})
+    rc = gvd.main(["mutate", "toy_gate"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NOT a clean result" in out
 
 
 def test_mutate_missing_gate_script_is_reported(tmp_path):

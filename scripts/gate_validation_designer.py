@@ -23,7 +23,9 @@ Subcommands:
   (a) mandatory classes with no genuinely-passing trial,
   (b) trials whose seed_id has no re-executable entry in the retroactive
   suite (``tests/test_gate_validation_retroactive.py``; seeds found in
-  another suite are located and reported, not flagged),
+  another suite are located and reported, not flagged; only a
+  quote-delimited string-literal occurrence counts — a bare/comment mention
+  is ``mention-only`` and flagged as missing),
   (c) authority-boundary claims that name a limit but have no no-fire trial
   proving the boundary — an HONEST keyword-overlap heuristic, every match
   labeled proven-confident/proven-uncertain and possibly wrong,
@@ -46,7 +48,9 @@ Subcommands:
   installed) scoped to the gate's script with the gate's own unit tests as
   the runner. A mutant that SURVIVES the gate's tests is detection logic no
   seed pins — each survivor is proposed as a new seed-class candidate.
-  When mutmut is absent: skipped WITH instructions, never silent. Runtime
+  When mutmut is absent: skipped WITH instructions, never silent. A run
+  that exits nonzero is reported ``failed`` with the stderr tail — no
+  mutation signal, never presented as a clean zero-survivor result. Runtime
   is bounded: the run gets ``--max-mutants x --per-mutant-seconds`` wall
   time (defaults 20 x 30s) and the candidate list is capped at
   ``--max-mutants``.
@@ -167,21 +171,36 @@ def boundary_coverage(record: dict) -> list[dict]:
 # --- seed re-execution scan ----------------------------------------------------
 
 
+def _quoted(seed_id: str, text: str) -> bool:
+    """True when seed_id appears as a quote-delimited string literal — the only
+    form that counts as re-executable (a registry key / test argument), as
+    opposed to a bare or comment mention."""
+    return f'"{seed_id}"' in text or f"'{seed_id}'" in text
+
+
 def seed_execution_locations(seed_ids: list[str], tests_dir: Path) -> dict[str, str]:
     """Where each seed_id is re-executable: 'retroactive' (the protocol home,
     tests/test_gate_validation_retroactive.py), 'other:<file>' (a companion
-    suite, e.g. saas_gate's fixture-server tests), or 'missing'."""
+    suite, e.g. saas_gate's fixture-server tests), 'mention-only:<file>' (the
+    id appears only OUTSIDE a string literal — a comment or bare mention is
+    not a re-executable entry, so this counts as missing), or 'missing'."""
     tests_dir = Path(tests_dir)
     retro = tests_dir / RETROACTIVE_SUITE
     retro_text = retro.read_text() if retro.is_file() else ""
-    others = sorted(p for p in tests_dir.glob("test_*.py") if p.name != RETROACTIVE_SUITE)
+    texts = {p.name: p.read_text()
+             for p in sorted(tests_dir.glob("test_*.py")) if p.name != RETROACTIVE_SUITE}
     out: dict[str, str] = {}
     for sid in seed_ids:
-        if sid in retro_text:
+        if _quoted(sid, retro_text):
             out[sid] = "retroactive"
             continue
-        hit = next((p for p in others if sid in p.read_text()), None)
-        out[sid] = f"other:{hit.name}" if hit else "missing"
+        hit = next((name for name, text in texts.items() if _quoted(sid, text)), None)
+        if hit:
+            out[sid] = f"other:{hit}"
+            continue
+        mention = (RETROACTIVE_SUITE if sid in retro_text
+                   else next((name for name, text in texts.items() if sid in text), None))
+        out[sid] = f"mention-only:{mention}" if mention else "missing"
     return out
 
 
@@ -292,9 +311,15 @@ def proposed_matrix(record: dict) -> dict[str, dict]:
                 entry["why"] = ("concurrency_applicable: false but no concurrency_note — "
                                 "the protocol requires a justification, not a silent omission")
         elif cls == "instrumentation-deleted":
-            entry["status"] = "n/a"
-            entry["why"] = ("telemetry_dependent: false — no instrumentation channel to "
-                            "delete (protocol: omit this seed)")
+            if "telemetry_dependent" in record:
+                entry["status"] = "n/a"
+                entry["why"] = ("telemetry_dependent: false — no instrumentation channel to "
+                                "delete (protocol: omit this seed)")
+            else:
+                entry["status"] = "n/a-unjustified"
+                entry["why"] = ("no telemetry_dependent key — the record never declares "
+                                "whether an instrumentation channel exists; the protocol "
+                                "requires an explicit false, not a silent omission")
         else:  # pragma: no cover - the trio and direct are always required
             entry["status"] = "n/a"
             entry["why"] = "not required by this record's declarations"
@@ -339,6 +364,13 @@ def audit_gate(gate: str, validation_dir: str | Path,
                              "detail": f"seed_id {sid!r} appears in no test suite under "
                                        f"{tests_dir.name}/ — the trial cannot be re-executed, "
                                        "so the record is an aspirational claim for it"})
+        elif loc.startswith("mention-only:"):
+            findings.append({"kind": "no-reexecutable-seed", "seed_id": sid,
+                             "detail": f"seed_id {sid!r} appears only outside a string "
+                                       f"literal in {loc.removeprefix('mention-only:')} "
+                                       "(bare/comment mention, not a re-executable entry) — "
+                                       "the trial cannot be re-executed, so the record is "
+                                       "an aspirational claim for it"})
         elif loc.startswith("other:"):
             findings.append({"kind": "seed-outside-retroactive-suite", "seed_id": sid,
                              "detail": f"re-executed in {loc.removeprefix('other:')} rather "
@@ -508,8 +540,17 @@ def escapes_view(log_file: str | Path, validation_dir: str | Path,
         else:
             caught, boundary = _certified_classes(record)
             if seed_class in caught:
+                # A class in BOTH sets (a caught trial AND a no-fire boundary
+                # trial) still demotes — conservative, parity with factory_log —
+                # but the ambiguity is stated, never silent.
                 row["verdict"] = "DEMOTION"
                 row["instruction"] = _demotion_instruction(g, seed_class)
+                if seed_class in boundary:
+                    row["instruction"] += (
+                        " CAVEAT: class certified both caught and no-fire — the event "
+                        "cannot distinguish the path; confirm the escape traversed the "
+                        "certified-caught scenario before executing the demotion."
+                    )
             elif seed_class in boundary:
                 row["verdict"] = "boundary-consistent"
                 row["instruction"] = (
@@ -530,6 +571,12 @@ def escapes_view(log_file: str | Path, validation_dir: str | Path,
 
 
 # --- mutate: best-effort mutmut leg --------------------------------------------
+
+
+_MUTMUT_VERSION_CAVEAT = (
+    "Version caveat: these flags target the mutmut 2.x interface; 3.x moved to "
+    "config-file setup — verify your mutmut major version."
+)
 
 
 def _mutmut_available() -> bool:
@@ -583,7 +630,8 @@ def mutate_gate(gate: str, scripts_dir: str | Path, tests_path: str | Path | Non
             "  pip install mutmut   # in the CW venv (feedback: use a venv)\n"
             f"  python3 scripts/gate_validation_designer.py mutate {gate}\n"
             "Surviving mutants indicate detection logic no seed pins; each is a "
-            "proposed new seed-class candidate for the record + seeds file.")}
+            "proposed new seed-class candidate for the record + seeds file.\n"
+            f"{_MUTMUT_VERSION_CAVEAT}")}
     script = scripts_dir / f"{gate}.py"
     if not script.is_file():
         return {"status": "error", "detail": f"gate script not found: {script.name} "
@@ -595,9 +643,10 @@ def mutate_gate(gate: str, scripts_dir: str | Path, tests_path: str | Path | Non
                "--tests-dir", str(tests_path.parent),
                "--runner", f"{sys.executable} -m pytest -x -q {tests_path}"]
     status, detail = "ran", ""
+    proc = None
     try:
-        runner(run_cmd, capture_output=True, text=True, timeout=timeout,
-               cwd=scripts_dir.parent)
+        proc = runner(run_cmd, capture_output=True, text=True, timeout=timeout,
+                      cwd=scripts_dir.parent)
     except subprocess.TimeoutExpired:
         status = "partial"
         detail = (f"mutmut run timed out after {timeout}s (bounded by "
@@ -605,6 +654,12 @@ def mutate_gate(gate: str, scripts_dir: str | Path, tests_path: str | Path | Non
                   "(mutmut caches progress across runs)")
     except OSError as exc:
         return {"status": "error", "detail": f"could not run mutmut: {exc}"}
+    if proc is not None and proc.returncode != 0:
+        stderr_tail = "\n".join((proc.stderr or "").strip().splitlines()[-10:])
+        return {"status": "failed", "detail": (
+            f"mutmut run failed — no mutation signal; NOT a clean result "
+            f"(exit {proc.returncode}). stderr tail:\n{stderr_tail or '(empty)'}\n"
+            f"{_MUTMUT_VERSION_CAVEAT}")}
     results = runner([sys.executable, "-m", "mutmut", "results"],
                      capture_output=True, text=True, timeout=120,
                      cwd=scripts_dir.parent)
@@ -680,7 +735,7 @@ def render_mutate(gate: str, result: dict) -> str:
     lines = [f"# Mutation leg — {gate} (status: {result['status']})", ""]
     if result["status"] == "skipped":
         lines.append(result["instructions"])
-    elif result["status"] == "error":
+    elif result["status"] in ("error", "failed"):
         lines.append(result["detail"])
     else:
         if result.get("detail"):
@@ -784,12 +839,18 @@ def main(argv: list[str] | None = None) -> int:
             print(render_escapes(rows))
     elif args.cmd == "extract-seeds":
         gates = [args.gate] if args.gate else gates_with_records(args.validation_dir)
+        extracted_any = False
         for g in gates:
             try:
                 path = extract_seeds(g, args.validation_dir)
+                extracted_any = True
                 print(f"extracted {path}")
             except FileNotFoundError as exc:
                 print(f"skipped {g}: {exc}")
+        if extracted_any:
+            print("note: seeds files live in the ratchet-protected pathset "
+                  "(docs/quality/**) — a branch touching them parks for human review; "
+                  "regenerate only alongside the record change that motivates it.")
     elif args.cmd == "mutate":
         result = mutate_gate(args.gate, scripts_dir=args.scripts_dir,
                              tests_path=args.tests, max_mutants=args.max_mutants,
