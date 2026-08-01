@@ -161,21 +161,76 @@
       "feeds": "deployment-release, improvement-loop",
       "spec": "patterns/build-test-floor/pattern.md",
       "manifest": "patterns/build-test-floor/manifest.json"
+    },
+    {
+      "id": "reconciliation-sweep",
+      "title": "Bidirectional Reconciliation Sweep",
+      "category": "process-loop",
+      "status": "specified",
+      "trust_class": "destructive-capable-automation-protected-path",
+      "summary": "Periodic job repairing local<->external divergence in both directions plus a stale-in-flight sweep. Mined discipline: status-guarded CAS repair, state-machine legality before every write, fail-closed on unknown age, re-confirm against live external truth before destroying, deterministic idempotency keys, paired flag set/clear sweeps, per-run counts with surfaced skips. Promoted from candidate; INV-RSW-001..007.",
+      "invariants": "INV-RSW-001..007",
+      "depends_on": "fetch-on-webhook-reconcile",
+      "feeds": "improvement-loop",
+      "spec": "patterns/reconciliation-sweep/pattern.md",
+      "manifest": "patterns/reconciliation-sweep/manifest.json"
+    },
+    {
+      "id": "transactional-email-and-dunning",
+      "title": "Transactional Email & Dunning Lifecycle",
+      "category": "process-loop",
+      "status": "specified",
+      "trust_class": "outbound-end-user-messaging-protected-path",
+      "summary": "Provider-neutral lifecycle messaging: transport-shaped send seam, atomic send-once keys (unique index/CAS, never read-then-write), outbox with provider correlation, re-assert-state-before-send, declared blocking/best-effort criticality. Dunning half (bounded ladder -> explicit grant-preserving degrade) is design-derived and flagged ASPIRATIONAL until a product builds it. Promoted from candidate; INV-TED-001..007.",
+      "invariants": "INV-TED-001..007",
+      "depends_on": "provider-neutral-adapter, feature-entitlements",
+      "feeds": "engagement-instrumentation, improvement-loop",
+      "spec": "patterns/transactional-email-and-dunning/pattern.md",
+      "manifest": "patterns/transactional-email-and-dunning/manifest.json"
+    },
+    {
+      "id": "feature-entitlements",
+      "title": "Feature Entitlements Read-Model",
+      "category": "saas-infra",
+      "status": "specified",
+      "trust_class": "billing-adjacent-authorization-protected-path",
+      "summary": "One resolver answering 'what can this account do', consumed identically by backend gates and frontend: per-key tier<-override<-grandfather layering (reuses entitlement-overlay's mined discipline), fail-closed on unknown principal, explicit dated grandfathering, deployment-capability/entitlement split, tier ceiling enforced at write with audit. Promoted from candidate; INV-FE-001..006.",
+      "invariants": "INV-FE-001..006",
+      "depends_on": "entitlement-overlay",
+      "feeds": "tiered-subscription, frictionless-onboarding, self-serve-billing-portal",
+      "spec": "patterns/feature-entitlements/pattern.md",
+      "manifest": "patterns/feature-entitlements/manifest.json"
+    },
+    {
+      "id": "self-serve-billing-portal",
+      "title": "Self-Serve Billing Portal",
+      "category": "saas-infra",
+      "status": "specified",
+      "trust_class": "money-moving-surface-protected-path",
+      "summary": "Provider-hosted portal session minted server-side (customer binding from the server's own mirror, caller-scoped, fail-closed) + a webhook-authoritative local plan/seat mirror with a single sanctioned writer, fetch-on-webhook intake (verified, event-id-deduped, persist-after-mutate), and subscription state that actually degrades capability via feature-entitlements. Promoted from candidate; INV-SBP-001..006.",
+      "invariants": "INV-SBP-001..006",
+      "depends_on": "fetch-on-webhook-reconcile, feature-entitlements",
+      "feeds": "feature-entitlements",
+      "spec": "patterns/self-serve-billing-portal/pattern.md",
+      "manifest": "patterns/self-serve-billing-portal/manifest.json"
     }
   ],
   "stacks": {
     "$comment": "Concrete stack profiles bind these vendor-neutral patterns to a real infrastructure stack + runnable stand-up skills + a cost model. This is the layer that turns the catalog into a micro/mini-SaaS factory. Index: patterns/stacks/registry.json. See docs/patterns-registry.md#stack-profiles.",
     "index": "patterns/stacks/registry.json",
     "profiles": [
-      {"id": "gcp-serverless-saas", "summary": "Firebase Hosting + Cloud Run + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless WIF, as a T0->T1->T2 cost ladder ($0 PoC -> paid prod).", "provenance": ["plwp.net", "booking-forms", "dogeared-coach"]}
+      {
+        "id": "gcp-serverless-saas",
+        "summary": "Firebase Hosting + Cloud Run + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless WIF, as a T0->T1->T2 cost ladder ($0 PoC -> paid prod).",
+        "provenance": [
+          "plwp.net",
+          "booking-forms",
+          "dogeared-coach"
+        ]
+      }
     ]
   },
-  "candidates": [
-    {"id": "reconciliation-sweep", "title": "Bidirectional Reconciliation Sweep", "category": "process-loop", "status": "candidate", "summary": "Periodic job repairing divergence between local records and an external system in both directions plus a stale-in-flight sweep. Fail-closed on unknown age, re-confirm before destructive action, idempotent guarded updates, per-run counts report. Its run reports and audit stream are operational-health signal.", "reusability": "high"},
-    {"id": "transactional-email-and-dunning", "title": "Transactional Email & Dunning Lifecycle", "category": "process-loop", "status": "candidate", "summary": "Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge (fires if a signed-up user hasn't hit the activation event), re-engagement, and a failed-payment dunning sequence with bounded retries before degrade. Send-once keys prevent duplicate sends across retries. Recovery outcomes are conversion/retention signal.", "reusability": "high"},
-    {"id": "feature-entitlements", "title": "Feature Entitlements Read-Model", "category": "saas-infra", "status": "candidate", "summary": "A single entitlement resolver deriving capability flags from tier + per-account overrides + grandfathering, consumed identically by backend gates and the frontend (one source of 'what can this account do'). Distinct from the tier matrix: it layers overrides and is the read model onboarding + UI both query.", "reusability": "medium-high"},
-    {"id": "self-serve-billing-portal", "title": "Self-Serve Billing Portal", "category": "saas-infra", "status": "candidate", "summary": "Let users manage plan, payment method, and seats without support -- provider-hosted portal session minted server-side + a local mirror of plan/seat state kept authoritative via billing webhooks. Removes the #1 support-ticket class for tiered SaaS.", "reusability": "medium"}
-  ],
+  "candidates": [],
   "meta_disciplines": {
     "$comment": "Recurring cross-pattern engineering rules worth stating once, not registry entries themselves.",
     "rules": [

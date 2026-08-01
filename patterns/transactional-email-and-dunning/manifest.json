@@ -1,0 +1,146 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/transactional-email-and-dunning/pattern.md. INV-TED-003/004/005 mined from a shipped production SaaS's email subsystem (private-repo paths held out of the public registry per the provenance policy); INV-TED-001 reuses the in-repo provider-neutral-adapter; INV-TED-002 is the atomic strengthening of a mined mechanism with a real read-then-write race; INV-TED-006/007 are design-derived and flagged ASPIRATIONAL per issue #139 \u2014 no mined app has built dunning.",
+  "id": "transactional-email-and-dunning",
+  "version": 1,
+  "title": "Transactional Email & Dunning Lifecycle",
+  "category": "process-loop",
+  "trust_class": "outbound-end-user-messaging-protected-path",
+  "applies_when": [
+    "the product sends state-triggered lifecycle messages (signup, inactivity, payment failure), not only request/response receipts",
+    "sends must be exactly-once per (entity, message-type) under retries and replicas",
+    "failed payments need a bounded recovery sequence ending in an explicit, reversible degrade"
+  ],
+  "components": [
+    "transport-shaped-seam: all sends go through one adapter port (Send(message)); domain helpers compose messages and never hold provider SDK types",
+    "atomic-send-once: a deterministic (entity, message_type) key claimed via unique index or CAS \u2014 never read-then-write \u2014 so replicas and retries produce one send",
+    "outbox: every attempt writes a row with status, error, and provider message id; manual resend only from failed",
+    "reassert-state-before-send: async notify paths re-read the entity and confirm the triggering state still holds before sending",
+    "declared-criticality: each message type is blocking (failure fails the operation; missing recipient fails before send) or best-effort (failure logged, never blocks)",
+    "bounded-dunning-ladder: failed payment starts a bounded, spaced retry-and-message ladder; exhaustion ends in an explicit grant-preserving degrade via the entitlement read-model (ASPIRATIONAL)",
+    "suppression: bounce/complaint/unsubscribe list checked before every send; provider delivery webhooks feed it (ASPIRATIONAL)"
+  ],
+  "invariants": {
+    "$comment": "003/004/005 mined (realized_as describes mechanisms, paths withheld); 001 cites the in-repo provider-neutral-adapter; 002 atomically strengthens a mined mechanism whose race is real; 006/007 design-derived + aspirational \u2014 they ground when a product first builds dunning/suppression.",
+    "cluster": [
+      {
+        "id": "INV-TED-001",
+        "statement": "Transport-shaped provider seam: every send goes through one adapter port shaped like Send(message); domain code composes messages and never holds provider SDK types, so swapping providers touches the adapter alone. A domain-shaped many-method interface that leaks provider types into every signature does not satisfy this.",
+        "realized_as": {
+          "app": "chief-wiggum registry",
+          "code": "patterns/provider-neutral-adapter/manifest.json (the port/adapter discipline this seam instantiates)"
+        }
+      },
+      {
+        "id": "INV-TED-002",
+        "statement": "Atomic send-once: every lifecycle send derives a deterministic send key (entity, message_type) and claims it atomically (unique index or CAS) before sending \u2014 never read-then-write \u2014 so N replicas running the same scheduler and user-driven retries produce exactly one send per key.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-TED-003",
+        "statement": "Outbox with provider correlation: every send attempt writes an outbox row carrying status (sent/failed), the error on failure, and the provider's message id on success; recording is best-effort and never blocks delivery; manual resend is permitted only from the failed state.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "email outbox: both branches of the single send path record a row (failed + error, sent + provider msg id); resend endpoint refuses non-failed rows"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-TED-004",
+        "statement": "Re-assert state before send: an asynchronous notify path re-reads the triggering entity and confirms the triggering state still holds immediately before sending; if the entity has moved on, the send is dropped silently as correct behavior, not an error.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "post-sweep notifier: detached goroutine with its own timeout re-queries the record asserting the swept status before composing the email"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-TED-005",
+        "statement": "Criticality-declared failure: each message type declares blocking (send failure fails the surrounding operation with a client-visible error; missing recipient or provider config fails before any send) or best-effort (failure is logged and never blocks the operation); the declaration lives with the message type, not ad hoc at call sites.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "booking intake: business notification failure aborts the request (5xx), customer courtesy copy failure is logged and the request succeeds; empty business recipient fails before send"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-TED-006",
+        "statement": "Bounded dunning ladder with explicit grant-preserving degrade (ASPIRATIONAL): a failed payment starts a bounded, spaced sequence of retry-and-message steps; exhaustion ends in an explicit degrade that narrows future capability via the entitlement read-model and never claws back delivered value; the outcome is never silence (no stamped status that messages no one) and never infinite grace; ladder timing, copy, and degrade economics are admin-gated.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-TED-007",
+        "statement": "Suppression respected (ASPIRATIONAL): a bounce/complaint/unsubscribe suppression store is consulted before every send, and provider delivery webhooks (bounce, complaint) feed it; a send to a suppressed address is a defect, not a delivery attempt.",
+        "grounding": "design-derived"
+      }
+    ]
+  },
+  "parameters": {
+    "send_adapter": {
+      "type": "string",
+      "required": true,
+      "description": "The transport-shaped port \u2014 a provider-neutral-adapter instance (INV-TED-001)."
+    },
+    "message_types": {
+      "type": "object",
+      "required": true,
+      "description": "Each message type with trigger, template, and declared criticality: blocking or best-effort (INV-TED-005)."
+    },
+    "send_once_store": {
+      "type": "string",
+      "required": true,
+      "description": "Where (entity, message_type) keys are atomically claimed (INV-TED-002)."
+    },
+    "outbox": {
+      "type": "string",
+      "required": true,
+      "description": "The attempt ledger: status, error, provider message id (INV-TED-003)."
+    },
+    "dunning_ladder": {
+      "type": "object",
+      "required": false,
+      "description": "Steps (delay, message, retry) and the exhaustion degrade action \u2014 the aspirational half (INV-TED-006)."
+    },
+    "suppression_store": {
+      "type": "string",
+      "required": false,
+      "description": "Bounce/complaint/unsubscribe list consulted before send (INV-TED-007)."
+    }
+  },
+  "success_metrics": {
+    "$comment": "Recovery outcomes are conversion/retention signal; ladder economics are protected-path so the improvement loop proposes, a human approves.",
+    "metrics": [
+      {
+        "id": "duplicate_sends",
+        "goal": "zero",
+        "desc": "atomic send-once efficacy (INV-TED-002)"
+      },
+      {
+        "id": "blocking_send_failures_surfaced",
+        "goal": "up",
+        "desc": "share of blocking failures that reached a human/operator (INV-TED-005)"
+      },
+      {
+        "id": "dunning_recovery_rate",
+        "goal": "up",
+        "desc": "failed payments recovered by the ladder (INV-TED-006)"
+      },
+      {
+        "id": "silent_churn_after_payment_failure",
+        "goal": "zero",
+        "desc": "no stamped status that messages no one (INV-TED-006)"
+      },
+      {
+        "id": "suppression_violations",
+        "goal": "zero",
+        "desc": "sends to suppressed addresses (INV-TED-007)"
+      }
+    ]
+  },
+  "protected_paths": [
+    "message templates + triggers (outbound end-user messaging \u2014 trust class)",
+    "the send-once store + key derivation (INV-TED-002)",
+    "the dunning ladder's timing, copy, and degrade economics (INV-TED-006)"
+  ],
+  "depends_on": "provider-neutral-adapter, feature-entitlements",
+  "feeds": "engagement-instrumentation, improvement-loop"
+}

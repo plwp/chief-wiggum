@@ -1,0 +1,142 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/self-serve-billing-portal/pattern.md. INV-SBP-001/005 mined from a shipped production billing integration (private-repo paths held out of the public registry per the provenance policy); INV-SBP-004 reuses the in-repo fetch-on-webhook-reconcile pattern; INV-SBP-002/003/006 are design-derived, each inverting an observed production failure (unscoped minting, two-writer mirror field, status gating nothing).",
+  "id": "self-serve-billing-portal",
+  "version": 1,
+  "title": "Self-Serve Billing Portal",
+  "category": "saas-infra",
+  "trust_class": "money-moving-surface-protected-path",
+  "applies_when": [
+    "plan/payment-method/seat management is a real support-ticket class to remove",
+    "the payment provider offers a hosted portal session API plus subscription-lifecycle webhooks",
+    "subscription state must gate capability through the entitlement read-model, not just render a badge"
+  ],
+  "components": [
+    "server-minted-session: portal/checkout session minted server-side; customer binding read from the server's own mirror, never client-supplied; return URL server-controlled; missing provider client fails closed",
+    "caller-scoped-minting: a self-serve caller mints only for the account they administer, asserted server-side from the authenticated principal; staff minting is separately authorized and audited",
+    "webhook-authoritative-mirror: the local plan/seat mirror has one sanctioned write path driven by provider webhooks; synchronous syncs route through the same writer (declare controls_field + sanctioned_writers for check_single_writer)",
+    "fetch-on-webhook: handlers re-fetch the authoritative object from the provider rather than trusting the event payload",
+    "verified-idempotent-intake: signature verification fail-closed; event-id dedupe persisted AFTER the mutation so failed mutations retry instead of stranding; handler errors return non-2xx so the provider retries",
+    "declared-degrade: subscription states map to a declared capability degrade consumed via feature-entitlements"
+  ],
+  "invariants": {
+    "$comment": "001/005 mined (realized_as describes the mechanism, paths withheld); 004 cites the in-repo fetch-on-webhook-reconcile pattern; 002/003/006 design-derived (grounding field marks them) \u2014 they ground fully when a product first builds the self-serve surface.",
+    "cluster": [
+      {
+        "id": "INV-SBP-001",
+        "statement": "Server-minted session: the provider-hosted portal/checkout session is minted server-side \u2014 the customer binding is read from the server's own mirror and never accepted from the client, the return URL is server-controlled, and an unconfigured provider client refuses to mint (fail-closed), returning only the session URL to the caller.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "portal-session endpoint: customer id read from the tenant mirror (400 when absent), hardcoded server-side return URL, 503 when the provider client is nil"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-SBP-002",
+        "statement": "Caller-scoped minting: a self-serve caller may mint a portal session only for the account they administer, with the account binding asserted server-side from the authenticated principal \u2014 never from a request parameter; staff minting for arbitrary accounts is a separately-authorized, audited path.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-SBP-003",
+        "statement": "Webhook-authoritative mirror with a single writer: the local plan/seat mirror is written through exactly one sanctioned write path driven by provider webhooks; synchronous admin syncs route through that same writer, so no last-write-wins race between a sync and a webhook can clobber newer state. Declared as controls_field + sanctioned_writers so check_single_writer enforces it mechanically.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-SBP-004",
+        "statement": "Fetch on webhook: on receiving a billing webhook, the handler re-fetches the authoritative object from the provider and derives all mirror writes from the fetched object, never from the event payload.",
+        "realized_as": {
+          "app": "chief-wiggum registry",
+          "code": "patterns/fetch-on-webhook-reconcile/manifest.json (the payload-is-a-doorbell discipline)"
+        }
+      },
+      {
+        "id": "INV-SBP-005",
+        "statement": "Verified, idempotent, retryable intake: webhook signatures are verified fail-closed (a missing secret refuses intake, never bypasses verification); events dedupe on provider event id via a unique index; the dedupe record is persisted AFTER the local mutation so a failed mutation is retried by the provider rather than stranded behind an 'applied' record; and a handler error returns non-2xx so the provider's retry machinery engages.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "payments-side webhook intake: unique event-id index, persist-after-mutate ordering with the stranded-retry rationale documented inline, 5xx on the retry-critical event type"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-SBP-006",
+        "statement": "Declared degrade: every mirrored subscription state (past_due, canceled, trialing) maps to a declared capability consequence consumed through the entitlement read-model; a mirrored status that gates nothing is a defect, not a feature.",
+        "grounding": "design-derived"
+      }
+    ]
+  },
+  "parameters": {
+    "provider": {
+      "type": "string",
+      "required": true,
+      "description": "Billing provider offering the hosted portal session API and lifecycle webhooks."
+    },
+    "mirror_fields": {
+      "type": "object",
+      "required": true,
+      "description": "Mirrored plan/seat fields and their store \u2014 the controls_field set for single-writer enforcement (INV-SBP-003)."
+    },
+    "webhook_writer": {
+      "type": "string",
+      "required": true,
+      "description": "The single sanctioned writer of the mirror (INV-SBP-003)."
+    },
+    "mint_scope": {
+      "type": "string",
+      "required": true,
+      "description": "How the authenticated principal maps to the one account they may mint for (INV-SBP-002)."
+    },
+    "return_url": {
+      "type": "string",
+      "required": true,
+      "description": "Server-controlled portal return URL (INV-SBP-001)."
+    },
+    "degrade_map": {
+      "type": "object",
+      "required": true,
+      "description": "Subscription state to entitlement degrade, consumed by feature-entitlements (INV-SBP-006)."
+    },
+    "staff_mint_audit": {
+      "type": "string",
+      "required": false,
+      "description": "Audit sink for the separately-authorized staff minting path (INV-SBP-002)."
+    }
+  },
+  "success_metrics": {
+    "$comment": "The pattern exists to remove the #1 support-ticket class for tiered SaaS while keeping the mirror truthful.",
+    "metrics": [
+      {
+        "id": "billing_support_tickets",
+        "goal": "down",
+        "desc": "plan/payment/seat changes self-served"
+      },
+      {
+        "id": "mirror_provider_divergence",
+        "goal": "zero",
+        "desc": "webhook-authoritative + fetch-on-webhook discipline (INV-SBP-003/004)"
+      },
+      {
+        "id": "unsanctioned_mirror_writers",
+        "goal": "zero",
+        "desc": "check_single_writer over the declared controls_field (INV-SBP-003)"
+      },
+      {
+        "id": "webhook_replay_side_effects",
+        "goal": "zero",
+        "desc": "idempotent intake (INV-SBP-005)"
+      },
+      {
+        "id": "canceled_accounts_with_full_capability",
+        "goal": "zero",
+        "desc": "declared degrade actually gates (INV-SBP-006)"
+      }
+    ]
+  },
+  "protected_paths": [
+    "the session-minting endpoint + mint scope (INV-SBP-001/002)",
+    "the mirror's sanctioned write path (INV-SBP-003)",
+    "webhook intake: verification, dedupe, ordering (INV-SBP-005)",
+    "the degrade map (INV-SBP-006 \u2014 billing-adjacent authorization)"
+  ],
+  "depends_on": "fetch-on-webhook-reconcile, feature-entitlements",
+  "feeds": "feature-entitlements"
+}

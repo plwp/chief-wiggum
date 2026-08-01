@@ -1,6 +1,7 @@
 """Tests for scripts/check_patterns.py."""
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -193,3 +194,66 @@ def test_referral_invite_loop_is_specified_with_grounded_cluster():
     grounded = [e for e in cluster if isinstance(e.get("realized_as"), dict)
                 and "elevated-access-session" in e["realized_as"].get("code", "")]
     assert {e["id"] for e in grounded} == {"INV-RIL-001", "INV-RIL-002", "INV-RIL-003"}
+
+
+# --- #139 final promotions: the last four candidates --------------------------
+
+FINAL_PROMOTIONS = {
+    "reconciliation-sweep": ("INV-RSW", 7, "fetch-on-webhook-reconcile"),
+    "feature-entitlements": ("INV-FE", 6, "entitlement-overlay"),
+    "self-serve-billing-portal": (
+        "INV-SBP", 6, "fetch-on-webhook-reconcile, feature-entitlements"),
+    "transactional-email-and-dunning": (
+        "INV-TED", 7, "provider-neutral-adapter, feature-entitlements"),
+}
+
+
+def test_final_four_are_specified_and_candidates_is_empty():
+    reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
+    assert reg.get("candidates") == [], "#139 done looks like: zero remaining candidates"
+    for pid, (prefix, n, dep) in FINAL_PROMOTIONS.items():
+        entry = next((e for e in reg["patterns"] if e["id"] == pid), None)
+        assert entry is not None, f"{pid} must be a specified pattern"
+        assert entry["status"] == "specified"
+        assert entry.get("depends_on") == dep
+        # the index's invariants summary stays in sync with the manifest cluster
+        assert entry["invariants"] == f"{prefix}-001..00{n}", entry["invariants"]
+
+
+def test_final_four_clusters_are_complete_and_grounding_is_honest():
+    """Every invariant carries exactly one honest grounding class: in-repo
+    provenance, mined-anonymized provenance (mechanism-described, never a
+    path), or an explicit design-derived marker. The anonymization policy is
+    enforced with real checks: no file:line refs, no path separators, no
+    source-file extensions in private provenance."""
+    path_like = re.compile(r":\d+|\.(go|ts|tsx|js|py|rb|java)\b|/")
+    for pid, (prefix, n, _) in FINAL_PROMOTIONS.items():
+        manifest = json.loads(
+            (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
+        cluster = check_patterns.cluster_entries(manifest["invariants"])
+        ids = [e["id"] for e in cluster]
+        assert ids == [f"{prefix}-00{i}" for i in range(1, n + 1)], ids
+        for e in cluster:
+            grounding = e.get("grounding", "")
+            in_repo = (isinstance(e.get("realized_as"), dict)
+                       and "chief-wiggum" in e["realized_as"]["app"])
+            mined = grounding.startswith("mined-anonymized")
+            is_design = grounding == "design-derived"
+            assert in_repo or mined or is_design, (
+                f"{e['id']} has no honest grounding class")
+            if mined:
+                ra = e.get("realized_as")
+                assert isinstance(ra, dict), f"{e['id']} mined without realized_as mechanism"
+                code = ra.get("code", "")
+                assert not path_like.search(code), (
+                    f"{e['id']} leaks path-like provenance: {code}")
+
+
+def test_dunning_half_is_flagged_aspirational():
+    manifest = json.loads((SCRIPTS.parent / "patterns" /
+                           "transactional-email-and-dunning" / "manifest.json").read_text())
+    cluster = check_patterns.cluster_entries(manifest["invariants"])
+    dunning = next(e for e in cluster if e["id"] == "INV-TED-006")
+    assert dunning.get("grounding") == "design-derived"
+    assert "ASPIRATIONAL" in dunning["statement"], (
+        "issue #139 flags the dunning half aspirational — the invariant must say so")

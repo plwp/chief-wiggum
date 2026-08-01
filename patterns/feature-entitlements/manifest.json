@@ -1,0 +1,64 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/feature-entitlements/pattern.md. The whole cluster is design-derived: the per-field layering SHAPE is inherited from the in-repo entitlement-overlay pattern (INV-EO-001..003, mined) but that mined form is raise-only, while this pattern's overrides may also narrow — so no invariant here claims mined provenance. Each inverts a concrete failure mode observed while auditing shipped production SaaS (private-repo paths held out of the public registry per the provenance policy).",
+  "id": "feature-entitlements",
+  "version": 1,
+  "title": "Feature Entitlements Read-Model",
+  "category": "saas-infra",
+  "trust_class": "billing-adjacent-authorization-protected-path",
+
+  "applies_when": [
+    "more than one surface (API guards, UI, onboarding) needs 'can this account do X' and must agree",
+    "tiers exist and per-account exceptions (overrides, grandfathering) are real",
+    "subscription state (past_due, canceled) must degrade capabilities somewhere beyond a dashboard badge"
+  ],
+
+  "components": [
+    "single-resolver: exactly one implementation resolves entitlements; backend gates call it and the frontend consumes its served output — parallel derivations are the drift mechanism",
+    "per-key-layering: each capability resolves tier-base <- account-override <- grandfather stamp, per key; a partial override never zeroes absent keys (no whole-struct replacement)",
+    "fail-closed-unknown-principal: an unknown or missing account resolves to no capabilities or an explicit error — never a default account's capabilities, never permissive defaults",
+    "explicit-grandfathering: legacy accommodation is a dated per-account stamp, never an implicit 'absent config means everything enabled' default",
+    "deployment-capability-split: what the deployment can do and what the account may do are separate documents; the entitlement read is authenticated and account-scoped, client failure posture fail-closed",
+    "tier-ceiling-at-write: self-serve writes cannot exceed the tier grant; overrides may narrow, only sanctioned paths widen; every change is audited"
+  ],
+
+  "invariants": {
+    "$comment": "All six are design-derived (grounding field marks them), each inverting an observed production failure mode; 002 additionally records the in-repo entitlement-overlay mined layering shape it generalizes (related field — raise-only in the mined form, bidirectional here). They ground fully when a product first builds the resolver.",
+    "cluster": [
+      {"id": "INV-FE-001", "statement": "Single resolver: exactly one implementation answers 'what can this account do'; backend gates call it and the frontend consumes its served output. No second flag table, no parallel derivation in another language, no inline capability checks that bypass it.", "grounding": "design-derived"},
+      {"id": "INV-FE-002", "statement": "Per-key layering: every capability resolves as tier-base <- account-override <- grandfather stamp, per key; an override that sets one key never resets absent keys to zero values, and caps layer with explicit semantics. The in-repo entitlement-overlay pattern realizes the per-field layered-resolution shape in its mined form (INV-EO-001..003) with raise-only overlay semantics; this pattern's bidirectional form — an override may also narrow, under INV-FE-006's ceiling — is design-derived.", "grounding": "design-derived", "related": {"app": "chief-wiggum registry", "code": "patterns/entitlement-overlay/manifest.json (INV-EO-001..003 — the mined per-field layering shape, raise-only)"}},
+      {"id": "INV-FE-003", "statement": "Fail-closed on unknown principal: an unknown, missing, or unresolvable account yields no capabilities (or an explicit error) — never another account's capabilities, never a default tenant's configuration, never permissive defaults.", "grounding": "design-derived"},
+      {"id": "INV-FE-004", "statement": "Explicit grandfathering: legacy accommodation is a dated, per-account stamp (grandfathered_until / plan-version pin) the resolver honors and reporting can enumerate — never an implicit permissive default for accounts lacking config.", "grounding": "design-derived"},
+      {"id": "INV-FE-005", "statement": "Deployment capability is not entitlement: what the deployment can do (providers configured) and what the account may do are separate documents; the entitlement read is authenticated and account-scoped, and its client-side failure posture is fail-closed (deployment-capability display reads may fail open, entitlement reads may not).", "grounding": "design-derived"},
+      {"id": "INV-FE-006", "statement": "Tier ceiling at write time: self-serve settings writes cannot exceed what the tier grants — an account override may narrow, only sanctioned admin paths may widen — and every entitlement change is audited with actor, before, and after.", "grounding": "design-derived"}
+    ]
+  },
+
+  "parameters": {
+    "tier_matrix": {"type": "object", "required": true, "description": "Per-tier capability base: keys to grants/limits."},
+    "override_store": {"type": "string", "required": true, "description": "Where per-account overrides live; its write path is the sanctioned one (INV-FE-006)."},
+    "grandfather_stamp": {"type": "string", "required": true, "description": "The dated per-account legacy pin the resolver honors (INV-FE-004)."},
+    "served_endpoint": {"type": "string", "required": true, "description": "The authenticated, account-scoped read the frontend consumes (INV-FE-005)."},
+    "audit_sink": {"type": "string", "required": true, "description": "Where entitlement changes are recorded: actor, before, after (INV-FE-006)."},
+    "degrade_map": {"type": "object", "required": false, "description": "How subscription states (past_due, canceled) narrow the resolved set."}
+  },
+
+  "success_metrics": {
+    "$comment": "The resolver is the read-model onboarding, UI, and gates all query — disagreement between surfaces is the defect this pattern exists to make impossible.",
+    "metrics": [
+      {"id": "entitlement_check_sources", "goal": "one", "desc": "no parallel derivations (INV-FE-001)"},
+      {"id": "frontend_backend_disagreements", "goal": "zero", "desc": "both consume the same resolved output"},
+      {"id": "unknown_principal_grants", "goal": "zero", "desc": "fail-closed resolution (INV-FE-003)"},
+      {"id": "overrides_exceeding_tier", "goal": "zero", "desc": "ceiling enforced at write (INV-FE-006)"},
+      {"id": "unaudited_entitlement_changes", "goal": "zero", "desc": "every change carries actor + diff (INV-FE-006)"}
+    ]
+  },
+
+  "protected_paths": [
+    "the resolver implementation (INV-FE-001 — the single source of 'what can this account do')",
+    "the tier matrix + degrade map (billing-adjacent authorization)",
+    "the override write path (INV-FE-006 — the only sanctioned widener)"
+  ],
+
+  "depends_on": "entitlement-overlay",
+  "feeds": "tiered-subscription, frictionless-onboarding, self-serve-billing-portal"
+}

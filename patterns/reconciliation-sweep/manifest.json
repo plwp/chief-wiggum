@@ -1,0 +1,156 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/reconciliation-sweep/pattern.md. Mined from a shipped production SaaS's payment-hold reconciler; per the registry's provenance policy, private-repo paths are held out of the public registry \u2014 realized_as describes the realized mechanism instead. INV-RSW-004 is mined-for-one-sweep and generalized by design; INV-RSW-007's surfaced-skip clause is design-derived from the mined gap.",
+  "id": "reconciliation-sweep",
+  "version": 1,
+  "title": "Bidirectional Reconciliation Sweep",
+  "category": "process-loop",
+  "trust_class": "destructive-capable-automation-protected-path",
+  "applies_when": [
+    "local records mirror an external system (payments, storage, CDN/DNS config) and divergence accumulates",
+    "some repairs are destructive (cancel, expire, abandon, release) and must be safe under retries, replicas, and races",
+    "operators need per-run evidence of what the sweep did"
+  ],
+  "components": [
+    "ordered-sweep-set: one scheduler runs the sweeps in declared order with a per-run budget, once at startup then on the interval; each returns a count",
+    "status-guarded-cas: every repairing write re-asserts the expected pre-state in the write filter; zero rows modified means a concurrent actor won \u2014 skip, no side effects",
+    "legality-before-write: each repair transition is validated against the domain state machine before the write; illegal transitions are skipped and surfaced, never forced",
+    "fail-closed-unknown-age: age-based destructive selectors exclude records with absent ordering timestamps at the query level; timestamps are never fabricated",
+    "reconfirm-before-destroy: destructive repairs fetch the external system's live state first and treat it as authoritative; unreachable external system means skip, fail-closed",
+    "deterministic-idempotency: outbound repairs carry a namespaced deterministic key (reconcile:<op>:<record-id>) so replays cannot double-apply",
+    "bidirectional-flag-sweeps: flag-set sweeps are no-ops on re-run and every set sweep has a paired clear sweep",
+    "surfaced-run-report: per-sweep counts plus provenance-tagged per-item events; an unrunnable sweep reports skipped, never a silent zero"
+  ],
+  "invariants": {
+    "$comment": "001/002/003/005/006 mined from the reconciler; 004 mined for the stale-in-flight sweep and generalized to all destructive sweeps by design; 007's surfaced-skip clause design-derived from the mined silent-zero gap.",
+    "cluster": [
+      {
+        "id": "INV-RSW-001",
+        "statement": "Status-guarded CAS repair: every repairing write re-asserts the expected pre-state in its write filter and treats zero-rows-modified as 'a concurrent actor already handled it' \u2014 the sweep skips and no follow-on side effect (capacity release, notification, external call) fires.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "payment-hold reconciler: every sweep's update filter carries the pre-state status and gates side effects on ModifiedCount > 0"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-RSW-002",
+        "statement": "Legality before write: every repair transition is validated against the domain state machine before the write; an illegal transition is skipped and surfaced as a finding, never forced by the job.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "the domain state machine's transition-validation routine is invoked before every sweep write; failures are logged per record and the record is skipped"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-RSW-003",
+        "statement": "Fail-closed on unknown age: an age/expiry-based destructive selector excludes records whose ordering timestamp is absent (query-level $ne nil), and upstream writers never fabricate the timestamp \u2014 a record with unknown age is never swept to destruction.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "expiry sweep selects capture-deadline < now AND != nil; the webhook writer deletes the field rather than defaulting it to now+7d"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-RSW-004",
+        "statement": "Re-confirm before destroy: before a destructive repair, the external system's live object is fetched and is authoritative over local belief; if the external system is unreachable or the record lacks its external binding, the sweep skips fail-closed. (Mined for the stale-in-flight sweep; the pattern requires it for every destructive sweep wherever an external truth exists.)",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "stuck-in-flight sweep re-fetches the payment intent and branches on its live status; nil client or fetch error \u2192 skip"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-RSW-005",
+        "statement": "Deterministic external idempotency: every outbound repair against the external system carries a namespaced deterministic idempotency key derived from the operation and the repaired record's id, so replays across runs and replicas cannot double-apply.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "reconcile:cancel:<request-id> set as the provider idempotency key on sweep-initiated cancels"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-RSW-006",
+        "statement": "Idempotent, bidirectional flag sweeps: alert-flag sweeps exclude already-flagged rows in their selector (no-op on re-run), and every flag-set sweep has a paired flag-clear sweep so flags track current state rather than decaying into set-once noise.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "approaching-expiry flag set with $ne-true guard and cleared by a paired sweep when the deadline moves out past the buffer"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-RSW-007",
+        "statement": "Per-run counts, surfaced skips: each sweep returns its repair count, the run emits per-sweep counts and provenance-tagged per-item events, and a sweep that cannot run (store or external client unavailable) reports skipped \u2014 never a silent zero indistinguishable from a clean pass.",
+        "grounding": "design-derived"
+      }
+    ]
+  },
+  "parameters": {
+    "sweeps": {
+      "type": "object",
+      "required": true,
+      "description": "Ordered sweep set: name, selector, repair action, direction (local-to-external, external-to-local, local-only)."
+    },
+    "interval": {
+      "type": "string",
+      "required": true,
+      "description": "Ticker period (mined loop: 60s with a 2m per-run budget)."
+    },
+    "state_machine": {
+      "type": "string",
+      "required": true,
+      "description": "The transition-legality authority every repair is checked against (INV-RSW-002)."
+    },
+    "idempotency_namespace": {
+      "type": "string",
+      "required": true,
+      "description": "Prefix for deterministic outbound repair keys (INV-RSW-005)."
+    },
+    "run_budget": {
+      "type": "string",
+      "required": false,
+      "description": "Per-run context timeout."
+    },
+    "run_ledger": {
+      "type": "string",
+      "required": false,
+      "description": "Where per-run counts persist; default emitted-only (a stated v1 boundary)."
+    }
+  },
+  "success_metrics": {
+    "$comment": "Run reports and the repair-event audit stream are operational-health signal for the improvement loop.",
+    "metrics": [
+      {
+        "id": "repairs_per_run",
+        "goal": "down",
+        "desc": "divergence is shrinking, not accumulating"
+      },
+      {
+        "id": "skipped_sweeps",
+        "goal": "zero",
+        "desc": "every sweep actually ran (INV-RSW-007)"
+      },
+      {
+        "id": "illegal_transition_skips",
+        "goal": "zero",
+        "desc": "each one is model/code drift worth a finding (INV-RSW-002)"
+      },
+      {
+        "id": "stale_inflight_age_p95",
+        "goal": "down",
+        "desc": "stuck records are recovered promptly"
+      },
+      {
+        "id": "double_repair_count",
+        "goal": "zero",
+        "desc": "CAS + idempotency-key efficacy (INV-RSW-001/005)"
+      }
+    ]
+  },
+  "protected_paths": [
+    "the sweep set, selectors, and thresholds (destructive-capable automation \u2014 trust class)",
+    "the state-machine legality authority (INV-RSW-002)",
+    "the idempotency-key derivation (INV-RSW-005)"
+  ],
+  "depends_on": "fetch-on-webhook-reconcile",
+  "feeds": "improvement-loop"
+}
