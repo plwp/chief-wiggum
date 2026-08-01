@@ -42,6 +42,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Meta-location resolver (chief-wiggum#213): routes the DEFAULT trace-links
+# sidecar location through the target's elected footprint mode (embedded:
+# <repo>/docs/quality — the status quo; sidecar: the external quality dir).
+# --links keeps precedence.
+import artifacts  # noqa: E402
+
 # The per-language emitter registry (#162): language-specific emitter -> generic
 # regex tier -> skip-with-warning. Used by scan_source/unsupported_extension_counts
 # below to surface files with NO emitter coverage instead of dropping them silently.
@@ -413,6 +419,7 @@ def _scanner_version() -> str:
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_emission.py",
         cw_dir / "trace_links.py",
@@ -735,7 +742,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    links_path = Path(args.links) if args.links else Path(args.source or ".") / SIDECAR_RELPATH
+    if args.links:
+        links_path = Path(args.links)
+    else:
+        # Default: the quality dir of the source repo's meta root (#213) —
+        # byte-identical to <--source or cwd>/SIDECAR_RELPATH in embedded mode.
+        source_root = Path(args.source or ".")
+        links_path = (
+            artifacts.Resolver.resolve(source_root).quality_dir() / Path(SIDECAR_RELPATH).name
+        )
 
     try:
         report = check(

@@ -680,6 +680,7 @@ def test_scanner_version_includes_both_checker_sources():
     cw = scripts / "chief_wiggum"
     expected = scanner_version(
         scripts / "code_query.py",
+        scripts / "artifacts.py",
         scripts / "check_single_writer.py",
         scripts / "check_traceability.py",
         cw / "trace_ids.py", cw / "annotations.py",
@@ -687,3 +688,25 @@ def test_scanner_version_includes_both_checker_sources():
         cw / "manifest.py", cw / "hashing.py",
     )
     assert code_query._scanner_version() == expected
+
+
+def test_discover_epics_reads_sidecar_meta_root(tmp_path, monkeypatch):
+    """#213: with a sidecar election, Plane A discovery reads the external
+    meta root — a target with zero CW files in-tree still gets real epic
+    context (and no election keeps <repo>/docs/epics, per every other test
+    in this file)."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    artifacts.elect(repo, "sidecar")
+    edir = artifacts.Resolver.resolve(repo).epic_dir("checkout")
+    edir.mkdir(parents=True)
+    (edir / "contracts.md").write_text(
+        "### CTR-order-001 — valid date range\nREQUIRES: start <= end\n"
+    )
+    epics = code_query.discover_epics(repo)
+    assert [e.slug for e in epics] == ["checkout"]
+    assert "CTR-order-001" in epics[0].defined
+    assert not (repo / "docs").exists()

@@ -70,6 +70,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 import check_single_writer  # noqa: E402
 import check_traceability  # noqa: E402
 from chief_wiggum.hashing import scanner_version  # noqa: E402
@@ -151,7 +152,9 @@ def _locate_definitions(epic_dir: Path) -> dict[str, tuple[str, int]]:
 def discover_epics(repo_root: Path, epic: str | None = None) -> list[Epic]:
     """Discover epics under `docs/epics/*` (or just `epic` if given). Plane A is
     parsed fresh every call — never memoized across queries."""
-    epics_root = Path(repo_root) / "docs" / "epics"
+    # Resolved through the #213 meta resolver: <repo>/docs/epics in embedded
+    # mode (the status quo, byte-identical), the sidecar epics dir otherwise.
+    epics_root = artifacts.Resolver.resolve(Path(repo_root)).epics_dir()
     if not epics_root.is_dir():
         return []
     if epic:
@@ -181,7 +184,7 @@ def discover_epics(repo_root: Path, epic: str | None = None) -> list[Epic]:
 
 
 def load_design(repo_root: Path) -> dict | None:
-    p = Path(repo_root) / "docs" / "design" / "design.json"
+    p = artifacts.Resolver.resolve(Path(repo_root)).design_dir() / "design.json"
     if not p.is_file():
         return None
     try:
@@ -323,8 +326,11 @@ def _scanner_version() -> str:
     # emission logic lives in chief_wiggum.write_emission / trace_emission
     # (with the extension universe in chief_wiggum.languages) — those are
     # inputs for the same reason.
+    # artifacts.py resolves WHERE epic/quality meta is read from (#213) —
+    # a resolution change changes what a query returns, so it versions too.
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         here.parent / "check_single_writer.py",
         here.parent / "check_traceability.py",
         cw_dir / "trace_ids.py", cw_dir / "annotations.py",
@@ -723,7 +729,7 @@ def _load_hotspots(repo_root: Path) -> dict | None:
     """Read `docs/quality/hotspots.json` fresh (never cached — same live-scan
     discipline as everything else this module reads). Missing/unparsable is a
     silent `None`: the hotspot fact is advisory, never a hard dependency."""
-    p = Path(repo_root) / _HOTSPOTS_PATH
+    p = artifacts.Resolver.resolve(Path(repo_root)).quality_dir() / _HOTSPOTS_PATH.name
     if not p.is_file():
         return None
     try:
@@ -1703,11 +1709,12 @@ def main(argv: list[str] | None = None) -> int:
     if not repo_root.is_dir():
         print(f"Error: repo not found: {args.repo}", file=sys.stderr)
         return 2
-    if args.epic and not (repo_root / "docs" / "epics" / args.epic).is_dir():
+    epic_check_dir = artifacts.Resolver.resolve(repo_root).epic_dir(args.epic) if args.epic else None
+    if epic_check_dir is not None and not epic_check_dir.is_dir():
         # A nonexistent epic slug is a usage error (a typo), exactly like the
         # other checkers' missing epic_dir — NOT a "scanned, nothing governs"
         # empty answer, which would serve absence of knowledge as knowledge.
-        print(f"Error: epic dir not found: {repo_root / 'docs' / 'epics' / args.epic}", file=sys.stderr)
+        print(f"Error: epic dir not found: {epic_check_dir}", file=sys.stderr)
         return 2
 
     kw = {"limit": args.limit, "cursor": args.cursor}

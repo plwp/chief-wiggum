@@ -87,6 +87,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
+
 # Same stable-ID grammar as check_traceability.py and the TIM schema — shared
 # via chief_wiggum.trace_ids so a kind added in one place cannot be silently
 # dropped by another (#166; uppercase-id vacuity was the same class of bug,
@@ -112,6 +114,15 @@ JOURNAL_NAME = "ratchet-journal.jsonl"
 HIGHWATER_NAME = "ratchet-highwater.json"
 SCORECARD_NAME = "ratchet-scorecard.json"
 DEFAULT_STATE_DIR = "docs/quality"
+
+
+def default_state_dir(repo: Path) -> Path:
+    """The default ratchet state dir for a target: ``quality/`` under the
+    target's meta root (chief-wiggum#213 resolver). Byte-identical to
+    ``<repo>/docs/quality`` in embedded mode (no election); the sidecar
+    quality dir when the target elected sidecar — where workers in the target
+    worktree physically cannot write it."""
+    return artifacts.Resolver.resolve(repo).quality_dir()
 
 # A gate-authority lifecycle event (chief-wiggum#198): the operator wiring a gate
 # with --gate (blocking) or un-wiring it. Journaled here — in the SAME
@@ -203,7 +214,7 @@ def repo_root(repo_arg: str | None) -> Path:
 
 
 def load_config(repo: Path) -> Config:
-    path = repo / DEFAULT_STATE_DIR / CONFIG_NAME
+    path = default_state_dir(repo) / CONFIG_NAME
     if not path.is_file():
         raise RatchetError(
             f"no ratchet config at {path} — run `ratchet.py init --repo {repo}` first"
@@ -759,7 +770,7 @@ def detect_suites(repo: Path) -> list[dict]:
 
 def cmd_init(args) -> int:
     repo = repo_root(args.repo)
-    path = repo / DEFAULT_STATE_DIR / CONFIG_NAME
+    path = default_state_dir(repo) / CONFIG_NAME
     if path.is_file() and not args.force:
         print(f"ratchet: config already exists at {path}")
         return 0
@@ -841,7 +852,11 @@ def suspect_links_for(cfg: Config, sc: dict) -> list[dict]:
     "the ratchet held" — report-only (see docs/gate-rollout.md); it does not
     change ``check``'s exit code.
     """
-    sidecar = load_sidecar(cfg.repo / SIDECAR_RELPATH)
+    # The trace-links sidecar lives beside the rest of the ratchet state — in
+    # cfg.state_dir, which the #213 resolver already routed (embedded:
+    # <repo>/docs/quality, i.e. exactly <repo>/SIDECAR_RELPATH; sidecar mode:
+    # the external quality dir).
+    sidecar = load_sidecar(cfg.state_dir / Path(SIDECAR_RELPATH).name)
     return find_suspect_links(sidecar, sc.get("contract_hashes", {}) or {})
 
 
@@ -1141,6 +1156,7 @@ def _scanner_version() -> str:
     q_dir = here.parent / "quality"
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         cw_dir / "hashing.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",

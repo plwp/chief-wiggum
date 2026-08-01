@@ -784,3 +784,22 @@ def test_report_to_dict_includes_new_fields_and_is_json_serializable():
     ):
         assert key in d
     json.loads(json.dumps(d))
+
+
+def test_cli_default_links_path_routes_through_sidecar_election(tmp_path, monkeypatch):
+    """#213: with a sidecar election for --source, the DEFAULT trace-links
+    sidecar lands in the external quality dir — zero CW files in the target
+    tree. Embedded (no election) stays <source>/docs/quality (covered by
+    test_cli_default_links_path_is_under_source_docs_quality)."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    artifacts.elect(src, "sidecar")
+    rc = ct.main([str(epic), "--source", str(src), "--write-links", "--format", "json"])
+    assert rc == 0
+    sidecar_links = artifacts.Resolver.resolve(src).quality_dir() / "trace-links.json"
+    assert sidecar_links.is_file()
+    assert load_sidecar(sidecar_links)["links"]
+    assert not (src / "docs").exists()

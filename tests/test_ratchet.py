@@ -692,3 +692,26 @@ def test_cli_scanner_version_prints_hex_digest_with_no_subcommand():
 
 def test_scanner_version_is_deterministic_and_stable_across_calls():
     assert ratchet._scanner_version() == ratchet._scanner_version()
+
+
+def test_sidecar_election_routes_ratchet_state_dir(tmp_path, monkeypatch):
+    """#213: a sidecar election moves the DEFAULT state dir (config, journal,
+    scorecard) to the external quality dir — workers in the target tree
+    physically cannot write it; no election keeps <repo>/docs/quality."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    # embedded status quo without an election
+    assert ratchet.default_state_dir(repo) == repo / "docs" / "quality"
+    artifacts.elect(repo, "sidecar")
+    state = ratchet.default_state_dir(repo)
+    assert state == artifacts.Resolver.resolve(repo).quality_dir()
+    assert str(state).startswith(str(tmp_path / "cw-user"))
+    assert ratchet.cmd_init(argparse.Namespace(repo=str(repo), force=False)) == 0
+    assert (state / "ratchet.json").is_file()
+    assert not (repo / "docs").exists()  # zero CW files in the target tree
+    cfg = ratchet.load_config(repo)
+    assert cfg.state_dir == state
+    assert cfg.journal == state / "ratchet-journal.jsonl"

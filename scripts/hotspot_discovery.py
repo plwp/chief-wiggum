@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 from quality import hotspots  # noqa: E402
 
 
@@ -80,7 +81,11 @@ def resolve_target(owner_repo: str | None, repo_path: str | None) -> str:
 
 
 def _default_out(target: str) -> str:
-    return str(Path(target) / "docs" / "quality" / "hotspots.json")
+    """Default artifact location: the quality dir of the target's meta root
+    (#213 resolver) — <target>/docs/quality/hotspots.json in embedded mode
+    (the status quo, byte-identical), the sidecar quality dir otherwise.
+    An explicit --out always takes precedence."""
+    return str(artifacts.Resolver.resolve(Path(target)).quality_dir() / "hotspots.json")
 
 
 def render_text(result: dict) -> str:

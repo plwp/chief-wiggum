@@ -345,3 +345,27 @@ def test_scaffold_manifest_rejects_bad_template_types_and_paths(tmp_path, bad, m
     (pdir / "scaffold.json").write_text(bad)
     with pytest.raises(ap.ApplyError, match=msg):
         ap.load_scaffold(MTI, base=tmp_path)
+
+
+def test_sidecar_election_routes_knowledge_but_scaffold_stays_in_repo(tmp_path, monkeypatch):
+    """#213: code stays in-repo, knowledge goes sidecar — with a sidecar
+    election the contract pack, adopted.json, and ratchet stub land in the
+    external meta root while scaffold code is still stamped into the target."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    target = tmp_path / "target"
+    target.mkdir()
+    artifacts.elect(target, "sidecar")
+    plan = apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, target, write=True)
+    meta = artifacts.Resolver.resolve(target).meta_root
+    assert (meta / "patterns" / MTI / "invariants.md").is_file()
+    assert (meta / "patterns" / "adopted.json").is_file()
+    assert (meta / "quality" / "ratchet.json").is_file()
+    for rel in MTI_TARGETS:  # scaffold CODE ships in the target regardless of mode
+        assert (target / rel).is_file(), rel
+    assert not (target / "docs").exists()  # zero CW knowledge files in-tree
+    # list_adopted reads the sidecar record back
+    adopted = apply_pattern.list_adopted(target)
+    assert [a["id"] for a in adopted] == [MTI]

@@ -434,3 +434,24 @@ def test_history_walk_is_head_based_never_all(synth_repo):
     assert before["git_sha"] == after["git_sha"]
     assert before["window_days"] == after["window_days"]
     assert json.dumps(before["hotspots"], sort_keys=True) == json.dumps(after["hotspots"], sort_keys=True)
+
+
+def test_default_out_routes_through_sidecar_election(tmp_path, monkeypatch):
+    """#213: hotspot_discovery's DEFAULT artifact location follows the
+    target's elected footprint mode; an explicit --out keeps precedence
+    (unchanged code path, covered by the CLI tests above)."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import artifacts
+    import hotspot_discovery
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    # embedded status quo without an election
+    assert hotspot_discovery._default_out(str(repo)) == str(
+        repo / "docs" / "quality" / "hotspots.json"
+    )
+    artifacts.elect(repo, "sidecar")
+    out = hotspot_discovery._default_out(str(repo))
+    assert out == str(artifacts.Resolver.resolve(repo).quality_dir() / "hotspots.json")
+    assert out.startswith(str(tmp_path / "cw-user"))
