@@ -962,11 +962,24 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
                 if isinstance(loc, str) and loc.rsplit(":", 1)[0] == rel]
         if not locs:
             continue
+        # Grandfathered labeling (#215): a pre-adoption-baseline item is
+        # STATED as such (and an expired grandfather loudly so) — the fact
+        # stays in the answer either way; only the label changes.
+        gf_tag = ""
+        gf_extra: dict = {}
+        if item.get("grandfathered"):
+            gf_tag = ("[EXPIRED grandfather] " if item.get("grandfather_expired")
+                      else "[grandfathered] ")
+            gf_extra = {
+                "grandfathered": True,
+                "grandfather_expiry": item.get("grandfather_expiry"),
+                "grandfather_expired": bool(item.get("grandfather_expired")),
+            }
         facts.append(Fact(
             kind="debt",
             id=item["id"],
             statement=(
-                f"{item.get('engine')}/{item.get('kind')} [{item.get('severity')}]: "
+                f"{gf_tag}{item.get('engine')}/{item.get('kind')} [{item.get('severity')}]: "
                 f"{item.get('detail', '')} — {authority}"
             ),
             handle=f"{_DEBT_PATH}#items[{item['id']}]",
@@ -978,6 +991,7 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
                 "severity": item.get("severity"),
                 "locations": locs,
                 "blast_radius": item.get("blast_radius"),
+                **gf_extra,
             },
             provenance={
                 **_file_provenance(repo_root, rel),

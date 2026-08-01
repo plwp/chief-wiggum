@@ -240,6 +240,22 @@ def format_debt_block(debt: dict | None) -> str:
     for engine, sevs in sorted(counts.items()):
         parts = ", ".join(f"{sevs[s]} {s}" for s in ("high", "medium", "low") if s in sevs)
         lines.append(f"  - {engine}: {parts}")
+    # Grandfathered items (#215): pre-adoption baseline debt stays in the
+    # inventory, labeled here; EXPIRED grandfathers surface prominently.
+    items = [i for i in (debt.get("items") or []) if isinstance(i, dict)]
+    grandfathered = [i for i in items if i.get("grandfathered")]
+    if grandfathered:
+        lines.append(
+            f"  - {len(grandfathered)} grandfathered (pre-adoption baseline — "
+            "labeled, non-blocking; expiry is visible pressure, not amnesty)"
+        )
+    expired = sorted(i["id"] for i in grandfathered
+                     if i.get("grandfather_expired") and i.get("id"))
+    if expired:
+        lines.append(
+            "  - EXPIRED grandfather: " + ", ".join(expired)
+            + " — expiry passed; re-triage or remediate (docs/adopt.md)"
+        )
     uns = debt.get("unscanned_languages") or {}
     if uns:
         lines.append(

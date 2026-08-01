@@ -223,7 +223,7 @@ def test_cli_json_format(user_dir, tmp_path, capsys):
     rc = status.main(["--repo", str(target), "--format", "json"])
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
-    assert set(data) == {"resolver", "gates", "ratchet", "patterns", "debt"}
+    assert set(data) == {"resolver", "gates", "ratchet", "patterns", "debt", "adoption"}
 
 
 def test_cli_missing_target_is_usage_error(user_dir, tmp_path, capsys):

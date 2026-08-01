@@ -107,6 +107,7 @@ See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 | `/stitch-audit` | Cross-layer data flow analysis |
 | `/code-metrics` | Literature-grounded code-quality metrics: churn, complexity, code survival, duplication, process signals |
 | `/status` | Live one-screen target state: footprint mode, domain scope, gate ledger, ratchet high-water, adopted patterns, debt counts |
+| `/adopt` | Brownfield entry for repos CW didn't build: shape survey → footprint election → real-test-run ratchet baseline + debt baseline → grandfathering with expiry → adoption record |
 | `/tutorial-video` | Narrated click-through tutorial video: script → recording → TTS narration → .mp4 + .srt |
 | `/update` | Refresh AI model IDs and library versions |
 
@@ -125,6 +126,8 @@ graph TD
         B["/seed"]:::entry
         C["/create-issue"]:::default
         D["Requirements / Issues"]:::default
+        X["Existing codebase"]:::default
+        AD["/adopt<br/>(survey · elect · baseline · grandfather)"]:::entry
     end
 
     subgraph "Product Design"
@@ -146,6 +149,9 @@ graph TD
     N --> E
     C --> E
     E --> F
+    X --> AD
+    AD -->|"/architect per epic"| F
+    AD -->|"/plan-epic --from-debt"| E
     N -.->|"docs/design/"| F
     F --> G
     F --> W

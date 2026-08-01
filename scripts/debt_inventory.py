@@ -61,7 +61,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -260,6 +260,62 @@ def _attach_blast_radius(
 # --- inventory ----------------------------------------------------------------
 
 
+GRANDFATHER_RELPATH = Path("adoption") / "grandfathered.json"
+
+
+def _load_grandfather(resolver: artifacts.Resolver) -> tuple[dict[str, dict], str | None]:
+    """(id -> entry, file path) from ``<meta root>/adoption/grandfathered.json``
+    (written by ``adopt.py grandfather``, chief-wiggum#215). Missing file ->
+    ({}, None); an unparsable file is treated as absent — marking is additive
+    labeling, never a gate input, so degrading is safe and honest (the /status
+    adoption section names the record separately)."""
+    p = resolver.meta_root / GRANDFATHER_RELPATH
+    if not p.is_file():
+        return {}, None
+    try:
+        doc = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}, None
+    out: dict[str, dict] = {}
+    for entry in (doc.get("entries") or []) if isinstance(doc, dict) else []:
+        if isinstance(entry, dict) and entry.get("id"):
+            out[entry["id"]] = entry
+    return out, str(p)
+
+
+def _grandfather_expired(expiry: str | None, today: str) -> bool:
+    """ISO-date compare; an unparseable/missing expiry counts as EXPIRED, not
+    a silent pass — same posture as the JUSTIFIED-waiver ``is_expired``."""
+    if not isinstance(expiry, str):
+        return True
+    try:
+        return date.fromisoformat(expiry) < date.fromisoformat(today)
+    except ValueError:
+        return True
+
+
+def _apply_grandfather(items: list[dict], resolver: artifacts.Resolver,
+                       today: str) -> dict:
+    """Mark grandfathered items IN PLACE — they stay in the inventory (visible
+    pressure), labeled so every surfacing layer (code-metrics debt section,
+    slop-gate block, orient facts) can say so; expired grandfathers are
+    flagged prominently. Returns the envelope's ``grandfather`` block."""
+    entries, gf_file = _load_grandfather(resolver)
+    expired_ids: list[str] = []
+    count = 0
+    for item in items:
+        entry = entries.get(item["id"])
+        if entry is None:
+            continue
+        count += 1
+        item["grandfathered"] = True
+        item["grandfather_expiry"] = entry.get("expiry")
+        item["grandfather_expired"] = _grandfather_expired(entry.get("expiry"), today)
+        if item["grandfather_expired"]:
+            expired_ids.append(item["id"])
+    return {"file": gf_file, "count": count, "expired": sorted(expired_ids)}
+
+
 def _previous_seen(out_path: Path) -> dict[str, dict]:
     """id -> {first_seen, last_seen} from the previous debt.json, if any."""
     if not out_path.is_file():
@@ -328,6 +384,10 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
         # was last observed at (envelope carries it too; items are quoted alone).
         item["target_sha"] = sha
 
+    # Grandfathered items (#215): marked, never removed — pre-adoption debt is
+    # visible pressure, and expiry makes it LOUD, not amnestied.
+    grandfather = _apply_grandfather(items, resolver, now[:10])
+
     # Deterministic order: severity desc, engine, id.
     sev_rank = {s: i for i, s in enumerate(reversed(SEVERITY_ORDER))}
     items.sort(key=lambda x: (sev_rank[x["severity"]], x["engine"], x["id"]))
@@ -355,6 +415,7 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
         },
         "unscanned_languages": unscanned,
         "counts": counts,
+        "grandfather": grandfather,
         "items": items,
     })
     return envelope
@@ -412,6 +473,17 @@ def format_report(envelope: dict) -> str:
         lines.append(f"- {gap}")
     if envelope.get("hotspots_note"):
         lines.append(f"- {envelope['hotspots_note']}")
+    gf = envelope.get("grandfather") or {}
+    if gf.get("count"):
+        lines.append(
+            f"- grandfathered: {gf['count']} item(s) (pre-adoption baseline — "
+            "labeled, non-blocking; expiry is visible pressure, not amnesty)"
+        )
+    if gf.get("expired"):
+        lines.append(
+            "- EXPIRED grandfather: " + ", ".join(gf["expired"])
+            + " — expiry passed; re-triage or remediate (see docs/adopt.md)"
+        )
     top = envelope["items"][:10]
     if top:
         lines.append("")
@@ -419,7 +491,11 @@ def format_report(envelope: dict) -> str:
         for item in top:
             loc = item["locations"][0] if item["locations"] else "?"
             more = f" (+{len(item['locations']) - 1} more)" if len(item["locations"]) > 1 else ""
-            lines.append(f"  {item['id']} [{item['severity']}] {item['engine']}/{item['kind']} "
+            tag = ""
+            if item.get("grandfathered"):
+                tag = (" [EXPIRED grandfather]" if item.get("grandfather_expired")
+                       else " [grandfathered]")
+            lines.append(f"  {item['id']} [{item['severity']}]{tag} {item['engine']}/{item['kind']} "
                          f"{loc}{more} — {item['detail'][:100]}")
     return "\n".join(lines)
 
