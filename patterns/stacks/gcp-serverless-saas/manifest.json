@@ -1,10 +1,10 @@
 {
-  "$comment": "Machine-readable surface for a future /apply-pattern --stack installer. Human spec: patterns/stacks/gcp-serverless-saas/stack.md. A stack profile binds vendor-neutral patterns (../../<id>) to concrete vendors, ships stand-up skills, and carries a cost model. Mined from plwp.net (T0), booking-forms (T1), dogeared-coach (T2).",
+  "$comment": "Machine-readable surface for a future /apply-pattern --stack installer. Human spec: patterns/stacks/gcp-serverless-saas/stack.md. A stack profile binds vendor-neutral patterns (../../<id>) to concrete vendors, ships stand-up skills, and carries a cost model. Mined from plwp.net (T0), a multi-tenant booking frontend (T1, private), and a multi-provider booking/payments SaaS (T2, private); private-repo identities are held out of the public registry per the provenance policy.",
   "id": "gcp-serverless-saas",
   "version": 1,
   "title": "GCP Serverless SaaS (the house stack)",
   "status": "specified",
-  "provenance": {"T0": "plwp.net", "T1": "booking-forms", "T2": "dogeared-coach"},
+  "provenance": {"T0": "plwp.net", "T1": "a multi-tenant booking frontend (private)", "T2": "a multi-provider booking/payments SaaS (private)"},
 
   "vendors": {
     "hosting": {"vendor": "Firebase Hosting", "role": "static frontend, multi-site", "swappable_for": ["Vercel", "Netlify", "Cloudflare Pages"]},
@@ -28,14 +28,14 @@
       "free_tier_limits": ["Firestore ~20k writes/day", "Hosting 10GB storage + 360MB/day egress"]
     },
     {
-      "id": "T1", "name": "Thin serverless", "monthly": "~$0-5", "exemplar": "booking-forms",
+      "id": "T1", "name": "Thin serverless", "monthly": "~$0-5", "exemplar": "a multi-tenant booking frontend (private)",
       "active_seams": ["hosting", "backend(scale-to-zero)", "database(firestore)", "email", "payments(connect)", "secrets", "deploy_identity"],
       "use_for": "transactional micro-SaaS, per-tenant config, marketplace/deposits",
       "first_ceiling": "Resend 3k mail/mo (100/day) free tier",
       "cost_caps": ["Cloud Run max-instances cap (throughput ceiling doubles as cost cap)"]
     },
     {
-      "id": "T2", "name": "Full production", "monthly": "~$60-140", "exemplar": "dogeared-coach",
+      "id": "T2", "name": "Full production", "monthly": "~$60-140", "exemplar": "a multi-provider booking/payments SaaS (private)",
       "active_seams": ["hosting", "backend(min-instances=1)", "database(atlas)", "auth", "payments(checkout+portal+webhooks)", "email", "media", "secrets", "deploy_identity", "observability"],
       "use_for": "subscription SaaS with accounts, media, compliance",
       "biggest_fixed_jump": "prod Cloud Run min-instances=1 (~$45-65/mo illustrative; depends on region/CPU/memory/billing-mode, not an invariant)",
@@ -52,12 +52,12 @@
   ],
 
   "bindings": {
-    "tiered-subscription": {"tier": "T2", "recipe": "bindings/tiered-subscription.md", "vendor": "Stripe Checkout+Portal", "source": "dogeared-coach"},
+    "tiered-subscription": {"tier": "T2", "recipe": "bindings/tiered-subscription.md", "vendor": "Stripe Checkout+Portal", "source": "the T2 exemplar (private)"},
     "engagement-instrumentation": {"tier": "T0+", "recipe": "bindings/engagement-instrumentation.md", "vendor": "DIY Firestore beacon", "source": "plwp.net"},
-    "multi-tenant-isolation": {"tier": "T1/T2", "recipe": "bindings/multi-tenant-isolation.md", "vendor": "server-derived scoping (2 variants)", "source": "booking-forms, dogeared-coach"},
-    "provider-neutral-adapter": {"tier": "T2", "recipe": "bindings/provider-neutral-adapter.md", "vendor": "Go interface + Cloudflare Stream", "source": "dogeared-coach"},
-    "transactional-email-and-dunning": {"tier": "T1+", "recipe": "bindings/transactional-email.md", "vendor": "Resend", "source": "booking-forms, dogeared-coach", "note": "dunning half aspirational (unbuilt in mined apps)"},
-    "deployment-release": {"tier": "T1+", "recipe": "bindings/deployment-release.md", "vendor": "keyless WIF + promote-identical", "source": "booking-forms, dogeared-coach"}
+    "multi-tenant-isolation": {"tier": "T1/T2", "recipe": "bindings/multi-tenant-isolation.md", "vendor": "server-derived scoping (2 variants)", "source": "the T1 + T2 exemplars (private)"},
+    "provider-neutral-adapter": {"tier": "T2", "recipe": "bindings/provider-neutral-adapter.md", "vendor": "Go interface + Cloudflare Stream", "source": "the T2 exemplar (private)"},
+    "transactional-email-and-dunning": {"tier": "T1+", "recipe": "bindings/transactional-email.md", "vendor": "Resend", "source": "the T1 + T2 exemplars (private)", "note": "dunning half aspirational (unbuilt in mined apps)"},
+    "deployment-release": {"tier": "T1+", "recipe": "bindings/deployment-release.md", "vendor": "keyless WIF + promote-identical", "source": "the T1 + T2 exemplars (private)"}
   },
 
   "skills": [

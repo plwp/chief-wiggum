@@ -132,9 +132,9 @@ def test_emit_consult_without_tokens_records_frequency(tmp_path, monkeypatch):
     # @cw-trace verifies CTR-fh-015 INV-fh-011
     log = tmp_path / "f.jsonl"
     monkeypatch.setenv("CW_FACTORY_LOG", str(log))
-    factory_log.emit_consult("codex", None, repo="dogeared-coach")  # CLI provider, usage not surfaced
+    factory_log.emit_consult("codex", None, repo="acme/app")  # CLI provider, usage not surfaced
     rec = json.loads(log.read_text().splitlines()[0])
-    assert rec["event"] == "consult" and rec["provider"] == "codex" and rec["repo"] == "dogeared-coach"
+    assert rec["event"] == "consult" and rec["provider"] == "codex" and rec["repo"] == "acme/app"
     assert "tokens_in" not in rec and "cost_usd" not in rec  # no fabricated count/cost
 
 
@@ -281,7 +281,7 @@ def test_ingest_claude_code_folds_api_requests(tmp_path, monkeypatch):
         json.dumps({"event.name": "tool_decision", "tool_name": "Bash"}),  # ignored
         "not json",  # skipped
     ]) + "\n")
-    n = factory_log.ingest_claude_code(otel, repo="dogeared-coach")
+    n = factory_log.ingest_claude_code(otel, repo="acme/app")
     assert n == 2
     agg = factory_log.aggregate(factory_log.read_log())
     assert agg["claude_code"]["repl_main_thread"]["cost_usd"] == 0.0175

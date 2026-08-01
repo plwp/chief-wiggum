@@ -257,3 +257,40 @@ def test_dunning_half_is_flagged_aspirational():
     assert dunning.get("grounding") == "design-derived"
     assert "ASPIRATIONAL" in dunning["statement"], (
         "issue #139 flags the dunning half aspirational — the invariant must say so")
+
+
+# --- #221: anonymization policy over the WHOLE patterns tree ------------------
+
+PRIVATE_NAME = re.compile(r"dogeared|dgrd|booking-forms|windamere|duplicat-rex|safetrail",
+                          re.IGNORECASE)
+PATH_LIKE = re.compile(r":\d+|\.(go|ts|tsx|js|py|rb|java)\b")
+
+
+def test_patterns_tree_names_no_private_repos():
+    """The registry is public: no private repo/product name anywhere under
+    patterns/ (manifests, specs, stack profiles, bindings, registry indexes)."""
+    offenders = []
+    for f in sorted((SCRIPTS.parent / "patterns").rglob("*")):
+        if f.suffix not in (".json", ".md"):
+            continue
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            if PRIVATE_NAME.search(line):
+                offenders.append(f"{f.relative_to(SCRIPTS.parent)}:{i}: {line.strip()[:80]}")
+    assert offenders == [], "\n".join(offenders)
+
+
+def test_all_manifest_private_provenance_is_path_free():
+    """Every manifest cluster entry with non-chief-wiggum realized_as describes
+    a mechanism — never a file:line or source-file path (policy applied to the
+    pre-#139 mined manifests too, chief-wiggum#221)."""
+    offenders = []
+    for mf in sorted((SCRIPTS.parent / "patterns").glob("*/manifest.json")):
+        manifest = json.loads(mf.read_text())
+        for e in check_patterns.cluster_entries(manifest.get("invariants", {})):
+            ra = e.get("realized_as")
+            if not isinstance(ra, dict) or "chief-wiggum" in ra.get("app", ""):
+                continue
+            code = ra.get("code", "") + " " + ra.get("id", "")
+            if PATH_LIKE.search(code) or "/" in ra.get("code", ""):
+                offenders.append(f"{mf.parent.name}:{e.get('id')}: {ra}")
+    assert offenders == [], "\n".join(str(o) for o in offenders)

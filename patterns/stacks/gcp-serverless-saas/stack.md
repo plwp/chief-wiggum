@@ -1,8 +1,9 @@
 # Stack Profile: GCP Serverless SaaS (the house stack)
 
 - **Status:** specified (bindings + skills below; `scaffold/` not yet built)
-- **Provenance:** mined from three shipped apps — `plwp.net` (T0), `booking-forms`
-  (T1), `dogeared-coach` (T2). The vendor choices are consistent across all three;
+- **Provenance:** mined from three shipped apps — `plwp.net` (T0), a multi-tenant
+  booking frontend (T1, private), and a multi-provider booking/payments SaaS (T2,
+  private). The vendor choices are consistent across all three;
   this profile is that consistency written down.
 
 ## What a stack profile is (and why it's separate from a pattern)
@@ -76,7 +77,7 @@ start* so that migration is contained.
   cost lever is *no always-on server, no vendor*.
 - **Use for:** landing pages, marketing sites, tiny tools, demand validation.
 
-### T1 — Thin serverless (~$0–5/mo) · exemplar `booking-forms`
+### T1 — Thin serverless (~$0–5/mo) · exemplar: a multi-tenant booking frontend (private)
 
 - **+ Cloud Run** (Go, stdlib `net/http`), `min-instances=0` (scale-to-zero),
   `max-instances` capped for cost — the cap doubles as a throughput ceiling.
@@ -95,7 +96,7 @@ start* so that migration is contained.
 - **Use for:** real transactional micro-SaaS, per-tenant config, marketplace/deposit
   collection.
 
-### T2 — Full production (~$60–140/mo) · exemplar `dogeared-coach`
+### T2 — Full production (~$60–140/mo) · exemplar: a multi-provider booking/payments SaaS (private)
 
 - **+ Cloud Run prod `min-instances=1`** to kill cold-start latency on auth/media —
   typically **the biggest fixed-cost jump**. *~$45–65/mo is an illustrative figure*
@@ -144,12 +145,12 @@ stack** — the wiring, the non-obvious glue, the gotchas mined from the real ap
 
 | Binding | Realizes | Tier | Source |
 |--|--|--|--|
-| [`tiered-subscription.md`](bindings/tiered-subscription.md) | `tiered-subscription` | T2 | dgrd |
+| [`tiered-subscription.md`](bindings/tiered-subscription.md) | `tiered-subscription` | T2 | T2 exemplar (private) |
 | [`engagement-instrumentation.md`](bindings/engagement-instrumentation.md) | `engagement-instrumentation` | T0+ | plwp.net |
-| [`multi-tenant-isolation.md`](bindings/multi-tenant-isolation.md) | `multi-tenant-isolation` (two variants) | T1/T2 | booking-forms, dgrd |
-| [`provider-neutral-adapter.md`](bindings/provider-neutral-adapter.md) | `provider-neutral-adapter` | T2 | dgrd (Cloudflare) |
-| [`transactional-email.md`](bindings/transactional-email.md) | `transactional-email-and-dunning` | T1+ | booking-forms, dgrd |
-| [`deployment-release.md`](bindings/deployment-release.md) | `deployment-release` | T1+ | booking-forms, dgrd |
+| [`multi-tenant-isolation.md`](bindings/multi-tenant-isolation.md) | `multi-tenant-isolation` (two variants) | T1/T2 | T1 + T2 exemplars (private) |
+| [`provider-neutral-adapter.md`](bindings/provider-neutral-adapter.md) | `provider-neutral-adapter` | T2 | T2 exemplar (private; Cloudflare) |
+| [`transactional-email.md`](bindings/transactional-email.md) | `transactional-email-and-dunning` | T1+ | T1 + T2 exemplars (private) |
+| [`deployment-release.md`](bindings/deployment-release.md) | `deployment-release` | T1+ | T1 + T2 exemplars (private) |
 
 ## Stand-up skills (runnable playbooks)
 

@@ -82,7 +82,7 @@
       "category": "saas-infra",
       "status": "specified",
       "trust_class": "session-mint-guard-and-audit-are-protected-paths",
-      "summary": "Time-boxed, revocable, dual-identity-audited operator act-as. Session TTL enforced against the session's own iat (independent of the IdP token life), future-skew guard, fail-closed revocation, no nested impersonation, boundary-checked deny-list (operator plane + auth-factor + destructive/GDPR), dual-identity audit before every impersonated mutation, un-forgeable at the signing root. Promoted from candidate; realized 1:1 in dogeared-coach as INV-EAS-001..007.",
+      "summary": "Time-boxed, revocable, dual-identity-audited operator act-as. Session TTL enforced against the session's own iat (independent of the IdP token life), future-skew guard, fail-closed revocation, no nested impersonation, boundary-checked deny-list (operator plane + auth-factor + destructive/GDPR), dual-identity audit before every impersonated mutation, un-forgeable at the signing root. Promoted from candidate; realized 1:1 in a shipped production SaaS (private) as INV-EAS-001..007.",
       "invariants": "INV-EAS-001..007",
       "depends_on": "provider-neutral-adapter, multi-tenant-isolation",
       "spec": "patterns/elevated-access-session/pattern.md",
@@ -106,7 +106,7 @@
       "category": "multi-provider",
       "status": "specified",
       "trust_class": "seam-boundary-is-protected-path",
-      "summary": "The swappability seam for an external vendor: single-file vendor confinement (SDK imported in exactly one file, import-lint enforceable), neutral DTOs only + unexported concrete adapter with a compile-time var _ Port assertion (+ Fake), vendor-state->enum with safe defaults, signed-webhook-normalized-to-neutral-event (webhook is truth, not the client redirect), sign-per-request TTL-clamped tokens, and direct browser->CDN upload via a one-time ticket (API credential never reaches the browser). Promoted from candidate; realized twice in dogeared-coach (video + billing). INV-PNA-001..006.",
+      "summary": "The swappability seam for an external vendor: single-file vendor confinement (SDK imported in exactly one file, import-lint enforceable), neutral DTOs only + unexported concrete adapter with a compile-time var _ Port assertion (+ Fake), vendor-state->enum with safe defaults, signed-webhook-normalized-to-neutral-event (webhook is truth, not the client redirect), sign-per-request TTL-clamped tokens, and direct browser->CDN upload via a one-time ticket (API credential never reaches the browser). Promoted from candidate; realized twice in a shipped production SaaS (private; video + billing seams). INV-PNA-001..006.",
       "invariants": "INV-PNA-001..006",
       "feeds": "fetch-on-webhook-reconcile, tiered-subscription, elevated-access-session, multi-tenant-isolation",
       "spec": "patterns/provider-neutral-adapter/pattern.md",
@@ -224,8 +224,8 @@
         "summary": "Firebase Hosting + Cloud Run + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless WIF, as a T0->T1->T2 cost ladder ($0 PoC -> paid prod).",
         "provenance": [
           "plwp.net",
-          "booking-forms",
-          "dogeared-coach"
+          "a multi-tenant booking frontend (private)",
+          "a multi-provider booking/payments SaaS (private)"
         ]
       }
     ]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert duplicat-rex DomainModel to chief-wiggum formal model JSON.
+Convert an external agentic-cloner's DomainModel to chief-wiggum formal model JSON.
 
 Bridges the reverse engineering pipeline to the formal methods pipeline:
   EntityHypothesis → contracts-schema.json + state-machine-schema.json
@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-# Map duplicat-rex FieldType to contract schema types
+# Map the cloner's FieldType to contract schema types
 FIELD_TYPE_MAP = {
     "string": "string",
     "integer": "integer",
@@ -42,7 +42,7 @@ METHOD_VERB = {
 
 
 def load_domain_model(path: Path) -> dict:
-    """Load a duplicat-rex domain model JSON."""
+    """Load a cloner domain model JSON."""
     with open(path) as f:
         return json.load(f)
 
@@ -305,7 +305,7 @@ def convert_domain_model(dm: dict, entity_filter: str | None = None) -> tuple[di
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Convert duplicat-rex DomainModel to chief-wiggum formal models"
+        description="Convert an agentic-cloner DomainModel to chief-wiggum formal models"
     )
     parser.add_argument("model", help="Path to domain model JSON")
     parser.add_argument("--entity", help="Convert only this entity (default: all)")

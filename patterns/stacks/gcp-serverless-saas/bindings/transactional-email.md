@@ -1,7 +1,7 @@
 # Binding: `transactional-email-and-dunning` → Resend on GCP Serverless SaaS
 
 - **Realizes:** [`transactional-email-and-dunning`](../../registry.json) (candidate; vendor-neutral)
-- **Tier:** T1+ · **Vendor:** Resend · **Source:** `booking-forms`, `dogeared-coach`
+- **Tier:** T1+ · **Vendor:** Resend · **Source:** two shipped production apps (private; the stack's T1 + T2 exemplars)
 - **Honesty flag:** the **transactional half is shipped**; the **dunning half is
   aspirational** — no mined app built a failed-payment sequence (Stripe sends the
   billing emails). This binding describes what shipped and marks the gap.
@@ -9,11 +9,11 @@
 ## Transactional email (shipped)
 
 - **Client:** Resend, either **raw HTTPS** (`POST https://api.resend.com/emails`,
-  no SDK — dgrd) or the **`resend-go` SDK** (booking-forms). API key from
+  no SDK — the T2 exemplar) or the **`resend-go` SDK** (the T1 exemplar). API key from
   `RESEND_API_KEY` in Secret Manager.
 - **Emails that shipped:** single-use **invite** links (7-day expiry token) for
-  onboarding providers/clients (dgrd); **booking notification + customer
-  confirmation** sent synchronously in the request handler (booking-forms).
+  onboarding providers/clients (the T2 exemplar); **booking notification + customer
+  confirmation** sent synchronously in the request handler (the T1 exemplar).
 - **Templating:** hand-rolled Go `fmt.Sprintf` HTML — **no template engine**. Per-
   tenant branding (banners, hours, from-address) from a config map.
 - **Injection hygiene (important):** `html.EscapeString` on all interpolated values

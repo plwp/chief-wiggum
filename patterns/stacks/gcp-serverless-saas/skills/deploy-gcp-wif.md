@@ -101,7 +101,7 @@ silently repointed after it's been validated.
 
 ```bash
 # fail if any staging/demo config leaked into the prod bundle
-if grep -rE "(dogeared-stag|firebaseapp.com/__/staging|demo-)" dist/assets/*.js; then
+if grep -rE "(myapp-stag|firebaseapp.com/__/staging|demo-)" dist/assets/*.js; then
   echo "::error::staging config leaked into prod bundle"; exit 1
 fi
 ```

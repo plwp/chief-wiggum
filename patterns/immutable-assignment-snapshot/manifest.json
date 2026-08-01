@@ -1,5 +1,5 @@
 {
-  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/immutable-assignment-snapshot/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; grounded in dogeared-coach course versioning.",
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/immutable-assignment-snapshot/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; grounded in a shipped production SaaS's content-versioning subsystem (private; path provenance held out of the public registry per the provenance policy).",
   "id": "immutable-assignment-snapshot",
   "version": 1,
   "title": "Immutable Assignment Snapshot",
@@ -22,11 +22,11 @@
   ],
 
   "invariants": {
-    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach course versioning.",
+    "$comment": "The cluster this pattern guarantees; grounded in a shipped production SaaS's content-versioning subsystem (private; paths withheld).",
     "cluster": [
-      {"id": "INV-IAS-001", "statement": "Published version is write-once: no in-place patch (version store exposes insert + find only).", "realized_as": {"app": "dogeared-coach", "code": "db/store.go:95-118; models/course.go:20-40"}},
-      {"id": "INV-IAS-002", "statement": "Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id.", "realized_as": {"app": "dogeared-coach", "code": "services/course.go:609-629; models/assignment.go:8-23"}},
-      {"id": "INV-IAS-003", "statement": "Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate.", "realized_as": {"app": "dogeared-coach", "code": "services/assignment_view.go:364-389"}}
+      {"id": "INV-IAS-001", "statement": "Published version is write-once: no in-place patch (version store exposes insert + find only).", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "the version store exposes insert + find only, so a published version has no update path"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"},
+      {"id": "INV-IAS-002", "statement": "Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "the edit path inserts a NEW version document; existing assignments keep the immutable version id they were created with"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"},
+      {"id": "INV-IAS-003", "statement": "Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "publish value-copies composite-item fields into the version document; hydrate reads them from the pinned version"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"}
     ]
   },
 

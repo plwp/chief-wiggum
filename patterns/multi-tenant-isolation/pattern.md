@@ -81,14 +81,14 @@ store, and the routes are parameters.
 
 ## Invariant cluster
 
-| Generic ID | Invariant | Realized as (provenance) |
+| Generic ID | Invariant | Realized as (provenance; mechanism described — private-repo paths withheld per the registry provenance policy) |
 |--|--|--|
-| `INV-MTI-001` | Fail-closed scoping: every repo method resolves tenant from context first, errors if absent; no unscoped path exists. | dogeared-coach `db/tenant.go:16` (`ErrMissingTenant`), `db/tenant_repo.go:44-135` |
-| `INV-MTI-002` | Reject-don't-override: a caller-supplied tenant key anywhere (incl. `$rename` string values, nested arrays) is rejected; key auto-injected on insert. | `db/tenant.go:20,81-142` (`ErrTenantOverride`, recursive `containsProviderID` + `…StringValue`) |
-| `INV-MTI-003` | Server-only resolution: client hints rejected (400); anti-probe 404 for wrong actor class. | `middleware/tenant.go:130-191,278-285` |
-| `INV-MTI-004` | Operator plane out-of-band: admin routes register OUTSIDE tenant middleware; provider token can't reach `/admin/*`, admin token can't ride provider routes. | `INV-ADM-001/002/020`; `handlers/routes.go` (`RegisterAdminRoutes`), `middleware/admin_only.go` |
-| `INV-MTI-005` | Standing cross-tenant proof gate: asserts denial AND no-mutation AND no-foreign-id-in-denial across every vector. | `integration/cross_tenant_test.go` (+ `_clients`, `_client_assignments`) |
-| `INV-MTI-006` | Cancel-latched resumable transactional cascade erasure with a documented tombstone exception (billing cancelled outside+before the wipe; tax snapshots survive). | `db/erasure.go:83-…` (`DeleteTenantAll`), `services/admin_offboarding.go:14-21` |
+| `INV-MTI-001` | Fail-closed scoping: every repo method resolves tenant from context first, errors if absent; no unscoped path exists. | a shipped production SaaS (private): every repo method resolves the tenant from context first and errors if absent; raw collection handles stay unexported |
+| `INV-MTI-002` | Reject-don't-override: a caller-supplied tenant key anywhere (incl. `$rename` string values, nested arrays) is rejected; key auto-injected on insert. | a recursive scan rejects a caller-supplied tenant key anywhere in a write (including rename targets and nested string values); inserts auto-inject the key |
+| `INV-MTI-003` | Server-only resolution: client hints rejected (400); anti-probe 404 for wrong actor class. | tenant middleware rejects client hints with 400 and answers wrong-actor-class probes with an anti-probe 404 |
+| `INV-MTI-004` | Operator plane out-of-band: admin routes register OUTSIDE tenant middleware; provider token can't reach `/admin/*`, admin token can't ride provider routes. | `INV-ADM-001/002/020`: admin routes registered outside the tenant middleware chain behind an admin-only guard |
+| `INV-MTI-005` | Standing cross-tenant proof gate: asserts denial AND no-mutation AND no-foreign-id-in-denial across every vector. | a standing integration gate attempts every cross-tenant vector, including nested child records |
+| `INV-MTI-006` | Cancel-latched resumable transactional cascade erasure with a documented tombstone exception (billing cancelled outside+before the wipe; tax snapshots survive). | a cancel-latched resumable transactional erasure across all tenant collections; billing cancelled outside+before the wipe, tax snapshots survive |
 
 ## Parameters
 

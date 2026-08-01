@@ -180,16 +180,16 @@ def test_resolve_engine_passthrough_and_auto(monkeypatch):
 
 
 def test_apply_pronunciations_word_boundary_case_insensitive():
-    mapping = {"Dogeared Coach": "dog eared coach", "Dogeared": "dog eared"}
-    assert tv.apply_pronunciations("Welcome to Dogeared Coach.", mapping) == "Welcome to dog eared coach."
+    mapping = {"Barkly Coach": "bark lee coach", "Barkly": "bark lee"}
+    assert tv.apply_pronunciations("Welcome to Barkly Coach.", mapping) == "Welcome to bark lee coach."
     # longest key wins; bare word also mapped; no substring mangling
-    assert tv.apply_pronunciations("dogeared style, undogeared", mapping) == "dog eared style, undogeared"
+    assert tv.apply_pronunciations("barkly style, unbarkly", mapping) == "bark lee style, unbarkly"
 
 
 def test_pronunciations_schema_validated():
-    board = _board(pronunciations={"Dogeared": "dog eared"})
+    board = _board(pronunciations={"Barkly": "bark lee"})
     assert tv.validate_storyboard(board) == []
-    bad = _board(pronunciations={"Dogeared": 3})
+    bad = _board(pronunciations={"Barkly": 3})
     assert any("pronunciations" in e for e in tv.validate_storyboard(bad))
 
 

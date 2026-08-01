@@ -1,7 +1,7 @@
 # Binding: `tiered-subscription` → Stripe on GCP Serverless SaaS
 
 - **Realizes:** [`tiered-subscription`](../../../tiered-subscription) (vendor-neutral spec)
-- **Tier:** T2 · **Vendor:** Stripe (`stripe-go/v82`) · **Source:** `dogeared-coach`
+- **Tier:** T2 · **Vendor:** Stripe (`stripe-go/v82`) · **Source:** a multi-provider booking/payments SaaS (private; the stack's T2 exemplar)
 
 The concrete Stripe wiring for the abstract subscribe → enforce → lifecycle
 pattern. The abstract spec says "billing webhook is the source of truth"; this is

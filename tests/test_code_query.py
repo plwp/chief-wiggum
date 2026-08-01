@@ -434,7 +434,7 @@ def test_inferred_binding_requires_all_literal_words():
 
 # --- corpus-derived word specificity (#185 precision fix) -----------------------------
 #
-# Real-world trigger (dogeared-coach): `ui/src/providers/auth-provider.tsx` word-matched
+# Real-world trigger (a mined production repo): `ui/src/providers/auth-provider.tsx` word-matched
 # ~30 unrelated operations purely because "provider" is the entity name and recurs
 # across nearly every Provider operation. The fixture's Provider entity (4 operations,
 # 3 of which share ONLY the bare word "providers") + ui-spec route reproduces the same

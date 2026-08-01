@@ -225,7 +225,7 @@ def apply_pronunciations(text: str, mapping: dict[str, str]) -> str:
     """Rewrite narration for the TTS engine only (captions keep the original).
 
     Keys are matched case-insensitively on word boundaries, longest first, so
-    "Dogeared Coach" -> "dog eared coach" wins over a shorter "Dogeared" entry.
+    "Barkly Coach" -> "bark lee coach" wins over a shorter "Barkly" entry.
     """
     for word in sorted(mapping, key=len, reverse=True):
         text = re.sub(rf"\b{re.escape(word)}\b", mapping[word], text, flags=re.IGNORECASE)

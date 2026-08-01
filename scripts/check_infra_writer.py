@@ -8,7 +8,7 @@ it's declared and checked mechanically. An **infra invariant** names a
 (e.g. ``["terraform"]``), and the ``terraform_root`` whose declared state must
 match live state.
 
-Pilot incident this targets: the Dogeared deploy's ``enable_cicd`` footgun — a
+Pilot incident this targets: a production deploy's ``enable_cicd`` footgun — a
 CI run that silently applied infra changes out-of-band, bypassing the
 terraform-owns-infra contract. Nothing flagged it because no check inventories
 *live* infra writers the way ``check_single_writer.py`` inventories *code*

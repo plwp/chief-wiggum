@@ -89,20 +89,21 @@ This pattern *is* the following cluster of invariants (see
 Binding this pattern into an epic pulls these into `invariants.md` with their
 stable ids; the traceability, single-writer, and ratchet gates then hold them.
 
-| Generic ID | Invariant | Realized as (provenance) |
+| Generic ID | Invariant | Realized as (provenance; mechanism described — private-repo paths withheld per the registry provenance policy) |
 |--|--|--|
-| `INV-FOWR-001` | Trigger-only: the handler never reads mutable state from the payload; state comes from a live fetch. | dogeared-coach `INV-BIL-001`; `services/billing_reconcile.go:82-94,169-171` |
-| `INV-FOWR-002` | Order-immune & idempotent; dedupe is a claim→processed lease that **releases on failure** for retry, not a silent drop. | `INV-BIL-003`; `handlers/stripe_webhook.go:158-165` |
+| `INV-FOWR-001` | Trigger-only: the handler never reads mutable state from the payload; state comes from a live fetch. | a shipped production SaaS (private) `INV-BIL-001`: the handler re-fetches the live subscription before projecting entitlement |
+| `INV-FOWR-002` | Order-immune & idempotent; dedupe is a claim→processed lease that **releases on failure** for retry, not a silent drop. | `INV-BIL-003`: claim→processed lease on the event id, released on failure for retry |
 | `INV-FOWR-003` | Single-writer projection of the external-derived state. | `INV-BIL-001` (single-writer) |
-| `INV-FOWR-004` | Unknown external id is fatal: no write, no floor fallback, alert. | `INV-BIL-012`; `billing_reconcile.go:37-40,256-267` |
-| `INV-FOWR-005` | Known-but-non-access states project to the restrictive floor for enforcement. | `INV-BIL-005`; `billing_reconcile.go:250-257` |
+| `INV-FOWR-004` | Unknown external id is fatal: no write, no floor fallback, alert. | `INV-BIL-012`: unknown external id aborts with no write and raises an alert |
+| `INV-FOWR-005` | Known-but-non-access states project to the restrictive floor for enforcement. | `INV-BIL-005`: non-access states project to the most-restrictive tier at the enforcement floor |
 | `INV-FOWR-006` | Signature valid against a rotation **list** of secrets + bounded timestamp window. | `INV-BIL-002` |
-| `INV-FOWR-007` | Resource-mismatch guard: bind only if cached id empty or equal. | `billing_reconcile.go:182-213` |
-| `INV-FOWR-008` | Terminal/deletion latch: late events ignored (not errored) once the record is latched terminal. | `INV-BIL-013`; `billing_reconcile.go:236-248` |
+| `INV-FOWR-007` | Resource-mismatch guard: bind only if cached id empty or equal. | bind-only-if-empty-or-equal guard on the cached external customer id |
+| `INV-FOWR-008` | Terminal/deletion latch: late events ignored (not errored) once the record is latched terminal. | `INV-BIL-013`: terminal latch — late events return OK without writes |
 
 The **sibling monotonic branch** carries its own smaller cluster (terminal-state
 never resurrects; advance-only FSM write; replay is a no-op), realized in the same
-app's video webhook (`db/video_webhook.go:54-84`, `handlers/webhook.go:301-308`).
+app's media-processing webhook (an advance-only FSM write whose source set excludes
+the target state, so a replayed terminal event is a true no-op).
 
 ## Parameters
 

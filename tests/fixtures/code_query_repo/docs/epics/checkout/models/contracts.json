@@ -58,7 +58,7 @@
     },
     {
       "name": "Provider",
-      "description": "#185 fixture: a deliberately common entity — nearly every operation below shares the bare word 'providers', mirroring the real dogeared-coach over-match (an 'auth-provider.tsx' file lexically matched ~30 unrelated provider operations). Regression fixture for CTR-fh-050/051/INV-fh-012: 'providers' alone must NOT bind, but an entity+verb combination (e.g. 'verify') still does.",
+      "description": "#185 fixture: a deliberately common entity — nearly every operation below shares the bare word 'providers', mirroring a real production over-match (an 'auth-provider.tsx' file lexically matched ~30 unrelated provider operations). Regression fixture for CTR-fh-050/051/INV-fh-012: 'providers' alone must NOT bind, but an entity+verb combination (e.g. 'verify') still does.",
       "fields": [],
       "operations": [
         {

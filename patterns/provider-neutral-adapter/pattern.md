@@ -62,14 +62,14 @@ early.
 
 ## Invariant cluster
 
-| Generic ID | Invariant | Realized as (provenance) |
+| Generic ID | Invariant | Realized as (provenance; mechanism described — private-repo paths withheld per the registry provenance policy) |
 |--|--|--|
-| `INV-PNA-001` | Single-file vendor confinement: the vendor SDK is imported in exactly one file (+ tests); no vendor type crosses the seam. | dogeared-coach `billing/stripe.go` (only `stripe-go` importer); `video/cloudflare.go` (package doc: no CF type escapes) |
-| `INV-PNA-002` | Neutral DTOs only; concrete adapter unexported + compile-time `var _ Port = (*concrete)(nil)` assertion; a Fake behind the same port. | `video/service.go:91-118`, `video/cloudflare.go:37`; `billing/client.go:39-83`, `billing/stripe.go:24`, `billing/fake.go:52` |
+| `INV-PNA-001` | Single-file vendor confinement: the vendor SDK is imported in exactly one file (+ tests); no vendor type crosses the seam. | a shipped production SaaS (private): each vendor SDK is imported by exactly one file per seam (billing + video); the package doc pins that no vendor type escapes |
+| `INV-PNA-002` | Neutral DTOs only; concrete adapter unexported + compile-time `var _ Port = (*concrete)(nil)` assertion; a Fake behind the same port. | neutral DTO port with an unexported concrete adapter, the compile-time assertion, and a Fake behind the same port in both seams |
 | `INV-PNA-003` | Vendor status mapped to an internal enum with a safe default for unknown states. | billing status→tier + video status mapping at the seam |
-| `INV-PNA-004` | Signed webhook normalized to a neutral internal event `{id,type,livemode,raw}`; the webhook, not the client redirect, is source of truth. | `billing/stripe.go:290-318`; `video/webhook.go:118-142` |
-| `INV-PNA-005` | Sign-per-request access token: minted per request, never persisted, TTL clamped to a hard ceiling. | `video/jwt.go:22-24,95-144` (`maxTTL=60m`, `defaultTTL=30m`, `clampTTL`) |
-| `INV-PNA-006` | Direct browser→CDN upload via a one-time server-minted ticket; the API credential never reaches the browser. | `video/cloudflare.go:62-114` (`CreateDirectUploadURL`, tus `direct_user=true`) |
+| `INV-PNA-004` | Signed webhook normalized to a neutral internal event `{id,type,livemode,raw}`; the webhook, not the client redirect, is source of truth. | both webhook handlers verify the signature then normalize to the neutral internal event at the seam |
+| `INV-PNA-005` | Sign-per-request access token: minted per request, never persisted, TTL clamped to a hard ceiling. | per-request token minted at the seam, never persisted; a clamp helper bounds TTL (`maxTTL=60m`, `defaultTTL=30m`) |
+| `INV-PNA-006` | Direct browser→CDN upload via a one-time server-minted ticket; the API credential never reaches the browser. | server-minted one-time direct-upload ticket (tus `direct_user=true`); the API credential never leaves the server |
 
 ## Parameters
 
