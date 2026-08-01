@@ -51,6 +51,14 @@ python3 "$CW_HOME/scripts/reflect.py" "$TARGET_REPO" --prs "$CW_TMP/prs.json" --
 
 The report has: `commit_kinds`, `gate_mentions`, `force_bypasses`, `slippage_commits`, `assumptions` (TBD markers), `ratchet` health, `pattern_coverage`, `retrospectives`, and mechanical `findings` seeding your analysis.
 
+Also run the deferred-rigor trigger check (report-only — see `docs/deferred-rigor.json`, the durable index that replaced chief-wiggum#171/#161's open-issue parking):
+
+```bash
+python3 "$CW_HOME/scripts/check_deferred_triggers.py" --repo "$TARGET_REPO" --format text
+```
+
+Each deferred system-layer decision carries a quorum-settled design and a concrete build trigger. A `FIRED` item means its mechanical trigger is now true: file the full issue **from the item's `settled_notes`** (the design is settled — do not relitigate it) in Step 4 alongside the other drafted issues. A `CANDIDATE` item has soft evidence (heuristic counts, matching bug events) — confirm with the human before filing. `UNEVALUATED` items need human judgment and are listed so nothing is silently dropped.
+
 ### Step 3: Reason across the dimensions
 
 The mechanical findings are a starting point, not the analysis. Reason over the evidence:
