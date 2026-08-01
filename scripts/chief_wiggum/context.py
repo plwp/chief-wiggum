@@ -160,8 +160,27 @@ class WorkflowContext:
             lines.append(f"export ISSUE_NUMBER={self.issue}")
         if self.epic_slug is not None:
             lines.append(f"export EPIC_SLUG={env.shell_quote(self.epic_slug)}")
-            lines.append(f'export EPIC_DIR="$TARGET_REPO/docs/epics/{self.epic_slug}"')
+            epic_dir = self._resolved_epic_dir()
+            if epic_dir is not None:
+                lines.append(f"export EPIC_DIR={env.shell_quote(str(epic_dir))}")
+            else:
+                lines.append(f'export EPIC_DIR="$TARGET_REPO/docs/epics/{self.epic_slug}"')
         return "\n".join(lines)
+
+    def _resolved_epic_dir(self):
+        """Meta location is resolved, never assumed (#213): when the target
+        repo path is known, EPIC_DIR comes from the artifacts resolver, so a
+        sidecar election routes the epic-consuming skills to the sidecar.
+        Offline (--no-resolve) falls back to the embedded literal."""
+        if self.repo_path is None or self.epic_slug is None:
+            return None
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            import artifacts
+            return artifacts.Resolver.resolve(Path(self.repo_path)).epic_dir(self.epic_slug)
+        except Exception:
+            return None
 
 
 def resolve(

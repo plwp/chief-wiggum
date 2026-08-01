@@ -21,6 +21,13 @@ Three rules, all mechanical:
    **protected pathset**. A worker branch that touches them is *parked* for
    human review, never auto-merged.
 
+   In **sidecar footprint mode** ([sidecar.md](sidecar.md)) this rule holds
+   **by construction, not by diff inspection**: the goalposts live outside the
+   target tree entirely, so a worker in the target worktree *physically
+   cannot* write them — there is no diff to park because there is no path to
+   the file. `protected` remains the enforcement for embedded targets, where
+   the goalposts share the tree with the code.
+
 Plus two further dimensions (one validated-and-wired, one report-only):
 
 4. **Verifier-test bodies are goalposts too (#206).** The pass-set is keyed by
