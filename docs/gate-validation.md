@@ -11,7 +11,10 @@ This is deliberately a **manual/scripted protocol**, not an automated
 "designer" that invents seeds for you. Building that generator is deferred
 until the gate count makes hand-authoring seeds a real burden (cost-lens
 trigger: revisit past 5 gates). Below 5 gates, a human writing 3-6 seeds per
-gate is cheaper than a meta-tool to write them.
+gate is cheaper than a meta-tool to write them. *(That trigger has since
+fired — 7 records — and chief-wiggum#218 shipped the designer, report-only;
+see "The designer" below. The records themselves stay hand-authored; the
+designer audits them.)*
 
 ## Why this exists
 
@@ -365,6 +368,91 @@ This mirrors "quality ratchets, never slides" (CLAUDE.md): a gate's blocking
 authority is a high-water mark too, and a demonstrated production miss of a
 *validated* seed class is exactly the kind of regression that must move the
 mark back down, not get logged and forgotten.
+
+## The designer: `scripts/gate_validation_designer.py` (chief-wiggum#218)
+
+The deferred-rigor trigger (">5 validated gates") fired at 7 records, so the
+meta-tool this doc deferred now exists — as an **auditor of the hand-authored
+records**, not a generator that invents seeds. It is **report-only ALWAYS**
+(every subcommand exits 0): the designer proposes, never blocks. Per
+`docs/gate-rollout.md` it must earn any blocking authority via its own
+validation record, which it does not yet have.
+
+```bash
+python3 "$CW_HOME/scripts/gate_validation_designer.py" audit --all   # per-record audit
+python3 "$CW_HOME/scripts/gate_validation_designer.py" matrix        # one-screen table
+python3 "$CW_HOME/scripts/gate_validation_designer.py" escapes       # independent intake
+python3 "$CW_HOME/scripts/gate_validation_designer.py" extract-seeds <gate>
+python3 "$CW_HOME/scripts/gate_validation_designer.py" mutate <gate> --max-mutants 20
+```
+
+- **`audit [<gate>|--all]`** reads each record + authority-boundary statement,
+  proposes the mandatory seed-class matrix (direct + the evasion trio +
+  concurrency-where-applicable + instrumentation-deleted-where-telemetry-
+  dependent), and flags: mandatory classes with no genuinely-passing trial;
+  trials whose `seed_id` has no re-executable entry in the retroactive suite
+  (`tests/test_gate_validation_retroactive.py` — a seed re-executed in a
+  companion suite, e.g. `test_saas_gate.py`, is located and reported as
+  informational, not flagged; a seed counts as re-executable only when it
+  appears as a quote-delimited string literal — a bare or comment mention is
+  classified `mention-only:<file>` and flagged as missing); missing
+  applicability declarations (a record with no `telemetry_dependent` key, like
+  one with `concurrency_applicable: false` but no note, gets
+  `n/a-unjustified`, not a silent pass); authority-boundary claims that name a limit
+  but have no no-fire trial proving the boundary (an **honest heuristic** —
+  keyword overlap, every match labeled proven-confident/proven-uncertain and
+  possibly wrong in both directions); clean-corpus runs whose coverage
+  evidence is missing or all-zero (a no-op wearing a green checkmark); and
+  drift between the record's trials and its seeds file.
+- **`matrix`** prints the gates × seed-classes coverage table — trial present
+  / MISSING / FAILING / n-a-with-justification / n-a-unjustified — the
+  one-screen audit surface.
+- **`escapes [<gate>]`** is the **independent escape intake** (the settled
+  #218 note, refuter #18-20): it reads ONLY the factory log's `escape` events
+  (`factory_log.py bug --missed-by <gate> --seed-class ...`) and the raw
+  records — never the designer's own proposals — and classifies each escape:
+  a seed class the record certified **caught** → prints the DEMOTION
+  instruction (revert to report-only + ticket to re-derive the seed class,
+  per "Demotion" above); a certified `no-fire` boundary → consistent with the
+  authority statement, no demotion, stated; an uncertified class or an
+  untagged escape → surfaced as such. A class certified BOTH caught and
+  no-fire still demotes (conservative, parity with `factory_log`) but carries
+  an explicit caveat: the event cannot distinguish the path — confirm the
+  escape traversed the certified-caught scenario before executing the
+  demotion.
+- **`extract-seeds <gate>|--all`** materializes the record's trials into
+  `docs/quality/validation/seeds/<gate>.seeds.json` — **seeds versioned
+  separately from gate code** made concrete: the seeds file carries
+  `seed_id`/`seed_class`/`seed_version`/corpus ref/corpus digest/expected
+  outcome and never moves with `scanner_version`. It is a derived,
+  committed artifact: **re-authoring a record means re-running
+  `extract-seeds` in the same change** — `audit` reports record-vs-seeds
+  drift otherwise, and `tests/test_gate_validation_designer.py` pins the
+  shipped seeds files byte-for-byte against regeneration. The seeds files
+  live in the ratchet-protected pathset (`docs/quality/**`): a branch
+  touching them parks for human review, so regenerate only alongside the
+  record change that motivates it (the CLI prints this reminder after
+  writing).
+- **`mutate <gate>`** is the best-effort mutation-testing leg: runs `mutmut`
+  (when installed — it is NOT a project dependency; absent means
+  skipped-with-instructions, never silent) scoped to the gate's script file
+  with the gate's own unit tests as the runner. A mutant that **survives**
+  the gate's tests is detection logic no seed pins — each survivor is
+  proposed as a new seed-class candidate. Runtime is bounded:
+  `--max-mutants × --per-mutant-seconds` (defaults 20 × 30s) wall-time on
+  the run, and the candidate list is capped at `--max-mutants`. A `mutmut
+  run` that exits nonzero is reported as **failed** with the stderr tail —
+  no mutation signal, never presented as a clean zero-survivor result. The
+  flags target the mutmut 2.x interface; 3.x moved to config-file setup —
+  verify your mutmut major version.
+
+**Promotion path (giving it teeth):** if a designer finding class proves
+precise in practice, the path is the same as every gate's — author a
+validation record for `gate_validation_designer` itself (seeded-defect trials
+per this protocol: e.g. inject a record missing a mandatory class and prove
+the audit fires; inject an all-zero coverage clean run; etc.), journal it,
+and only then wire any blocking behavior. Until then its findings are
+operator scrutiny cues, exactly like a new gate's report-only phase.
 
 ## Retroactive validation
 

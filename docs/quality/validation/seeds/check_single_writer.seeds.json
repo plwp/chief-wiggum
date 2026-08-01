@@ -1,0 +1,43 @@
+{
+  "gate": "check_single_writer",
+  "extracted_from": "check_single_writer.json",
+  "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds check_single_writer` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
+  "seeds": [
+    {
+      "seed_id": "sw-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/single_writer_clean",
+      "corpus_digest": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "internal/admin/handlers.go: ChangePlan writes provider.plan via bson $set, outside INV-bil-001's sanctioned_writers",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "sw-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/single_writer_clean",
+      "corpus_digest": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "internal/db/leak.go: an unsanctioned write of provider.active_owner_count hidden inside a nested anonymous closure with no directly-enclosing named function at the write site",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "sw-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/single_writer_clean",
+      "corpus_digest": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "internal/wrappers/generic.go: a generically-named SetField helper writes provider.stripe_plan via bson $set \u2014 indirection through a wrapper function, not the sanctioned symbol name",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "sw-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/single_writer_clean",
+      "corpus_digest": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "vendor/thirdparty/patch.go: an unsanctioned write of provider.stripe_plan placed inside the vendor/ subtree, which SKIP_PARTS excludes by design",
+      "expected": "no-fire"
+    }
+  ]
+}

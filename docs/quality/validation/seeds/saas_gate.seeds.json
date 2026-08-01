@@ -1,0 +1,43 @@
+{
+  "gate": "saas_gate",
+  "extracted_from": "saas_gate.json",
+  "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds saas_gate` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
+  "seeds": [
+    {
+      "seed_id": "saas-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/saas_gate_clean",
+      "corpus_digest": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'missing_headers': the root response omits Content-Security-Policy and X-Content-Type-Options entirely -> two FAIL findings (content-security-policy 'missing', x-content-type-options 'missing (want nosniff)')",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "saas-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/saas_gate_clean",
+      "corpus_digest": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'csrf_samesite_none_spaced': the session cookie carries 'SameSite = None' with stray whitespace a naive substring check might miss; the structural _cookie_attrs parser still normalizes it to samesite=none and FAILs the csrf check ('SameSite=none (need Lax/Strict)')",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "saas-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/saas_gate_clean",
+      "corpus_digest": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'headers_lowercased': an otherwise-healthy response serves every security header NAME lower-cased (content-security-policy, x-content-type-options, ...). The gate's case-insensitive _hget must still recognize them as present+healthy -> zero FAIL findings. A certified non-coverage-evasion boundary: casing indirection neither dodges detection nor causes a spurious finding, so the gate correctly does not fire.",
+      "expected": "no-fire"
+    },
+    {
+      "seed_id": "saas-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/saas_gate_clean",
+      "corpus_digest": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "scenario 'no_rate_limit': /login returns 200 on every one of the 20 probe attempts, never 429. Absent --rate-limit-required, check_rate_limit marks this WARN (not FAIL) by design -> report.ok stays True. A never-429 endpoint is a certified non-finding under the default scope, not a scanner miss, so the gate correctly does not fire.",
+      "expected": "no-fire"
+    }
+  ]
+}

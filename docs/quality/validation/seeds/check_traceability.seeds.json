@@ -1,0 +1,43 @@
+{
+  "gate": "check_traceability",
+  "extracted_from": "check_traceability.json",
+  "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds check_traceability` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
+  "seeds": [
+    {
+      "seed_id": "tr-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/traceability_clean",
+      "corpus_digest": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "order.py: removed the `@cw-trace guards CTR-order-001 INV-order-003` annotation entirely",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "tr-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/traceability_clean",
+      "corpus_digest": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "test_create_order.py: guards annotation left intact, but the verifies annotation silently dropped INV-order-003 (kept only CTR-order-001)",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "tr-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/traceability_clean",
+      "corpus_digest": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "order.py: the real create_order lost its guards annotation, but a decoy `@cw-trace guards CTR-order-001 INV-order-003` was placed on an unrelated no-op function that does not implement the guard",
+      "expected": "no-fire"
+    },
+    {
+      "seed_id": "tr-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/traceability_clean",
+      "corpus_digest": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "test_create_order.py lost its real verifies annotation; a decoy verifies annotation for both IDs was placed in notes.txt, an extension outside SOURCE_EXTS",
+      "expected": "fire"
+    }
+  ]
+}

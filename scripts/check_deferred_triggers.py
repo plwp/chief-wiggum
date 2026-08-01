@@ -13,6 +13,11 @@ the MECHANICAL half of those triggers and reports, per item:
 - ``UNEVALUATED`` — the trigger needs human judgment (no mechanical checks,
                     or a required input like ``--repo`` wasn't provided);
                     surfaced, never silently skipped.
+- ``BUILT``       — the item carries a ``built`` field naming the issue that
+                    shipped it (e.g. ``"#218"``): its FIRED state has been
+                    ANSWERED, so evaluation is skipped — the row stays in the
+                    index (never removed) as the durable record of the settled
+                    design and what built it.
 
 This is a **permanently report-only scrutiny cue, never a gate** (exit 0
 always, same doctrine as the high-water test-file cue): the trigger table is
@@ -137,6 +142,13 @@ def check_telemetry_bug_keyword(log_path: Path, keywords: list[str]) -> tuple[st
 
 
 def evaluate_item(item: dict, repo: Path | None, log_path: Path) -> dict:
+    if item.get("built"):
+        # The trigger fired and was ANSWERED: the settled design shipped in the
+        # named issue. Skip evaluation (the checks would just re-fire forever)
+        # but keep the row — the index is the durable record, never pruned.
+        return {"id": item["id"], "title": item["title"],
+                "source_issue": item.get("source_issue"), "trigger": item.get("trigger"),
+                "status": "BUILT", "built": item["built"], "checks": []}
     checks = item.get("checks", [])
     results = []
     for chk in checks:
@@ -195,7 +207,10 @@ def main() -> int:
             print(f"              trigger: {r['trigger']}")
             for c in r["checks"]:
                 print(f"              - {c['kind']}: {c['status']} ({c['detail']})")
-            if not r["checks"]:
+            if r["status"] == "BUILT":
+                print(f"              - built: {r['built']} — trigger answered; "
+                      "evaluation skipped (row kept as the durable record)")
+            elif not r["checks"]:
                 print("              - no mechanical checks: human judgment (surfaced, not silent)")
         fired = [r["id"] for r in results if r["status"] == "FIRED"]
         cand = [r["id"] for r in results if r["status"] == "CANDIDATE"]
