@@ -80,6 +80,50 @@ def test_target_id_non_git_dir_falls_back_to_path_hash(tmp_path):
     assert artifacts.Resolver.resolve(d).target_id.startswith("local/")
 
 
+@pytest.mark.parametrize("hostile", [
+    "https://x.com/../..",           # meta-root escape via ..
+    "https://x.com/../evil",         # partial escape
+    "https://host/./.",              # dot segments
+    "a/b/c",                         # bare local path, no host
+    "https://x.com//repo",           # empty owner segment
+    "https://host/evil\\..",         # windows separator in repo
+    "https://host/a\\b/c",           # windows separator in owner
+    "https://../owner/repo",         # hostile host
+])
+def test_target_id_hostile_remote_falls_back_to_local_hash(tmp_path, hostile):
+    """F2: a remote URL whose parsed segments could traverse out of the meta
+    root (../.., empty parts, separators) must NEVER become the target id —
+    the safe, deterministic local/<hash> identity is used instead."""
+    repo = make_git_repo(tmp_path / "r", remote=hostile)
+    tid = artifacts.derive_target_id(repo)
+    assert tid.startswith("local/"), f"{hostile!r} produced unsafe id {tid!r}"
+    # ...and the meta dir stays inside the user dir.
+    meta = artifacts.meta_dir(tid).resolve()
+    assert str(meta).startswith(str(artifacts.user_dir().resolve()))
+
+
+def test_target_id_non_github_host_is_host_qualified(tmp_path):
+    """F3: host-blind identity collides gitlab.acme.com/team/app with
+    github.com/team/app onto one meta dir — non-github hosts are prefixed."""
+    gl = make_git_repo(tmp_path / "gl", remote="https://gitlab.acme.com/acme/app.git")
+    gh = make_git_repo(tmp_path / "gh", remote="https://github.com/acme/app.git")
+    assert artifacts.derive_target_id(gl) == "gitlab.acme.com/acme/app"
+    assert artifacts.derive_target_id(gh) == "acme/app"
+    assert artifacts.derive_target_id(gl) != artifacts.derive_target_id(gh)
+
+
+def test_target_id_non_github_scp_remote_is_host_qualified(tmp_path):
+    repo = make_git_repo(tmp_path / "r", remote="git@gitlab.acme.com:acme/app.git")
+    assert artifacts.derive_target_id(repo) == "gitlab.acme.com/acme/app"
+
+
+def test_target_id_deep_https_path_takes_last_two_segments(tmp_path):
+    """A valid deep path (gitlab group/subgroup/repo) keeps the existing
+    last-two-segments behavior, host-qualified."""
+    repo = make_git_repo(tmp_path / "r", remote="https://gitlab.acme.com/grp/sub/app.git")
+    assert artifacts.derive_target_id(repo) == "gitlab.acme.com/sub/app"
+
+
 def test_target_id_stable_across_symlinked_path_variants(tmp_path):
     """Regression (caught in the #213 smoke run): /tmp vs /private/tmp on
     macOS — or any symlinked spelling of the same repo — must resolve to the
@@ -168,6 +212,30 @@ def test_malformed_election_fails_closed(tmp_path, user_dir):
         artifacts.Resolver.resolve(repo)
 
 
+@pytest.mark.parametrize("payload", ["[]", "null", "12", '"sidecar"'])
+def test_non_dict_election_json_is_malformed_not_attributeerror(tmp_path, user_dir, payload):
+    """F11: valid-JSON-but-not-an-object election files ([]/null/12/"sidecar")
+    take the SAME malformed-election ValueError path as unparsable JSON —
+    never an AttributeError out of .get()."""
+    repo = make_git_repo(tmp_path / "r", remote="https://github.com/acme/app.git")
+    path = user_dir / "meta" / "acme" / "app" / "election.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload)
+    with pytest.raises(ValueError, match="malformed election file"):
+        artifacts.load_election("acme/app")
+
+
+def test_election_with_unknown_backing_fails_closed(tmp_path, user_dir):
+    """F11: backing is validated on READ too — an election hand-edited to an
+    unknown backing must not silently resolve."""
+    repo = make_git_repo(tmp_path / "r", remote="https://github.com/acme/app.git")
+    path = user_dir / "meta" / "acme" / "app" / "election.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mode": "sidecar", "backing": "s3"}))
+    with pytest.raises(ValueError, match="backing"):
+        artifacts.Resolver.resolve(repo)
+
+
 # ---- CHIEF_WIGGUM_USER_DIR / cw_home isolation ---------------------------------
 
 
@@ -237,6 +305,46 @@ def test_scope_lives_at_the_sidecar_meta_root_in_sidecar_mode(tmp_path, user_dir
     assert not r.in_scope("cmd/x.go")
 
 
+def test_scope_unknown_keys_raise_naming_them(tmp_path):
+    """F6: a typo'd scope key ({"includes": ...}) must never silently mean
+    whole-repo scope — ValueError names the offending key."""
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    r.meta_root.mkdir(parents=True, exist_ok=True)
+    (r.meta_root / "scope.json").write_text(json.dumps({"includes": ["pkg/*"]}))
+    with pytest.raises(ValueError, match="includes"):
+        r.in_scope("pkg/x.go")
+    with pytest.raises(ValueError, match="includes"):
+        r.scope_summary()
+
+
+def test_scope_comment_key_is_allowed(tmp_path):
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    r.meta_root.mkdir(parents=True, exist_ok=True)
+    (r.meta_root / "scope.json").write_text(json.dumps(
+        {"$comment": "team scope", "include": ["pkg/*"]}))
+    assert r.in_scope("pkg/x.go")
+
+
+def test_scope_unparsable_json_raises(tmp_path):
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    r.meta_root.mkdir(parents=True, exist_ok=True)
+    (r.meta_root / "scope.json").write_text("{not json")
+    with pytest.raises(ValueError, match="parse"):
+        r.in_scope("pkg/x.go")
+
+
+def test_cli_show_surfaces_scope_error_as_exit_2(tmp_path, capsys):
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    r.meta_root.mkdir(parents=True, exist_ok=True)
+    (r.meta_root / "scope.json").write_text(json.dumps({"includes": []}))
+    assert artifacts.main(["show", str(repo), "--format", "json"]) == 2
+    assert "includes" in capsys.readouterr().err
+
+
 # ---- version binding (stamp / check_stale) -------------------------------------
 
 
@@ -290,3 +398,6 @@ def test_cli_elect_and_show(tmp_path, user_dir, capsys):
     assert doc["mode"] == "sidecar"
     assert doc["target_id"] == "acme/app"
     assert doc["meta_root"] == str(user_dir / "meta" / "acme" / "app" / "docs")
+    # F8: absolute, mode-resolved dirs for skills (`show ... | jq -r .quality_dir`)
+    assert doc["epics_dir"] == str(user_dir / "meta" / "acme" / "app" / "docs" / "epics")
+    assert doc["quality_dir"] == str(user_dir / "meta" / "acme" / "app" / "docs" / "quality")

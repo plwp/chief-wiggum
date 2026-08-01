@@ -948,9 +948,11 @@ def test_defined_ids_make_the_report_applicable(tmp_path):
     assert report.uncovered_contracts == ["CTR-order-001"]
 
 
-def test_annotations_without_definitions_are_applicable(tmp_path):
-    """Dangling annotations alone (no defined IDs) still mean there was
-    something to check — that is applicable, with dangling findings."""
+def test_annotations_without_definitions_are_inapplicable_but_dangle(tmp_path):
+    """F9: with ZERO contracts defined there is nothing for coverage to be
+    true of — inapplicable REGARDLESS of annotations. The annotations
+    themselves remain a soundness matter: they are all dangling, and soundness
+    still fails on them (exit codes unchanged)."""
     epic = tmp_path / "epic"
     epic.mkdir()
     (epic / "contracts.md").write_text("# empty\n")
@@ -958,8 +960,44 @@ def test_annotations_without_definitions_are_applicable(tmp_path):
     src.mkdir()
     (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
     report = ct.check(epic, src, schema=SCHEMA)
-    assert report.applicability == "applicable"
-    assert report.dangling
+    assert report.applicability == "inapplicable"
+    assert report.dangling  # soundness findings survive the classification
+    assert report.soundness_ok is False
+    assert report.coverage_ok is True  # vacuously — which is the point
+
+
+def test_cli_gate_soundness_still_fails_on_dangling_when_inapplicable(tmp_path, capsys):
+    """F9 keeps exit codes unchanged: annotations-without-definitions are
+    dangling, so --gate soundness still exits 1 even though coverage is
+    classified inapplicable."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# empty\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "soundness", "--format", "json"])
+    assert rc == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["applicability"] == "inapplicable"
+    assert data["dangling"]
+
+
+def test_cli_gate_coverage_annotations_without_definitions_banner(tmp_path, capsys):
+    """F9: --gate coverage with annotations but zero definitions exits 0
+    (coverage has nothing to hold over) but prints the inapplicable banner —
+    never a silent identical green."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# empty\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["applicability"] == "inapplicable"
+    assert "inapplicable, not passing" in captured.err
 
 
 def test_cli_gate_coverage_inapplicable_exits_zero_with_banner(tmp_path, capsys):

@@ -110,15 +110,20 @@ def write_epic(epic_dir: Path) -> Path:
     return epic_dir
 
 
-def configure_ratchet(target: Path, junit: Path, epic_docs: str) -> Path:
-    """ratchet init, then pin the suite + epic_docs. The junit report is an
-    ABSOLUTE path outside the target so the suite run leaves no artifact
-    in-tree; in sidecar mode ``epic_docs`` is the absolute sidecar epics path
-    (docs/sidecar.md — the embedded default 'docs/epics' is target-relative)."""
+def configure_ratchet(target: Path, junit: Path, expected_epic_docs: str) -> Path:
+    """ratchet init, then pin the suite ONLY. ``epic_docs`` is asserted, never
+    hand-patched: ``cmd_init`` itself resolves it via artifacts.Resolver (F1 —
+    embedded targets get the portable 'docs/epics'; sidecar targets get the
+    ABSOLUTE sidecar epics dir, or contract hashing would be silently
+    vacuous). The junit report is an ABSOLUTE path outside the target so the
+    suite run leaves no artifact in-tree."""
     assert ratchet.cmd_init(argparse.Namespace(repo=str(target), force=False)) == 0
     config_path = ratchet.default_state_dir(target) / ratchet.CONFIG_NAME
     assert config_path.is_file()
     cfg = json.loads(config_path.read_text())
+    assert cfg["epic_docs"] == expected_epic_docs, (
+        f"cmd_init wrote epic_docs={cfg['epic_docs']!r}, expected {expected_epic_docs!r}"
+    )
     cfg["suites"] = [{
         "name": "py",
         "cmd": f'"{sys.executable}" -m pytest tests -q -p no:cacheprovider --junitxml="{junit}"',
@@ -126,7 +131,6 @@ def configure_ratchet(target: Path, junit: Path, epic_docs: str) -> Path:
         "parser": "junit-xml",
         "report": str(junit),
     }]
-    cfg["epic_docs"] = epic_docs
     config_path.write_text(json.dumps(cfg))
     return config_path
 

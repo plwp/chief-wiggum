@@ -87,6 +87,54 @@ def test_ratchet_counts_come_from_the_scorecard(user_dir, tmp_path):
     assert "pass-set: 3 case(s)" in status.render_text(st)
 
 
+def test_stale_scorecard_warns_in_git_target(user_dir, tmp_path):
+    """F12: a scorecard stamped against an older HEAD gets a staleness
+    warning line (Resolver.check_stale); a fresh one does not."""
+    import subprocess
+
+    target = _make_target(tmp_path)
+
+    def _git(*args):
+        subprocess.run(["git", "-C", str(target), *args], check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@t")
+    _git("config", "user.name", "t")
+    (target / "README.md").write_text("hi\n")
+    _git("add", ".")
+    _git("commit", "-q", "-m", "init")
+    head = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": [], "contract_hashes": {}, "verifier_test_hashes": {},
+        "target_sha": head,
+    }))
+    st = status.gather(target)
+    assert "stale" not in st["ratchet"]  # fresh: no warning
+
+    (target / "new.txt").write_text("x\n")
+    _git("add", ".")
+    _git("commit", "-q", "-m", "more")
+    st = status.gather(target)
+    assert "stale" in st["ratchet"] and head in st["ratchet"]["stale"]
+    assert "WARNING" in status.render_text(st)
+
+
+def test_non_git_target_scorecard_never_warns_stale(user_dir, tmp_path):
+    """Staleness is a git concept: a non-git target has no HEAD to be stale
+    against — no warning, exactly the pre-F12 rendering."""
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({"pass_set": []}))
+    st = status.gather(target)
+    assert "stale" not in st["ratchet"]
+
+
 def test_ratchet_config_without_scorecard(user_dir, tmp_path):
     target = _make_target(tmp_path)
     q = target / "docs" / "quality"

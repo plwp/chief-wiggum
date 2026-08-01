@@ -69,24 +69,54 @@ The split is by kind, not by convenience:
 
 One config consequence: the sidecar `ratchet.json`'s `epic_docs` must point at
 the sidecar epics tree (an absolute path — the embedded default `docs/epics`
-is target-relative), so contract-definition hashing reads the same artifacts
-every other gate does.
+is target-relative and would hash nothing there, a silently vacuous contract
+ratchet). `ratchet.py init` resolves this itself: on a sidecar-elected target
+it writes the absolute sidecar epics dir; embedded targets keep the portable
+`docs/epics` default.
 
-## Threat model: fails closed by construction
+## Threat model: the goalposts leave the reviewed diff
 
 In embedded mode, rule 3 of the ratchet ([ratchet.md](ratchet.md)) is enforced
 by **diff inspection**: `ratchet.py protected` parks any worker branch touching
-the protected pathset. In sidecar mode the same guarantee holds **by
-construction**: workers operate in the target worktree, and the goalposts —
-contracts, specs, ratchet state — simply are not in the tree they can touch. A
-worker physically cannot write them, cannot weaken a contract, cannot append to
-the journal, cannot edit a validation record. There is no diff to inspect
-because there is no path to the file. The ratchet fails closed not because a
-check ran, but because the write is impossible.
+the protected pathset. In sidecar mode the goalposts — contracts, specs,
+ratchet state — have **no path inside the target tree**, so a goalpost edit
+cannot ride in the worker's *reviewed diff*: there is nothing for a branch to
+touch, nothing for a merge to carry, and the C2-style channel (a goalpost move
+hidden inside an otherwise-plausible code change) is removed. That is the
+claim — no more.
 
-(The sidecar meta-repo has its own trust boundary: the orchestrator writes it,
-workers never see it. With `--backing git`, its history is the outer anchor,
-same role git history plays for embedded `docs/quality/**`.)
+### Trust boundary
+
+What sidecar mode does **not** do (same voice as [ratchet.md](ratchet.md)'s
+trust-boundary section — stated assumptions, not TODOs):
+
+- **Workers are not filesystem-sandboxed.** A worker process runs as the same
+  user, and the sidecar is a plain directory under `~/.chief-wiggum/` — a
+  process that chooses to write it directly, can. The boundary is the **diff**,
+  not the disk. (With `--backing git`, the meta-repo's history is the outer
+  anchor for such writes, the same role git history plays for embedded
+  `docs/quality/**`.)
+- **`CHIEF_WIGGUM_USER_DIR` re-roots resolution entirely.** It exists for test
+  isolation (see below); an agent that sets it points every resolver at a
+  directory of its choosing. It is a convenience knob, not a security control.
+- **Elections are overwritable by convention.** `elect` records the mode by
+  overwriting `election.json` — deliberately, so an operator can switch modes;
+  it means the election itself is an operator convention, not a tamper-evident
+  fact. Re-electing is loud (`/status` names the mode live) but not prevented.
+
+A worker that misbehaves at the filesystem level is caught by the layers that
+already own that class: the sidecar meta-repo's own git history, and the fact
+that gate verdicts are derived live from the sidecar the *orchestrator* reads
+— not from anything the worker hands back.
+
+### `CHIEF_WIGGUM_USER_DIR`
+
+The env var overrides the `~/.chief-wiggum` root for **test isolation**: every
+test sets it to a tmp dir so the real home dir is never a fixture (precedence:
+explicit `cw_home` parameter > `CHIEF_WIGGUM_USER_DIR` > `~/.chief-wiggum`,
+see `scripts/artifacts.py user_dir`). It is **not a security boundary** — per
+the trust-boundary note above, anything that can set the environment can
+re-root where elections, scopes, and sidecar meta resolve.
 
 ## Version binding: every artifact names the HEAD it was computed against
 

@@ -176,7 +176,7 @@ python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_RE
 
 **If `assert-main-pristine` fails, STOP** — main is on a feature branch or dirty (an isolation leak). Restore it (`git checkout "$DEFAULT_BRANCH"`, inspect/park any stray changes) before launching any wave, or every worktree will branch off a contaminated base.
 
-**Load amnesia context** (if the repo has `docs/quality/ratchet.json`): replay the recent ratchet journal so this session doesn't re-litigate decisions a previous wave already made (a parked ticket, an amended contract, a known-flaky suite):
+**Load amnesia context** (resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`; if `$QUALITY_DIR/ratchet.json` exists): replay the recent ratchet journal so this session doesn't re-litigate decisions a previous wave already made (a parked ticket, an amended contract, a known-flaky suite):
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 5
@@ -279,7 +279,7 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
 2. Run the full test suite
 3. Run linting
 4. Verify the branch has the expected commits
-5. **Protected-path guard** (if the repo has `docs/quality/ratchet.json`, see `docs/ratchet.md`) — workers must not move their own goalposts. Check the worker's diff against the protected pathset (contracts, invariants, integration-test specs, formal models, ratchet state):
+5. **Protected-path guard** (if `$QUALITY_DIR/ratchet.json` exists — `QUALITY_DIR` resolved via `python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir`; see `docs/ratchet.md`) — workers must not move their own goalposts. Check the worker's diff against the protected pathset (contracts, invariants, integration-test specs, formal models, ratchet state):
    ```bash
    python3 "$CW_HOME/scripts/ratchet.py" protected --repo "$worktree" --base "origin/$DEFAULT_BRANCH"
    ```
@@ -322,7 +322,7 @@ Run the integration check **on the staging branch, before promoting to main**:
 2. **Linting**: `golangci-lint run ./...` / `npx eslint` — zero high-severity findings
 3. **Build**: Verify the project compiles/builds cleanly
 4. **Smoke test**: If services can be started, start them and verify health endpoints respond
-5. **Ratchet check** (if the repo has `docs/quality/ratchet.json`, see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID:
+5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists — `QUALITY_DIR` resolved via `python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir`; see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID:
    ```bash
    python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
    python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
@@ -435,7 +435,7 @@ After the wave merges, update the traceability matrix for all tickets in the wav
 - Mark acceptance criteria as `covered` where tests were written
 - Note any gaps for the `/close-epic` retrospective
 
-**Journal the ratchet** (if the repo has `docs/quality/ratchet.json`): record the merged wave so its passing tests advance the high-water mark, and give the next session amnesia context:
+**Journal the ratchet** (if `$QUALITY_DIR/ratchet.json` exists — `QUALITY_DIR` resolved via `python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir`): record the merged wave so its passing tests advance the high-water mark, and give the next session amnesia context:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
@@ -443,7 +443,7 @@ python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
   --notes "<tickets merged, anything parked and why>"
 ```
 
-Commit the traceability and ratchet updates to main.
+Commit the traceability and ratchet updates to main (embedded mode only — in sidecar mode the journal/state live outside the target, so there is nothing to commit in-tree).
 
 ### Step 5: Create PRs (optional)
 

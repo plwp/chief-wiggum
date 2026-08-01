@@ -157,10 +157,20 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
     """Everything /status shows, as one JSON-ready dict. Read-only."""
     resolver = artifacts.Resolver.resolve(Path(target).resolve(), cw_home=cw_home)
     quality_dir = resolver.quality_dir()
+    rt = ratchet_status(quality_dir)
+    # Version-binding staleness (#213 F12): the scorecard names the target HEAD
+    # it was computed against (ratchet score stamps target_sha); warn when it
+    # no longer matches. Only meaningful for git targets — a non-git target has
+    # no HEAD to be stale against.
+    if rt.get("scorecard") and artifacts.head_sha(resolver.target) is not None:
+        sc = _load_json(quality_dir / SCORECARD_NAME)
+        stale = resolver.check_stale(sc if isinstance(sc, dict) else {})
+        if stale:
+            rt["stale"] = stale
     return {
         "resolver": resolver.to_dict(),
         "gates": gate_ledger(quality_dir),
-        "ratchet": ratchet_status(quality_dir),
+        "ratchet": rt,
         "patterns": adopted_patterns(resolver.patterns_dir()),
         "debt": debt_counts(quality_dir),
     }
@@ -200,6 +210,8 @@ def render_text(status: dict) -> str:
             f"pass-set: {rt['pass_set']} case(s) | contracts: {rt['contracts']} | "
             f"verifier hashes: {rt['verifier_hashes']}"
         )
+        if rt.get("stale"):
+            lines.append(f"WARNING: scorecard {rt['stale']}")
     lines += ["", "## Adopted patterns", ""]
     if not status["patterns"]:
         lines.append("(none adopted)")
@@ -243,7 +255,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"status: target not found: {target}", file=sys.stderr)
         return 2
 
-    status = gather(target)
+    try:
+        status = gather(target)
+    except ValueError as exc:
+        # e.g. a malformed election file or an unknown-key scope.json (#213
+        # F6) — a legible usage error, never a traceback or a silent
+        # whole-repo degradation.
+        print(f"status: {exc}", file=sys.stderr)
+        return 2
     if args.format == "json":
         print(json.dumps(status, indent=2))
     else:

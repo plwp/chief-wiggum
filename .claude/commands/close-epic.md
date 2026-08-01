@@ -174,7 +174,7 @@ Any writer of a controlled field whose enclosing symbol/file is **not** in `sanc
 
 ### Step 2f: Ratchet gate
 
-If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID:
+Resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`. If `$QUALITY_DIR/ratchet.json` exists (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
@@ -192,7 +192,7 @@ python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-
   --notes "<why the contract changed, link to the decision>"
 ```
 
-Otherwise, once the check passes, record the epic close (same command without `--amend`/`--retire`) and commit `docs/quality/`. The journal entry is the epic's quality sign-off and feeds the next epic's amnesia context.
+Otherwise, once the check passes, record the epic close (same command without `--amend`/`--retire`) and commit `docs/quality/` (embedded mode only — in sidecar mode the journal/state live outside the target, so there is nothing to commit in-tree). The journal entry is the epic's quality sign-off and feeds the next epic's amnesia context.
 
 ### Step 2g: Minimal-CI check (report-only)
 

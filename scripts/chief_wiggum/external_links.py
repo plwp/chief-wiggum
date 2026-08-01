@@ -291,11 +291,21 @@ def add_link(
     links.append(entry)
     links.sort(key=_sort_key)
     write_sidecar(store_path, {"links": links})
-    warning = None if span else (
-        f"link recorded WITHOUT a symbol hash — {rel}::{symbol} could not be "
-        f"anchored: {reason}; it will report as unresolved until re-anchored"
-    )
-    return entry, warning
+    warnings = []
+    if span is None:
+        warnings.append(
+            f"link recorded WITHOUT a symbol hash — {rel}::{symbol} could not be "
+            f"anchored: {reason}; it will report as unresolved until re-anchored"
+        )
+    if entry["target_sha"] is None:
+        # Version binding (#213 F12): a sidecar entry with no target HEAD is
+        # un-checkable for staleness — recorded, but named out loud.
+        warnings.append(
+            f"link recorded WITHOUT a target_sha — {target} has no git HEAD, so "
+            "this entry's staleness can never be verified (version binding "
+            "unavailable)"
+        )
+    return entry, ("; ".join(warnings) or None)
 
 
 def verify_links(

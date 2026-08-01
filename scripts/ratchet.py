@@ -160,6 +160,9 @@ DEFAULT_PROTECTED = [
     "docs/epics/*/state-machines.md",
     "docs/epics/*/models/**",
     "docs/quality/**",
+    # The domain scope is a goalpost too (#213): widening scope.json widens
+    # what a worker's diff may touch — a worker must not edit its own leash.
+    "docs/scope.json",
 ]
 
 
@@ -247,6 +250,11 @@ def load_contract_hashes(cfg: Config) -> dict[str, str]:
     Delegates to ``chief_wiggum.hashing.hash_epic_definitions`` (#169) — the
     single implementation of contract-block hashing, also reused by
     ``check_traceability.py`` for per-link suspect propagation.
+
+    ``epic_docs`` may be ABSOLUTE (sidecar mode, where the epic artifacts live
+    outside the target — ``cmd_init`` writes the resolver's absolute epics dir
+    there): ``Path.__truediv__`` with an absolute right-hand side yields the
+    right-hand side, so the join below is correct in both modes.
     """
     return hash_epic_definitions(cfg.repo / cfg.epic_docs)
 
@@ -775,13 +783,23 @@ def detect_suites(repo: Path) -> list[dict]:
 
 def cmd_init(args) -> int:
     repo = repo_root(args.repo)
-    path = default_state_dir(repo) / CONFIG_NAME
+    resolver = artifacts.Resolver.resolve(repo)
+    path = resolver.quality_dir() / CONFIG_NAME
     if path.is_file() and not args.force:
         print(f"ratchet: config already exists at {path}")
         return 0
+    # F1 (#213): on a sidecar-elected target the epic artifacts live OUTSIDE
+    # the tree — the embedded default "docs/epics" is target-relative and
+    # would hash nothing there, making the contract ratchet silently vacuous.
+    # Write the ABSOLUTE sidecar epics dir instead; embedded keeps the
+    # portable relative default.
+    if resolver.mode == "sidecar":
+        epic_docs = str(resolver.epics_dir())
+    else:
+        epic_docs = "docs/epics"
     cfg = {
         "suites": detect_suites(repo),
-        "epic_docs": "docs/epics",
+        "epic_docs": epic_docs,
         "protected_paths": list(DEFAULT_PROTECTED),
         "quality_tolerance": dict(DEFAULT_QUALITY_TOLERANCE),
     }
@@ -820,6 +838,11 @@ def cmd_score(args) -> int:
         "test_files_unresolved": sorted(cid for cid in pass_set if cid not in test_files),
         "tests_run": not args.no_tests,
         "quality": quality,
+        # Version binding (#213 F12): the target HEAD this scorecard was
+        # computed against — mandatory for sidecar staleness detection
+        # (Resolver.check_stale), harmless in embedded mode (None outside a
+        # git repo). /status warns when it no longer matches HEAD.
+        "target_sha": artifacts.head_sha(cfg.repo),
     }
     if vscan.unscanned:
         sc["verifier_unscanned"] = vscan.unscanned
@@ -1189,7 +1212,19 @@ def load_pathset(path: str | Path) -> dict:
         )
     if not has_paths and not has_scope:
         raise RatchetError(
-            f"pathset file {p} has neither 'paths' nor 'include'/'exclude' — not a pathset"
+            f"pathset file {p} has neither 'paths' nor 'include'/'exclude' "
+            f"(found key(s): {', '.join(sorted(spec)) or '(none)'}) — not a pathset; "
+            "a typo'd key must never silently sanction everything (or nothing)"
+        )
+    # Unknown keys are a hard error, not a shrug (#213 F6): {"includes": ...}
+    # beside a valid "exclude" must not silently drop the include list.
+    allowed = {"paths", "source", "$comment"} if has_paths else {
+        "include", "exclude", "source", "$comment"}
+    unknown = sorted(set(spec) - allowed)
+    if unknown:
+        raise RatchetError(
+            f"pathset file {p} has unknown key(s): {', '.join(unknown)} "
+            f"(allowed: {', '.join(sorted(allowed))})"
         )
     return spec
 

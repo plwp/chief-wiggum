@@ -881,22 +881,29 @@ def main(argv: list[str] | None = None) -> int:
 
     scope = None
     if args.scope:
-        if args.scope == "auto":
-            # The --source target's elected meta root (embedded: <repo>/docs;
-            # sidecar: the external meta dir). No scope.json there = whole-repo
-            # scope — the documented default, not an error.
-            scope_path = artifacts.Resolver.resolve(Path(args.source or ".")).scope_path()
-            scope = artifacts.load_scope_file(scope_path)
-            if scope is None:
-                scope = {}  # whole repo: everything in-domain, nothing boundary
-        else:
-            # An explicit path that doesn't load is a usage error — a typo'd
-            # --scope silently meaning "everything in-domain" would be a silent
-            # authority widening.
-            scope = artifacts.load_scope_file(args.scope)
-            if scope is None:
-                print(f"Error: cannot read scope file: {args.scope}", file=sys.stderr)
-                return 2
+        # load_scope_file raises ValueError on a malformed or unknown-key scope
+        # document (#213 F6: {"includes": ...} must never silently mean
+        # whole-repo scope) — surfaced as a usage error, exit 2.
+        try:
+            if args.scope == "auto":
+                # The --source target's elected meta root (embedded: <repo>/docs;
+                # sidecar: the external meta dir). No scope.json there = whole-repo
+                # scope — the documented default, not an error.
+                scope_path = artifacts.Resolver.resolve(Path(args.source or ".")).scope_path()
+                scope = artifacts.load_scope_file(scope_path)
+                if scope is None:
+                    scope = {}  # whole repo: everything in-domain, nothing boundary
+            else:
+                # An explicit path that doesn't exist is a usage error — a typo'd
+                # --scope silently meaning "everything in-domain" would be a silent
+                # authority widening.
+                scope = artifacts.load_scope_file(args.scope)
+                if scope is None:
+                    print(f"Error: cannot read scope file: {args.scope}", file=sys.stderr)
+                    return 2
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
 
     try:
         report = check(args.epic_dir, args.source, exclude=args.exclude,

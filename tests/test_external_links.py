@@ -180,11 +180,14 @@ def test_add_then_verify_ok(tmp_path):
     store = tmp_path / "meta" / "quality" / "external-links.json"
     entry, warning = xl.add_link(store, root, "orders.py", "create_order", "guards",
                                  ["CTR-order-001", "inv-order-003"], use_lsp=False)
-    assert warning is None
+    # F12: outside a git repo the entry has no target_sha — recorded, but the
+    # missing version binding is WARNED about, never silent.
+    assert warning is not None and "target_sha" in warning
     assert entry["ids"] == ["CTR-order-001", "INV-order-003"]  # canonicalized + sorted
     assert entry["symbol_hash"]
     assert entry["recorded_at"]
     assert "target_sha" in entry  # None outside a git repo — still recorded
+    assert entry["target_sha"] is None
     result = xl.verify_links(store, root, use_lsp=False)
     assert [e["symbol"] for e in result["ok"]] == ["create_order"]
     assert result["ok"][0]["line"] == 1 and result["ok"][0]["tier"] == "ast"
@@ -283,9 +286,10 @@ def test_target_sha_recorded_in_git_repo(tmp_path):
     subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
                     "--allow-empty", "-m", "x"], cwd=root, check=True)
     store = tmp_path / "external-links.json"
-    entry, _ = xl.add_link(store, root, "orders.py", "create_order", "guards",
-                           ["CTR-a-001"], use_lsp=False)
+    entry, warning = xl.add_link(store, root, "orders.py", "create_order", "guards",
+                                 ["CTR-a-001"], use_lsp=False)
     assert entry["target_sha"] and len(entry["target_sha"]) == 40
+    assert warning is None  # anchored AND version-bound: nothing to warn about
 
 
 # --- CLI ----------------------------------------------------------------------

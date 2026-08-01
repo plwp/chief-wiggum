@@ -15,10 +15,14 @@ footprint modes, elected once per target and recorded OUTSIDE the target
   journal/high-water/scorecard, trace links, gate-validation records) moves to
   the sidecar.
 
-Threat-model note (docs/ratchet.md): in sidecar mode, workers operating in
-the target worktree PHYSICALLY CANNOT write the goalposts — the contracts,
-specs, and ratchet state simply are not in the tree they can touch. The
-ratchet fails closed by construction, not by diff inspection.
+Threat-model note (docs/sidecar.md "Trust boundary"): in sidecar mode a
+goalpost edit cannot ride in the worker's REVIEWED DIFF — the contracts,
+specs, and ratchet state have no path inside the target tree, so the
+C2-style channel (a goalpost move hidden inside a reviewed code change) is
+removed. That is the whole claim. Workers are NOT filesystem-sandboxed: a
+process running as the same user can still write the sidecar directly, and
+the ``CHIEF_WIGGUM_USER_DIR`` env var re-roots resolution entirely. The
+boundary is the diff, not the disk.
 
 Version binding: in sidecar mode every artifact carries the target HEAD sha it
 was computed against — ``Resolver.stamp`` / ``Resolver.check_stale``
@@ -61,19 +65,35 @@ SCOPE_NAME = "scope.json"
 META_SUBDIRS = ("epics", "quality", "patterns", "design")
 
 
+SCOPE_ALLOWED_KEYS = ("include", "exclude", "$comment")
+
+
 def load_scope_file(path: Path | str) -> dict | None:
-    """Read a ``scope.json`` document. Missing or unreadable ⇒ ``None``
-    (= whole-repo scope) — the same degradation ``Resolver._load_scope``
-    always had, exposed module-level so gates can consume an EXPLICIT
-    ``--scope <path>`` with identical semantics."""
+    """Read a ``scope.json`` document. A MISSING file ⇒ ``None`` (= whole-repo
+    scope, the documented default). A file that exists but is unparsable, not
+    an object, or carries unknown keys raises ``ValueError`` naming the
+    problem: a typo'd key (``"includes"``) must never silently mean whole-repo
+    scope — that would be a silent authority widening. Exposed module-level so
+    gates consuming an EXPLICIT ``--scope <path>`` share identical semantics."""
     p = Path(path)
     if not p.is_file():
         return None
     try:
         doc = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    return doc if isinstance(doc, dict) else None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot parse scope file {p}: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise ValueError(
+            f"scope file {p} must be a JSON object, got {type(doc).__name__}"
+        )
+    unknown = sorted(k for k in doc if k not in SCOPE_ALLOWED_KEYS)
+    if unknown:
+        raise ValueError(
+            f"scope file {p} has unknown key(s): {', '.join(unknown)} "
+            f"(allowed: {', '.join(SCOPE_ALLOWED_KEYS)}) — a typo'd key must not "
+            "silently mean whole-repo scope"
+        )
+    return doc
 
 
 def path_in_scope(scope: dict | None, relpath: str | Path) -> bool:
@@ -140,22 +160,65 @@ def head_sha(target: Path | str) -> str | None:
     return _git(Path(target), "rev-parse", "HEAD")
 
 
+def _safe_id_part(part: str) -> bool:
+    """A remote-derived id segment that is safe to use as a path component
+    under the meta root. Rejects anything that could traverse or escape:
+    empty, ``.``/``..``, path separators, backslashes, NUL, absolute forms.
+    The target id becomes ``meta/<id>`` on disk, so a hostile remote URL
+    (``https://x.com/../..``) must NEVER survive into it — it falls back to
+    the ``local/<hash>`` identity instead."""
+    if not part or part in (".", ".."):
+        return False
+    if any(c in part for c in ("/", "\\", "\x00")):
+        return False
+    return True
+
+
 def _parse_remote(url: str) -> str | None:
-    """``<owner>/<repo>`` from an https/ssh/scp-form remote URL, else None."""
+    """Target id from an https/ssh/scp-form remote URL, else None.
+
+    - host ``github.com`` (the overwhelmingly common case): ``<owner>/<repo>``
+      — unchanged, so every existing meta dir keeps resolving.
+    - any other host: ``<host>/<owner>/<repo>`` — host-blind identity would
+      collide ``gitlab.acme.com/team/app`` with ``github.com/team/app`` onto
+      one meta dir (and one election).
+
+    Every emitted segment is validated via ``_safe_id_part`` (dots in a host
+    are fine; ``..`` is not); any violation returns None so the caller falls
+    back to the safe, deterministic ``local/<hash>`` identity."""
     u = re.sub(r"\.git/?$", "", url.strip().rstrip("/"))
-    m = re.search(r"[:/]([^/:]+)/([^/:]+)$", u)
-    if not m:
+    m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^/@]*@)?([^/:]+)(?::\d+)?/(.+)$", u, re.IGNORECASE)
+    if m:
+        host, path = m.group(1), m.group(2)
+    else:
+        # scp form: [user@]host:owner/repo
+        m = re.match(r"^(?:[^@/:]+@)?([^/:@]+):(.+)$", u)
+        if not m:
+            return None
+        host, path = m.group(1), m.group(2)
+    host = host.lower()
+    parts = path.split("/")
+    if len(parts) < 2:
         return None
-    owner, repo = m.group(1), m.group(2)
-    if not owner or not repo or "@" in repo:
+    owner, repo = parts[-2], parts[-1]
+    if not _safe_id_part(host) or host.startswith("."):
         return None
-    return f"{owner}/{repo}"
+    if not all(_safe_id_part(p) for p in parts):
+        return None
+    if "@" in repo:
+        return None
+    if host == "github.com":
+        return f"{owner}/{repo}"
+    return f"{host}/{owner}/{repo}"
 
 
 def derive_target_id(target: Path | str) -> str:
-    """Target identity: ``<owner>/<repo>`` from the origin remote; fallback
-    ``local/<sha1-of-abspath-first-12>`` when the target has no remote (or is
-    not a git repo at all)."""
+    """Target identity: ``<owner>/<repo>`` from the origin remote (prefixed
+    with the host for non-github remotes); fallback
+    ``local/<sha1-of-abspath-first-12>`` when the target has no remote, is not
+    a git repo at all, or its remote does not parse into SAFE path segments
+    (see ``_safe_id_part`` — a hostile remote must not traverse the meta
+    root)."""
     url = _git(Path(target), "remote", "get-url", "origin")
     if url:
         parsed = _parse_remote(url)
@@ -186,10 +249,22 @@ def load_election(target_id: str, cw_home: Path | str | None = None) -> dict | N
         doc = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"malformed election file at {path}: {exc}") from exc
+    if not isinstance(doc, dict):
+        # [] / null / 12 / "sidecar" are all malformed, same failure path as
+        # unparsable JSON — never an AttributeError leaking out of .get().
+        raise ValueError(
+            f"malformed election file at {path}: expected a JSON object, "
+            f"got {type(doc).__name__}"
+        )
     if doc.get("mode") not in MODES:
         raise ValueError(
             f"election file at {path} has unknown mode {doc.get('mode')!r} "
             f"(expected one of {MODES})"
+        )
+    if doc.get("backing", "local") not in BACKINGS:
+        raise ValueError(
+            f"election file at {path} has unknown backing {doc.get('backing')!r} "
+            f"(expected one of {BACKINGS})"
         )
     return doc
 
@@ -278,7 +353,9 @@ class Resolver:
 
     def _load_scope(self) -> dict | None:
         """Read scope.json fresh each call (live-scan discipline — never
-        memoized). Missing or unreadable ⇒ whole-repo scope."""
+        memoized). Missing ⇒ whole-repo scope; a malformed/unknown-key file
+        raises ValueError (see ``load_scope_file``) so a typo never silently
+        widens authority to the whole repo."""
         return load_scope_file(self.scope_path())
 
     def in_scope(self, relpath: str | Path) -> bool:
@@ -331,6 +408,11 @@ class Resolver:
             "mode": self.mode,
             "backing": self.backing,
             "meta_root": str(self.meta_root),
+            # Absolute, mode-resolved paths (#213 F8) so skills can consume
+            # `show --format json | jq -r .quality_dir` instead of assuming
+            # the embedded docs/ layout.
+            "epics_dir": str(self.epics_dir()),
+            "quality_dir": str(self.quality_dir()),
             "scope": self.scope_summary(),
         }
 
@@ -359,25 +441,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "elect":
         try:
             record = elect(args.target, args.mode, backing=args.backing)
+            resolver = Resolver.resolve(args.target)
         except ValueError as exc:
             print(f"artifacts: {exc}", file=sys.stderr)
             return 2
-        resolver = Resolver.resolve(args.target)
         print(f"artifacts: elected mode={record['mode']} backing={record['backing']} "
               f"for {record['target_id']} — meta root: {resolver.meta_root}")
         return 0
 
     if args.cmd == "show":
+        # to_dict() reads scope.json (scope_summary) — a malformed scope file
+        # must exit 2 with the ValueError's message, never silently degrade to
+        # whole-repo scope (or traceback).
         try:
             resolver = Resolver.resolve(args.target)
+            d = resolver.to_dict()
         except ValueError as exc:
             print(f"artifacts: {exc}", file=sys.stderr)
             return 2
         if args.format == "json":
-            print(json.dumps(resolver.to_dict(), indent=2))
+            print(json.dumps(d, indent=2))
         else:
-            d = resolver.to_dict()
-            for k in ("target_id", "mode", "backing", "meta_root", "scope"):
+            for k in ("target_id", "mode", "backing", "meta_root",
+                      "epics_dir", "quality_dir", "scope"):
                 print(f"{k}: {d[k]}")
         return 0
 

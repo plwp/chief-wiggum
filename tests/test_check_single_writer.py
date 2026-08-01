@@ -986,6 +986,29 @@ def test_cli_scope_bad_path_is_usage_error(tmp_path, capsys):
     assert "scope" in capsys.readouterr().err
 
 
+def test_cli_scope_typo_key_is_usage_error_naming_the_key(tmp_path, capsys):
+    """F6: {"includes": [...]} (typo'd key) must exit 2 NAMING the key —
+    never silently degrade to whole-repo scope (a silent authority widening)."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope_file = tmp_path / "scope.json"
+    scope_file.write_text(json.dumps({"includes": ["internal/billing/**"]}))
+    rc = sw.main([str(epic), "--source", str(src), "--scope", str(scope_file)])
+    assert rc == 2
+    assert "includes" in capsys.readouterr().err
+
+
+def test_cli_scope_auto_typo_key_is_usage_error(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-home"))
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    (src / "docs").mkdir(exist_ok=True)
+    (src / "docs" / "scope.json").write_text(json.dumps({"includes": ["internal/**"]}))
+    rc = sw.main([str(epic), "--source", str(src), "--scope", "auto"])
+    assert rc == 2
+    assert "includes" in capsys.readouterr().err
+
+
 def test_cli_scope_auto_reads_resolver_meta_root(tmp_path, capsys, monkeypatch):
     """--scope auto reads scope.json from the --source target's resolved meta
     root (embedded: <src>/docs/scope.json)."""

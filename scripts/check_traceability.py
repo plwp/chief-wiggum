@@ -521,9 +521,11 @@ def build_report(
         report.warnings.append("no @cw-trace annotations found; reporting coverage as absent")
     if not defined:
         report.warnings.append("no contract/invariant/BR IDs defined in epic artifacts")
-    if not defined and not annotations:
-        # Vacuous-pass fix (#213 Phase E): an empty graph passes every "no
-        # findings" check trivially — that is inapplicability, never a green.
+        # Vacuous-pass fix (#213 Phase E, tightened by F9): with ZERO contracts
+        # defined there is nothing for coverage to be true OF — coverage is
+        # inapplicable even when annotations exist. Annotations without
+        # definitions remain a SOUNDNESS matter: they are all dangling, and
+        # soundness findings/exit codes are unchanged by this classification.
         report.applicability = "inapplicable"
     return report
 
@@ -707,8 +709,9 @@ def render_markdown(report: TraceReport) -> str:
     lines.append(f"- Coverage (uncovered/untested): {'OK' if report.coverage_ok else 'FINDINGS'}")
     if report.applicability == "inapplicable":
         lines.append(
-            "- Applicability: INAPPLICABLE — no contracts defined and no annotations "
-            "found; nothing was checked (inapplicable, not passing)"
+            "- Applicability: INAPPLICABLE — no contracts defined, so there is "
+            "nothing for coverage to hold over (inapplicable, not passing); any "
+            "annotations found are dangling and remain soundness findings"
         )
     for label, items in (
         ("Orphan business rules", report.orphan_business_rules),
@@ -890,16 +893,19 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
-    # Vacuous-pass fix (#213 Phase E): a gate run over an EMPTY graph (no
-    # contracts defined, no annotations anywhere) still exits 0 — changing the
-    # exit code would break every existing green pipeline — but it must never
-    # be a silent identical green: the banner prints and the JSON carries
-    # "applicability": "inapplicable" so a wrapper skill can distinguish.
+    # Vacuous-pass fix (#213 Phase E, tightened by F9): a gate run with ZERO
+    # contracts defined still exits per the unchanged soundness/coverage
+    # semantics below — changing exit codes would break existing pipelines —
+    # but it must never be a silent identical green: the banner prints and the
+    # JSON carries "applicability": "inapplicable" so a wrapper skill can
+    # distinguish. Annotations without definitions are dangling (soundness),
+    # so --gate soundness still fails on them; coverage alone is the vacuous
+    # surface.
     if args.gate and report.applicability == "inapplicable":
         print(
-            "check_traceability: INAPPLICABLE — no contracts defined and no "
-            f"annotations found; --gate {args.gate} passes vacuously "
-            "(no contracts defined — inapplicable, not passing)",
+            "check_traceability: INAPPLICABLE — no contracts defined; "
+            f"--gate {args.gate} has nothing to hold over "
+            "(inapplicable, not passing)",
             file=sys.stderr,
         )
 

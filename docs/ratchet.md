@@ -21,12 +21,15 @@ Three rules, all mechanical:
    **protected pathset**. A worker branch that touches them is *parked* for
    human review, never auto-merged.
 
-   In **sidecar footprint mode** ([sidecar.md](sidecar.md)) this rule holds
-   **by construction, not by diff inspection**: the goalposts live outside the
-   target tree entirely, so a worker in the target worktree *physically
-   cannot* write them — there is no diff to park because there is no path to
-   the file. `protected` remains the enforcement for embedded targets, where
-   the goalposts share the tree with the code.
+   In **sidecar footprint mode** ([sidecar.md](sidecar.md)) the goalposts
+   live outside the target tree entirely, so a goalpost edit **cannot ride in
+   the worker's reviewed diff** — there is no path in the tree for a branch
+   to touch, which removes the C2-style channel (a goalpost move hidden
+   inside a reviewed code change). The scope of that claim is the diff, not
+   the disk: workers are not filesystem-sandboxed, and same-user filesystem
+   access (or setting `CHIEF_WIGGUM_USER_DIR`) can still reach the sidecar —
+   see sidecar.md's "Trust boundary". `protected` remains the enforcement for
+   embedded targets, where the goalposts share the tree with the code.
 
 Plus two further dimensions (one validated-and-wired, one report-only):
 

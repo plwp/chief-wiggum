@@ -761,3 +761,71 @@ def test_orient_includes_external_link_store_facts(tmp_path, monkeypatch):
     (repo2 / "order.py").write_text("def create_order():\n    return True\n")
     out2 = code_query.cmd_orient(repo2, "order.py", None)
     assert not [f for f in out2["facts"] if f.get("source") == "external-link-store"]
+
+
+def _sidecar_store_repo(tmp_path, monkeypatch):
+    """A sidecar-elected repo with one contract and a source file — the F7
+    verification fixtures build hand-written store entries on top."""
+    import artifacts
+    from chief_wiggum import external_links
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "order.py").write_text(
+        "def create_order(start, end):\n    assert start <= end\n    return True\n"
+    )
+    artifacts.elect(repo, "sidecar")
+    resolver = artifacts.Resolver.resolve(repo)
+    edir = resolver.epic_dir("checkout")
+    edir.mkdir(parents=True)
+    (edir / "contracts.md").write_text(
+        "### CTR-order-001 — valid date range\nREQUIRES: start <= end\n"
+    )
+    store = resolver.quality_dir() / external_links.STORE_NAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    return repo, store
+
+
+def test_external_store_bogus_hash_is_never_an_exact_fact(tmp_path, monkeypatch):
+    """F7: a hand-written store entry with a BOGUS symbol hash is a suspect
+    claim — surfaced marked `suspect: true` with a re-verify note, never an
+    exact/authoritative fact, on both the orient and guards surfaces."""
+    repo, store = _sidecar_store_repo(tmp_path, monkeypatch)
+    store.write_text(json.dumps({"links": [{
+        "file": "order.py", "symbol": "create_order", "verb": "guards",
+        "ids": ["CTR-order-001"], "symbol_hash": "bogus-not-the-real-hash",
+        "recorded_at": "2026-01-01T00:00:00+00:00", "target_sha": None,
+    }]}))
+
+    for env in (code_query.cmd_orient(repo, "order.py", None),
+                code_query.cmd_guards(repo, "CTR-order-001", None)):
+        ext = [f for f in env["facts"] if f.get("source") == "external-link-store"]
+        assert ext, env
+        assert all(f.get("suspect") is True for f in ext)
+        assert all("re-verify" in (f.get("note") or "") for f in ext)
+
+    # ...and internally it never ranks as exact.
+    facts, _w = code_query.governing_facts_for_file(
+        repo, "order.py", code_query.discover_epics(repo, None))
+    ext_facts = [f for f in facts if f.extra.get("source") == "external-link-store"]
+    assert ext_facts and all(not f.exact for f in ext_facts)
+
+
+def test_external_store_nonexistent_symbol_is_warning_not_fact(tmp_path, monkeypatch):
+    """F7: an entry naming a symbol that doesn't exist is UNRESOLVED — it
+    becomes an envelope warning and never a fact of any kind."""
+    repo, store = _sidecar_store_repo(tmp_path, monkeypatch)
+    store.write_text(json.dumps({"links": [{
+        "file": "order.py", "symbol": "no_such_function", "verb": "guards",
+        "ids": ["CTR-order-001"], "symbol_hash": "whatever",
+        "recorded_at": "2026-01-01T00:00:00+00:00", "target_sha": None,
+    }]}))
+
+    orient = code_query.cmd_orient(repo, "order.py", None)
+    assert not [f for f in orient["facts"] if f.get("source") == "external-link-store"]
+    assert any("no_such_function" in w and "unresolved" in w for w in orient["warnings"])
+
+    guards = code_query.cmd_guards(repo, "CTR-order-001", None)
+    assert not [f for f in guards["facts"] if f.get("source") == "external-link-store"]
+    assert any("no_such_function" in w for w in guards["warnings"])

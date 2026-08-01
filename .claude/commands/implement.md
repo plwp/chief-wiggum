@@ -399,7 +399,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --markdown
    ```
    It exits non-zero if any step fails. ALL tests must pass. Zero tolerance.
-4b. **Ratchet check** (see `docs/ratchet.md`) — if the target repo has `docs/quality/ratchet.json`, verify this ticket doesn't slide quality backward:
+4b. **Ratchet check** (see `docs/ratchet.md`) — resolve the target's quality dir via the meta-location resolver (`QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$(git rev-parse --show-toplevel)" --format json | jq -r .quality_dir)`; embedded targets resolve to `<repo>/docs/quality`, sidecar targets to the external meta root); if `$QUALITY_DIR/ratchet.json` exists, verify this ticket doesn't slide quality backward:
    ```bash
    python3 "$CW_HOME/scripts/ratchet.py" score --repo "$(git rev-parse --show-toplevel)"
    python3 "$CW_HOME/scripts/ratchet.py" check --repo "$(git rev-parse --show-toplevel)" --gate-verifier-tests
@@ -724,12 +724,16 @@ python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" \
 
 Commit the updated `traceability.md` (or comment on the epic milestone if other tickets are in flight).
 
-**Journal the ratchet** (if the repo has `docs/quality/ratchet.json`): once the PR is merged, record the ticket so its passing tests enter the high-water mark:
+**Journal the ratchet** (resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`; if `$QUALITY_DIR/ratchet.json` exists): once the PR is merged, record the ticket so its passing tests enter the high-water mark:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
   --event ticket --ref "#$issue_number" --merged --notes "<one line: what shipped>"
-git -C "$TARGET_REPO" add docs/quality && git -C "$TARGET_REPO" commit -m "chore: ratchet record for #$issue_number" && git -C "$TARGET_REPO" push
+# Embedded mode only — in sidecar mode the journal/state live outside the
+# target, so there is nothing to commit in-tree:
+if [ "$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .mode)" = "embedded" ]; then
+  git -C "$TARGET_REPO" add docs/quality && git -C "$TARGET_REPO" commit -m "chore: ratchet record for #$issue_number" && git -C "$TARGET_REPO" push
+fi
 ```
 
 (If the PR hasn't merged yet, record with `--gate pass` and without `--merged` — an unmerged record documents the run but doesn't move the high-water mark. In `/implement-wave` this is handled per wave instead.)

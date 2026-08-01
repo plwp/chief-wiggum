@@ -717,6 +717,65 @@ def test_sidecar_election_routes_ratchet_state_dir(tmp_path, monkeypatch):
     assert cfg.journal == state / "ratchet-journal.jsonl"
 
 
+def test_sidecar_init_then_score_sees_sidecar_contracts(tmp_path, monkeypatch):
+    """F1 regression: sidecar elect -> init -> score must hash the SIDECAR
+    epic contracts (non-zero contract count) with NO hand-patching of
+    epic_docs. Before the fix, cmd_init wrote the target-relative
+    'docs/epics', which is empty on a clean sidecar target — the contract
+    ratchet was silently vacuous."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    artifacts.elect(repo, "sidecar", backing="local")
+    resolver = artifacts.Resolver.resolve(repo)
+    epic = resolver.epic_dir("order-app")
+    epic.mkdir(parents=True)
+    (epic / "contracts.md").write_text(
+        "### CTR-app-001 — valid range\nREQUIRES: start <= end\n")
+
+    assert ratchet.cmd_init(argparse.Namespace(repo=str(repo), force=False)) == 0
+    cfg_doc = json.loads((resolver.quality_dir() / "ratchet.json").read_text())
+    # cmd_init resolved the ABSOLUTE sidecar epics dir itself.
+    assert cfg_doc["epic_docs"] == str(resolver.epics_dir())
+    assert Path(cfg_doc["epic_docs"]).is_absolute()
+
+    assert ratchet.cmd_score(argparse.Namespace(
+        repo=str(repo), no_tests=True, no_quality=True, venv=None, gobin=None)) == 0
+    sc = json.loads((resolver.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+    assert sc["contract_hashes"], "sidecar contracts were not hashed (vacuous ratchet)"
+    assert "CTR-app-001" in sc["contract_hashes"]
+    assert not (repo / "docs").exists()  # still zero CW files in the target
+
+
+def test_embedded_init_keeps_relative_epic_docs(tmp_path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    assert ratchet.cmd_init(argparse.Namespace(repo=str(repo), force=False)) == 0
+    cfg_doc = json.loads((repo / "docs" / "quality" / "ratchet.json").read_text())
+    assert cfg_doc["epic_docs"] == "docs/epics"
+
+
+def test_scope_json_is_default_protected(tmp_path):
+    """F13: docs/scope.json is a goalpost — a worker widening its own scope
+    must be parked by `protected`."""
+    assert "docs/scope.json" in ratchet.DEFAULT_PROTECTED
+    cfg = make_repo(tmp_path)
+    assert ratchet.protected_hits(cfg, ["docs/scope.json"]) == ["docs/scope.json"]
+
+
+def test_score_stamps_target_sha(tmp_path):
+    """F12: every scorecard names the target HEAD it was computed against
+    (None outside a git repo — recorded, not omitted)."""
+    make_repo(tmp_path)
+    assert ratchet.cmd_score(argparse.Namespace(
+        repo=str(tmp_path), no_tests=True, no_quality=True, venv=None, gobin=None)) == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert "target_sha" in sc
+    assert sc["target_sha"] is None  # tmp_path is not a git repo — recorded as None
+
+
 # ---- sanctioned pathset (chief-wiggum#213) -----------------------------------------
 
 
@@ -851,6 +910,37 @@ def test_cmd_pathset_scope_source_parks_out_of_scope(tmp_path, capsys):
     rc = ratchet.cmd_pathset(args)
     assert rc == 1
     assert "ui/app.tsx" in capsys.readouterr().err
+
+
+def test_load_pathset_typo_key_is_a_legible_error(tmp_path):
+    """F6: {"includes": [...]} (typo) must error NAMING the key — never
+    silently sanction everything (or nothing)."""
+    p = tmp_path / "pathset.json"
+    p.write_text(json.dumps({"includes": ["internal/**"]}))
+    with pytest.raises(ratchet.RatchetError, match="includes"):
+        ratchet.load_pathset(p)
+
+
+def test_load_pathset_unknown_key_beside_valid_shape_is_an_error(tmp_path):
+    p = tmp_path / "pathset.json"
+    p.write_text(json.dumps({"exclude": ["vendor/**"], "includes": ["internal/**"]}))
+    with pytest.raises(ratchet.RatchetError, match="includes"):
+        ratchet.load_pathset(p)
+
+
+def test_cmd_pathset_typo_scope_exits_2(tmp_path, capsys):
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "scope.json"
+    spec_file.write_text(json.dumps({"includes": ["internal/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    dispatch_rc = None
+    try:
+        dispatch_rc = ratchet.cmd_pathset(args)
+    except ratchet.RatchetError as e:
+        assert "includes" in str(e)
+    else:
+        raise AssertionError(f"expected RatchetError, got rc={dispatch_rc}")
 
 
 def test_cmd_pathset_needs_no_ratchet_config(tmp_path, capsys):
