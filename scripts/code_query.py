@@ -923,6 +923,73 @@ def _hotspot_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
     return facts
 
 
+_DEBT_PATH = Path("docs") / "quality" / "debt.json"
+
+
+def _load_debt(repo_root: Path) -> dict | None:
+    """Read the #214 debt inventory fresh (never cached — live-scan
+    discipline). Missing/unparsable is a silent `None`: debt facts are
+    advisory, never a hard dependency (same posture as `_load_hotspots`)."""
+    p = artifacts.Resolver.resolve(Path(repo_root)).quality_dir() / _DEBT_PATH.name
+    if not p.is_file():
+        return None
+    try:
+        doc = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("items"), list):
+        return None
+    return doc
+
+
+def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
+    """The #214 `measured` fact tier: EXACT file-path membership in a debt
+    item's `locations` ONLY — never a lexical channel (the same INV-fh-007/012
+    discipline as `_hotspot_facts_for_file`). Ranked low by the `measured`
+    relation tier; `source: "debt-inventory"` marks the producing layer, and
+    provenance carries the generating `target_sha` so a stale inventory is
+    visibly attributable."""
+    doc = _load_debt(repo_root)
+    if not doc:
+        return []
+    sha = doc.get("target_sha")
+    authority = doc.get("authority", "")
+    facts: list[Fact] = []
+    for item in doc["items"]:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        locs = [loc for loc in (item.get("locations") or [])
+                if isinstance(loc, str) and loc.rsplit(":", 1)[0] == rel]
+        if not locs:
+            continue
+        facts.append(Fact(
+            kind="debt",
+            id=item["id"],
+            statement=(
+                f"{item.get('engine')}/{item.get('kind')} [{item.get('severity')}]: "
+                f"{item.get('detail', '')} — {authority}"
+            ),
+            handle=f"{_DEBT_PATH}#items[{item['id']}]",
+            epic=None,
+            extra={
+                "relation": "measured",
+                "source": "debt-inventory",
+                "engine": item.get("engine"),
+                "severity": item.get("severity"),
+                "locations": locs,
+                "blast_radius": item.get("blast_radius"),
+            },
+            provenance={
+                **_file_provenance(repo_root, rel),
+                "derived": True,
+                "generating_sha": sha,
+            },
+            exact=True,
+            proximity=0,
+        ))
+    return facts
+
+
 def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     rel = _norm(path)
@@ -934,6 +1001,7 @@ def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAUL
         )
     facts, ext_warnings = governing_facts_for_file(repo_root, rel, epics)
     facts += _hotspot_facts_for_file(repo_root, rel)
+    facts += _debt_facts_for_file(repo_root, rel)
     warnings = [w for e in epics for w in e.warnings] + ext_warnings
     if not epics:
         warnings.append("no docs/epics/* found — orienting on annotations/design only would need epic context")
@@ -1616,6 +1684,7 @@ def _resolve_json_fragment(data: dict, fragment: str):
 
     - ``pages[<route>]``                      (ui-spec.json)
     - ``hotspots[<file>]``                    (docs/quality/hotspots.json, #187)
+    - ``items[<DEBT-id>]``                    (docs/quality/debt.json, #214)
     - ``invariants[<ID>]``                    (state-machines.json)
     - ``transitions[<from>-><to>]``           (state-machines.json)
     - ``invalid_transitions[<from>-><to>]``   (state-machines.json)
@@ -1635,6 +1704,13 @@ def _resolve_json_fragment(data: dict, fragment: str):
         for h in data.get("hotspots", []) or []:
             if isinstance(h, dict) and h.get("file") == want:
                 return h
+        return None
+    m = re.match(r"^items\[(.+)\]$", fragment)
+    if m:
+        want = m.group(1)
+        for item in data.get("items", []) or []:
+            if isinstance(item, dict) and item.get("id") == want:
+                return item
         return None
     m = re.match(r"^invariants\[(.+)\]$", fragment)
     if m:

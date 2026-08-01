@@ -54,13 +54,16 @@ def _jscpd_cmd() -> list[str] | None:
     return None
 
 
-def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
-    """Run jscpd over production code and return the duplication statistics."""
-    name = name or repo.rstrip("/").split("/")[-1]
+def run_jscpd(repo: str, workdir: str) -> tuple[dict | None, dict | None]:
+    """The ONE jscpd invocation both consumers share (#214): this module's
+    aggregate percentage and ``clones.py``'s clone-class clustering. Returns
+    ``(report, None)`` with the full parsed ``jscpd-report.json`` (statistics
+    AND per-clone ``duplicates`` locations), or ``(None, skip)`` where ``skip``
+    is the graceful ``{"skipped": ..., "note": ...}`` shape when node/jscpd is
+    absent or produced nothing."""
     cmd = _jscpd_cmd()
     if not cmd:
-        return {
-            "repo": name,
+        return None, {
             "skipped": "jscpd/node not found",
             "note": "duplication requires node + jscpd (npm i -g jscpd)",
         }
@@ -79,15 +82,26 @@ def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
     )
     report = os.path.join(workdir, "jscpd-report.json")
     if not os.path.exists(report):
-        return {
-            "repo": name,
+        return None, {
             "skipped": "jscpd produced no report",
             "note": (proc.stderr or proc.stdout or "").strip()[:400],
         }
     try:
         with open(report) as fh:
-            stats = json.load(fh)["statistics"]["total"]
-    except (json.JSONDecodeError, KeyError, OSError) as exc:
+            return json.load(fh), None
+    except (json.JSONDecodeError, OSError) as exc:
+        return None, {"skipped": f"unreadable jscpd report: {exc}"}
+
+
+def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
+    """Run jscpd over production code and return the duplication statistics."""
+    name = name or repo.rstrip("/").split("/")[-1]
+    data, skip = run_jscpd(repo, workdir)
+    if skip is not None:
+        return {"repo": name, **skip}
+    try:
+        stats = data["statistics"]["total"]
+    except KeyError as exc:
         return {"repo": name, "skipped": f"unreadable jscpd report: {exc}"}
 
     return {
