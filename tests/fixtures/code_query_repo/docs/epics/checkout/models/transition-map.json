@@ -1,0 +1,43 @@
+{
+  "entities": [
+    {
+      "name": "Order",
+      "model_file": "state-machines.json",
+      "transitions": [
+        {
+          "from": "pending",
+          "to": "confirmed",
+          "event": "confirm",
+          "tickets": ["#1"],
+          "status": "covered",
+          "code_locations": [
+            { "file": "src/order.py", "line": 17, "handler": "confirm_order", "guard": "order.status != 'pending'" }
+          ]
+        },
+        {
+          "from": "pending",
+          "to": "cancelled",
+          "event": "cancel",
+          "tickets": [],
+          "status": "missing",
+          "code_locations": []
+        }
+      ],
+      "undocumented": [
+        {
+          "from": "confirmed",
+          "to": "shipped",
+          "code_locations": [
+            { "file": "src/order.py", "line": 24, "handler": "ship_order" }
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_model_transitions": 2,
+    "covered": 1,
+    "missing": 1,
+    "undocumented": 1
+  }
+}

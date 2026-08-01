@@ -114,6 +114,11 @@ The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) fee
 
 These artifacts are **hard constraints** on the implementation. The coding worker MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
+**Query the architecture live instead of re-deriving it** — when $EPIC_DIR exists, `scripts/code_query.py` (see `docs/code-query.md`) answers "what governs this file/field/contract" from the epic artifacts + code annotations, as small JSON with `file:line` handles instead of a full context-load of these docs. Steps 4/6/8 below use it in place of ad hoc grepping:
+```bash
+python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" orient path/to/file.go
+```
+
 **Unresolved-unknowns gate**: scan the epic artifacts for markers this ticket would inherit:
 ```bash
 python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json
@@ -126,10 +131,12 @@ All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief
 
 ### Step 2: Pick and read the ticket
 
-Fetch the issue details:
+Fetch the issue details, keeping the raw JSON around for the `ticket.json` writer below:
 
 ```bash
-gh issue view "$issue_number" --repo "$owner_repo" --json title,body,labels,assignees,milestone,comments
+gh issue view "$issue_number" --repo "$owner_repo" \
+  --json title,body,author,labels,assignees,milestone,comments \
+  | tee "$TICKET_TMP/issue-raw.json"
 ```
 
 Present to the user:
@@ -138,6 +145,19 @@ Present to the user:
 - Labels and current status
 - Any comments with additional context
 - Epic context (if loaded): relevant contracts, invariants, state machine transitions
+
+**Write `$TICKET_TMP/ticket.json`** — the reusable ticket context Step 4's approach prompt and Step 7's review pipeline both read. Comments (including `authorAssociation`) MUST be fetched and serialized here: before #83, this writer didn't exist at all, so `TicketComment`/`review.TicketContext.from_dict` had nothing to preserve and reviewers judged diffs against stale body-only acceptance criteria even after a maintainer amended them in a comment.
+
+```bash
+python3 "$CW_HOME/scripts/write_ticket_context.py" \
+  --issue-json "$TICKET_TMP/issue-raw.json" \
+  --number "$issue_number" \
+  --acceptance-criteria "<AC line 1 you extracted above>" \
+  --acceptance-criteria "<AC line 2>" \
+  --output "$TICKET_TMP/ticket.json"
+```
+
+Pass one `--acceptance-criteria` per line you extracted for the "Present to the user" summary above (repeatable flag; omit entirely for a ticket with no explicit AC). `write_ticket_context.py` flattens `gh`'s raw comment shape (`author.login`, `authorAssociation`, `createdAt`) into `TicketComment`'s field names and always emits a `comments` array — an issue with zero comments still produces `"comments": []` (CTR-fh-002/IT-fh-10). An absent `comments` key would be the writer-side half of the #83 regression: `review.TicketContext.from_dict` warns loudly (`MissingCommentsWarning`) rather than silently defaulting, but this writer never omits the key in the first place.
 
 ### Step 3: Clarify requirements (only if needed)
 
@@ -158,8 +178,8 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
 
 1. **Codex + Gemini** — Launch as background bash commands:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" &
+   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
+   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
    wait
    ```
 
@@ -278,6 +298,11 @@ The worker should:
    python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" --line <L> --col <C> hover path/to/file.go
    python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics path/to/file.py
    ```
+
+   **Architecture knowledge (if $EPIC_DIR exists)**: before editing a file this ticket touches, ask what already governs it instead of re-reading the whole epic — `orient` surfaces the contracts/invariants/state-transitions bound to it (by annotation OR by artifact — an un-annotated handler still gets a real answer), so you don't silently miss a REQUIRES/invariant that isn't yet annotated:
+   ```bash
+   python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" orient path/to/file.go
+   ```
 2. Enforce epic contracts as runtime guards:
    - Every REQUIRES block → input validation / guard clause at function entry
    - Every ENSURES block → verify postcondition before returning (or via integration test)
@@ -312,7 +337,7 @@ The worker should:
    git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
    ```
 
-2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Pass a `ticket.json` with the title/body/acceptance criteria, and optionally epic artifacts:
+2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass the `ticket.json` written in Step 2 — title/body/acceptance criteria plus the comment thread (`comments`, always an array — CTR-fh-002), which `run_review.py` renders as two labeled, authority-separated regions ("Accepted AC amendments" vs "Discussion/context" — CTR-fh-003/ADR-fh-02) so reviewers judge the diff against the CURRENT authoritative state, not a stale body-only baseline — and optionally epic artifacts:
    ```bash
    python3 "$CW_HOME/scripts/run_review.py" \
      --ticket-context "$TICKET_TMP/ticket.json" \
@@ -323,14 +348,24 @@ The worker should:
    ```
    Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `synthesis-prompt.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
-3. Perform its own review of the diff.
+3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:
+   ```bash
+   for f in $(git diff --name-only "$DEFAULT_BRANCH"...HEAD); do
+     python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --format text orient "$f" \
+       | grep -q '^- (hotspot)' && echo "$f: measured hotspot — escalate review depth"
+   done
+   ```
+   If any file is flagged, note it explicitly to the reviewer worker (e.g. append to the ticket context or mention it directly when reviewing) so the reviewer quorum spends more attention there — deeper review, not a different bar. This is advisory only: `docs/quality/hotspots.json` never gates, and its absence for a touched file is not evidence the file is safe (young files have no history yet).
 
-4. Synthesize using:
+4. Perform its own review of the diff.
+
+5. Synthesize using:
    ```bash
    python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/reviews/reviewer-codex.md $TICKET_TMP/reviews/reviewer-gemini.md
    ```
+   **When `reviewer` is lensed, expect disjoint findings, not convergence** — each provider was scoped to a different concern over the same diff, so agreement across reviewers is the exception, not the confirmation signal. `synthesize_reviews.py` reconciles by **union, then cross-verifies only contested items**: every concrete finding is retained regardless of whether one reviewer raised it or several (a soundness issue only the refuter caught is not weaker for being unique to it), and cross-verification against the diff is reserved for cases where two reviewers make genuinely *contradictory* claims about the same fact — not merely where one mentions something the other didn't. Do not fall back to majority-vote reasoning when reconciling a lensed quorum; it defeats the reason the lenses were assigned.
 
-5. Return a concise summary categorising each piece of feedback:
+6. Return a concise summary categorising each piece of feedback:
    - **High-confidence fixes**: Concrete bugs/regressions with clear failure scenarios. Apply automatically.
    - **Medium-confidence findings**: Plausible issues that need a quick local verification before applying.
    - **Low-confidence or architectural feedback**: Speculative concerns or design trade-offs. Flag for user decision.
@@ -338,7 +373,7 @@ The worker should:
 
    Also return the **checklist scorecard**: pass/fail for each item in the structured checklist, with one-line justification for any failures.
 
-6. **Record validation telemetry.** The review's cost already flows (its reviewer consults + the review worker's tokens); record its *value* so the cost↔value verdict can rate it. Emit one gate event with the count of substantive findings (high + medium + low real defects; exclude style-only) — no-op unless telemetry is enabled, never blocks:
+7. **Record validation telemetry.** The review's cost already flows (its reviewer consults + the review worker's tokens); record its *value* so the cost↔value verdict can rate it. Emit one gate event with the count of substantive findings (high + medium + low real defects; exclude style-only) — no-op unless telemetry is enabled, never blocks:
 
    ```bash
    python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name code-review \
@@ -367,9 +402,22 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 4b. **Ratchet check** (see `docs/ratchet.md`) — if the target repo has `docs/quality/ratchet.json`, verify this ticket doesn't slide quality backward:
    ```bash
    python3 "$CW_HOME/scripts/ratchet.py" score --repo "$(git rev-parse --show-toplevel)"
-   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$(git rev-parse --show-toplevel)"
+   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$(git rev-parse --show-toplevel)" --gate-verifier-tests
    ```
-   A violation is a hard blocker, same as a failing test: a `missing_tests` entry means a previously-passing case regressed; `weakened_contracts`/`removed_contracts` means the branch edited a contract definition to make the implementation pass. Fix the code — never the contract. If a contract genuinely needs revising, that is a human decision: surface it to the user and journal it with `record --amend`/`--retire`, don't edit around the gate. Skip this item only when the repo has no ratchet config (not yet adopted).
+   Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (it normally does — the record ships with chief-wiggum); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings report-only, per `docs/gate-rollout.md`. A violation is a hard blocker, same as a failing test: a `missing_tests` entry means a previously-passing case regressed; `weakened_contracts`/`removed_contracts` means the branch edited a contract definition to make the implementation pass; `weakened_verifier_tests`/`removed_verifier_tests` (#206, channel C1c) means a `@cw-trace verifies`-annotated test body was rewritten or dropped behind its still-green test ID. Fix the code — never the contract or its verifier test. If a contract (or a verifier test) genuinely needs revising, that is a human decision: surface it to the user and journal it with `record --amend`/`--retire` (contracts) or `record --amend-verifier`/`--retire-verifier` (verifier tests), don't edit around the gate. Skip this item only when the repo has no ratchet config (not yet adopted).
+4c. **Single-writer / traceability quick check** (report-only, ticket-scoped) — if `$EPIC_DIR` exists, run both checkers scoped to just this ticket's changed files with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`). This is a fast early signal, NOT the authoritative gate — `--changed-since` scans only what this branch touched, so it cannot see a stale writer/annotation elsewhere in the repo. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic:
+   ```bash
+   python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
+     --changed-since "$DEFAULT_BRANCH" --format text
+   python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
+     --changed-since "$DEFAULT_BRANCH" --format text
+   ```
+   Surface any findings to the fixer as early feedback (a new unsanctioned writer, a missing `@cw-trace guards`/`verifies` on the code this ticket just wrote); don't hard-block on them here. Skip this item if the ticket has no epic context.
+
+   **Inspecting a finding**: `code_query.py` turns a bare ID from either report into its full governing context in one call, instead of re-opening `invariants.md`/`contracts.md` — `trace <BR-or-CTR-ID>` for the full BR→contract→code→test slice, `writers <INV-ID>` for every writer of that invariant's controlled field (sanctioned/unsanctioned), `guards`/`verifies <CTR-ID>` for just the code or test side:
+   ```bash
+   python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" trace CTR-order-001
+   ```
 5. **Start services** and verify they work:
    - If `docker-compose.yml` exists: `docker compose up -d` and wait for healthy
    - If Docker isn't running, start it (`open -a Docker` on macOS, `sudo systemctl start docker` on Linux) and wait
@@ -423,6 +471,16 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 10. **Clean up** — Stop any services you started (`docker compose down`)
 
 If ANY verification fails: fix it directly, or re-launch the coding worker (contract: `docs/worker-contracts.md#implementation-worker`) with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
+
+**Log a real finding as an escape.** This orchestrator validation is exactly where a bug that the earlier steps (TDD/tests, Step 7's multi-AI code review, static analysis) should have caught but didn't gets found independently — walking the AC, hitting a real endpoint, or reading the code turns up something the automated checks missed. When that happens, log it so gate RECALL (not just catches) is measurable (no-op unless telemetry is enabled, never blocks):
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
+  --summary "..." --severity medium --missed-by code-review \
+  --found-in implement-verify --ticket "$issue_number" --fixed
+```
+
+(Convention: `docs/factory-telemetry.md` → "Escapes — measuring gate RECALL, not just catches".)
 
 ### Step 9: UX sanity + design-fidelity gate
 

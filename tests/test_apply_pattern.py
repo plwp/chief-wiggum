@@ -41,9 +41,16 @@ def test_unknown_pattern_raises():
         apply_pattern.build_plan("nope", {}, now=FIXED_NOW)
 
 
-def test_candidate_pattern_raises():
+def test_candidate_pattern_raises(tmp_path):
+    # No real candidates remain (#139 promoted the last four), so pin the
+    # refusal behavior against a synthetic registry.
+    reg = tmp_path / "registry.json"
+    reg.write_text(json.dumps({
+        "patterns": [],
+        "candidates": [{"id": "someday", "title": "Someday", "category": "saas-infra",
+                        "status": "candidate", "summary": "not yet specified"}]}))
     with pytest.raises(apply_pattern.ApplyError, match="candidate"):
-        apply_pattern.build_plan("reconciliation-sweep", {}, now=FIXED_NOW)  # still a candidate
+        apply_pattern.build_plan("someday", {}, registry_path=reg, now=FIXED_NOW)
 
 
 def test_unknown_param_raises():
@@ -155,8 +162,8 @@ def test_catalog_lists_specified_with_applies_when():
     assert REAL in items
     assert items[REAL]["status"] == "specified"
     assert items[REAL]["applies_when"]  # non-empty selection criteria from the manifest
-    # candidates are listed too, flagged
-    assert any(c["status"] == "candidate" for c in apply_pattern.catalog())
+    # every entry is specified now — the last candidates were promoted (#139)
+    assert all(c["status"] == "specified" for c in apply_pattern.catalog())
 
 
 def test_cli_catalog_needs_no_target(tmp_path):
@@ -187,3 +194,154 @@ def test_cli_dry_run(tmp_path):
     out = json.loads(proc.stdout)
     assert out["pattern"] == REAL and out["dry_run"] is True
     assert not (tmp_path / "docs").exists()
+
+
+# --- scaffold stamping (#135) -----------------------------------------------
+
+MTI = "multi-tenant-isolation"
+MTI_PARAMS = {"tenant_key": "provider_id", "resolver": "claim",
+              "store": "firestore", "operator_routes": "/admin"}
+MTI_TARGETS = ("internal/tenant/resolver.go", "internal/tenant/scoped_repo.go")
+
+
+def test_scaffold_renders_into_plan_when_required_params_bound():
+    plan = apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    assert set(plan.scaffold_files) == set(MTI_TARGETS)
+    body = plan.scaffold_files["internal/tenant/scoped_repo.go"]
+    # placeholders are bound, none survive
+    assert "provider_id" in body and "firestore" in body
+    assert "{{" not in body
+    assert not plan.scaffold_skipped
+
+
+def test_scaffold_skipped_when_required_param_unresolved():
+    plan = apply_pattern.build_plan(MTI, {"tenant_key": "provider_id"}, now=FIXED_NOW)
+    assert plan.scaffold_files == {}
+    assert "scaffold not stamped" in plan.scaffold_skipped
+    # contract pack still installs regardless
+    assert f"docs/patterns/{MTI}/invariants.md" in plan.files
+
+
+def test_scaffold_stamps_to_target_paths(tmp_path):
+    plan = apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    for rel in MTI_TARGETS:
+        assert (tmp_path / rel).is_file(), rel
+    assert "package tenant" in (tmp_path / "internal/tenant/resolver.go").read_text()
+
+
+def test_scaffold_is_idempotent_and_never_clobbers(tmp_path):
+    plan = apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    edited = tmp_path / MTI_TARGETS[0]
+    edited.write_text("// hand-edited\npackage tenant\n")
+    # second apply (no force) must skip, preserving the hand edit
+    actions = apply_pattern.apply_plan(
+        apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW), tmp_path, write=True)
+    assert any("skip scaffold" in a for a in actions)
+    assert edited.read_text() == "// hand-edited\npackage tenant\n"
+
+
+def test_scaffold_force_re_stamps(tmp_path):
+    plan = apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    edited = tmp_path / MTI_TARGETS[0]
+    edited.write_text("// hand-edited\n")
+    actions = apply_pattern.apply_plan(
+        apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW), tmp_path, write=True, force=True)
+    assert any("re-stamp scaffold" in a for a in actions)
+    assert "package tenant" in edited.read_text()
+
+
+def test_scaffold_dry_run_writes_nothing(tmp_path):
+    plan = apply_pattern.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    apply_pattern.apply_plan(plan, tmp_path, write=False)
+    assert not (tmp_path / "internal").exists()
+
+
+def test_cli_apply_stamps_scaffold(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "apply_pattern.py"), MTI,
+         "--target-dir", str(tmp_path), "--now", FIXED_NOW,
+         "--param", "tenant_key=provider_id", "--param", "resolver=claim",
+         "--param", "store=firestore", "--param", "operator_routes=/admin"],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (tmp_path / "internal/tenant/resolver.go").is_file()
+
+
+def test_scaffold_rejects_path_traversal_target(tmp_path, monkeypatch):
+    # a pattern/param that renders a target escaping the repo must fail closed
+    import apply_pattern as ap
+    orig = ap.load_scaffold
+    monkeypatch.setattr(ap, "load_scaffold", lambda pid, base=ap.ROOT: {
+        "files": [{"template": "tenant_resolver.go.tmpl", "target": "../evil.go"}]})
+    with pytest.raises(ap.ApplyError, match="repo-relative path"):
+        ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    monkeypatch.setattr(ap, "load_scaffold", orig)
+
+
+def test_scaffold_rejects_absolute_target(tmp_path, monkeypatch):
+    import apply_pattern as ap
+    monkeypatch.setattr(ap, "load_scaffold", lambda pid, base=ap.ROOT: {
+        "files": [{"template": "tenant_resolver.go.tmpl", "target": "/etc/evil.go"}]})
+    with pytest.raises(ap.ApplyError, match="repo-relative path"):
+        ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+
+
+def test_scaffold_fails_closed_on_unbound_body_placeholder(tmp_path, monkeypatch):
+    import apply_pattern as ap
+    # a template body referencing an unbound param must fail, not leak {{param}}
+    (tmp_path / "s").mkdir()
+    monkeypatch.setattr(ap, "ROOT", tmp_path)
+    pdir = tmp_path / "patterns" / MTI / "scaffold"
+    pdir.mkdir(parents=True)
+    (pdir / "t.tmpl").write_text("package x // {{unbound_param}}\n")
+    (pdir / "scaffold.json").write_text(json.dumps(
+        {"files": [{"template": "t.tmpl", "target": "x.go"}]}))
+    with pytest.raises(ap.ApplyError, match="unbound param"):
+        ap._render_scaffold(MTI, ap.load_scaffold(MTI, base=tmp_path), {}, base=tmp_path)
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ("[]", "must be a JSON object"),
+    ('{"files": {}}', "non-empty 'files'"),
+    ('{"files": []}', "non-empty 'files'"),
+    ('{"files": ["x"]}', "must be an object"),
+    ('{"files": [{"template": "t.tmpl"}]}', "string 'template'"),
+])
+def test_malformed_scaffold_manifest_is_clean_apply_error(tmp_path, bad, msg):
+    import apply_pattern as ap
+    pdir = tmp_path / "patterns" / MTI / "scaffold"
+    pdir.mkdir(parents=True)
+    (pdir / "scaffold.json").write_text(bad)
+    with pytest.raises(ap.ApplyError, match=msg):
+        ap.load_scaffold(MTI, base=tmp_path)
+
+
+def test_scaffold_refuses_symlink_target(tmp_path):
+    import apply_pattern as ap
+    plan = ap.build_plan(MTI, MTI_PARAMS, now=FIXED_NOW)
+    # a symlink at the final target path must be refused (write_text would follow it)
+    (tmp_path / "internal" / "tenant").mkdir(parents=True)
+    outside = tmp_path / "outside.go"
+    outside.write_text("// outside\n")
+    (tmp_path / "internal" / "tenant" / "resolver.go").symlink_to(outside)
+    with pytest.raises(ap.ApplyError, match="symlink"):
+        ap.apply_plan(plan, tmp_path, write=True, force=True)
+    assert outside.read_text() == "// outside\n"  # untouched
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ('{"files": [{"template": ["x"], "target": "x.go"}]}', "string 'template'"),
+    ('{"files": [{"template": "t.tmpl", "target": 123}]}', "string 'template'"),
+    ('{"files": [{"template": "../t.tmpl", "target": "x.go"}]}', "under scaffold/"),
+    ('{"files": [{"template": "/abs.tmpl", "target": "x.go"}]}', "under scaffold/"),
+])
+def test_scaffold_manifest_rejects_bad_template_types_and_paths(tmp_path, bad, msg):
+    import apply_pattern as ap
+    pdir = tmp_path / "patterns" / MTI / "scaffold"
+    pdir.mkdir(parents=True)
+    (pdir / "scaffold.json").write_text(bad)
+    with pytest.raises(ap.ApplyError, match=msg):
+        ap.load_scaffold(MTI, base=tmp_path)

@@ -1,0 +1,10 @@
+{
+  "contracts": [
+    {
+      "id": "CTR-rt-002",
+      "operation": "delete_widget",
+      "requires": "the widget id resolves to an existing row owned by the caller",
+      "ensures": "the row is soft-deleted (deleted_at is set); it is never hard-removed"
+    }
+  ]
+}

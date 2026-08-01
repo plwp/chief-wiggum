@@ -10,12 +10,18 @@ tool-dependent live path is exercised only when git-of-theseus is importable
 from __future__ import annotations
 
 import argparse
+import json as _json
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
+import check_gate_validation as _gv
 import pytest
 import quality_slop_gate as gate
+
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 # --- band classification ----------------------------------------------------
 
@@ -262,3 +268,116 @@ def test_survival_live_young_repo_self_skips(tmp_path):
     # young repo: either the analyzer produced no 14-day-old lines (too_young)
     # or the tool skipped — both are graceful, neither crashes.
     assert sv["status"] in {"too_young", "skipped"}
+
+
+# ---- --scanner-version (#184) ----------------------------------------------
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    assert gate._scanner_version() == gate._scanner_version()
+
+
+def test_cli_scanner_version_prints_hex_digest():
+    # gate.main() has no injectable argv (reads sys.argv directly), so the CLI
+    # contract — no other arguments needed, exit 0, no side effects — is
+    # exercised via subprocess like ratchet.py's.
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "quality_slop_gate.py"), "--scanner-version"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex
+
+
+# ---- gate-validation record trials (#184, docs/gate-validation.md) ----------
+#
+# Re-executes every seeded-defect trial the shipped quality_slop_gate.json record
+# claims, calling the REAL pure verdict functions (evaluate_survival /
+# evaluate_duplication / has_findings) with the fixture band files as input — the
+# only reproducible-in-CI path (git-of-theseus / jscpd are not installed).
+
+_GV_ROOT = Path(__file__).resolve().parent.parent
+_GV_CORPUS = _GV_ROOT / "tests" / "fixtures" / "gate_validation" / "quality_slop_gate_clean"
+_GV_RECORD = _GV_ROOT / "docs" / "quality" / "validation" / "quality_slop_gate.json"
+_GV_VALIDATION_DIR = _GV_ROOT / "docs" / "quality" / "validation"
+_GV_EXPECTED_TO_RESULT = {"fire": "fired", "no-fire": "not-fired"}
+
+# seed_id -> (band file, int_keys) — int_keys re-casts the serialized string age
+# keys to the engine-native integer keys the survival engine actually emits.
+_GV_TRIALS = {
+    "slop-direct-01": ("survival_past_ai.json", True),
+    "slop-direct-02": ("duplication_past_ai.json", False),
+    "slop-config-indirection-01": ("survival_past_ai.json", False),
+    "slop-omission-01": ("too_young.json", False),
+    "slop-sampling-gap-01": ("both_skipped.json", False),
+}
+
+
+def _gv_outcome(band_file: str, int_keys: bool = False) -> str:
+    data = _json.loads((_GV_CORPUS / band_file).read_text())
+    sv_result = data["survival_result"]
+    if int_keys and "survival_by_age_days" in sv_result:
+        sv_result = {
+            **sv_result,
+            "survival_by_age_days": {int(k): v for k, v in sv_result["survival_by_age_days"].items()},
+        }
+    sv = gate.evaluate_survival(sv_result)
+    dup = gate.evaluate_duplication(data["duplication_result"])
+    return "fired" if gate.has_findings(sv, dup) else "not-fired"
+
+
+def _gv_record() -> dict:
+    return _json.loads(_GV_RECORD.read_text())
+
+
+def test_slop_gate_record_trials_backed_by_live_functions():
+    record = _gv_record()
+    assert record["gate"] == "quality_slop_gate"
+    assert record["scanner_version"] == gate._scanner_version(), "record scanner_version is stale"
+    digest = _gv.corpus_digest(_GV_CORPUS)
+    trials = record["seeded_defect_trials"]
+    assert {t["seed_id"] for t in trials} == set(_GV_TRIALS)
+    for t in trials:
+        assert t["sha"] == digest, f"{t['seed_id']} pins a stale corpus digest"
+        band_file, int_keys = _GV_TRIALS[t["seed_id"]]
+        result = _gv_outcome(band_file, int_keys)
+        assert result == t["result"], (t["seed_id"], result, t["result"])
+        assert t["passed"] == (result == _GV_EXPECTED_TO_RESULT[t["expected"]])
+
+
+def test_slop_gate_dual_key_survival_classifies_identically():
+    # The engine emits int keys; a serialized band file carries string keys. The
+    # config-indirection trial rests on both classifying identically.
+    data = _json.loads((_GV_CORPUS / "survival_past_ai.json").read_text())
+    str_keyed = gate.evaluate_survival(data["survival_result"])
+    int_keyed = gate.evaluate_survival({
+        **data["survival_result"],
+        "survival_by_age_days": {int(k): v for k, v in data["survival_result"]["survival_by_age_days"].items()},
+    })
+    assert str_keyed == int_keyed
+    assert str_keyed["band_14d"] == "past-ai"
+
+
+def test_slop_gate_clean_corpus_backed_by_live_functions():
+    record = _gv_record()
+    run = record["clean_corpus_runs"][0]
+    assert run["sha"] == _gv.corpus_digest(_GV_CORPUS)
+    data = _json.loads((_GV_CORPUS / "clean.json").read_text())
+    sv = gate.evaluate_survival(data["survival_result"])
+    dup = gate.evaluate_duplication(data["duplication_result"])
+    findings = gate.has_findings(sv, dup)
+    assert findings == []
+    coverage = {
+        "signals_evaluated": 2,
+        "measured_signals": sum(1 for v in (sv, dup) if v.get("status") == "measured"),
+        "bands_classified": sum(1 for v in (sv, dup) if v.get("band_14d") or v.get("band")),
+    }
+    assert run["findings"] == len(findings) == 0
+    assert run["coverage"] == coverage
+
+
+def test_slop_gate_record_passes_gate_of_gates():
+    rep = _gv.check("quality_slop_gate", _GV_VALIDATION_DIR)
+    assert rep.record_found and rep.passing, rep.to_dict()

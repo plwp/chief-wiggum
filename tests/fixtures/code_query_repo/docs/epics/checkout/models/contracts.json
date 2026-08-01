@@ -1,0 +1,103 @@
+{
+  "entities": [
+    {
+      "name": "Order",
+      "description": "A customer order moving through checkout.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum",
+          "required": "always",
+          "source_of_truth": "orders collection",
+          "immutable": false,
+          "notes": "single write path — see INV-checkout-001"
+        },
+        {
+          "name": "customer_id",
+          "type": "ObjectID",
+          "required": "always",
+          "immutable": true
+        }
+      ],
+      "operations": [
+        {
+          "name": "Confirm Order",
+          "method": "POST",
+          "path": "/api/v1/orders/:id/confirm",
+          "description": "Confirms a pending order.",
+          "preconditions": [
+            {
+              "id": "CTR-order-confirm-001-pre1",
+              "description": "order status is pending",
+              "expression": "order.status == 'pending'"
+            }
+          ],
+          "postconditions": [
+            {
+              "id": "CTR-order-confirm-001-post1",
+              "description": "order status becomes confirmed",
+              "expression": "order.status == 'confirmed'"
+            }
+          ],
+          "error_cases": [
+            { "status": 409, "condition": "order is already confirmed" }
+          ],
+          "state_transition": "pending -> confirmed",
+          "invariants_touched": ["INV-checkout-001"]
+        },
+        {
+          "name": "List Orders",
+          "method": "GET",
+          "path": "/api/v1/orders",
+          "description": "Lists orders. #185 fixture: a second Order operation whose path is a BARE entity word — dilutes 'orders' document-frequency across the corpus so it stays a specific (not ubiquitous) word, contrasting with the 'providers' entity below.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        }
+      ]
+    },
+    {
+      "name": "Provider",
+      "description": "#185 fixture: a deliberately common entity — nearly every operation below shares the bare word 'providers', mirroring the real dogeared-coach over-match (an 'auth-provider.tsx' file lexically matched ~30 unrelated provider operations). Regression fixture for CTR-fh-050/051/INV-fh-012: 'providers' alone must NOT bind, but an entity+verb combination (e.g. 'verify') still does.",
+      "fields": [],
+      "operations": [
+        {
+          "name": "List Providers",
+          "method": "GET",
+          "path": "/api/v1/providers",
+          "description": "Bare entity word only — the over-match case.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        },
+        {
+          "name": "Verify Provider",
+          "method": "POST",
+          "path": "/api/v1/providers/:id/verify",
+          "description": "Entity + specific verb — must still bind for a file whose path also contains 'verify'.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        },
+        {
+          "name": "Schedule Provider",
+          "method": "POST",
+          "path": "/api/v1/providers/:id/schedule",
+          "description": "Entity + a different specific word — keeps 'providers' from being the corpus's only word.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        },
+        {
+          "name": "Provider Plan",
+          "method": "GET",
+          "path": "/api/v1/providers/:id/plan",
+          "description": "Entity + a third specific word.",
+          "preconditions": [],
+          "postconditions": [],
+          "error_cases": []
+        }
+      ]
+    }
+  ]
+}

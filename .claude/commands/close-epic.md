@@ -124,9 +124,25 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
 
 Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the fact was resolved during implementation (update the artifact with the real value and a citation) or it wasn't (which means some ticket was built on a guess — trace it and verify what actually shipped). Target: zero markers.
 
+### Step 2c2: Gate-validation check (docs/gate-validation.md)
+
+Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, and before Step 2f passes `--gate-verifier-tests` to `ratchet.py check`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e/2f keep their existing enforcement unchanged:
+
+```bash
+python3 "$CW_HOME/scripts/check_gate_validation.py" check_traceability --validation-dir "$CW_HOME/docs/quality/validation" --gate
+python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --validation-dir "$CW_HOME/docs/quality/validation" --gate
+python3 "$CW_HOME/scripts/check_gate_validation.py" ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate
+```
+
+(A target repo that hosts gates of its own keeps their records at the same relative path in that repo — `docs/quality/validation/<gate>.json`, sibling to its ratchet journal — and this step checks them the same way.)
+
+**If any exits non-zero (no record, a stale/forged one, or a failing one), do not pass the corresponding blocking flag in the step below** — for `check_traceability`/`check_single_writer` that flag is `--gate coverage`; for `ratchet` it is `--gate-verifier-tests` (the ratchet's core pass-set/contract-hash check in Step 2f stays hard-blocking regardless — only the verifier-test dimension's blocking authority is governed by the record, per chief-wiggum#208) — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
+
+If a checker that was previously wired blocking (`check_gate_validation.py ... --wire` was run for it earlier) shows `"authority": {"demoted": true, ...}` in this step's JSON output, its record went stale or missing/invalid WHILE blocking — surface the printed `DEMOTION` instruction (`previous_authority`/`demotion_reason`) verbatim in the close report alongside the coverage finding above (see `docs/gate-validation.md`'s "Auto-demotion" section, chief-wiggum#198); this is the same instruction-surfacing pattern as the escape-driven `demotion_check` in "Demotion: an escape a seed class should have caught," just triggered by staleness instead of a production escape.
+
 ### Step 2d: Traceability coverage gate
 
-Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`):
+Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`). Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_traceability --gate` passed; otherwise drop `--gate coverage` and report the finding instead:
 
 ```bash
 python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
@@ -134,9 +150,21 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
 
+**Suspect links (#169, report-only)**: the same run surfaces `suspect_links` — code/test links whose contract's definition hash has changed since that link was last validated ("code claims to guard CTR-X but CTR-X changed since that claim was validated"), distinct from a dangling/uncovered finding. This does not block the gate yet (see `docs/gate-rollout.md`) but re-review any suspect link before closing.
+
+**JUSTIFIED waivers**: a contract that's genuinely not going to be covered (e.g. manual QA only) may carry a committed waiver at `docs/epics/<slug>/justifications/*.json` (`reason`/`approver`/`expiry`/`ticket` — a justification without a ticket ref is invalid and does NOT satisfy coverage). Valid, non-expired waivers render as `justified_contracts` and satisfy the coverage gate honestly instead of a fabricated guard/verify annotation.
+
+Once the gate passes, (re)write the definition-hash sidecar so future runs can detect suspect links — never hand-maintain this file:
+
+```bash
+python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --write-links --format text
+```
+
+`--write-links` only updates `$TARGET_REPO/docs/quality/trace-links.json` when the coverage gate passes — a failing run leaves the sidecar untouched, so a broken state is never recorded as validated. Commit this file alongside the rest of `docs/quality/` in Step 2f.
+
 ### Step 2e: Single-writer coverage gate
 
-For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*.
+For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*. Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_single_writer --gate` passed; otherwise drop `--gate coverage` and report the finding instead:
 
 ```bash
 python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
@@ -146,15 +174,17 @@ Any writer of a controlled field whose enclosing symbol/file is **not** in `sanc
 
 ### Step 2f: Ratchet gate
 
-If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact and no contract definition weakened or removed since the `/architect` baseline:
+If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
-python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO"
+python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
 python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
 ```
 
-A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
+Pass `--gate-verifier-tests` only if Step 2c2's `check_gate_validation.py ratchet --gate` passed; otherwise drop the flag (the check still *prints* `weakened_verifier_tests`/`removed_verifier_tests` findings report-only — surface them in the close report) and direct the operator to the gate-validation protocol, same as 2d/2e.
+
+A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. A `weakened_verifier_tests`/`removed_verifier_tests` violation (chief-wiggum#206, channel C1c) means a test annotated `@cw-trace verifies` — the executable expression of a contract — was rewritten or dropped behind its still-green test ID; fix the code, or if the verifier test was *deliberately* revised, journal it via `ratchet.py record --amend-verifier <ref>` (a human act, same semantics as `--amend` for contracts). `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
@@ -204,6 +234,16 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer "$CW_TMP/security-revie
 
 Triage every finding like the other gates: a confirmed exploitable issue is **blocking** (fix before close); a plausible-but-unproven one is **parked for the human** with the `file:line` and the concrete attack. Never close a user-facing/auth/money epic on an unreviewed security surface. Skip only when the epic is purely internal/back-office with **no new external surface** — and say so explicitly in the close report.
 
+**Log a real finding as an escape.** When this adversarial review (or the cross-surface/UX review in Step 9) confirms a genuine bug that an *earlier* gate should have caught — the ticket's own tests/review, `traceability`, `ratchet`, `check_single_writer` — that's exactly the class of miss `caught` counters can't see: the gate reported clean while a real bug shipped anyway. Log it so `/reflect` can measure gate RECALL, not just catches (no-op unless telemetry is enabled, never blocks):
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
+  --summary "reset endpoint leaks account existence via timing" --severity high \
+  --missed-by ticket-gate --found-in close-epic-review --ticket 42 --fixed
+```
+
+(Convention: `docs/factory-telemetry.md` → "Escapes — measuring gate RECALL, not just catches".)
+
 ### Step 2i: AI-slop signals (report-only)
 
 Two signals the literature converged on for AI-generated code degradation: **elevated 2-week churn** (code reverted/reworked soon after authoring — GitClear; DORA 2024 stability drop) and **rising production duplication** (copy/paste written to be added, not reused). Run them over the target as a standing guardrail on top of the one-off `/code-metrics` audit:
@@ -213,6 +253,31 @@ python3 "$CW_HOME/scripts/quality_slop_gate.py" --repo "$TARGET_REPO" --report
 ```
 
 This is **report-only** (per `docs/gate-rollout.md`): it computes code survival (% of added lines surviving 14/30 days via git-of-theseus) and production-only duplication (% clones, tests excluded, via jscpd), prints each against GitClear's `[VENDOR]` reference bands (survival: pre-AI ~96.9% / AI-assisted ~94.3%; duplication: pre-AI 8.3% / AI 12.3%), and **always exits 0** — it never blocks the close. Surface its output verbatim in the final report under `### AI-slop signals`. It degrades gracefully: if git-of-theseus / jscpd / node are absent it prints `skipped (tool not found)`, and survival self-skips when the repo has < 14 days of history (too young to measure 2-week survival) — report that caveat honestly rather than treating a young repo as a pass. A future blocking mode is behind `--gate` (off by default, and even then only a regression *past* the AI band counts — the bands are directional).
+
+### Step 2j: Tutorial drift & coverage (report-only)
+
+An epic that changes the UI silently invalidates the product's tutorial videos — the flows still work but the recordings now show the old chrome, and a new user-facing journey the epic added (a new nav destination, a new settings/billing surface) has no tutorial at all. "Build + tests green" never catches this; only comparing the shipped UI against the tutorial library does. This step makes that review part of the close, so a UI-touching epic can't quietly leave a stale tutorial library behind (it did, once — a UX-hardening epic drifted every provider tutorial's visuals and added billing/settings journeys with no tutorial, and nothing flagged it until a human noticed).
+
+**Only runs when the target repo has a tutorial system.** Detect it:
+
+```bash
+TUT_STATUS_SCRIPT="$TARGET_REPO/scripts/maintain_tutorials.py"   # the repo's own tutorial maintainer
+if [ -d "$TARGET_REPO/docs/tutorials" ] && [ -f "$TUT_STATUS_SCRIPT" ]; then
+  # The maintainer's status scan reports per-tutorial drift (content-hash +
+  # product-drift) AND coverage gaps — including a nav-vs-storyboard scan that
+  # surfaces a shipped journey with no tutorial even when it has no e2e spec.
+  # --json is machine-parseable and exits non-zero when anything needs work.
+  python3 "$TUT_STATUS_SCRIPT" status --json > "$CW_TMP/tutorial-status.json" || true
+fi
+```
+
+If the repo has no `docs/tutorials/` (or no maintainer script), **skip and say so** — most products won't have a tutorial library. When it does run, parse `$CW_TMP/tutorial-status.json` and surface, in the final report under `### Tutorial coverage`:
+
+- **DRIFTED / PRODUCT-DRIFT** tutorials whose mapped surfaces this epic touched — their visuals/flow are stale and should be re-produced (`/tutorial-videos`). Cross-reference the epic's changed files: a tutorial is *epic-relevant* if it demonstrates a page this epic modified.
+- **NAV-GAP** entries (`nav_gaps` in the JSON) — user-facing journeys the epic shipped with no tutorial (a new nav destination, a new settings/billing screen). Each is a candidate new tutorial.
+- **UNCOVERED** spec-audit gaps, as before.
+
+This is **report-only** — it never blocks the close (a stale tutorial is a follow-up, not a broken seam). Recommend `/tutorial-videos` to re-produce drifted ones and author the gaps, and **ticket the new-tutorial gaps** so they aren't lost. Do not attempt to record videos inside `/close-epic` — production needs a running instance and is its own workflow.
 
 ### Step 3: Integration test execution
 
@@ -523,6 +588,11 @@ Present the full epic close report:
 - Code survival (14d/30d): X% / Y% — [beats pre-AI baseline / between bands / past AI band] (or skipped: too young / tool absent)
 - Production duplication: Z% — [beats pre-AI baseline / between bands / past AI band] (or skipped: tool absent)
 - _[VENDOR] GitClear bands; directional. Informational — does not block the close._
+
+### Tutorial coverage (report-only)
+- Drifted tutorials this epic touched: [slugs] — re-produce with `/tutorial-videos` (or "none" / "no tutorial system")
+- New-tutorial gaps (nav destinations the epic shipped with no tutorial): [slugs/routes] — ticketed as [#N]
+- _Report-only; a stale tutorial is a follow-up, not a broken seam._
 
 ### Multi-AI Analysis
 - Consensus risks: [areas both AIs flagged]

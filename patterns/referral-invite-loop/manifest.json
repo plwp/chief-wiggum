@@ -1,0 +1,65 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/referral-invite-loop/pattern.md. The signed-token discipline is REUSED from the in-repo elevated-access-session pattern (INV-EAS-*), not re-derived; the attribution/reward/fraud invariants are design-derived (this loop is not yet mined from a shipped app — honest per issue #139's 'design-derived statements where not yet built').",
+  "id": "referral-invite-loop",
+  "version": 1,
+  "title": "Referral / Invite Growth Loop",
+  "category": "process-loop",
+  "trust_class": "reward-and-copy-are-end-user-signal-driven-protected-path",
+
+  "applies_when": [
+    "you want existing users to invite new ones with a self-serve, trackable loop",
+    "an invite must be attributable server-side (who referred whom) and rewardable on both sides",
+    "reward economics or invite copy will be tuned over time and must stay admin-gated"
+  ],
+
+  "components": [
+    "signed-invite-token: the invite is a token minted by the trusted signer carrying the referrer as an actor claim the client cannot self-assert (reuses the elevated-access-session signing discipline)",
+    "ttl-against-own-iat: the token expires on its own issue time, independent of any session/IdP lifetime",
+    "consume-once: accepting an invite consumes the token exactly once; replay is rejected fail-closed",
+    "server-trusted-attribution: attribution is derived server-side from the consumed token, never from a client-supplied referrer field; it is trust-tagged signal",
+    "grant-only-idempotent-reward: each accepted invite rewards each side at most once, keyed on the consumed token, idempotent under retries, never revoked on replay",
+    "fail-closed-fraud-guard: self-referral and re-attribution of an already-attributed account are rejected; reward size + invite copy are a protected path"
+  ],
+
+  "invariants": {
+    "$comment": "001-002 reuse the in-repo elevated-access-session signed-token discipline (cited in realized_as); 003 is the fail-closed-consume sibling of EAS revocation; 004-006 are design-derived (grounding field marks them) and honestly flagged, this loop not yet mined from a shipped app.",
+    "cluster": [
+      {"id": "INV-RIL-001", "statement": "Un-forgeable invite token: the invite is minted by the trusted signer with the referrer identity as an actor claim the accepting client cannot self-assert; attribution can never be forged by the invitee.", "realized_as": {"app": "chief-wiggum registry", "code": "patterns/elevated-access-session/manifest.json (INV-EAS-007 un-forgeable-at-signing-root)"}},
+      {"id": "INV-RIL-002", "statement": "Expiring against its own issue time: the invite token's TTL is enforced against the token's own iat, independent of any session or IdP token lifetime.", "realized_as": {"app": "chief-wiggum registry", "code": "patterns/elevated-access-session/manifest.json (INV-EAS-001 TTL-against-own-iat)"}},
+      {"id": "INV-RIL-003", "statement": "Single-use, fail-closed: accepting an invite consumes the token exactly once; a second presentation (replay/retry-after-accept) is rejected fail-closed, mirroring the elevated-access-session fail-closed revocation-lookup discipline.", "realized_as": {"app": "chief-wiggum registry", "code": "patterns/elevated-access-session/manifest.json (INV-EAS-002 fail-closed revocation)"}},
+      {"id": "INV-RIL-004", "statement": "Server-trusted attribution: who referred whom is derived server-side from the consumed signed token, never from a client-supplied referrer field; attribution is emitted as a trust-tagged signal, not accepted as end-user input.", "grounding": "design-derived"},
+      {"id": "INV-RIL-005", "statement": "Grant-only, idempotent two-sided reward: each accepted invite rewards each side at most once, keyed on the consumed token; reward issuance is idempotent under retries and grant-only (a replay never re-grants and never revokes).", "grounding": "design-derived"},
+      {"id": "INV-RIL-006", "statement": "Fail-closed fraud guard + protected reward economics: self-referral (referrer == invitee) and re-attribution of an already-attributed account are rejected fail-closed; reward size and invite copy are end-user-signal-driven and therefore a protected path (changes are admin-gated, never auto-applied by an optimization loop).", "grounding": "design-derived"}
+    ]
+  },
+
+  "parameters": {
+    "signer": {"type": "string", "required": true, "description": "The trusted signing root that mints invite tokens (reuse the product's existing signer; same root as elevated-access-session if adopted)."},
+    "token_ttl": {"type": "string", "required": true, "description": "Invite token lifetime, enforced against the token's own iat (e.g. 14d)."},
+    "reward_spec": {"type": "object", "required": true, "description": "The two-sided reward: what the referrer and the invitee each receive on a successful, attributed accept."},
+    "attribution_sink": {"type": "string", "required": true, "description": "Where the server-trusted attribution signal is recorded (the trust-tagged event store the improvement loop reads)."},
+    "consume_store": {"type": "string", "required": true, "description": "The consume-once store that makes an invite single-use (idempotency key = the token id)."},
+    "already_attributed_check": {"type": "string", "required": false, "description": "How an account is determined to be already-attributed, for the re-attribution fraud guard."}
+  },
+
+  "success_metrics": {
+    "$comment": "Growth-loop health. Reward/copy are protected-path, so the improvement loop may PROPOSE tuning but changes are admin-gated (INV-RIL-006).",
+    "metrics": [
+      {"id": "invites_sent", "goal": "up", "desc": "invites created per active referrer per unit time"},
+      {"id": "invite_accept_rate", "goal": "up", "desc": "accepted / sent — the loop's conversion efficiency"},
+      {"id": "k_factor", "goal": "up", "desc": "new attributed signups per existing user (viral coefficient)"},
+      {"id": "reward_fraud_rate", "goal": "down", "desc": "rejected self-referral / re-attribution attempts as a share of accepts (guard efficacy)"},
+      {"id": "reward_cost_per_attributed_signup", "goal": "down", "desc": "two-sided reward spend per net new attributed account (loop unit economics)"}
+    ]
+  },
+
+  "protected_paths": [
+    "the token signer / mint path (un-forgeability root — INV-RIL-001)",
+    "the consume-once store + accept handler (single-use enforcement — INV-RIL-003)",
+    "the reward-grant path (grant-only idempotency + fraud guard — INV-RIL-005/006)",
+    "reward_spec + invite copy (end-user-signal-driven economics — INV-RIL-006)"
+  ],
+
+  "depends_on": "elevated-access-session",
+  "feeds": "improvement-loop"
+}

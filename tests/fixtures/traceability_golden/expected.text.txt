@@ -1,0 +1,24 @@
+# Traceability Audit
+
+Defined IDs: 4
+
+- Soundness (orphans/dangling/invalid): FINDINGS
+- Coverage (uncovered/untested): FINDINGS
+
+## Uncovered contracts (no code guard)
+
+- CTR-order-002
+
+## Untested contracts (no test)
+
+- CTR-order-002
+- INV-order-003
+
+## Dangling annotations
+
+- order.py:6 guards CTR-ghost-999 (undefined)
+
+## Invalid links
+
+- bad_verify.py:3 verifies cannot originate from code
+

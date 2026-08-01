@@ -1,0 +1,3 @@
+# @cw-trace verifies CTR-order-001 INV-order-003
+def test_create_order():
+    ...

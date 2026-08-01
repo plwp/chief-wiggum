@@ -45,6 +45,7 @@ SCHEMAS = {
     "gap": SCHEMA_DIR / "gap-classification.json",
     "transition-map": SCHEMA_DIR / "transition-map-schema.json",
     "ui-spec": SCHEMA_DIR / "ui-spec-schema.json",
+    "architecture": SCHEMA_DIR / "architecture-schema.json",
 }
 
 
@@ -64,6 +65,8 @@ def _load_schema(name: str) -> dict:
 
 def detect_schema_type(data: dict) -> str:
     """Heuristic detection of which schema a JSON document conforms to."""
+    if "nodes" in data and "edges" in data:
+        return "architecture"
     if "states" in data and "transitions" in data:
         return "state-machine"
     if "entities" in data and "summary" in data:

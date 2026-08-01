@@ -230,6 +230,50 @@ def test_incident_clean_when_only_sanctioned_writer(tmp_path):
     assert report.coverage_ok is True
 
 
+def test_epic_own_generated_artifacts_are_not_scanned_as_writers(tmp_path):
+    """When the epic dir lives UNDER the scanned source_root (the real layout:
+    source is the repo root, epic is docs/epics/<slug>), the epic's OWN rendered
+    model artifacts DESCRIBE the controlled field — they must not be mis-read as a
+    second writer. Regression: a rendered `@deal.post` message carrying the literal
+    bson update `{active_owner_count:-1}` was flagged as an unsanctioned writer."""
+    repo = tmp_path
+    epic = repo / "docs" / "epics" / "team-seats"
+    (epic / "models").mkdir(parents=True)
+    (epic / "invariants.md").write_text(
+        "# Invariants\n\n"
+        "**INV-seat-001**: single write path for the owner counter\n"
+        "<!-- @cw-writes INV-seat-001 controls_field=provider.active_owner_count "
+        "sanctioned_writers=RemoveStaff,internal/db/provider_owner_count.go -->\n"
+    )
+    # A rendered spec artifact: the field token appears inside a message STRING that
+    # documents the physical update — it is not itself a write.
+    (epic / "models" / "contracts_deal.py").write_text(
+        "@deal.post(lambda r: provider.active_owner_count_after "
+        "== provider.active_owner_count_before - 1, "
+        'message="runs {$inc:{active_owner_count:-1}}; MatchedCount==0 -> ErrLastOwner")\n'
+    )
+    # The real, sanctioned physical writer, in the implementation tree.
+    (repo / "internal" / "db").mkdir(parents=True)
+    (repo / "internal" / "db" / "provider_owner_count.go").write_text(
+        "package db\n\n"
+        "func (r *providerRepo) DecrementActiveOwnerCountIfMultiple(id ID) {\n"
+        '\tr.c.UpdateOne(ctx, bson.M{"_id": id},\n'
+        '\t\tbson.M{"$inc": bson.M{"active_owner_count": -1}})\n'
+        "}\n"
+    )
+
+    report = sw.check(epic, repo)
+
+    # The generated spec artifact under the epic dir is NOT a violation.
+    assert [v for v in report.violations if "contracts_deal.py" in v["file"]] == []
+    assert report.violations == []
+    assert report.coverage_ok is True
+    # The real implementation writer is still found (scanning wasn't over-excluded).
+    assert any(
+        w["file"].endswith("provider_owner_count.go") for w in report.writers
+    ), "the real db-layer writer must still be detected"
+
+
 # --- graceful degradation + gates -------------------------------------------
 
 
@@ -249,6 +293,105 @@ def test_no_writer_found_warns(tmp_path):
     report = sw.check(epic, src)
     assert any("no writer found" in w for w in report.warnings)
     assert report.coverage_ok  # no writer means no violation
+
+
+# --- language coverage metadata (#162) ---------------------------------------
+
+
+def test_unsupported_extension_file_is_not_silently_skipped(tmp_path):
+    """A recognized-but-unsupported-language file (no emitter at all) must
+    surface an explicit coverage warning — never just vanish from the scan."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    (src / "legacy.php").write_text("<?php $plan = 'pro';\n")
+    report = sw.check(epic, src)
+    assert any("no emitter coverage" in w and ".php" in w for w in report.warnings)
+    assert report.coverage_ok  # unrelated to the actual single-writer verdict
+
+
+def test_unsupported_extension_counts_are_aggregated_per_extension(tmp_path):
+    (tmp_path / "a.php").write_text("<?php\n")
+    (tmp_path / "b.php").write_text("<?php\n")
+    (tmp_path / "c.cpp").write_text("int main() {}\n")
+    counts = sw.unsupported_extension_counts(tmp_path)
+    assert counts == {".php": 2, ".cpp": 1}
+
+
+def test_unsupported_extension_counts_empty_when_all_supported(tmp_path):
+    (tmp_path / "a.go").write_text("func f() {}\n")
+    (tmp_path / "b.py").write_text("def f(): pass\n")
+    assert sw.unsupported_extension_counts(tmp_path) == {}
+
+
+def test_unsupported_extension_counts_ignores_arbitrary_non_source_files(tmp_path):
+    """Markdown/lockfiles/etc. are not in the curated unsupported list — no
+    coverage-warning noise for ordinary non-source repo content."""
+    (tmp_path / "README.md").write_text("# hi\n")
+    (tmp_path / "package-lock.json").write_text("{}\n")
+    assert sw.unsupported_extension_counts(tmp_path) == {}
+
+
+def test_unsupported_extension_counts_respects_exclude(tmp_path):
+    d = tmp_path / "vendor"
+    d.mkdir()
+    (d / "legacy.php").write_text("<?php\n")
+    assert sw.unsupported_extension_counts(tmp_path, exclude=["vendor"]) == {}
+
+
+def test_scan_writers_routes_through_emitter_registry(tmp_path, monkeypatch):
+    """The gate consumes scripts/emitters' dispatch path — not a private direct
+    call to emit_write_sites — so a per-language emitter can't drift from what
+    the gate actually scans. Regression: fails if scan_writers reverts to
+    calling emit_write_sites directly."""
+    calls: list[str] = []
+    real_emit = sw.emitters.emit
+
+    def spy(path, content):
+        calls.append(path)
+        return real_emit(path, content)
+
+    monkeypatch.setattr(sw.emitters, "emit", spy)
+    (tmp_path / "admin.go").write_text(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert calls == ["admin.go"]
+    assert writers and writers[0].symbol == "ChangePlan"
+
+
+def test_changed_since_scoped_scan_still_warns_on_unsupported_extension(tmp_path, capsys):
+    """A changed .php file must trigger the coverage warning even in
+    --changed-since scoped mode — scoping must never make a coverage gap
+    silent (the changed-path predicate is widened beyond SOURCE_EXTS)."""
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.go").write_text("func A() {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    epic = _write_billing_epic(tmp_path)
+    # Added AFTER base: an unsupported-language file (and nothing else changed).
+    (tmp_path / "legacy.php").write_text("<?php $plan = 'pro';\n")
+
+    rc = sw.main([
+        str(epic), "--source", str(tmp_path), "--changed-since", base, "--format", "json",
+    ])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert any("no emitter coverage" in w and ".php" in w for w in data["warnings"])
 
 
 # --- CLI --------------------------------------------------------------------
@@ -467,3 +610,250 @@ def test_sink_db_skips_query_filter_clause(tmp_path):
         "\tc.UpdateMany(ctx, bson.M{\"plan\": bson.M{\"$exists\": false}}, upd)\n}\n"
     )
     assert sw.scan_writers(tmp_path, [_inv_persist()]) == []
+
+
+# --- emission/claim split (#160) --------------------------------------------
+
+
+def test_emit_write_sites_is_field_agnostic():
+    """emit_write_sites needs no invariant at all — it just finds candidate
+    write-shaped tokens."""
+    sites = sw.emit_write_sites(
+        "admin.go", "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    assert any(s.token == "StripePlan" and s.kind == sw.KIND_ASSIGN for s in sites)
+    assert all(s.file == "admin.go" for s in sites)
+    assert any(s.symbol == "ChangePlan" for s in sites)
+
+
+def test_emit_write_sites_struct_literal_kind():
+    sites = sw.emit_write_sites("seed.go", "func mk() Provider {\n\treturn Provider{Plan: \"pro\"}\n}\n")
+    assert any(s.token == "Plan" and s.kind == sw.KIND_STRUCT for s in sites)
+
+
+def test_emit_write_sites_sql_kind():
+    sites = sw.emit_write_sites(
+        "store.go",
+        "func UpdateQuota(db *sql.DB) {\n\tdb.Exec(\"UPDATE t SET plan = $1, quota = $2\", a, b)\n}\n",
+    )
+    tokens = {s.token for s in sites if s.kind == sw.KIND_SQL}
+    assert tokens == {"plan", "quota"}
+
+
+def test_emit_write_sites_no_candidates_on_dead_line():
+    assert sw.emit_write_sites("f.go", "func f() {\n\tx := 1\n\t_ = x\n}\n") == []
+
+
+def test_match_writers_filters_by_field_token_and_sink():
+    sites = sw.emit_write_sites(
+        "billing.go",
+        "func ReconcileStripe(c *mongo.Collection) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"stripe_plan\": v}})\n}\n",
+    )
+    inv = _inv_persist()  # controls provider.plan + provider.quota_minutes, sink=db
+    other_inv = sw.SingleWriterInvariant(
+        id="INV-unrelated-001", description="", controls_field=["x.unrelated"],
+        sanctioned_writers=["Foo"], source="s",
+    )
+    assert sw.match_writers(sites, other_inv) == []  # token doesn't match this invariant
+
+    bil_inv = _inv()  # controls provider.plan, provider.stripe_plan; no sink
+    matched = sw.match_writers(sites, bil_inv)
+    assert len(matched) == 1
+    assert matched[0].field == "provider.stripe_plan"
+    assert matched[0].sanctioned is True
+
+
+def test_match_writers_same_sites_different_invariants_yield_independent_results():
+    """The same emitted sites can be claimed by multiple invariants — emission
+    ran once, matching is a pure per-invariant query over it."""
+    sites = sw.emit_write_sites(
+        "admin.go", "func ChangePlan(p *Provider) {\n\tp.Plan = \"x\"\n}\n"
+    )
+    inv_a = sw.SingleWriterInvariant("INV-a-001", "", ["p.plan"], ["ChangePlan"], "s")
+    inv_b = sw.SingleWriterInvariant("INV-b-001", "", ["p.plan"], ["SomeoneElse"], "s")
+    assert sw.match_writers(sites, inv_a)[0].sanctioned is True
+    assert sw.match_writers(sites, inv_b)[0].sanctioned is False
+
+
+def test_scan_writers_preserves_line_major_ordering_across_invariants(tmp_path):
+    """Regression guard for the refactor: when two invariants both hit in the
+    same file at interleaved lines, the overall order must stay line-ascending
+    (not grouped by invariant) — matching the original interleaved scan."""
+    inv_a = sw.SingleWriterInvariant("INV-a-001", "", ["p.alpha"], ["Foo"], "s")
+    inv_b = sw.SingleWriterInvariant("INV-b-001", "", ["p.beta"], ["Foo"], "s")
+    (tmp_path / "f.go").write_text(
+        "func f(p *P) {\n"
+        "\tp.Alpha = 1\n"      # line 2: INV-a-001
+        "\tp.Beta = 2\n"       # line 3: INV-b-001
+        "\tp.Alpha = 3\n"      # line 4: INV-a-001 again
+        "}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [inv_a, inv_b])
+    assert [(w.invariant_id, w.line) for w in writers] == [
+        ("INV-a-001", 2), ("INV-b-001", 3), ("INV-a-001", 4),
+    ]
+
+
+def test_emission_captures_hyphenated_quoted_key(tmp_path):
+    """Regression (#179 review): the pre-split scanner built regexes from the
+    escaped field token, so a hyphenated Mongo key (`"plan-tier"`) matched. The
+    field-agnostic emission must cover the same token surface — a `\\w+`-only
+    capture would silently MISS this unsanctioned writer on a full scan.
+    (Old-vs-new agreement on this case is also pinned by the golden fixture's
+    INV-tier-004, whose expected outputs were generated with the pre-split
+    scanner.)"""
+    inv = sw.SingleWriterInvariant(
+        id="INV-tier-001", description="", controls_field=["provider.plan-tier"],
+        sanctioned_writers=["SetPlanTier"], source="s", persistence_only=True,
+    )
+    (tmp_path / "legacy.go").write_text(
+        "func LegacyTier(c *mongo.Collection, v string) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"plan-tier\": v}})\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [inv])
+    assert len(writers) == 1
+    assert writers[0].symbol == "LegacyTier" and writers[0].sanctioned is False
+    # And the raw emission carries the full hyphenated token, not a fragment.
+    sites = sw.emit_write_sites("legacy.go", (tmp_path / "legacy.go").read_text())
+    assert any(s.token == "plan-tier" and s.kind == sw.KIND_QUOTED for s in sites)
+
+
+def test_emission_captures_hyphenated_sql_field(tmp_path):
+    inv = sw.SingleWriterInvariant(
+        id="INV-tier-001", description="", controls_field=["provider.plan-tier"],
+        sanctioned_writers=["Nobody"], source="s", persistence_only=True,
+    )
+    (tmp_path / "store.go").write_text(
+        "func UpdateTier(db *sql.DB) {\n"
+        "\tdb.Exec(`UPDATE providers SET \"plan-tier\" = $1 WHERE id = $2`, v, id)\n}\n"
+    )
+    writers = sw.scan_writers(tmp_path, [inv])
+    assert writers and writers[0].sanctioned is False
+
+
+def test_dotted_quoted_key_does_not_claim_leaf_field():
+    """`"provider.plan"` is captured as ONE token (`provider.plan`) — it must
+    not claim-match the leaf `plan`, mirroring the old quote-delimited
+    exact-token behavior."""
+    sites = sw.emit_write_sites(
+        "repo.go",
+        "func f(c *mongo.Collection) {\n"
+        "\tc.UpdateOne(ctx, f, bson.M{\"$set\": bson.M{\"provider.plan\": v}})\n}\n",
+    )
+    assert any(s.token == "provider.plan" for s in sites)
+    assert not any(s.token == "plan" and s.kind == sw.KIND_QUOTED for s in sites)
+
+
+def test_full_scan_skips_nested_git_checkout(tmp_path):
+    """Submodules / vendored repos (a dir containing a .git entry) are excluded
+    from the FULL scan, matching --changed-since (whose manifest never surfaces
+    a submodule's files — a submodule is a single gitlink entry there)."""
+    (tmp_path / "admin.go").write_text("func Bad(p *Provider) {\n\tp.Plan = x\n}\n")
+    sub = tmp_path / "vendor-app"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: ../.git/modules/vendor-app\n")  # gitlink file
+    (sub / "other.go").write_text("func AlsoBad(p *Provider) {\n\tp.Plan = y\n}\n")
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert {w.file for w in writers} == {"admin.go"}
+
+
+# --- --scanner-version / --changed-since (#160) ------------------------------
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    rc1 = sw.main(["--scanner-version"])
+    assert rc1 == 0
+
+
+def test_cli_scanner_version_prints_hex_digest(capsys):
+    rc = sw.main(["--scanner-version"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex
+
+
+def test_cli_requires_epic_dir_unless_scanner_version(capsys):
+    rc = sw.main([])
+    assert rc == 2
+    assert "epic_dir is required" in capsys.readouterr().err
+
+
+def test_changed_since_scopes_scan_to_changed_files(tmp_path, capsys):
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.go").write_text("func A(p *Provider) {\n\tp.Unrelated = \"x\"\n}\n")
+    (tmp_path / "b.go").write_text("func B() {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    epic = _write_billing_epic(tmp_path)
+    # New unsanctioned writer, added AFTER base, unrelated file to a.go.
+    (tmp_path / "b.go").write_text("func ChangePlan(p *Provider) {\n\tp.StripePlan = \"y\"\n}\n")
+
+    rc_full = sw.main([str(epic), "--source", str(tmp_path), "--gate", "coverage", "--format", "json"])
+    full = json.loads(capsys.readouterr().out)
+    rc_scoped = sw.main([
+        str(epic), "--source", str(tmp_path), "--changed-since", base,
+        "--gate", "coverage", "--format", "json",
+    ])
+    scoped = json.loads(capsys.readouterr().out)
+
+    assert rc_full == 1 and rc_scoped == 1
+    assert full["counts"]["violations"] == 1
+    assert scoped["counts"]["violations"] == 1
+    assert scoped["violations"][0]["file"] == "b.go"
+
+
+def test_changed_since_whole_repo_default_is_unaffected(tmp_path, capsys):
+    """No --changed-since given -> unchanged whole-repo behavior (regression
+    guard: the new parameter must be fully opt-in)."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    rc = sw.main([str(epic), "--source", str(src), "--gate", "coverage"])
+    assert rc == 0
+
+
+def test_changed_since_non_git_source_is_usage_error(tmp_path, capsys):
+    """--changed-since against a non-git --source must exit 2 with a concise
+    message, never a traceback (#179 review)."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = sw.main([str(epic), "--source", str(src), "--changed-since", "main"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Error" in err and "Traceback" not in err
+
+
+def test_changed_since_bad_ref_is_usage_error(tmp_path, capsys):
+    import subprocess
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (tmp_path / "a.go").write_text("func A() {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "init")
+    epic = _write_billing_epic(tmp_path)
+    rc = sw.main([str(epic), "--source", str(tmp_path), "--changed-since", "no-such-ref"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Error" in err and "Traceback" not in err

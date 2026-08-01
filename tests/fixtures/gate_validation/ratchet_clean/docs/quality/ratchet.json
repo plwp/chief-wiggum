@@ -1,0 +1,28 @@
+{
+  "epic_docs": "docs/epics",
+  "protected_paths": [
+    "docs/epics/*/contracts.md",
+    "docs/epics/*/invariants.md",
+    "docs/epics/*/integration-tests.md",
+    "docs/epics/*/state-machines.md",
+    "docs/epics/*/models/**",
+    "docs/quality/**"
+  ],
+  "quality_tolerance": {
+    "ccn_mean_abs": 0.5,
+    "ccn_mean_rel": 0.1,
+    "pct_ccn_gt10_abs": 1.0,
+    "pct_ccn_gt10_rel": 0.1,
+    "relative_churn_abs": 0.05,
+    "relative_churn_rel": 0.25
+  },
+  "suites": [
+    {
+      "cmd": "python3 -m pytest --junit-xml=.ratchet-junit.xml -q",
+      "cwd": ".",
+      "name": "pytest",
+      "parser": "junit-xml",
+      "report": ".ratchet-junit.xml"
+    }
+  ]
+}

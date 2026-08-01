@@ -68,20 +68,29 @@ Read the current `$CW_HOME/models.md` and update it with the new information:
 
 For tiered models, record the base (≤200k-context) rate. Leave a row `null` + `verified: false` if a price genuinely can't be confirmed (don't fabricate). `python3 -c "import json;json.load(open('config/model_pricing.json'))"` must stay valid.
 
+### Step 3.6: Refresh the language support matrix doc (`docs/languages.md`)
+
+`docs/languages.md` is mechanically rendered from `config/languages.json` (#162) — never hand-edit it. If the matrix changed (a new language, tier promotion, dep_profile change), regenerate the doc so it can't drift from the artifact:
+
+```bash
+python3 "$CW_HOME/scripts/render_languages_doc.py"
+```
+
 ### Step 4: Review changes
 
-Show the user a diff of what changed in `models.md` and `config/model_pricing.json`:
+Show the user a diff of what changed in `models.md`, `config/model_pricing.json`, and (if regenerated) `docs/languages.md`:
 - Highlight new models
 - Highlight deprecated models
 - Highlight version bumps
 - Highlight price changes
+- Highlight any language-matrix changes
 - Ask if the changes look correct
 
 ### Step 5: Commit and push
 
 ```bash
 cd "$CW_HOME"
-git add models.md config/model_pricing.json
+git add models.md config/model_pricing.json docs/languages.md
 git commit -m "docs: update models, pricing, and library versions — $(date +%Y-%m-%d)"
 git push
 ```

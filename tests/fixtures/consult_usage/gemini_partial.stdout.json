@@ -1,0 +1,11 @@
+{
+  "session_id": "test-partial",
+  "response": "PONG",
+  "stats": {
+    "models": {
+      "gemini-3.1-pro-preview": {
+        "tokens": {"prompt": 450}
+      }
+    }
+  }
+}

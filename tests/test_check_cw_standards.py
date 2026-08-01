@@ -48,6 +48,22 @@ def test_existing_script_reference_ok(tmp_path):
     assert "dangling-script-ref" not in _rules(check_cw_standards.check(tmp_path))
 
 
+def test_target_repo_scoped_reference_not_flagged(tmp_path):
+    # `$TARGET_REPO/scripts/<x>.py` points at the TARGET repo's own script, not a
+    # chief-wiggum script — its absence here is expected, not a dangling ref.
+    _scaffold(
+        tmp_path,
+        command='TUT="$TARGET_REPO/scripts/maintain_tutorials.py"; python3 "$TUT" status\n',
+    )
+    assert "dangling-script-ref" not in _rules(check_cw_standards.check(tmp_path))
+
+
+def test_bare_reference_still_flagged_when_target_prefix_absent(tmp_path):
+    # A plain `scripts/ghost.py` (no target-repo prefix) is still a chief-wiggum ref.
+    _scaffold(tmp_path, command="python3 scripts/ghost.py\n")
+    assert "dangling-script-ref" in _rules(check_cw_standards.check(tmp_path))
+
+
 def test_gate_without_test_flagged(tmp_path):
     _scaffold(tmp_path, script="check_thing.py")  # a gate, no test file
     assert "gate-untested" in _rules(check_cw_standards.check(tmp_path))

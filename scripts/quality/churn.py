@@ -50,22 +50,33 @@ MERGE_RE = re.compile(r"Merge pull request|\(#\d+\)$")
 SENT = "@@@COMMIT@@@"
 
 
-def _git_log(repo: str, no_merges: bool) -> str:
+def _git_log(repo: str, no_merges: bool, since: str | None = None) -> str:
     scope = "--no-merges" if no_merges else "--all"
+    cmd = [
+        "git", "-C", repo, "log", scope,
+        f"--format={SENT}%H\t%an\t%ae\t%ad\t%s",
+        "--numstat", "--date=short",
+    ]
+    if since:
+        # Native `git log --since` — reuses the SAME log/parse path with one
+        # extra native flag; not a second git-log parser. #187's hotspots.py
+        # uses this (via `analyze(..., since=...)`) to derive a per-file
+        # recent-activity trend without hand-rolling date-range parsing.
+        cmd.insert(4, f"--since={since}")
     # No check=True: a repo with no commits exits 128; we treat that as empty.
-    return subprocess.run(
-        [
-            "git", "-C", repo, "log", scope,
-            f"--format={SENT}%H\t%an\t%ae\t%ad\t%s",
-            "--numstat", "--date=short",
-        ],
-        capture_output=True, text=True,
-    ).stdout
+    return subprocess.run(cmd, capture_output=True, text=True).stdout
 
 
-def analyze(repo: str, top_n: int = 25, no_merges: bool = True) -> dict:
-    """Compute git-history churn metrics for ``repo``. Never raises on empty repos."""
-    log = _git_log(repo, no_merges)
+def analyze(repo: str, top_n: int = 25, no_merges: bool = True, since: str | None = None) -> dict:
+    """Compute git-history churn metrics for ``repo``. Never raises on empty repos.
+
+    ``since`` (optional, e.g. ``"2026-01-01"`` or ``"90 days ago"``, anything
+    ``git log --since`` accepts) restricts analysis to commits after that
+    point — the SAME engine, just date-bounded, for callers that need a
+    recent-activity slice (e.g. a trend comparison) without re-deriving churn
+    from scratch.
+    """
+    log = _git_log(repo, no_merges, since=since)
 
     commits: list[dict] = []
     cur: dict | None = None

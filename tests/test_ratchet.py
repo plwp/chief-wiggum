@@ -3,6 +3,7 @@
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,7 +41,9 @@ def make_repo(tmp_path, contracts_md=None, suites=None):
 
 def test_uppercase_stable_ids_are_hashed(tmp_path):
     """Regression (chief-wiggum#86 class): uppercase INV-/CTR- ids must be detected
-    for weakening-hashing, not silently skipped by a lowercase-only grammar."""
+    for weakening-hashing, not silently skipped by a lowercase-only grammar.
+    Keys are CANONICAL (uppercase kind, lowercase slug — PR #181 review) so they
+    join against the traceability scanner's canonicalized annotation targets."""
     cfg = make_repo(
         tmp_path,
         contracts_md=(
@@ -51,8 +54,31 @@ def test_uppercase_stable_ids_are_hashed(tmp_path):
         ),
     )
     hashes = ratchet.load_contract_hashes(cfg)
-    assert "CTR-BIL-001" in hashes
-    assert "INV-FOWR-004" in hashes
+    assert "CTR-bil-001" in hashes
+    assert "INV-fowr-004" in hashes
+    # raw-cased keys must NOT appear — one canonical key per declared ID
+    assert "CTR-BIL-001" not in hashes and "INV-FOWR-004" not in hashes
+
+
+def test_highwater_from_precanonicalization_journal_is_not_falsely_removed(tmp_path):
+    """Back-compat (PR #181 review): journals written before hash keys were
+    canonicalized carry raw-cased IDs (CTR-BIL-001). derive_highwater/violations
+    must canonicalize both sides of the join, or every such contract would
+    falsely read as *removed* against a new canonical scorecard and block."""
+    cfg = make_repo(
+        tmp_path,
+        contracts_md="### CTR-BIL-001 — customer uniqueness\nREQUIRES: one customer per provider\n",
+    )
+    current = scorecard_from(cfg, set())  # canonical keys: CTR-bil-001
+    # Old-style journal record: same hash VALUE (it covers block content only),
+    # raw-cased KEY — exactly what a pre-#181 scorecard recorded.
+    old_sc = dict(current)
+    old_sc["contract_hashes"] = {"CTR-BIL-001": current["contract_hashes"]["CTR-bil-001"]}
+    append_record(cfg, old_sc, merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert set(hw["contract_hashes"]) == {"CTR-bil-001"}
+    v = ratchet.violations(current, hw)
+    assert v["removed_contracts"] == [] and v["weakened_contracts"] == []
 
 
 def scorecard_from(cfg, pass_set):
@@ -223,7 +249,9 @@ def test_run_suite_namespaces_cases(tmp_path):
     cfg = make_repo(tmp_path, suites=[
         {"name": "smoke", "cmd": "printf 'PASS one\\nPASS two\\n'", "cwd": ".", "parser": "pass-fail-lines"},
     ])
-    assert ratchet.run_suite(cfg, cfg.suites[0]) == {"smoke::one", "smoke::two"}
+    ids, files = ratchet.run_suite(cfg, cfg.suites[0])
+    assert ids == {"smoke::one", "smoke::two"}
+    assert files == {}  # pass-fail-lines carries no file info — unresolved, not guessed
 
 
 # ---- protected pathset -------------------------------------------------------------
@@ -359,6 +387,88 @@ def test_skipped_quality_snapshot_never_regresses(tmp_path):
     assert hw2 == {"ccn_mean": 3.0, "pct_ccn_gt10": 4.0, "relative_churn": 0.2}
 
 
+# ---- suspect-link visibility (#169) ----------------------------------------
+
+
+def _write_sidecar(cfg, links):
+    from chief_wiggum.trace_links import write_sidecar
+    write_sidecar(cfg.repo / ratchet.SIDECAR_RELPATH, {"links": links})
+
+
+def test_suspect_links_for_flags_a_changed_contract_hash(tmp_path):
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    assert hashes["CTR-order-001"] != "stale-hash"
+    susp = ratchet.suspect_links_for(cfg, sc)
+    assert len(susp) == 1
+    assert susp[0]["target"] == "CTR-order-001"
+
+
+def test_suspect_links_for_is_empty_when_hash_matches(tmp_path):
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": hashes["CTR-order-001"],
+    }])
+    sc = scorecard_from(cfg, set())
+    assert ratchet.suspect_links_for(cfg, sc) == []
+
+
+def test_suspect_links_for_is_empty_when_no_sidecar_written(tmp_path):
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, set())
+    assert ratchet.suspect_links_for(cfg, sc) == []
+
+
+def test_cmd_check_surfaces_suspect_links_visibly_but_does_not_block(tmp_path, capsys):
+    """AC3 (#169): a definition-hash change with surviving suspect links must be
+    VISIBLE in `check`'s output, never silently absorbed into 'the ratchet held'
+    — but suspect propagation ships report-only, so it must not change the exit
+    code (docs/gate-rollout.md)."""
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    append_record(cfg, sc, merged=True)
+    _write_scorecard(cfg, sc)
+    assert hashes["CTR-order-001"] != "stale-hash"
+
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0  # visible, but does not block
+    err = capsys.readouterr().err
+    assert "suspect link" in err
+    assert "CTR-order-001" in err
+
+    args_json = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    ratchet.cmd_check(args_json)
+    data = json.loads(capsys.readouterr().out)
+    assert data["suspect_links"][0]["target"] == "CTR-order-001"
+
+
+def test_cmd_regressed_includes_suspect_links(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    _write_sidecar(cfg, [{
+        "verb": "guards", "target": "CTR-order-001", "file": "order.go", "line": 10,
+        "source_kind": "code", "definition_hash": "stale-hash",
+    }])
+    sc = scorecard_from(cfg, set())
+    append_record(cfg, sc, merged=True)
+    _write_scorecard(cfg, sc)
+    args = argparse.Namespace(repo=str(tmp_path))
+    ratchet.cmd_regressed(args)
+    data = json.loads(capsys.readouterr().out)
+    assert data["suspect_links"][0]["target"] == "CTR-order-001"
+
+
 @pytest.mark.skipif(shutil.which("lizard") is None,
                     reason="lizard required for the end-to-end quality snapshot")
 def test_score_quality_end_to_end_on_a_real_repo(tmp_path):
@@ -372,3 +482,213 @@ def test_score_quality_end_to_end_on_a_real_repo(tmp_path):
     assert q["total_loc"] > 0 and 0 <= q["pct_ccn_gt10"] <= 100
     # relative_churn requires git history; chief-wiggum has plenty
     assert q["relative_churn"] is None or q["relative_churn"] >= 0
+
+
+# ---- gate-validation event (docs/gate-validation.md, #168) --------------------
+
+
+def test_record_accepts_gate_validation_event(tmp_path):
+    """`ratchet.py record --event gate-validation` journals a gate-validation-protocol
+    run — --ref names the gate, per docs/gate-validation.md's "Recording results"."""
+    cfg = make_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "score", "--repo", str(tmp_path),
+         "--no-tests", "--no-quality"],
+        capture_output=True, text=True, check=True,
+    )
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "gate-validation", "--ref", "check_single_writer", "--merged",
+         "--notes", "seeded-defect + clean-corpus trials passed"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    records = ratchet.load_journal(cfg)
+    assert len(records) == 1
+    assert records[0]["event"] == "gate-validation"
+    assert records[0]["ref"] == "check_single_writer"
+
+
+def test_record_rejects_unknown_event(tmp_path):
+    make_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "not-a-real-event", "--ref", "x"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+
+
+def test_it_fh_06_real_journal_corroborates_stale_while_blocking_demotion(tmp_path):
+    """IT-fh-06 (chief-wiggum#198) through the REAL `ratchet.py record` CLI —
+    not a hand-written journal fixture. Journal a gate-validation event for
+    real, author a validation record whose ratchet_record_id names it, wire the
+    gate blocking, then simulate #184's scenario (a scanner edit bumps
+    --scanner-version) and prove check_gate_validation.check_and_transition
+    auto-demotes it (blocking -> demoted), recording previous_authority."""
+    import check_gate_validation as gv  # noqa: PLC0415
+
+    cfg = make_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "score", "--repo", str(tmp_path),
+         "--no-tests", "--no-quality"],
+        capture_output=True, text=True, check=True,
+    )
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "gate-validation", "--ref", "example_gate", "--merged",
+         "--notes", "IT-fh-06 fixture"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    record_id = ratchet.load_journal(cfg)[0]["record_id"]
+
+    validation_dir = cfg.journal.parent / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir = tmp_path / "fake_scripts"
+
+    def _write_fake_gate(version: str) -> None:
+        scripts_dir.mkdir(exist_ok=True)
+        (scripts_dir / "example_gate.py").write_text(
+            "import sys\n"
+            "if '--scanner-version' in sys.argv:\n"
+            f"    print({version!r})\n"
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+
+    _write_fake_gate("v1")
+    record = {
+        "gate": "example_gate",
+        "protocol_version": "1",
+        "scanner_version": "v1",
+        "telemetry_dependent": False,
+        "concurrency_applicable": False,
+        "concurrency_note": "static analysis has no concurrent dimension",
+        "authority_boundary": {"proves": "fixture", "artifact": "fixture", "assumptions": ["fixture"]},
+        "seeded_defect_trials": [
+            {"seed_id": "d1", "seed_class": "direct", "repo": "r", "expected": "fire",
+             "result": "fired", "passed": True},
+            {"seed_id": "o1", "seed_class": "evasion-omission", "repo": "r", "expected": "fire",
+             "result": "fired", "passed": True},
+            {"seed_id": "c1", "seed_class": "evasion-config-indirection", "repo": "r",
+             "expected": "fire", "result": "fired", "passed": True},
+            {"seed_id": "s1", "seed_class": "evasion-sampling-gap", "repo": "r",
+             "expected": "no-fire", "result": "not-fired", "passed": True},
+        ],
+        "clean_corpus_runs": [
+            {"repo": "r", "sha": "abc", "findings": 0, "coverage": {"n": 1}, "passed": True},
+        ],
+        "status": "passed",
+        "ratchet_record_id": record_id,
+    }
+    (validation_dir / "example_gate.json").write_text(json.dumps(record))
+
+    report, transition = gv.check_and_transition(
+        "example_gate", validation_dir, scripts_dir=scripts_dir, wire=True,
+    )
+    assert report.passing is True, (report.provenance_errors, report.schema_errors)
+    assert transition.new_state == "blocking"
+
+    _write_fake_gate("v2-after-scanner-edit")  # #184: a scanner edit bumps --scanner-version
+
+    report2, transition2 = gv.check_and_transition(
+        "example_gate", validation_dir, scripts_dir=scripts_dir,
+    )
+    assert report2.passing is False
+    assert transition2.previous_state == "blocking"
+    assert transition2.new_state == "demoted"
+    assert transition2.demotion_reason == "stale"
+    assert transition2.previous_authority == "blocking"
+
+
+# ---- gate-authority journal primitives: tamper-tolerance (chief-wiggum#198) ----
+
+
+def _chain(journal_path: Path, bodies: list[dict]) -> None:
+    """Write a hash-chained journal (same chaining as ratchet.append_authority_event)."""
+    from chief_wiggum.hashing import stable_hash  # noqa: PLC0415
+    prev = "genesis"
+    lines = []
+    for body in bodies:
+        body = {k: v for k, v in body.items() if k != "record_hash"}
+        body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+        prev = body["record_hash"]
+        lines.append(json.dumps(body, sort_keys=True))
+    journal_path.write_text("\n".join(lines) + "\n")
+
+
+def test_last_authority_action_ignores_bogus_details_after_wire(tmp_path):
+    """FINDING 1: a hash-VALID gate-authority event carrying a bogus `details`
+    (e.g. 'noop') after a real wire must NOT flip the gate to un-wired — only
+    'wire'/'unwire' are authority actions; anything else is ignored, so the
+    prior genuine wire still stands."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+        {"record_id": "rec-00002", "event": "gate-authority", "ref": "g", "details": "noop"},
+    ])
+    # The bogus 'noop' is ignored; the last GENUINE action is still 'wire'.
+    assert ratchet.last_authority_action(journal, "g") == "wire"
+
+
+def test_last_authority_action_respects_a_real_unwire(tmp_path):
+    """Control for finding 1: a genuine 'unwire' after a 'wire' DOES un-wire —
+    the filter ignores only non-action details, never a real unwire."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+        {"record_id": "rec-00002", "event": "gate-authority", "ref": "g", "details": "unwire"},
+    ])
+    assert ratchet.last_authority_action(journal, "g") == "unwire"
+
+
+def test_verified_prefix_stops_before_a_non_json_trailing_line(tmp_path):
+    """FINDING 2: malformed JSON in the journal tail after a valid wire must not
+    crash the read — verified_prefix parses line-by-line and stops before the
+    first unparseable line, so the wire is still read (and a stale record still
+    demotes)."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+    ])
+    # Corrupt the tail with a non-JSON garbage line.
+    with journal.open("a") as f:
+        f.write("this is not json at all\n")
+
+    prefix = ratchet.verified_prefix(journal)
+    assert len(prefix) == 1  # the wire survives; the garbage tail is dropped
+    assert ratchet.last_authority_action(journal, "g") == "wire"
+
+
+def test_append_authority_event_fails_closed_on_garbled_tail(tmp_path):
+    """A garbled tail is a broken chain: append_authority_event must raise
+    TamperError (never a JSONDecodeError crash) so callers can handle it."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "gate-authority", "ref": "g", "details": "wire"},
+    ])
+    with journal.open("a") as f:
+        f.write("garbage\n")
+    with pytest.raises(ratchet.TamperError):
+        ratchet.append_authority_event(journal, "g", "unwire")
+
+
+# ---- --scanner-version (#184) --------------------------------------------------
+
+
+def test_cli_scanner_version_prints_hex_digest_with_no_subcommand():
+    # ratchet's CLI is subcommand-based (dest="cmd", required=True); --scanner-version
+    # must still work standalone, with no subcommand and no side effects.
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "--scanner-version"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    assert ratchet._scanner_version() == ratchet._scanner_version()

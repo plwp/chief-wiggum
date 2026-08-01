@@ -1,0 +1,7 @@
+# Minimal marker so saas_gate.detect_stack() reports ["python"] for the fixture
+# "repo" the gate-validation trials pass as --repo. No real app code is needed:
+# run_gate's detect_stack is a cheap marker-file check, and every runtime finding
+# comes from the scripted HTTP fixture server, not this tree.
+[project]
+name = "saas-gate-validation-fixture"
+version = "0"

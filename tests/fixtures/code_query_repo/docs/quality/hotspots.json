@@ -1,0 +1,68 @@
+{
+  "schema": "hotspots/1",
+  "generated_at": "2026-07-18T00:00:00+00:00",
+  "git_sha": "fixture0000000000000000000000000000000000",
+  "dirty": false,
+  "window_days": 120,
+  "no_merges": true,
+  "normalization": "max",
+  "complexity_source": "lizard-1.23.0",
+  "authority": "ranks files by historical change-frequency x current complexity from git history at fixture0000000000000000000000000000000000; high rank is a risk prior, not a defect finding; absence of rank is not evidence of health (young files have no history).",
+  "method": "score = norm_churn x norm_complexity per file; churn = added+deleted lines over the window (scripts/quality/churn.py, no_merges=True); complexity = sum of per-function cyclomatic complexity via lizard (scripts/quality/complexity.py); each normalized 0..1 by the max across analyzed files; change-coupling from scripts/quality/process.py (co_changes>=min_co, confidence=co_changes/min(commits_a,commits_b)).",
+  "params": {
+    "coupling_min_co": 4,
+    "coupled_with_top_n": 5,
+    "top_n": 200,
+    "decile_count": 10,
+    "trend_threshold": 0.15
+  },
+  "inputs": {
+    "churn": "scripts/quality/churn.py",
+    "complexity": "scripts/quality/complexity.py",
+    "coupling": "scripts/quality/process.py"
+  },
+  "hotspots": [
+    {
+      "file": "src/order.py",
+      "score": 0.92,
+      "norm_churn": 0.95,
+      "norm_complexity": 0.97,
+      "churn": 340,
+      "commits": 22,
+      "complexity": 58,
+      "decile": 10,
+      "coupled_with": [
+        {
+          "file": "src/coupled_partner.py",
+          "confidence": 0.8,
+          "co_changes": 6
+        }
+      ],
+      "trend": "rising"
+    },
+    {
+      "file": "src/legacy_util.py",
+      "score": 0.87,
+      "norm_churn": 0.88,
+      "norm_complexity": 0.99,
+      "churn": 210,
+      "commits": 14,
+      "complexity": 61,
+      "decile": 10,
+      "coupled_with": [],
+      "trend": "stable"
+    },
+    {
+      "file": "src/admin.py",
+      "score": 0.11,
+      "norm_churn": 0.2,
+      "norm_complexity": 0.15,
+      "churn": 40,
+      "commits": 5,
+      "complexity": 9,
+      "decile": 3,
+      "coupled_with": [],
+      "trend": null
+    }
+  ]
+}

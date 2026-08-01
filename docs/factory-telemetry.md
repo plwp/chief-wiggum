@@ -25,26 +25,109 @@ One JSON object per line. Each call site fills what it **knows** and omits the r
 
 ```
 {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
- provider?, tokens_in?, tokens_out?, cost_usd?, details?}
+ provider?, adapter?, requested_model?, usage_status?, pricing_version?,
+ tokens_in?, tokens_out?, cost_usd?,
+ summary?, severity?, missed_by?, found_in?, invariant?, fixed?, details?}
 ```
 
 | event | who emits | key fields |
 |--|--|--|
 | `gate` | a gate script | `name`, `result` (pass/fail/error), `duration_ms`, `caught` |
-| `consult` | an AI consultation | `provider`, `tokens_in`, `tokens_out`, `cost_usd` |
+| `consult` | an AI consultation | `provider`, `adapter`, `name` (resolved billed model), `usage_status`, `tokens_in`, `tokens_out`, `cost_usd` |
 | `worker` | a sub-agent run | `name`/role, tokens/cost if the harness surfaces them |
 | `skill` | a workflow step | `name`, `result` |
+| `escape` | an agent that manually found a bug | `summary`, `severity`, `missed_by`, `found_in`, `ticket?`, `invariant?`, `fixed?`, `seed_class?` |
+| `demotion` | `factory_log.py bug --seed-class` | `name` (the demoted gate), `details` (`seed_class=...`) |
 
-Token counts come from the provider's own usage summary — every consult provider
-surfaces one (the CLIs via their `--output-format json` mode, the SDKs via the
-response `usage`), so a `consult` event should carry `tokens_in`/`tokens_out`.
+## Escapes — measuring gate RECALL, not just catches
+
+A `gate` event's `caught` count is only ever what that gate saw *at the time it
+ran* — it has no way to record what it missed. That leaves a blind spot: a gate
+can report a perfect catch rate on everything it inspected and still have poor
+**recall** if real bugs keep slipping past it and are only found later (an
+adversarial review in `/close-epic`, orchestrator verification in `/implement`,
+a `/saas-gate` run, a manual find, or a production incident).
+
+`escape` closes that gap. When a review or verification step finds a **real
+bug that an earlier gate/stage should have caught**, log it:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo acme/app \
+  --summary "reset endpoint leaks account existence via timing" \
+  --severity high --missed-by ticket-gate --found-in close-epic-review \
+  --ticket 42 --invariant INV-012 --fixed
+```
+
+- `--missed-by` names the gate/stage that **should** have caught it (free text —
+  common values: `ticket-gate`, `traceability`, `ratchet`, `close-epic-review`,
+  `saas-gate`).
+- `--found-in` is a closed set naming where it **actually** surfaced:
+  `implement-verify` | `close-epic-review` | `saas-gate` | `manual` | `prod`.
+- `--severity` is `low` | `medium` | `high` | `critical`.
+- `--ticket`, `--invariant`, and `--fixed` are optional context.
+
+`aggregate()` joins each `missed_by` gate's own `caught` count with its escaped
+count into **recall**: `caught / (caught + escaped)`. A gate with `caught: 10,
+escaped: 0` has 100% recall; one with `caught: 2, escaped: 2` only actually
+catches half of what it should — a signal `caught` alone can never show. See
+`aggregate()["escapes"]` / the "Escapes" section of `render_report`.
+
+### Demotion — an escape a seed class should have caught
+
+`docs/gate-validation.md` proves, per gate, which specific "seed classes" (defect
+shapes) it catches via seeded-defect trials. Pass `--seed-class` on `bug` when
+the escape resembles one of those classes:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" bug --repo acme/app \
+  --summary "..." --severity high --missed-by check_single_writer \
+  --seed-class evasion-omission --found-in close-epic-review
+```
+
+If `check_single_writer`'s validation record (`--validation-dir`, default:
+chief-wiggum's own `docs/quality/validation/`) certified that seed class as
+**caught** (a trial with `expected: "fire"`, `result: "fired"`, `passed:
+true`), `factory_log.py` prints a **DEMOTION** instruction, writes the
+`seed_class` into the escape event, and emits a `demotion` event: revert the
+gate to report-only and file a ticket to re-derive that seed class. The
+record's claim of catching that class was proven wrong by production, not
+just missed once. A passing `expected: "no-fire"` trial (a certified
+non-coverage boundary, e.g. `vendor/` exclusion) never grounds a demotion —
+see `factory_log.demotion_check` and `docs/gate-validation.md`.
+
+Token counts come from the provider's own usage summary, where one exists —
+`scripts/consult_ai.py` switches every CLI provider to its usage-bearing output
+mode (`codex exec --json`'s event stream, `gemini --output-format json`,
+`claude -p --output-format json`) and the Vertex SDK path reads
+`response.usage_metadata` directly. Each parser's shape was verified against a
+real captured sample, not guessed (chief-wiggum#134). `claude-interactive` has
+no usage-bearing transport at all — its RESULT file never carries token
+counts — so it is always `usage_status: 'unavailable'` by construction.
+
+Every `consult` record now carries `adapter` (which parser produced the usage:
+`codex-cli` | `gemini-cli` | `vertex-sdk` | `claude-cli` | `claude-interactive`)
+and `usage_status` (`provider-json` | `sdk-metadata` | `partial` | `unavailable`
+— never silent, INV-fh-011). **Both-tokens-or-null:** a provider that only
+surfaces one of the two counts records `tokens_in`/`tokens_out` as both `None`
+(usage_status downgrades to `partial`) rather than half-pricing the call.
+Pre-#134 records simply lack `adapter`/`usage_status` — tolerate their absence,
+don't assume a value.
+
 **Cost is computed, not logged raw:** `emit_consult(provider, model, tokens_in,
-tokens_out)` multiplies the tokens by the grounded per-model rate in
-[`config/model_pricing.json`](../config/model_pricing.json) (`factory_log.cost_for`).
-That table is fetched from each vendor's live pricing page and refreshed by
-`/update` — never keyed from memory. `cost_usd` is omitted (not `0`) when a model
-has no price in the table, so an un-priced call still records its tokens without a
-fabricated dollar figure.
+tokens_out, ...)` multiplies the tokens by the grounded per-model rate in
+[`config/model_pricing.json`](../config/model_pricing.json) (`factory_log.cost_for`)
+— this is the ONLY place a consult's `cost_usd` is derived (INV-fh-002); no
+consult path computes or stores a dollar figure itself. That table is fetched
+from each vendor's live pricing page and refreshed by `/update` — never keyed
+from memory. `cost_usd` is omitted (not `0`) when a model has no price in the
+table, so an un-priced call still records its tokens without a fabricated
+dollar figure. The resolved `name` is always the BILLED model id — never a
+bare CLI/tool alias (`'codex'`/`'gemini'`/`'claude'`/`'claude-interactive'`),
+which `emit_consult` rejects outright (a mis-resolved alias would otherwise be
+indistinguishable from a genuinely unpriced model). `codex exec` bills
+whichever real `gpt-*` model is locally configured — its adapter resolves that
+id from `$CODEX_HOME/config.toml` when `--model` wasn't passed, rather than a
+fixed alias row.
 
 ## Emitting
 
@@ -148,3 +231,8 @@ python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app   # per-gate
 caught), or `unproven` (too few runs to judge) — the input to the gate-rollout
 question in `docs/gate-rollout.md`: a gate that never catches anything on real code
 is a candidate to demote or delete before it trains operators to `--force` past it.
+
+It also reports `escapes` — per `missed_by` gate, `caught`/`escaped`/`fixed` counts
+and `recall` (`caught / (caught + escaped)`), plus `escapes_total`. A gate that
+looks `earning` on catches alone but has low recall is quietly letting real bugs
+through; that's the case `caught` by itself can't show.

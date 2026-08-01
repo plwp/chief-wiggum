@@ -11,6 +11,17 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "providers.json"
+DEFAULT_LENSES = Path(__file__).resolve().parents[1] / "config" / "lenses.json"
+
+# Default wall-clock budget (seconds) for the claude-interactive delegate when it is
+# running in an OPTIONAL role slot, used when the role doesn't set its own
+# ``optional_timeout_seconds`` (chief-wiggum#188). claude-interactive timed out at its
+# full 1800s budget on two consecutive large-prompt consults while contributing
+# nothing — since it is never a role's required voice, there is no reason a role's
+# wall-clock (required providers finish in 10-20 minutes) should be held hostage to a
+# voice that's allowed to fail. Deliberately shorter than every required consult
+# TOOL_TIMEOUTS entry: an optional provider should fail fast, not merely "less slow".
+DEFAULT_OPTIONAL_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -27,6 +38,17 @@ class Role:
     name: str
     required: tuple[str, ...]
     optional: tuple[str, ...]
+    # Optional provider -> lens name mapping (chief-wiggum#163). When a provider
+    # is mapped, its charter (from config/lenses.json) is appended to the shared
+    # prompt for that provider only — the shared prompt itself never changes.
+    lenses: dict[str, str] = field(default_factory=dict)
+    # Per-role override (seconds) for how long an OPTIONAL provider's delegate
+    # call may run before it's abandoned (chief-wiggum#188). An optional voice
+    # that hasn't answered by this deadline is failing softly by design — the
+    # role's required providers must not sit blocked on it for the delegate's
+    # full budget (1800s for claude-interactive). ``None`` falls back to
+    # ``consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS``.
+    optional_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +72,54 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     return json.loads(path.expanduser().read_text())
 
 
+def load_lenses(path: Path = DEFAULT_LENSES) -> dict[str, Any]:
+    """Load named review-lens charters from ``config/lenses.json``.
+
+    Returns an empty mapping if the file does not exist — lenses are an
+    opt-in review-quorum feature (chief-wiggum#163), not a hard dependency.
+    """
+    path = path.expanduser()
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text()).get("lenses", {})
+
+
+def render_charter(lens: dict[str, Any]) -> str:
+    """Render a lens as the markdown section appended to a provider's prompt."""
+    goal = str(lens.get("goal", "")).strip()
+    exclusions = lens.get("exclusions") or []
+    lines = ["## Your charter", "", goal]
+    if exclusions:
+        lines.append("")
+        lines.append("Do NOT evaluate:")
+        for item in exclusions:
+            lines.append(f"- {item}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def prompt_for_provider(
+    role: Role,
+    provider_name: str,
+    shared_prompt: str,
+    lenses: dict[str, Any] | None,
+) -> str:
+    """Return the prompt to send ``provider_name`` for ``role``.
+
+    Every provider in a role quorum gets identical context — the value is in
+    natural divergence, not roleplay. When ``role`` maps ``provider_name`` to a
+    lens, that lens's charter is appended after a clearly delimited section so
+    the shared body stays byte-identical across every provider in the role;
+    an unmapped provider's prompt is returned completely unchanged.
+    """
+    lens_name = role.lenses.get(provider_name)
+    if not lens_name:
+        return shared_prompt
+    lenses = lenses or {}
+    if lens_name not in lenses:
+        raise KeyError(f"role {role.name!r} references unknown lens {lens_name!r}")
+    return f"{shared_prompt}\n\n---\n\n{render_charter(lenses[lens_name])}"
+
+
 def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
     providers: dict[str, Provider] = {}
     for name, raw in config.get("providers", {}).items():
@@ -70,6 +140,8 @@ def roles_from_config(config: dict[str, Any]) -> dict[str, Role]:
             name=name,
             required=tuple(raw.get("required", [])),
             optional=tuple(raw.get("optional", [])),
+            lenses=dict(raw.get("lenses", {})),
+            optional_timeout_seconds=raw.get("optional_timeout_seconds"),
         )
     return roles
 
@@ -127,6 +199,27 @@ def plan_role(
     )
 
 
+def optional_provider_timeout(
+    role: Role,
+    provider_name: str,
+    default: int = DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
+) -> int | None:
+    """Return the wall-clock cap (seconds) for ``provider_name``'s delegate call
+    when it runs in ``role``'s OPTIONAL slot, else ``None`` (chief-wiggum#188).
+
+    A required provider gets its full budget (``None`` = no override). An
+    optional provider is capped to the role's ``optional_timeout_seconds`` when
+    set, otherwise ``default``. This is the SINGLE source of the required/optional
+    timeout decision — both ``consult_ai.py``'s own ``--role`` quorum and the
+    ``/implement`` review pipeline (``chief_wiggum/review.run_review``) call it,
+    so an optional ``claude-interactive`` fails fast on BOTH paths instead of
+    holding a role's wall-clock to the delegate's 1800s budget.
+    """
+    if provider_name in role.required:
+        return None
+    return role.optional_timeout_seconds if role.optional_timeout_seconds is not None else default
+
+
 def validate_config(
     config: dict[str, Any],
     *,
@@ -147,6 +240,16 @@ def validate_config(
             if name in seen:
                 errors.append(f"role {role_name} references provider {name} more than once")
             seen.add(name)
+        # optional_timeout_seconds (chief-wiggum#188) only means anything for a
+        # role with at least one optional provider — silently ignoring a typo
+        # (a string, a negative number) would let a misconfigured role keep
+        # blocking on the full delegate budget with no visible signal.
+        ots = role.optional_timeout_seconds
+        if ots is not None and (isinstance(ots, bool) or not isinstance(ots, int) or ots <= 0):
+            errors.append(
+                f"role {role_name} has invalid optional_timeout_seconds {ots!r} "
+                "(must be a positive integer)"
+            )
     for provider in providers.values():
         if provider.type == "tool" and not provider.tool:
             errors.append(f"provider {provider.name} has type=tool but no tool")
@@ -164,6 +267,36 @@ def validate_config(
             )
         if provider.type not in {"tool", "delegate"}:
             errors.append(f"provider {provider.name} has unsupported type {provider.type}")
+    return errors
+
+
+def validate_role_lenses(role: Role, lenses: dict[str, Any]) -> list[str]:
+    """Validate one role's lens assignments before any provider is called.
+
+    Catches two mistakes that would otherwise surface mid-quorum (or worse,
+    silently no-op): a lens assigned to a provider that isn't actually in the
+    role, and a lens name with no matching charter in ``config/lenses.json``.
+    """
+    errors: list[str] = []
+    members = set(role.required) | set(role.optional)
+    for provider_name, lens_name in role.lenses.items():
+        if provider_name not in members:
+            errors.append(
+                f"role {role.name} assigns a lens to {provider_name!r}, "
+                "which is not a required or optional provider of that role"
+            )
+        if lens_name not in lenses:
+            errors.append(
+                f"role {role.name} references unknown lens {lens_name!r}"
+            )
+    return errors
+
+
+def validate_lenses(config: dict[str, Any], lenses: dict[str, Any]) -> list[str]:
+    """Validate every role's lens assignments in ``config``."""
+    errors: list[str] = []
+    for role in roles_from_config(config).values():
+        errors.extend(validate_role_lenses(role, lenses))
     return errors
 
 

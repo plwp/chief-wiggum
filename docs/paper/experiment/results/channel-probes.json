@@ -1,0 +1,146 @@
+[
+  {
+    "probe": "CTRL-1",
+    "channel": "-",
+    "tamper": "none (honest baseline)",
+    "expected": "score+check exit 0",
+    "observed": "score=0 check=0 violations={}",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "CTRL-2",
+    "channel": "-",
+    "tamper": "honest feature branch (new code + new test)",
+    "expected": "protected 0, check 0",
+    "observed": "protected=0 score=0 check=0",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "CTRL-3",
+    "channel": "-",
+    "tamper": "untouched validation workspace",
+    "expected": "passing: true",
+    "observed": "passing=True errors=[]",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C1a",
+    "channel": "C1 test regression",
+    "tamper": "impl edited so bound check never fires",
+    "expected": "check exit 1, missing_tests",
+    "observed": "exit=1 missing=['pytest::tests.test_widget::test_name_rejected_over_64']",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C1b",
+    "channel": "C1 test deletion",
+    "tamper": "high-water test function deleted",
+    "expected": "check exit 1, missing_tests",
+    "observed": "exit=1 missing=['pytest::tests.test_widget::test_name_rejected_over_64']",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C1c",
+    "channel": "C1c test-body rewrite (boundary probe)",
+    "tamper": "high-water test rewritten to bless new behavior, same test ID",
+    "expected": "UNDETECTED (documents the ID-keyed pass-set boundary)",
+    "observed": "exit=0 \u2014 tamper slipped through as predicted",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C2",
+    "channel": "C2 spec weakening",
+    "tamper": "CTR-exp-001 REQUIRES bound edited away",
+    "expected": "check exit 1, weakened_contracts",
+    "observed": "exit=1 weakened=['CTR-exp-001']",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C2-amend",
+    "channel": "C2 human revision path",
+    "tamper": "same edit + journaled --amend record",
+    "expected": "check exit 0 after amend",
+    "observed": "amend=0 check=0",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C3",
+    "channel": "C3 spec removal",
+    "tamper": "CTR-exp-002 block deleted",
+    "expected": "check exit 1, removed_contracts",
+    "observed": "exit=1 removed=['CTR-exp-002']",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C4a",
+    "channel": "C4 goalpost edit on worker branch",
+    "tamper": "worker branch edits contracts.md",
+    "expected": "protected exit 1 (parked)",
+    "observed": "exit=1",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C4b",
+    "channel": "C4 control",
+    "tamper": "worker branch touches only src/",
+    "expected": "protected exit 0",
+    "observed": "exit=0",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C5a",
+    "channel": "C5 history rewrite",
+    "tamper": "journal pass_set shrunk, hash left stale",
+    "expected": "check exit 4 (tamper)",
+    "observed": "exit=4 stderr=ratchet: journal tamper detected at record 0 (rec-00001): chain broken \u2014 fail closed",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C5b",
+    "channel": "C5 rewrite + local re-hash",
+    "tamper": "record 1 tampered AND re-hashed (2-record chain)",
+    "expected": "check exit 4 \u2014 next link breaks",
+    "observed": "exit=4",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C5c",
+    "channel": "C5 full-chain forgery via branch",
+    "tamper": "whole journal rewritten on worker branch",
+    "expected": "protected exit 1 \u2014 docs/quality/** is protected",
+    "observed": "exit=1",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C6",
+    "channel": "C6 gate rot (stale while blocking)",
+    "tamper": "gate wired, then record's scanner_version drifted",
+    "expected": "passing false + demotion reason=stale",
+    "observed": "passing=False authority={'previous_state': 'blocking', 'new_state': 'demoted', 'demotion_reason': 'stale'}",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C7",
+    "channel": "C7 forged trial",
+    "tamper": "trial result flipped to not-fired, passed left true",
+    "expected": "passing false (derived-pass check)",
+    "observed": "passing=False failed_trials=['sw-direct-01'] missing_seed_classes=['direct']",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C8",
+    "channel": "C8 silent no-op gate",
+    "tamper": "clean-corpus coverage blanked to {}",
+    "expected": "passing false (silence is not evidence)",
+    "observed": "passing=False failed_clean_runs=1",
+    "verdict": "PASS"
+  },
+  {
+    "probe": "C9",
+    "channel": "C9 forged authority",
+    "tamper": "hand-written gate-authority wire, bogus hash",
+    "expected": "wire confers nothing (outside verified prefix)",
+    "observed": "passing=False authority_state=report_only",
+    "verdict": "PASS"
+  }
+]

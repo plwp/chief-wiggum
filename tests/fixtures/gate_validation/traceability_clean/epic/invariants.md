@@ -1,0 +1,2 @@
+- **BR-order-001**: orders must have a positive total
+- **INV-order-003**: order status never regresses

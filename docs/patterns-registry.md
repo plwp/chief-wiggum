@@ -56,7 +56,7 @@ patterns/
 ├── improvement-loop/             # specified pattern
 │   ├── pattern.md                # the spec: what / when-to-apply / mechanism / parameters
 │   ├── manifest.json             # machine-readable: params, installs[], protected_paths, trust
-│   └── scaffold/                 # (future) the templated files stamped into the target app
+│   └── scaffold/                 # the templated code seams stamped into the target app (see #scaffold-layout)
 ├── engagement-instrumentation/   # specified pattern — the signal tier that feeds the loop
 │   ├── pattern.md
 │   └── manifest.json
@@ -69,6 +69,25 @@ patterns/
         ├── bindings/             # pattern × this-stack → concrete recipe (one .md per bound pattern)
         └── skills/               # runnable stand-up playbooks ("the skills to use them")
 ```
+
+<a id="scaffold-layout"></a>
+A pattern MAY also ship a **`scaffold/`** — the code half. Where the contract pack
+(`manifest.json`'s invariant cluster) declares *what must hold*, the scaffold is
+the *starting code that holds it*: the seams and guards realizing the cluster,
+stamped into the target repo by `apply_pattern.py`. Layout:
+
+- **`scaffold/scaffold.json`** — the scaffold manifest: `files[]`, each mapping a
+  `template` (a file under `scaffold/`) to a `target` (a repo-relative path in the
+  stamped app), with `realizes` (the `INV-*` ids it satisfies) and a `desc`.
+- **`scaffold/<name>.tmpl`** — a template file. Every `{{param}}` in both the
+  `target` path and the file body is replaced with the bound parameter value.
+
+Stamping rules (mechanically enforced by `apply_pattern.py`): a target that
+already exists is **skipped, never clobbered**, unless `--force` is passed (so
+hand-edits to a stamped seam survive re-application); stamping needs every
+**required** param bound, else the contract pack still installs and the scaffold
+is skipped with a note. `multi-tenant-isolation` is the first pattern to ship a
+scaffold (`internal/tenant/{resolver,scoped_repo}.go`, realizing INV-MTI-001/002).
 
 Each specified pattern is a directory. Two files are the contract:
 
@@ -97,8 +116,9 @@ A pattern is installed into a target repo by a thin workflow
 /apply-pattern owner/repo --pattern fetch-on-webhook-reconcile --param resource=subscription
 ```
 
-Mechanically — the **contract-pack** steps (1, 2, 4, 5) are **built**; scaffold
-stamping (3) is deferred until patterns ship a `scaffold/`:
+Mechanically — the **contract-pack** steps (1, 2, 4, 5) and scaffold stamping (3)
+are all **built** (`multi-tenant-isolation` is the first pattern to ship a
+`scaffold/`; see [Scaffold layout](#scaffold-layout)):
 
 1. **Resolve** the target repo (`scripts/repo.py`, as every workflow does). ✅
 2. **Bind parameters** — read `manifest.json`'s parameter schema and resolve each
@@ -106,8 +126,10 @@ stamping (3) is deferred until patterns ship a `scaffold/`:
    its model family, its protected paths). Unresolved **required** params become
    `TBD:` markers in the installed contract pack, gated exactly like every other
    CW artifact (`scripts/check_unresolved.py`). ✅
-3. **Stamp** the scaffold into the target repo with parameters bound. ⏳ *(deferred
-   — no pattern ships a `scaffold/` yet.)*
+3. **Stamp** the scaffold into the target repo with parameters bound. ✅ *(when the
+   pattern ships a `scaffold/`; idempotent — an existing target file is skipped,
+   never clobbered, unless `--force`. Needs every required param bound, else the
+   contract pack still installs and the scaffold is skipped with a note.)*
 4. **Register protected paths** — add `docs/patterns/**` (the installed contract
    pack) to the product's `docs/quality/ratchet.json`, so the adopted cluster
    becomes a goalpost the app's autonomous machinery cannot move (reuses the
@@ -394,7 +416,7 @@ surfaced a coherent set of reusable shapes. Two observations shaped how they lan
   behavioral data safe — the loop can read across tenants for analysis without
   leaking between them only atop a fail-closed, server-derived scoping layer.
 
-| Candidate | Category | One-liner |
+| Pattern (all now specified) | Category | One-liner |
 |--|--|--|
 | **multi-tenant-isolation** | saas-infra | Server-only tenant resolution → fail-closed tenant-scoped repository → standing cross-tenant isolation proof gate → quarantined cascade erasure. One multi-tenancy blueprint |
 | **provider-neutral-adapter** | multi-provider | Vendor-agnostic seam (neutral DTOs, unexported concrete types = compile-time swappability); behind it: signed-webhook-as-source-of-truth, sign-per-request access tokens, direct browser→CDN upload |
@@ -431,17 +453,18 @@ is **admin-gated**, because it's driven by end-user behavior (an injection surfa
 and touches pricing/paywall (a goalpost). Continuously improved, human always signs
 off on the ask for money.
 
-Supporting monetization candidates in `registry.json`:
+Supporting monetization/growth patterns, all now fully specified (chief-wiggum#139):
 
-| Candidate | Category | One-liner |
+| Pattern | Category | One-liner |
 |--|--|--|
-| **transactional-email-and-dunning** | process-loop | Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge, re-engagement, failed-payment dunning with bounded retries + send-once keys. Recovery outcomes are retention signal |
+| **transactional-email-and-dunning** | process-loop | Idempotent, provider-neutral lifecycle messaging: transport-shaped send seam, atomic send-once keys, outbox, declared criticality. Dunning half flagged aspirational until a product builds it. Recovery outcomes are retention signal |
 | **referral-invite-loop** | process-loop | Invite → signed single-use expiring token → attribution → two-sided reward. Reuses the signed-token discipline; a self-serve growth loop |
-| **feature-entitlements** | saas-infra | One resolver: capability flags from tier + per-account overrides + grandfathering, queried identically by backend gates and frontend UI |
-| **self-serve-billing-portal** | saas-infra | User-managed plan / payment / seats; provider-hosted portal session + a webhook-authoritative local mirror. Kills the #1 support-ticket class |
+| **feature-entitlements** | saas-infra | One resolver: capability flags from tier + per-account overrides + explicit grandfathering, queried identically by backend gates and frontend UI; reuses entitlement-overlay's mined layering |
+| **self-serve-billing-portal** | saas-infra | User-managed plan / payment / seats; caller-scoped server-minted portal session + a webhook-authoritative single-writer local mirror. Kills the #1 support-ticket class |
 
-Fully specifying the remaining candidates (a `pattern.md` + `manifest.json` each)
-is future work; the registry structure is built to hold them.
+Every candidate in `registry.json` is now promoted — the `candidates` list is
+empty, and `check_patterns.py` will flag any new candidate that lingers
+unspecified as a dangling reference the moment a specified pattern depends on it.
 
 ## Stack profiles — the concrete layer (the factory)
 
@@ -484,6 +507,16 @@ vendor), and each higher tier adds one seam with its cost and a **graduation
 trigger** (the concrete signal that says "now add this"). The single most important
 number a profile surfaces is the **first real fixed-cost jump** and the **only
 uncapped variable cost** — so a builder knows exactly what they're signing up for.
+
+The `cost_tiers`/`graduation_triggers` prose above is deliberately illustrative,
+not a set of structured per-unit rates (real rates are region/billing-mode
+dependent). `/business-consultant` (chief-wiggum#122) is the advisory layer that
+turns them into a decision: it derives unit economics + a pricing-model-family
+recommendation from a product's adopted `tiered-subscription` matrix plus a
+structured `cost-inputs.json` (`templates/cost-inputs-schema.json`) — either
+operator-authoritative, or a stack's own loudly-caveated illustrative seed
+(`patterns/stacks/<id>/cost-inputs.illustrative.json`) as a documented fallback,
+never presented as a quote. See `.claude/commands/business-consultant.md`.
 
 ### First profile: `gcp-serverless-saas`
 

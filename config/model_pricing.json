@@ -39,8 +39,7 @@
     "glm-4.6":       {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
     "glm-4.5":       {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
     "glm-4.7-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
-    "glm-4.5-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
-
-    "codex": {"input_per_mtok": null, "output_per_mtok": null, "provider": "openai", "verified": false, "note": "TBD (chief-wiggum#134): identify the exact GPT model `codex exec` bills as, then map to its gpt-* row"}
-  }
+    "glm-4.5-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"}
+  },
+  "_codex_note": "chief-wiggum#134 investigated the codex->billed-model mapping: there is no fixed 'codex' alias row to price, because `codex exec` bills whichever real gpt-* model is configured (verified live: codex-cli 0.142.5's `--json` event stream carries no model field at all; only the plain-text banner prints `model: <id>`, and $CODEX_HOME/config.toml's top-level `model` key is the CLI's own source of truth for its default, e.g. 'gpt-5.5' on this install -- already a priced row above). scripts/consult_ai.py's codex adapter resolves the real id at call time (--model override, else config.toml) and records THAT as the billed model; a resolved-but-unlisted id still records tokens with cost_usd null (the honest degradation, ADR-fh-05) rather than reviving a bare 'codex' placeholder row, which the ConsultUsageRecord contract now forbids as a resolved model id (CTR-fh-013)."
 }

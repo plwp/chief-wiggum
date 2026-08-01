@@ -1,0 +1,10 @@
+{
+  "invariants": [
+    {
+      "id": "INV-seat-003",
+      "description": "single write path for the owner counter",
+      "controls_field": ["provider.active_owner_count"],
+      "sanctioned_writers": ["RemoveStaff", "internal/db/owner_count.go"]
+    }
+  ]
+}

@@ -249,3 +249,19 @@ def test_cli_json_report(tmp_path):
     data = json.loads(result.stdout)
     assert data["ci_present"] is False
     assert data["stack"] == ["node"]
+
+
+# ---- --scanner-version (#184) ----------------------------------------------
+
+
+def test_scanner_version_is_deterministic_and_stable_across_calls():
+    rc1 = ci_scaffold.main(["--scanner-version"])
+    assert rc1 == 0
+
+
+def test_cli_scanner_version_prints_hex_digest(capsys):
+    rc = ci_scaffold.main(["--scanner-version"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert len(out) == 64  # sha256 hex digest
+    int(out, 16)  # valid hex

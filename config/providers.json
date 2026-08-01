@@ -9,12 +9,12 @@
     "gemini": {
       "type": "tool",
       "tool": "gemini",
-      "enabled": true
+      "enabled": false
     },
     "gemini-vertex": {
       "type": "tool",
       "tool": "gemini-vertex",
-      "enabled": false
+      "enabled": true
     },
     "claude": {
       "type": "tool",
@@ -29,28 +29,73 @@
   },
   "roles": {
     "explorer": {
-      "required": ["codex"],
-      "optional": ["gemini", "claude-interactive"]
+      "required": [
+        "codex"
+      ],
+      "optional": [
+        "gemini-vertex",
+        "claude-interactive"
+      ],
+      "optional_timeout_seconds": 300
     },
     "implementer": {
-      "required": ["codex"],
-      "optional": ["claude-interactive"]
+      "required": [
+        "codex"
+      ],
+      "optional": [
+        "claude-interactive"
+      ],
+      "optional_timeout_seconds": 300
     },
     "reviewer": {
-      "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"]
+      "required": [
+        "codex",
+        "gemini-vertex"
+      ],
+      "optional": [
+        "claude-interactive"
+      ],
+      "lenses": {
+        "codex": "refute-soundness",
+        "claude-interactive": "adoption-cost",
+        "gemini-vertex": "completeness"
+      },
+      "optional_timeout_seconds": 300
     },
     "architecture_critic": {
-      "required": ["codex"],
-      "optional": ["gemini", "claude-interactive"]
+      "required": [
+        "codex"
+      ],
+      "optional": [
+        "gemini-vertex",
+        "claude-interactive"
+      ],
+      "lenses": {
+        "codex": "refute-soundness",
+        "claude-interactive": "adoption-cost",
+        "gemini-vertex": "completeness"
+      },
+      "optional_timeout_seconds": 300
     },
     "design_critic": {
-      "required": ["gemini"],
-      "optional": ["codex", "claude-interactive"]
+      "required": [
+        "gemini-vertex"
+      ],
+      "optional": [
+        "codex",
+        "claude-interactive"
+      ],
+      "optional_timeout_seconds": 300
     },
     "risky_diff_review": {
-      "required": ["codex", "gemini"],
-      "optional": ["claude-interactive"]
+      "required": [
+        "codex",
+        "gemini-vertex"
+      ],
+      "optional": [
+        "claude-interactive"
+      ],
+      "optional_timeout_seconds": 300
     }
   }
 }

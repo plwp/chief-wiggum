@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"PONG","session_id":"test-stderr-only","usage":{"input_tokens":2,"output_tokens":14},"modelUsage":{"claude-fable-5":{"inputTokens":2,"outputTokens":14}}}

@@ -1,0 +1,12 @@
+{
+  "session_id": "test-session",
+  "response": "PONG",
+  "stats": {
+    "models": {
+      "gemini-3.1-pro-preview": {
+        "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 900},
+        "tokens": {"input": 400, "prompt": 450, "candidates": 12, "total": 462, "cached": 50, "thoughts": 0, "tool": 0}
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "title": "A ticket with no comments yet",
+  "body": "Body text.",
+  "author": {
+    "login": "reporter2"
+  },
+  "comments": []
+}

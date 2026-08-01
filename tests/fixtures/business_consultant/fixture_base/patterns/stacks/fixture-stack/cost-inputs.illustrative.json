@@ -1,0 +1,18 @@
+{
+  "$comment": "Synthetic illustrative-seed fixture for tests/test_business_consultant.py.",
+  "$caveat": "FIXTURE ILLUSTRATIVE -- placeholder numbers for test assertions only, not a real vendor price.",
+  "as_of": "2026-06-01",
+  "flat_monthly": 2.0,
+  "tier_fixed": {"T2": 10.0},
+  "meters": [
+    {
+      "id": "fixture_meter",
+      "unit": "unit",
+      "rate": 0.01,
+      "unit_desc": "fixture uncapped meter",
+      "capped_by": null,
+      "provenance": "illustrative",
+      "verified_date": "2026-06-01"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "trees": [
+    {
+      "root": {
+        "id": "BUD-voice-agent-001",
+        "kind": "latency",
+        "unit": "ms",
+        "bound": 800,
+        "alpha": 0.05,
+        "children": [
+          { "id": "BUD-voice-agent-002", "kind": "latency", "unit": "ms", "bound": 300, "alpha": 0.02, "telemetry_ref": "asr_latency_ms" },
+          { "id": "BUD-voice-agent-003", "kind": "latency", "unit": "ms", "bound": 300, "alpha": 0.02, "telemetry_ref": "llm_ttft_ms" }
+        ],
+        "residual": { "id": "BUD-voice-agent-004", "kind": "latency", "unit": "ms", "bound": 150, "alpha": 0.01, "telemetry_ref": "tts_ttfb_ms" }
+      }
+    }
+  ],
+  "chains": [
+    {
+      "id": "voice-chain-001",
+      "hops": [
+        { "caller": "ARC-client-001", "callee": "ARC-gateway-001", "timeout_ms": 5000 },
+        { "caller": "ARC-gateway-001", "callee": "ARC-stt-001", "timeout_ms": 800 }
+      ]
+    }
+  ]
+}

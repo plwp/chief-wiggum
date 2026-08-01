@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "description": "Declared per-language support matrix (#162): which capabilities exist for a language and their maturity tier. Consumed by scripts/chief_wiggum/languages.py, which check_deps.py (dependency profiles) and scripts/emitters/ (the emitter fallback chain) both read. Rendered by scripts/render_languages_doc.py into docs/languages.md.",
+  "languages": {
+    "go": {
+      "tier": 1,
+      "status": "supported",
+      "extensions": [".go"],
+      "lsp": "gopls",
+      "emitters": ["writer", "trace"],
+      "test_parser": "go test -json / gotestsum JUnit XML (scripts/ratchet.py)",
+      "extractor": "go_mongo (scripts/extractors/go_mongo.py, stitch-audit)",
+      "func_regex": true,
+      "dep_profile": "go-lsp"
+    },
+    "python": {
+      "tier": 1,
+      "status": "supported",
+      "extensions": [".py"],
+      "lsp": "pyright",
+      "emitters": ["writer", "trace"],
+      "test_parser": "pytest --junitxml (JUnit XML, scripts/ratchet.py)",
+      "extractor": null,
+      "func_regex": true,
+      "dep_profile": "python-lsp"
+    },
+    "typescript": {
+      "tier": 1,
+      "status": "supported",
+      "extensions": [".ts", ".tsx", ".js", ".jsx"],
+      "lsp": null,
+      "emitters": ["writer", "trace"],
+      "test_parser": "jest/vitest JUnit reporter",
+      "extractor": "typescript (scripts/extractors/typescript.py, stitch-audit)",
+      "func_regex": true,
+      "dep_profile": null
+    },
+    "rust": {
+      "tier": "designed",
+      "status": "designed, unbuilt",
+      "extensions": [".rs"],
+      "lsp": "rust-analyzer",
+      "emitters": [],
+      "test_parser": "cargo nextest (JUnit XML) + Cargo.toml autodetect",
+      "extractor": null,
+      "func_regex": false,
+      "dep_profile": null,
+      "trigger": "first real Rust target repo",
+      "requires": [
+        "rust-analyzer entry in scripts/chief_wiggum/lsp.py SERVERS",
+        "cargo nextest JUnit XML output + Cargo.toml autodetect wired into scripts/ratchet.py's test-result parser",
+        "fn regex for enclosing-symbol resolution (scripts/chief_wiggum/write_emission.py _enclosing_symbol)",
+        "writer patterns for struct literals + sqlx macros (a Rust-specific write-site emitter under scripts/emitters/)"
+      ],
+      "note": "The .rs extension is already scanned today by the generic regex tier (see generic_tier below) — write-site/trace-annotation facts ARE emitted for Rust files, just without a dedicated func_regex for enclosing-symbol resolution. 'designed, unbuilt' means the TIER-1 emitter (rust-analyzer + cargo nextest + fn regex + sqlx-aware writer patterns) is not built, not that Rust is unscanned."
+    }
+  },
+  "generic_tier": {
+    "description": "Extensions with NO dedicated per-language emitter module, scanned by the generic (language-agnostic) regex tier — scripts/emitters/generic.py — which is exactly the pre-#162 SOURCE_EXTS behavior of check_single_writer.py / check_traceability.py.",
+    "extensions": [".java", ".rb", ".rs"]
+  },
+  "unsupported_extensions": {
+    "description": "Recognized programming-language extensions with NO emitter coverage at all (neither a tier-1 module nor the generic tier). A file with one of these extensions is NEVER silently skipped: check_single_writer.py / check_traceability.py surface an explicit coverage warning in both --gate and plain (query) output instead. This list is curated, not exhaustive — extend it as new unsupported languages show up in a target repo.",
+    "extensions": [
+      ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".php", ".kt", ".kts",
+      ".swift", ".scala", ".m", ".mm", ".clj", ".cljs", ".ex", ".exs",
+      ".erl", ".hs", ".lua", ".dart", ".groovy", ".jl", ".pl", ".r"
+    ]
+  }
+}

@@ -48,6 +48,14 @@ cat "$TARGET_REPO/docs/domain-context.md" 2>/dev/null
 ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 ```
 
+**New-product check.** DST (deterministic-simulation testing, FoundationDB/TigerBeetle/Antithesis-style) is only cheap if determinism is designed in from day one — retrofitting it into a codebase with wall-clock reads and unseeded randomness scattered through business logic is brutal. This is the one window where it's free, so detect whether this is the epic that first architects the product. The default heuristic: no prior CW epic artifacts AND no existing CW quality state:
+
+```bash
+IS_NEW_PRODUCT=$([ ! -d "$TARGET_REPO/docs/epics" ] && [ ! -f "$TARGET_REPO/docs/quality/ratchet.json" ] && echo true || echo false)
+```
+
+This is a **default the operator can override**, not a proof — a repo can have real history without either marker (e.g. imported code CW never touched), or be effectively greenfield despite a stray artifact. If the signal looks wrong for this repo, say so at the Step 6 checkpoint and let the user decide. If `IS_NEW_PRODUCT` is `true`, Step 4b's structured model gains DST-readiness invariants (rendered into `invariants.md` via Step 4e) and Step 4f's ADR notes the clock/random/IO seam scaffolding (see below). Skip both for an established repo — retrofitting the invariants onto existing code is a separate, deliberate decision, not something to silently stamp in.
+
 `docs/domain-context.md` (written by `/seed` Step 2.5) is the **ground truth for data contracts**: canonical metric definitions, real schema names, source caveats, and mined use cases — each with citations. If the epic touches an existing data source and this file doesn't exist, run the `/seed` Step 2.5 ingestion now (semantic layer, schema introspection, transformation-repo history) before writing any data contract. Contracts authored from guessed table/column names are how query layers get built against names that don't exist.
 
 **Adopted patterns.** If the product has adopted registry patterns (via `/apply-pattern`), load their invariant clusters now — they are **pre-derived contracts** this epic must not re-invent:
@@ -70,21 +78,31 @@ Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-exp
 
 Write findings to `$CW_TMP/codebase-context.md`.
 
+**Hotspot + coupling context (measured, not declared — #187).** Refresh `docs/quality/hotspots.json` so architectural scrutiny concentrates where change-risk is *measured* from git history, not guessed:
+
+```bash
+python3 "$CW_HOME/scripts/hotspot_discovery.py" --repo "$TARGET_REPO" \
+  --out "$TARGET_REPO/docs/quality/hotspots.json" --format text
+```
+
+This is a report-only composer — it degrades gracefully (no lizard, no history, empty repo all produce a well-formed but empty/noted record) and **never gates `/architect`**. Note the top-decile files and their `coupled_with` partners that overlap the epic's touched areas; fold that list into the Step 3 consultation prompt below. `docs/quality/hotspots.json` itself carries no stable IDs and is never referenced by `@cw-trace` — it's a measured, rebuildable artifact, not a contract (INV-fh-007).
+
 ### Step 3: Multi-AI architectural consultation
 
 Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
 - Epic goal and ticket list with acceptance criteria
 - Codebase context from Step 2
+- Hotspot + change-coupling context (`docs/quality/hotspots.json`, if present): the top-decile files this epic touches, their churn/complexity scores, and their coupled partners — a measured risk *prior*, not a defect finding, and absence of rank is not evidence of health
 - Cross-cutting concerns identified by `/plan-epic`
 - Specific questions:
   1. What is the canonical data model for the entities this epic touches? Define the single source of truth.
   2. What state machines exist? Define all valid states and transitions.
   3. What invariants must hold across the full epic? (e.g., "an order always has a customer_id after confirmation")
   4. What are the API contracts — preconditions, postconditions, error cases?
-  5. Where are the integration risks and how should we test them?
+  5. Where are the integration risks and how should we test them? Cross-reference the hotspot/coupling context above — a file this epic touches that's ALSO a measured top-decile hotspot (or tightly coupled to one) deserves deeper contract scrutiny than the hotspot report alone would suggest; the absence of a hotspot entry is not a reason to skip scrutiny elsewhere.
   6. What could go wrong between tickets? (dual sources of truth, race conditions, inconsistent reads)
 
-Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation):
+Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation). Every provider gets the **identical** prompt above — the value is in natural divergence, not roleplay — but `config/providers.json` may additionally assign each provider a bounded **review lens** (`role.lenses`, e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters live in `config/lenses.json`). When a lens is assigned, `consult_ai.py` appends that provider's charter as a clearly-delimited `## Your charter` section — the shared prompt itself never changes. This decorrelates the reviewers on purpose: a soundness-refuter and a completeness-checker reading the *same* context reliably surface disjoint findings instead of converging on the same top issue three times:
 
 ```bash
 python3 "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/architect-prompt.md \
@@ -98,6 +116,8 @@ Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` 
 ### Step 4: Synthesise into architectural artifacts
 
 Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile all three consultations into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
+
+**Reconciliation expects disjoint findings, not convergence.** When the quorum is lensed (Step 3), agreement across providers is the exception, not the confirmation signal — each reviewer was scoped to look for something different. Reconcile by **union, then cross-verify contested items**: fold in every finding from every provider (a soundness issue the refuter caught is not weaker for being unique to it), and only for items where providers actively *disagree* on a fact (not merely "only one mentioned it") should the synthesis worker re-check against the codebase before deciding which side is right. Do not discard a lensed provider's finding for lacking a second vote — that would defeat the reason lenses were assigned.
 
 **The worker MUST produce structured JSON models first.** The prose markdown is then generated mechanically from the JSON — never the other way around. This ensures the machine-readable and human-readable artifacts stay in sync.
 
@@ -234,6 +254,34 @@ Each invariant MUST have a unique ID (e.g., INV-001) that matches its ID in the 
 
 The connected requirements arrive as a set — adopt the **whole** cluster for a realized pattern, not a subset. Any `unresolved` parameter reported for that pattern must be resolved (or explicitly re-marked `TBD:`) before an invariant depends on it.
 
+**DST-readiness invariants (new products only — `IS_NEW_PRODUCT=true` from Step 1).** Stamp a small, fixed cluster of determinism-readiness invariants so the seams exist from ticket one instead of getting retrofitted later. **Structured model first**: these go into `state-machines.json`'s top-level `invariants` array as schema-valid invariant objects (Step 4b), and the prose in `invariants.md` is then consolidated from the models like every other invariant — never authored verbatim into the prose alone (JSON is the source of truth; prose is derived):
+
+```json
+{
+  "id": "INV-dst-001",
+  "description": "No wall-clock reads outside the clock seam: production code reads the current time only through the designated clock module (e.g. internal/clock), never time.Now() / datetime.now() / Date.now() directly.",
+  "expression": "forall call in production_code: is_wall_clock_read(call) => module(call) == clock_seam",
+  "scope": "global",
+  "category": "operational_safety"
+},
+{
+  "id": "INV-dst-002",
+  "description": "No unseeded randomness outside the random seam: production code draws randomness only through a designated, seedable source (e.g. internal/rand), never default math/rand package functions / Python random module / Math.random() directly.",
+  "expression": "forall call in production_code: is_default_source_random(call) => module(call) == rand_seam",
+  "scope": "global",
+  "category": "operational_safety"
+},
+{
+  "id": "INV-dst-003",
+  "description": "IO behind seam interfaces: network/filesystem/DB calls are made only from designated IO packages, behind an interface a test can substitute. Checked by code review, not check_dst_readiness.py — grepping 'any IO outside package X' is too noisy for a v1 regex tier.",
+  "expression": "forall call in production_code: is_io(call) => package(call) in io_seam_packages",
+  "scope": "global",
+  "category": "operational_safety"
+}
+```
+
+After `render_models.py` regenerates the prose, verify the three IDs appear in `invariants.md` under their own subsection (e.g. "Determinism & Simulation Readiness"). These are advisory, not blocking: `scripts/check_dst_readiness.py` mechanically checks INV-dst-001/002 (report-only by default, FOREVER — this is design-readiness signal, not enforcement) and is run in Step 5a. INV-dst-003 has no mechanical check yet; it's scaffolding for code review to hold workers to. Keep the IDs stable so downstream `/implement` tickets and `check_dst_readiness.py`'s `**/clock*` / `**/rand*` / `**/telemetry/**` seam allowlist line up with real packages.
+
 #### 4f. ADR (`adr.md`)
 
 Architectural Decision Record capturing the key decisions for this epic:
@@ -262,6 +310,26 @@ Accepted
 - [Negative consequences / tech debt accepted]
 - [Follow-up work needed]
 ```
+
+**New products (`IS_NEW_PRODUCT=true`) add a decision entry for the DST seams**, naming the actual packages this codebase will use — not a hypothetical:
+
+```markdown
+### N. Determinism & simulation readiness (clock/random/IO seams)
+- **Decision**: All wall-clock reads go through `internal/clock` (a single `Now() time.Time`
+  seam); all randomness goes through `internal/rand` (seeded, injectable); network/DB/FS
+  calls are made behind interfaces owned by the designated IO packages listed here: [...].
+- **Alternatives considered**: Leaving `time.Now()`/`rand.Intn()` inline — rejected because
+  retrofitting determinism later means touching every call site instead of one seam.
+- **AI consensus**: [Where the three AIs agreed/diverged]
+- **Trade-offs**: One extra layer of indirection for time/randomness/IO from ticket one, in
+  exchange for this codebase staying simulation-testable (fast, reproducible, shrinkable bug
+  repros) instead of needing a painful determinism retrofit later.
+```
+
+This is the scaffolding note that makes INV-dst-001/002/003 (Step 4e) actionable — the
+invariant says "no wall-clock reads outside the clock seam"; this decision says which
+package IS the clock seam, so `/implement` workers build against it from ticket one instead
+of learning about it after the fact.
 
 #### 4g. Integration Test Specification (`integration-tests.md`)
 
@@ -311,6 +379,26 @@ Maps every acceptance criterion from every ticket to the test(s) that will verif
 
 Each row's "Status" column starts as `pending` and is updated to `covered` when `/implement` writes the test, then `passing` when `/close-epic` verifies it.
 
+#### 4i. System Architecture Model (`docs/system/architecture.json`) — once per product
+
+Unlike 4a–4h, this artifact is **system-level, not epic-level**: it lives at `docs/system/architecture.json` in the target repo (schema: `$CW_HOME/templates/formal-models/architecture-schema.json`) and is authored **once per product**, then updated only when an epic adds/removes/retires a deployable or connector — most epics touching an existing product will find it already present and just extend it.
+
+**Check first**: `test -f "$TARGET_REPO/docs/system/architecture.json"`.
+- **Absent** (first epic that touches system architecture, or a product that has never modeled it): author it fresh. Include `$CW_HOME/templates/formal-models/examples/voice-agent-architecture.json` in the worker prompt as a worked example (client → gateway → STT/LLM/TTS externals with `ASM-` refs) — a concrete template for the node/edge shape, not a fixture to copy verbatim.
+- **Present**: read it, and only add/amend the `ARC-`/`EDG-` nodes and edges THIS epic actually introduces (a new service, a new external vendor call, a connector being retired). Leave everything else untouched — this file is a standing product model, not a per-epic scratchpad.
+
+For every deployable and connector this epic's tickets introduce or change, define:
+- **Nodes** (`ARC-`): `id`, `name`, `kind` (`service`|`worker`|`db`|`queue`|`bucket`|`cron`|`external`), `repo` (URN/path, or `null` for external), `external`, `trust_zone` (`public`|`dmz`|`internal`|`restricted`), `region`, `failure_domain`, `criticality_tier` (`tier-1`|`tier-2`|`tier-3` — **never omit this**: a missing tier is reported as a finding by the checker, not silently skipped, so leaving it out just defers the problem), `emits` (telemetry binding names — bind these to the same names used in `docs/system/system-contracts.json` budget nodes' `telemetry_ref`, if that artifact exists, so the cross-artifact check in 5a has something to verify), `status` (`active`|`deprecated`|`retired`), `asm_refs` (REQUIRED, non-empty, when `external: true` and the node is reached by a `hard` edge — vendor SLA/assumption references, `ASM-` ids).
+- **Edges** (`EDG-`): `from`/`to` (must resolve to declared `ARC-` node ids), `protocol`, `mode` (`sync`|`async`), `criticality` (`hard`|`soft` — an AVAILABILITY dependency only, distinct from `carries` and from a trust-zone crossing: a low-tier logging sink may carry sensitive data without being availability-critical, and a low-tier auth provider may be availability-critical without carrying any payload), `on_failure` (`fallback`/`degrade_to`), `carries` (data-class labels, the monotone lattice `public < internal < pii < secret < official-sensitive`), `auth`, `timeout_ms`, `ordering`, `dlq`, `active`. **Never author `trust_zone_crossing`/`region_crossing`** — those two fields are computed ONLY by `check_architecture.py` from the node attributes; leave them `null` (or omit them) and let the checker derive them. An authored non-null value is itself a finding (INV-fh-006) — a hand-written "safe" crossing label is exactly the kind of thing that could mask a real trust-zone violation.
+
+**Verifier-in-the-loop**: validate against the schema as soon as the worker produces it:
+```bash
+python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/architecture.json" --type architecture
+```
+Fix and re-validate until clean. The deeper consistency checks (dangling endpoints, retired-node edges, unlabelled externals, tier inversion, label propagation, cross-artifact drift) run in Step 5a below — schema validity here is necessary but not sufficient.
+
+**What this proves, and what it doesn't.** `check_architecture.py` proves the DECLARED model in `architecture.json` is internally consistent. It does **not** prove the running code matches this model — that conformance/reflexion question is deliberately deferred (`#171`; see `docs/system-layer.md`). Declaring the model is cheap; treat it as a design-time contract the epic's `contracts.md`/`ui-spec.json` may reference by `ARC-`/`EDG-` id, not as a guarantee about deployed reality.
+
 ### Step 5: Formal model validation + multi-AI review
 
 The synthesised artifacts are the most critical output in the pipeline — every ticket inherits them. Validate mechanically first, then get a second opinion from external AIs.
@@ -334,7 +422,9 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 # the contract/invariant graph (see docs/traceability.md). Code/test coverage is
 # checked later by /close-epic; at architect time this validates the doc-level
 # graph. Assign stable BR-/CTR-/INV- IDs and `@cw-trace realizes` links so this
-# passes; it degrades gracefully when no IDs exist yet.
+# passes; it degrades gracefully when no IDs exist yet. (Suspect-link propagation
+# and `--write-links` are a /close-epic concern — no code/test links exist to
+# record yet at this stage.)
 python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
 
 # Single-writer soundness gate — validates that "single write path"/"single source
@@ -345,7 +435,24 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --fo
 python3 "$CW_HOME/scripts/check_single_writer.py" "$CW_TMP" --source "$TARGET_REPO" --gate soundness --format text
 ```
 
+**Architecture model consistency (`docs/system/architecture.json`, when 4i produced or updated one).** Report-only — this checker is NOT gated in `/architect` yet (ADR-fh-07: gating requires the #168 gate-validation protocol plus a passing `#184` validation record for `check_architecture`, which freezes its `CHECKS` inventory as a prerequisite). Run it so findings are visible at design time even though they don't block:
+
+```bash
+python3 "$CW_HOME/scripts/check_architecture.py" "$CW_TMP/architecture.json" \
+  --system-contracts "$TARGET_REPO/docs/system/system-contracts.json" --format text
+```
+
+(Omit `--system-contracts` if the target repo has no budget-tree doc yet — the checker reports that cross-artifact leg as "not checked", distinct from "passed", never silently skipped.) The authority line is printed every run: *"proves the DECLARED model is internally consistent; does not prove the code matches the model."* Fix any dangling endpoints, retired-node edges, unlabelled externals, tier inversions, label-propagation violations, or authored (non-null) crossing labels before proceeding — these are cheap to fix now and expensive to discover once tickets have started referencing the wrong `ARC-`/`EDG-` ids.
+
 Any invariant that says "single write path" or "single source of truth" for a field/state MUST name its `controls_field` and `sanctioned_writers` — either as arrays on the structured `state-machines.json` invariant, or via a `<!-- @cw-writes INV-... controls_field=a.b sanctioned_writers=Sym,path.go -->` tag next to its `**INV-...**` label in `invariants.md`. Without this metadata the invariant is prose only and a second mutator (e.g. a legacy admin control) can silently violate it. Review the surfaced writer inventory: if the gate lists a writer outside the sanctioned set, that is a pre-existing violation to fix or explicitly sanction before the epic builds on the invariant.
+
+**DST-readiness baseline (new products only — `IS_NEW_PRODUCT=true`).** Run the scanner report-only against the target repo to document the current wall-clock/random-call baseline — this NEVER blocks (advisory forever, per the design decision behind it):
+
+```bash
+python3 "$CW_HOME/scripts/check_dst_readiness.py" "$TARGET_REPO" --format text
+```
+
+Note the finding counts in Step 6's summary (a fresh repo should have ~zero; a real baseline scan may surface some pre-existing calls worth folding into the seam allowlist or fixing before the first ticket lands). This never gates — `--gate` exists in the script for a repo that later opts in via its own ratchet config, but `/architect` never passes it.
 
 Check the graph analysis output for:
 - **Unreachable states**: States that can't be reached from the initial state — these are model bugs
@@ -372,7 +479,7 @@ Prepare a validation prompt at `$CW_TMP/validate-artifacts-prompt.md` containing
   6. Does every precondition have a corresponding error case? (REQUIRES without an ERROR CASE means a silent failure)
   7. Are the `expression` fields in preconditions/postconditions/invariants reasonable and implementable?
 
-Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
+Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation). As in Step 3, `reviewer` may carry a lens assignment in `config/providers.json` — check its `lenses` map before assuming two providers scoped alike:
 
 ```bash
 python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifacts-prompt.md \
@@ -381,7 +488,7 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifa
 
 Responses land at `$CW_TMP/validate-artifacts/reviewer-<provider>.md` (status in `reviewer-manifest.json`).
 
-Review both responses. Apply clear improvements to the JSON models. Regenerate prose if models changed:
+Review both responses. **Union the findings rather than looking for agreement** — a lensed quorum is expected to produce disjoint findings; only cross-verify against the models when two providers make contested/contradictory claims about the same fact. Apply clear improvements to the JSON models. Regenerate prose if models changed:
 ```bash
 python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
 python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
@@ -407,6 +514,8 @@ python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name architect-rev
 - **Model health**: graph analysis — any unreachable states, dead states, missing paths
 - **Open unknowns**: every surviving `TBD:`/`UNRESOLVED:` marker, which tickets each one blocks, and the plan to resolve it (who/what/when)
 - **Test coverage preview**: number of test paths that will be mechanically generated (from the test view)
+- **DST readiness** (new products only): the INV-dst-001/002/003 invariants stamped, the clock/random/IO seam packages named in the ADR, and `check_dst_readiness.py`'s baseline finding counts
+- **System architecture model** (when 4i produced/updated one): node/edge counts, any `check_architecture.py` findings (report-only — never blocks here), and which `ARC-`/`EDG-` ids this epic's contracts reference
 - ADR: key decisions with trade-offs
 - Integration tests: what will be validated at epic close
 - Traceability: coverage gaps (any AC without a planned test)
@@ -435,6 +544,15 @@ git push
 ```
 
 The transition-map baseline marks existing-code transitions `covered` and new model transitions `planned`; it evolves as tickets are implemented. Use `--dry-run` to preview what would be installed (and the issue-comment body) without writing, and `--no-commit` to install without committing. The JSON output lists `copied`, `generated`, `transition_map`, `issue_comment`, and any `warnings`.
+
+**If Step 4i produced or updated `architecture.json`**, commit it separately to `docs/system/` — it is a system-level, once-per-product artifact and does NOT belong under `docs/epics/$EPIC_SLUG/`:
+```bash
+mkdir -p "$TARGET_REPO/docs/system"
+cp "$CW_TMP/architecture.json" "$TARGET_REPO/docs/system/architecture.json"
+git -C "$TARGET_REPO" add docs/system/architecture.json
+git -C "$TARGET_REPO" commit -m "arch: update docs/system/architecture.json for $EPIC_SLUG"
+```
+(This can be folded into the same commit/push as the epic artifacts above if the installer step hasn't pushed yet.)
 
 **If `git push` fails** (e.g., branch protection rules forbid direct pushes to the default branch), fall back to creating a PR:
 ```bash
@@ -503,6 +621,12 @@ Your implementation must satisfy the contracts and invariants. The /implement sk
 
 ### Coverage gaps
 - [Any AC without a planned test — these need attention during implementation]
+
+### DST readiness (new products only)
+- Invariants stamped: INV-dst-001 (clock seam), INV-dst-002 (random seam), INV-dst-003 (IO seam)
+- Seam packages named in the ADR: [e.g. `internal/clock`, `internal/rand`]
+- `check_dst_readiness.py` baseline: N findings (report-only — advisory forever, not a blocker)
+- [Omit this section for a repo that already has prior epics]
 
 ### Open unknowns (blockers)
 - [Each surviving TBD/UNRESOLVED marker: what it is, which tickets it blocks, how to resolve it]

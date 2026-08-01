@@ -12,13 +12,50 @@ exists.
 
 Event schema (one JSON object per line):
     {ts, event, repo?, ticket?, name?, result?, duration_ms?, caught?,
-     provider?, tokens_in?, tokens_out?, cost_usd?, details?}
+     provider?, adapter?, requested_model?, usage_status?, pricing_version?,
+     tokens_in?, tokens_out?, cost_usd?, summary?, severity?,
+     missed_by?, found_in?, invariant?, fixed?, seed_class?, details?,
+     previous_authority?, verb?, path?, hit_count?}
 
-  event: "gate" | "consult" | "worker" | "skill"
+  event: "gate" | "consult" | "worker" | "skill" | "escape" | "demotion" | "query"
+  A consult record's `adapter`/`usage_status`/`pricing_version` are chief-wiggum#134
+  additions — pre-#134 records simply lack them (readers must tolerate their
+  absence, not assume a value). `adapter` names which parser produced the usage
+  (codex-cli|gemini-cli|vertex-sdk|claude-cli|claude-interactive); `usage_status`
+  is provider-json|sdk-metadata|partial|unavailable (never silent, INV-fh-011);
+  `requested_model` is the --model override/provider default, distinct from
+  `name` (the RESOLVED billed model id — never a bare CLI alias, CTR-fh-013).
   A gate records name/result/duration_ms/caught; a consult records
-  provider/tokens/cost; each call site fills what it KNOWS and omits the rest.
+  provider/tokens/cost; an **escape** records a manually-found bug — especially
+  one that slipped PAST a gate and was caught later (`missed_by` the gate/stage
+  that should have caught it, `found_in` the review/verification step that
+  actually caught it) — so `aggregate()` can compute gate RECALL
+  (caught / (caught + escaped)), not just catches. A **query** records one
+  `code_query.py` call — `verb` (orient/governs/writers/...), `hit_count` (facts
+  found before the response cap), `path` (the queried path/field/ID, when it's
+  short/stable enough to be useful) — so `aggregate()` can show which structural
+  questions agents actually ask (#159), not just that the tool exists. Each call
+  site fills what it KNOWS and omits the rest.
+
+  A **demotion** (docs/gate-validation.md) fires when an escape's `--seed-class`
+  matches a seed class the `missed_by` gate's validation record certified it
+  catches: the validation was wrong about production recall, so the gate must
+  drop back to report-only and the seed class gets re-derived — not just logged.
+  A demotion can ALSO fire without any escape at all: chief-wiggum#198/IT-fh-06's
+  stale-while-blocking auto-demotion (state-machines.json's Gate
+  Blocking-Authority Lifecycle, G-008/G-014) — `check_gate_validation.py`
+  detects a BLOCKING gate's record went stale (scanner_version/journal drift) or
+  missing/invalid, and demotes it. That path has no `seed_class` (nothing
+  escaped in production; the record itself just rotted), so it calls the
+  GENERIC `emit_stale_demotion` (`details='stale'|'record_missing'`,
+  `previous_authority` recorded), never `emit_demotion` (which requires one).
 
     factory_log.py emit --event gate --repo acme/app --name ratchet --result pass --caught 0
+    factory_log.py bug --repo acme/app --summary "reset endpoint leaks account existence" \
+      --severity high --missed-by ticket-gate --found-in close-epic-review
+    factory_log.py bug --repo acme/app --summary "..." --severity high \
+      --missed-by check_single_writer --seed-class evasion-omission \
+      --found-in close-epic-review   # triggers a DEMOTION instruction if validated
     factory_log.py aggregate [--repo acme/app]
 """
 
@@ -31,14 +68,39 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from chief_wiggum.hashing import stable_hash  # noqa: E402
+
 DEFAULT_LOG = Path.home() / ".chief-wiggum" / "factory-log.jsonl"
 PRICING_PATH = Path(__file__).resolve().parent.parent / "config" / "model_pricing.json"
+
+# ConsultUsageRecord.usage_status (chief-wiggum#134 / ADR-fh-05). Pre-#134
+# records simply lack this field — readers must tolerate its absence rather
+# than assume a value.
+CONSULT_USAGE_STATUSES = ("provider-json", "sdk-metadata", "partial", "unavailable")
+
+# A resolved billed model id must never be the bare CLI/tool name a consult
+# was invoked with — that's indistinguishable from an unpriced model and
+# silently nulls cost (CTR-fh-013). Enforced here, the single write path for
+# ConsultUsageRecord (INV-fh-002).
+_BARE_CLI_ALIASES = frozenset({"codex", "gemini", "gemini-vertex", "claude", "claude-interactive"})
 
 GATE = "gate"
 CONSULT = "consult"
 WORKER = "worker"
 SKILL = "skill"
+ESCAPE = "escape"  # a manually-found bug, especially one a gate missed
+DEMOTION = "demotion"  # a gate reverted to report-only after a validated seed class escaped
+QUERY = "query"  # one code_query.py verb call (#159)
 CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's own OTEL telemetry
+
+ESCAPE_SEVERITIES = ("low", "medium", "high", "critical")
+ESCAPE_FOUND_IN = ("implement-verify", "close-epic-review", "saas-gate", "manual", "prod")
+
+# CW's own gates ship their validation records with chief-wiggum (see
+# docs/gate-validation.md); default to that so demotion works out of the box.
+DEFAULT_VALIDATION_DIR = str(Path(__file__).resolve().parent.parent / "docs" / "quality" / "validation")
 
 
 def log_path() -> Path:
@@ -80,6 +142,124 @@ def emit_gate(name: str, result: str, *, caught: int | None = None,
                 duration_ms=duration_ms, repo=repo, ticket=ticket)
 
 
+def emit_escape(summary: str, *, severity: str, missed_by: str, found_in: str,
+                repo: str | None = None, ticket: str | None = None,
+                invariant: str | None = None, fixed: bool | None = None,
+                seed_class: str | None = None) -> bool:
+    """Record a manually-found bug — especially an ESCAPE that slipped PAST a gate
+    and was only caught later (e.g. close-epic's adversarial review catching a bug
+    the ticket's own gates missed).
+
+    A `gate` event's `caught` count is only ever what THAT gate caught at THAT
+    time — it has no way to see what it missed. `escape` is the other half: a
+    human/agent records `missed_by` (the gate/stage that SHOULD have caught this,
+    e.g. `ticket-gate`, `traceability`, `ratchet`, `close-epic-review`,
+    `saas-gate`) and `found_in` (where it actually surfaced). `aggregate()` joins
+    the two into gate RECALL — caught / (caught + escaped) — which `caught` alone
+    can never show: a gate can report 100% catches on everything it looked at and
+    still have terrible recall if real bugs keep slipping past it unnoticed.
+    """
+    return emit(ESCAPE, summary=summary, severity=severity, missed_by=missed_by,
+                found_in=found_in, repo=repo, ticket=ticket, invariant=invariant,
+                fixed=fixed, seed_class=seed_class)
+
+
+def emit_demotion(gate: str, seed_class: str, *, repo: str | None = None,
+                  ticket: str | None = None) -> bool:
+    """Record that `gate` was demoted to report-only after a production escape
+    matched a seed class its gate-validation record certified it catches
+    (see `demotion_check` / docs/gate-validation.md)."""
+    return emit(DEMOTION, name=gate, details=f"seed_class={seed_class}",
+                repo=repo, ticket=ticket)
+
+
+def emit_stale_demotion(gate: str, reason: str, *, previous_authority: str | None = None,
+                       repo: str | None = None, ticket: str | None = None) -> bool:
+    """Record that `gate` auto-demoted because its gate-validation record went
+    stale or missing/invalid WHILE BLOCKING (state-machines.json's Gate
+    Blocking-Authority Lifecycle, G-008/G-014 — chief-wiggum#198/IT-fh-06).
+
+    This is deliberately the GENERIC `DEMOTION` event, not `emit_demotion`:
+    `emit_demotion` requires a `seed_class` (an escape-driven demotion always
+    has one — production proved a *validated* seed wrong); a staleness or
+    missing-record demotion has no escape and no seed_class at all, only a
+    `reason` ('stale' | 'record_missing') and the `previous_authority` the
+    gate is coming down from — recorded so a later re-derived/re-journaled
+    record can be told it is being *restored*, not freshly promoted.
+    @cw-trace guards INV-fh-003"""
+    assert reason in ("stale", "record_missing"), f"unknown stale-demotion reason: {reason!r}"
+    return emit(DEMOTION, name=gate, details=reason, previous_authority=previous_authority,
+                repo=repo, ticket=ticket)
+
+
+def load_validation_record(gate: str, validation_dir: str | Path) -> dict | None:
+    """Load a gate-validation-protocol record (docs/gate-validation.md) for `gate`.
+    Returns None (never raises) when absent or malformed — a missing record is
+    not itself an error here; `check_gate_validation.py` is the authority on that."""
+    path = Path(validation_dir) / f"{gate}.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def demotion_check(missed_by: str, seed_class: str | None,
+                   validation_dir: str | Path = DEFAULT_VALIDATION_DIR) -> dict | None:
+    """Return a demotion instruction when a real escape's `seed_class` matches a
+    class `missed_by`'s gate-validation record (docs/gate-validation.md)
+    certified it PASSED — i.e. the record claimed this gate catches exactly this
+    evasion technique, and production just proved that claim wrong.
+
+    This is the mechanical half of "quality ratchets, never slides" applied to a
+    gate's own blocking authority: a validated seed class that then escapes in
+    production is not a one-off miss to log and forget, it is evidence the
+    validation itself was insufficient. Returns None (nothing to demote) when no
+    `seed_class` was given, no record exists, or the class wasn't one the record
+    claims to have validated.
+
+    Only classes certified as CAUGHT ground a demotion: the trial must have
+    `expected: "fire"` with `result: "fired"` and `passed: true`. A passing
+    `expected: "no-fire"` trial certifies a documented NON-coverage boundary
+    (e.g. an evasion-sampling-gap seed proving vendor/ is out of scope) — an
+    escape through that boundary is consistent with the record's authority
+    statement, not a refutation of it, so it must not demote the gate.
+    """
+    if not seed_class:
+        return None
+    record = load_validation_record(missed_by, validation_dir)
+    if not record:
+        return None
+    validated_classes = {
+        t.get("seed_class") for t in record.get("seeded_defect_trials", []) or []
+        if t.get("passed") is True and t.get("expected") == "fire" and t.get("result") == "fired"
+    }
+    if seed_class not in validated_classes:
+        return None
+    return {
+        "gate": missed_by,
+        "seed_class": seed_class,
+        "instruction": (
+            f"DEMOTE {missed_by} to report-only (drop --gate from its workflow wiring) — "
+            f"a production escape matched seed class {seed_class!r}, which {missed_by}'s "
+            f"gate-validation record ({validation_dir}/{missed_by}.json) certified it catches. "
+            "File a tracking ticket to re-derive and re-run that seed class before "
+            "re-promoting the gate to blocking."
+        ),
+    }
+
+
+def emit_query(verb: str, *, repo: str | None = None, path: str | None = None,
+               hit_count: int | None = None) -> bool:
+    """Record one ``code_query.py`` verb call — usage telemetry, not a gate.
+
+    The point isn't pass/fail; it's learning which structural questions agents
+    actually ask (#159) — `aggregate()` tallies calls per verb from these events.
+    """
+    return emit(QUERY, verb=verb, repo=repo, path=path, hit_count=hit_count)
+
+
 def load_pricing(path: Path = PRICING_PATH) -> dict:
     """Load the grounded per-model pricing table (config/model_pricing.json)."""
     try:
@@ -104,21 +284,92 @@ def cost_for(model: str, tokens_in: int, tokens_out: int, pricing: dict | None =
     return round((tokens_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
 
 
-def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
-                 tokens_out: int | None = None, *, repo: str | None = None,
-                 ticket: str | None = None) -> bool:
-    """Record an AI consultation, with token usage + grounded cost when known.
+def _coerce_token(value) -> int | None:
+    """Coerce an untrusted token count to ``int``; anything unusable (bool, junk
+    string, list, non-integral float, ...) is ``None`` — a malformed count must
+    degrade the record's usage, never crash the emit (which would vanish the
+    whole telemetry event inside a best-effort caller)."""
+    if isinstance(value, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
-    When token counts are known, cost is computed from config/model_pricing.json
-    (omitted when the model is unpriced — never logged as $0). When tokens are
-    unknown (a CLI provider that didn't surface a usage summary), the event still
-    records that a consult happened, for whom, in which repo — honest frequency
-    telemetry without a fabricated token count.
+
+def _pricing_version(path: Path = PRICING_PATH) -> str | None:
+    """Hash of config/model_pricing.json's raw text (chief_wiggum.hashing.stable_hash),
+    recorded on each consult so a historical run can be re-priced later by replaying
+    cost_for over its recorded tokens against whichever pricing table version was
+    live at record time. None (never raises) when the file is unreadable."""
+    try:
+        return stable_hash(path.read_text())
+    except OSError:
+        return None
+
+
+def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
+                 tokens_out: int | None = None, *, usage_status: str | None = None,
+                 adapter: str | None = None, requested_model: str | None = None,
+                 repo: str | None = None, ticket: str | None = None) -> bool:
+    """Record an AI consultation, with token usage + grounded cost when known
+    (ConsultUsageRecord, chief-wiggum#134).
+
+    ``usage_status`` names the TRUE source of the usage data (``provider-json``
+    | ``sdk-metadata`` | ``partial`` | ``unavailable``) and is never silently
+    implied (INV-fh-011); an unrecognised value is dropped to unset rather than
+    trusted. Both-tokens-or-null: a one-sided OR malformed token count (only
+    one of tokens_in/tokens_out usable as an int) is recorded as NO usage
+    rather than half-priced — both are nulled, and a status that claimed a
+    real source downgrades to 'partial'. Malformed usage degrades the EVENT,
+    it never vanishes it: token values are coerced at this boundary
+    (``_coerce_token``) and cost derivation is exception-proof, so a drifted
+    payload can't raise inside a best-effort caller and silently drop the
+    whole record. ``model`` (the resolved billed model id) must never be a
+    bare CLI/tool alias (CTR-fh-013) — that's a caller bug, not a
+    degraded-usage case, so it raises rather than silently recording a wrong
+    id.
+
+    cost_usd is computed ONLY here, from config/model_pricing.json and the two
+    (both-or-null) recorded token counts (INV-fh-002) — never author-supplied,
+    never a fabricated 0; omitted (null) when the model is unpriced or tokens
+    are unknown. ``pricing_version`` lets a historical record be re-priced by
+    replaying cost_for against whichever pricing table was live at emit time.
+
+    @cw-trace ensures CTR-fh-013 CTR-fh-014 CTR-fh-015 INV-fh-002 INV-fh-011
     """
-    cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
-    return emit(CONSULT, provider=provider, name=model,
-                tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost,
-                repo=repo, ticket=ticket)
+    if model in _BARE_CLI_ALIASES:
+        raise ValueError(
+            f"emit_consult: resolved model {model!r} is a bare CLI alias, not a "
+            "billed model id (CTR-fh-013) — the caller failed to resolve it."
+        )
+    if usage_status is not None and usage_status not in CONSULT_USAGE_STATUSES:
+        usage_status = None
+    coerced_in, coerced_out = _coerce_token(tokens_in), _coerce_token(tokens_out)
+    malformed = (tokens_in is not None and coerced_in is None) or (
+        tokens_out is not None and coerced_out is None
+    )
+    tokens_in, tokens_out = coerced_in, coerced_out
+    if malformed or (tokens_in is None) != (tokens_out is None):
+        # One-sided or malformed payload: both-tokens-or-null (INV-fh-011) —
+        # never a half-priced record, never a crashed emit.
+        tokens_in = tokens_out = None
+        if usage_status in ("provider-json", "sdk-metadata"):
+            usage_status = "partial"
+    try:
+        cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
+    except Exception:
+        # A broken pricing row must degrade cost to null, not vanish the event.
+        cost = None
+    return emit(CONSULT, provider=provider, adapter=adapter, requested_model=requested_model,
+                name=model, usage_status=usage_status, tokens_in=tokens_in, tokens_out=tokens_out,
+                cost_usd=cost, pricing_version=_pricing_version(), repo=repo, ticket=ticket)
 
 
 class gate_timer:
@@ -232,6 +483,8 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         records = [r for r in records if r.get("repo") == repo]
     gates: dict[str, dict] = {}
     consults: dict[str, dict] = {}
+    escapes: dict[str, dict] = {}
+    queries: dict[str, dict] = {}
     # Claude Code's own token cost, split orchestrator (repl_main_thread) vs subagent,
     # and (when the OTEL events carry skill.name/agent.name) by loop/validation.
     claude_code: dict[str, dict] = {}
@@ -268,6 +521,23 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
                 bl = by_loop.setdefault(r["skill"], {"calls": 0, "cost_usd": 0.0})
                 bl["calls"] += 1
                 bl["cost_usd"] += r.get("cost_usd") or 0.0
+        elif r.get("event") == ESCAPE:
+            key = r.get("missed_by") or "unknown"
+            es = escapes.setdefault(key, {"escaped": 0, "fixed": 0, "by_severity": {}})
+            es["escaped"] += 1
+            if r.get("fixed"):
+                es["fixed"] += 1
+            sev = r.get("severity") or "unknown"
+            es["by_severity"][sev] = es["by_severity"].get(sev, 0) + 1
+        elif r.get("event") == QUERY:
+            key = r.get("verb") or "unknown"
+            q = queries.setdefault(key, {"calls": 0, "hits": 0, "misses": 0})
+            q["calls"] += 1
+            hc = r.get("hit_count")
+            if hc:
+                q["hits"] += 1
+            else:
+                q["misses"] += 1
     # value/noise hint: a gate with runs but zero caught is a noise candidate
     for g in gates.values():
         g["value"] = "earning" if g["caught"] > 0 else ("noise-candidate" if g["runs"] >= 3 else "unproven")
@@ -275,8 +545,18 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         cc["cost_usd"] = round(cc["cost_usd"], 6)
     for bl in by_loop.values():
         bl["cost_usd"] = round(bl["cost_usd"], 6)
+    # recall = caught / (caught + escaped) — joins the gate's own catches (what it
+    # saw) with escapes attributed to it (what it missed). None when we have
+    # neither a catch count nor an escape count to reason from.
+    for name, es in escapes.items():
+        caught = gates.get(name, {}).get("caught", 0)
+        escaped = es["escaped"]
+        es["caught"] = caught
+        es["recall"] = round(caught / (caught + escaped), 4) if (caught + escaped) > 0 else None
     return {"gates": gates, "consults": consults, "claude_code": claude_code,
             "cost_by_loop": by_loop, "verdict": cost_value_verdict(gates, by_loop),
+            "escapes": escapes, "escapes_total": sum(es["escaped"] for es in escapes.values()),
+            "queries": queries, "queries_total": sum(q["calls"] for q in queries.values()),
             "records": len(records),
             "consult_cost_usd": round(consult_cost, 4),
             "claude_code_cost_usd": round(cc_cost, 4),
@@ -350,6 +630,24 @@ def render_report(agg: dict, repo: str | None = None) -> str:
             cost = f"${v['cost_usd']:.2f}"
             cpc = f"${v['cost_per_catch']:.3f}" if v["cost_per_catch"] is not None else "—"
             L.append(f"    {name:<22}{v['runs']:>5}{v['caught']:>7}{cost:>10}{cpc:>10}   {v['verdict']}")
+
+    escapes = agg.get("escapes") or {}
+    if escapes:
+        L.append(f"\n  Escapes — bugs a gate missed ({agg.get('escapes_total', 0)} total). "
+                  "Recall = caught / (caught + escaped):")
+        L.append(f"    {'MISSED BY':<22}{'CAUGHT':>7}{'ESCAPED':>9}{'FIXED':>7}   RECALL")
+        L.append("    " + "─" * 55)
+        for name, e in sorted(escapes.items(), key=lambda kv: -kv[1]["escaped"]):
+            recall = f"{e['recall']:.0%}" if e["recall"] is not None else "—"
+            L.append(f"    {name:<22}{e['caught']:>7}{e['escaped']:>9}{e['fixed']:>7}   {recall}")
+
+    queries = agg.get("queries") or {}
+    if queries:
+        L.append(f"\n  code_query.py verbs asked ({agg.get('queries_total', 0)} total calls):")
+        L.append(f"    {'VERB':<16}{'CALLS':>7}{'HITS':>7}{'MISSES':>8}")
+        L.append("    " + "─" * 40)
+        for name, q in sorted(queries.items(), key=lambda kv: -kv[1]["calls"]):
+            L.append(f"    {name:<16}{q['calls']:>7}{q['hits']:>7}{q['misses']:>8}")
     return "\n".join(L)
 
 
@@ -365,6 +663,24 @@ def main() -> int:
         e.add_argument(f"--{opt}", type=int)
     e.add_argument("--duration-ms", type=float)
     e.add_argument("--cost-usd", type=float)
+
+    b = sub.add_parser("bug", help="Log a manually-found bug — especially an escape a gate missed")
+    b.add_argument("--repo", required=True)
+    b.add_argument("--summary", required=True, help="What the bug was")
+    b.add_argument("--severity", required=True, choices=ESCAPE_SEVERITIES)
+    b.add_argument("--missed-by", required=True,
+                   help="The gate/stage that SHOULD have caught it, e.g. ticket-gate|traceability|ratchet|close-epic-review|saas-gate")
+    b.add_argument("--found-in", required=True, choices=ESCAPE_FOUND_IN,
+                   help="Where it was actually caught")
+    b.add_argument("--ticket", help="Issue/ticket number, e.g. 42")
+    b.add_argument("--invariant", help="Related invariant ID, e.g. INV-012")
+    b.add_argument("--fixed", action="store_true", help="Set if already fixed at log time")
+    b.add_argument("--seed-class",
+                   help="Gate-validation seed class this escape resembles (docs/gate-validation.md), "
+                        "e.g. evasion-omission. Triggers a DEMOTION instruction when --missed-by's "
+                        "validation record certified it catches this class.")
+    b.add_argument("--validation-dir", default=DEFAULT_VALIDATION_DIR,
+                   help=f"Directory of <gate>.json validation records (default: {DEFAULT_VALIDATION_DIR})")
 
     a = sub.add_parser("aggregate", help="Summarize the log")
     a.add_argument("--repo")
@@ -394,6 +710,23 @@ def main() -> int:
         if not ok:
             print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)", file=sys.stderr)
             return 1
+        return 0
+    if args.cmd == "bug":
+        # Demotion is a structural check against the gate's validation record —
+        # independent of whether telemetry logging is enabled. It must not be
+        # silenced just because CW_TELEMETRY is off.
+        demotion = demotion_check(args.missed_by, args.seed_class, args.validation_dir)
+        if demotion:
+            print(f"factory_log: DEMOTION — {demotion['instruction']}", file=sys.stderr)
+        ok = emit_escape(args.summary, severity=args.severity, missed_by=args.missed_by,
+                          found_in=args.found_in, repo=args.repo, ticket=args.ticket,
+                          invariant=args.invariant, fixed=True if args.fixed else None,
+                          seed_class=args.seed_class)
+        if not ok:
+            print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)", file=sys.stderr)
+            return 1
+        if demotion:
+            emit_demotion(demotion["gate"], demotion["seed_class"], repo=args.repo, ticket=args.ticket)
         return 0
     if args.cmd == "aggregate":
         agg = aggregate(read_log(), repo=args.repo)

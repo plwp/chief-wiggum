@@ -18,6 +18,16 @@ Three ratcheted quantities, all project-agnostic:
   contract whose hash changed was *weakened* (or silently rewritten); one that
   disappeared was *removed*. Both block, unless a human deliberately journals
   an ``--amend``/``--retire``.
+- **Verifier-test body hashes (report-only, #206)** — the pass-set is keyed by
+  test ID, so a test's BODY can be rewritten to bless new behavior while its
+  node ID stays green (goalpost channel C1c — demonstrated scripted AND by an
+  unprompted pilot worker; docs/paper/experiment/). Tests annotated
+  ``@cw-trace verifies <ID>`` are the executable expression of a contract, so
+  their function bodies are hashed and ratcheted like contract definitions
+  (``--amend-verifier``/``--retire-verifier`` to revise; amending a contract
+  re-baselines its verifier tests). NEW dimension, so per docs/gate-rollout.md
+  it is REPORT-ONLY until validated: ``check`` prints weakened/removed
+  verifier tests but blocks only under ``--gate-verifier-tests``.
 - **Protected pathset** — contracts, invariants, integration-test specs, formal
   models, and the ratchet's own state are the goalposts. ``protected`` flags a
   branch diff that touches them so the orchestrator parks the change for human
@@ -33,7 +43,12 @@ Three ratcheted quantities, all project-agnostic:
 
 Tamper-evidence: the journal is an append-only HASH CHAIN. The high-water mark
 is DERIVED from the verified chain, not read from a separately-editable file —
-so lowering the bar by editing state is detectable and fails closed.
+so lowering the bar by editing state is detectable and fails closed. Boundary
+(#209): the chain detects INTERIOR rewrites; the TAIL record has no next link,
+so a tail tamper with a recomputed hash verifies — that blind spot is covered
+by the layers outside the chain (``protected`` parks any worker branch touching
+docs/quality/**, and git history anchors the default branch). See
+docs/ratchet.md "Trust boundary".
 
 State lives in the target repo (committed, like all epic artifacts):
 
@@ -49,6 +64,8 @@ Subcommands:
     check       exit 1 if the ratchet is violated (regression/weakening/removal)
     regressed   print JSON of current violations vs the high-water mark
     record      append a hash-chained record; (re)derive the high-water cache
+                (event=gate-validation records a gate-validation-protocol run —
+                see docs/gate-validation.md — --ref names the gate)
     recent      print the last N records' notes (amnesia context for the fixer)
     highwater   print the derived high-water mark
     protected   exit 1 if a branch diff touches the protected pathset
@@ -60,7 +77,6 @@ Exit codes: 0 = ok, 1 = gate violation, 2 = usage/config error,
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import subprocess
@@ -69,11 +85,42 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Same stable-ID grammar as check_traceability.py and the TIM schema — shared
+# via chief_wiggum.trace_ids so a kind added in one place cannot be silently
+# dropped by another (#166; uppercase-id vacuity was the same class of bug,
+# chief-wiggum#86). Re-exported here (identity, not a copy) so
+# tests/test_trace_ids.py can keep cross-checking that ratchet, check_traceability,
+# and the TIM schema all agree on the same regex objects.
+# stable_hash/hash_epic_definitions's home is chief_wiggum.hashing (#160, #169) —
+# check_single_writer.py and check_traceability.py import the same functions
+# for --scanner-version and per-link suspect-propagation hashing, so there is
+# exactly one contract-block hashing implementation, not a copy per module.
+# _hash_markdown_defs/_walk_json_ids are kept as thin aliases to that shared
+# home for callers/tests that reach into ratchet's (formerly private) internals.
+from chief_wiggum.hashing import hash_epic_definitions, scanner_version, stable_hash  # noqa: E402
+from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
+from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
+from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
+from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE  # noqa: E402,F401
+from chief_wiggum.trace_links import SIDECAR_RELPATH, find_suspect_links, load_sidecar  # noqa: E402
+from chief_wiggum.verifier_hashes import scan_verifier_hashes  # noqa: E402
+
 CONFIG_NAME = "ratchet.json"
 JOURNAL_NAME = "ratchet-journal.jsonl"
 HIGHWATER_NAME = "ratchet-highwater.json"
 SCORECARD_NAME = "ratchet-scorecard.json"
 DEFAULT_STATE_DIR = "docs/quality"
+
+# A gate-authority lifecycle event (chief-wiggum#198): the operator wiring a gate
+# with --gate (blocking) or un-wiring it. Journaled here — in the SAME
+# hash-chained, tamper-evident ledger the ratchet already owns — rather than in a
+# loose, forgeable JSON file, so "was this gate blocking?" is a tamper-evident
+# fact and not a hand-writable one (`check_gate_validation.py --wire/--unwire`).
+# It is NOT `merged`, so it never enters `derive_highwater`'s pass-set/contract
+# high-water; it rides the chain purely for its own tamper-evidence.
+GATE_AUTHORITY = "gate-authority"
 
 # Complexity/churn ratchet tolerance (see docs/ratchet.md "Complexity & churn").
 # DIRECTION: unlike the pass-set (which may not SHRINK), complexity is a cost we
@@ -89,16 +136,6 @@ DEFAULT_QUALITY_TOLERANCE = {
     "relative_churn_rel": 0.25,  # relative churn is advisory — a wide band
     "relative_churn_abs": 0.05,
 }
-
-# Same stable-ID grammar as check_traceability.py: the ID ends at the 3-digit
-# suffix and must not run into more id chars. Case-insensitive body: uppercase
-# ids (INV-BIL-001, adopted-pattern INV-FOWR-001) must be hashed too — a
-# lowercase-only grammar silently skipped them, leaving weakening-detection
-# vacuous for uppercase-id repos (same class as chief-wiggum#86).
-ID_RE = re.compile(r"\b(?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}(?![A-Za-z0-9-])")
-DEFINE_RE = re.compile(
-    r"(?:^#{1,6}\s+|\*\*\s*)((?:BR|CTR|INV)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})(?![A-Za-z0-9-])"
-)
 
 DEFAULT_PROTECTED = [
     "docs/epics/*/contracts.md",
@@ -116,14 +153,6 @@ class RatchetError(Exception):
 
 class TamperError(Exception):
     """Journal hash chain broken. Maps to exit 4 — fail closed."""
-
-
-def stable_hash(*parts: str) -> str:
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p.encode("utf-8"))
-        h.update(b"\x00")
-    return h.hexdigest()
 
 
 # ---- config ------------------------------------------------------------------
@@ -196,58 +225,14 @@ def load_config(repo: Path) -> Config:
 # ---- contract definition hashes (weakening detection) --------------------------
 
 
-def _hash_markdown_defs(text: str) -> dict[str, list[str]]:
-    """Map each stable ID declared in the markdown to the hash of its block.
-
-    A block runs from the declaring line to the next line that declares another
-    ID (or EOF), whitespace-normalized — so reformatting doesn't read as
-    weakening, but any wording change to the REQUIRES/ENSURES does.
-    """
-    lines = text.splitlines()
-    decls: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        m = DEFINE_RE.search(line)
-        if m:
-            decls.append((i, m.group(1)))
-    out: dict[str, list[str]] = {}
-    for idx, (start, cid) in enumerate(decls):
-        end = decls[idx + 1][0] if idx + 1 < len(decls) else len(lines)
-        block = "\n".join(ln.rstrip() for ln in lines[start:end]).strip()
-        out.setdefault(cid, []).append(stable_hash(block))
-    return out
-
-
-def _walk_json_ids(node, out: dict[str, list[str]]) -> None:
-    if isinstance(node, dict):
-        cid = node.get("id")
-        if isinstance(cid, str) and ID_RE.fullmatch(cid):
-            out.setdefault(cid, []).append(
-                stable_hash(json.dumps(node, sort_keys=True))
-            )
-        for v in node.values():
-            _walk_json_ids(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            _walk_json_ids(v, out)
-
-
 def load_contract_hashes(cfg: Config) -> dict[str, str]:
-    """Map stable ID -> definition hash across all epic docs (md + model JSON)."""
-    root = cfg.repo / cfg.epic_docs
-    collected: dict[str, list[str]] = {}
-    if root.is_dir():
-        for f in sorted(root.rglob("*.md")):
-            for cid, hashes in _hash_markdown_defs(f.read_text(errors="replace")).items():
-                collected.setdefault(cid, []).extend(hashes)
-        for f in sorted(root.rglob("*.json")):
-            try:
-                doc = json.loads(f.read_text(errors="replace"))
-            except json.JSONDecodeError:
-                continue
-            _walk_json_ids(doc, collected)
-    # An ID declared in several places hashes as the sorted combination, so the
-    # result is deterministic and any one declaration changing is visible.
-    return {cid: stable_hash(*sorted(hs)) for cid, hs in collected.items()}
+    """Map stable ID -> definition hash across all epic docs (md + model JSON).
+
+    Delegates to ``chief_wiggum.hashing.hash_epic_definitions`` (#169) — the
+    single implementation of contract-block hashing, also reused by
+    ``check_traceability.py`` for per-link suspect propagation.
+    """
+    return hash_epic_definitions(cfg.repo / cfg.epic_docs)
 
 
 # ---- suite parsers (pluggable, per target repo) --------------------------------
@@ -296,17 +281,93 @@ def parse_pass_fail_lines(stdout: str) -> set[str]:
     return passed - failed
 
 
-def run_suite(cfg: Config, suite: Suite) -> set[str]:
-    """Run one suite and return its passing case IDs, namespaced by suite name.
+def junit_case_files(cfg: Config, suite: Suite, xml_text: str) -> dict[str, str]:
+    """Map junit case IDs to repo-relative source files (#207).
+
+    Prefers the testcase ``file`` attribute (xunit1); falls back to resolving
+    the dotted ``classname`` against the suite's cwd (``tests.test_widget`` ->
+    ``tests/test_widget.py``, trying with the trailing class segment dropped).
+    Cases that resolve to no existing file are simply absent from the map —
+    ``score`` counts them in ``test_files_unresolved``.
+    """
+    root = ET.fromstring(xml_text)
+    out: dict[str, str] = {}
+    base = (cfg.repo / suite.cwd).resolve()
+    for case in root.iter("testcase"):
+        cls = case.get("classname") or case.get("file") or ""
+        cid = f"{suite.name}::{cls}::{case.get('name', '')}"
+        fattr = case.get("file")
+        candidates = [base / fattr] if fattr else []
+        if cls:
+            parts = cls.split(".")
+            candidates.append(base.joinpath(*parts).with_suffix(".py"))
+            if len(parts) > 1:  # trailing segment may be a test class
+                candidates.append(base.joinpath(*parts[:-1]).with_suffix(".py"))
+        for cand in candidates:
+            if cand.is_file():
+                try:
+                    out[cid] = cand.resolve().relative_to(cfg.repo.resolve()).as_posix()
+                except ValueError:  # outside the repo — leave unresolved
+                    pass
+                break
+    return out
+
+
+def go_case_dirs(cfg: Config, suite: Suite, stdout: str) -> dict[str, str]:
+    """Map go-test-json case IDs to repo-relative package DIRECTORIES (#207).
+
+    Go's import path prefixes the module name, which the parser doesn't know;
+    progressively shorter suffixes of the package path are tried as
+    directories under the suite cwd, then the repo root. Unmatched packages
+    stay unresolved (counted by ``score``), never guessed.
+    """
+    out: dict[str, str] = {}
+    pkg_dirs: dict[str, str | None] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        test, pkg = ev.get("Test"), ev.get("Package", "")
+        if not test or not pkg:
+            continue
+        if pkg not in pkg_dirs:
+            pkg_dirs[pkg] = None
+            parts = pkg.split("/")
+            for i in range(len(parts)):
+                rel = "/".join(parts[i:])
+                for root in (cfg.repo / suite.cwd, cfg.repo):
+                    if (root / rel).is_dir():
+                        pkg_dirs[pkg] = (
+                            (root / rel).resolve().relative_to(cfg.repo.resolve()).as_posix()
+                        )
+                        break
+                if pkg_dirs[pkg]:
+                    break
+        if pkg_dirs[pkg]:
+            out[f"{suite.name}::{pkg}::{test}"] = pkg_dirs[pkg]
+    return out
+
+
+def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
+    """Run one suite; return (passing case IDs, case-ID -> source file/dir map),
+    both namespaced by suite name.
 
     A non-zero exit is expected when tests fail — the parsed per-case results
-    are the signal, not the exit code.
+    are the signal, not the exit code. The file map (#207) feeds `protected`'s
+    report-only high-water-test-file cue; unresolvable cases are absent here
+    and surfaced by ``score`` as ``test_files_unresolved``.
     """
     proc = subprocess.run(
         suite.cmd, shell=True, cwd=cfg.repo / suite.cwd, capture_output=True, text=True
     )
+    files: dict[str, str] = {}
     if suite.parser == "go-test-json":
         passed = parse_go_test_json(proc.stdout)
+        files = go_case_dirs(cfg, suite, proc.stdout)
     elif suite.parser == "junit-xml":
         if not suite.report:
             raise RatchetError(f"suite {suite.name!r}: junit-xml parser needs `report`")
@@ -317,6 +378,7 @@ def run_suite(cfg: Config, suite: Suite) -> set[str]:
                 f"{proc.stderr[-2000:]}"
             )
         passed = parse_junit_xml(report.read_text())
+        files = junit_case_files(cfg, suite, report.read_text())
     elif suite.parser == "pass-fail-lines":
         passed = parse_pass_fail_lines(proc.stdout)
     else:
@@ -326,7 +388,8 @@ def run_suite(cfg: Config, suite: Suite) -> set[str]:
             f"ratchet: suite {suite.name!r} produced no passing cases "
             f"(exit {proc.returncode}):\n{proc.stderr[-2000:]}\n"
         )
-    return {f"{suite.name}::{cid}" for cid in passed}
+    ids = {f"{suite.name}::{cid}" for cid in passed}
+    return ids, {cid: f for cid, f in files.items() if cid in ids}
 
 
 # ---- complexity + churn snapshot (report-only dimension) -----------------------
@@ -471,32 +534,161 @@ def load_journal(cfg: Config) -> list[dict]:
     return records
 
 
+# --- gate-authority journal primitives (chief-wiggum#198) ---------------------
+# Path-based so `check_gate_validation.py` can journal/read wire events with only
+# the journal path (it has no ratchet Config), while the chain format stays owned
+# here in ratchet.py — the journal's single writer of record.
+
+
+def _read_journal_path(journal_path: str | Path) -> list[dict]:
+    p = Path(journal_path)
+    if not p.is_file():
+        return []
+    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+
+
+# The only valid gate-authority actions. A `details` value outside this set is
+# NOT an authority action — it must never flip a wired gate to un-wired (finding
+# 1): `last_authority_action` ignores it rather than treating it as an unwire.
+_AUTHORITY_ACTIONS = ("wire", "unwire")
+
+
+def verified_prefix(journal_path: str | Path) -> list[dict]:
+    """The journal entries whose hash chain verifies from genesis, stopping
+    BEFORE the first broken OR unparseable link. A TOLERANT read for facts that
+    must survive a LATER tamper: "was this gate wired" is knowable from an
+    early, still-valid entry even when a subsequent entry breaks the chain (a
+    bad hash) OR is garbage that won't parse — the demotion path depends on that
+    (a broken/garbled tail is itself a stale condition to demote ON, not one
+    that should erase the knowledge the gate was blocking). Parsing is
+    line-by-line so a non-JSON trailing line stops the prefix instead of
+    crashing the whole read (finding 2)."""
+    p = Path(journal_path)
+    if not p.is_file():
+        return []
+    good: list[dict] = []
+    prev = "genesis"
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            break  # garbage tail — stop before it, keep the valid prefix
+        if not isinstance(rec, dict):
+            break
+        body = {k: v for k, v in rec.items() if k != "record_hash"}
+        if rec.get("record_hash") != stable_hash(prev, json.dumps(body, sort_keys=True)):
+            break
+        good.append(rec)
+        prev = rec["record_hash"]
+    return good
+
+
+def last_authority_action(journal_path: str | Path, gate: str) -> str | None:
+    """`'wire'` / `'unwire'` of the LAST gate-authority event for `gate` in the
+    verified prefix, or None if the gate was never wired. This is the
+    tamper-evident "is this gate currently under blocking authority" fact —
+    read from journaled events, never from a hand-writable file.
+
+    Only `wire`/`unwire` are authority actions: a hash-VALID gate-authority
+    event carrying any OTHER `details` (e.g. a bogus `noop` slipped in after a
+    real wire) is IGNORED, never treated as an un-wiring — it must never flip a
+    wired gate to un-wired and suppress the demotion (finding 1)."""
+    for rec in reversed(verified_prefix(journal_path)):
+        if rec.get("event") == GATE_AUTHORITY and rec.get("ref") == gate:
+            action = rec.get("details")
+            if action in _AUTHORITY_ACTIONS:
+                return action
+            # else: not a real authority action — skip, keep looking for the
+            # last genuine wire/unwire.
+    return None
+
+
+def append_authority_event(journal_path: str | Path, gate: str, action: str,
+                           wired_rid: str | None = None) -> str:
+    """Append a hash-chained gate-authority event (``wire``/``unwire``) for
+    `gate`. Refuses to append onto a broken chain (fail closed — a tampered
+    journal must not be silently extended). Returns the new ``rec-NNNNN`` id."""
+    if action not in ("wire", "unwire"):
+        raise RatchetError(f"gate-authority action must be wire|unwire, got {action!r}")
+    # Robust broken/garbled-chain detection: compare the verified prefix against
+    # the raw non-empty line count WITHOUT a full JSON parse (a garbage tail
+    # must raise TamperError, not a JSONDecodeError — finding 3's append path).
+    p = Path(journal_path)
+    raw_lines = [ln for ln in p.read_text().splitlines() if ln.strip()] if p.is_file() else []
+    verified = verified_prefix(journal_path)
+    if len(verified) != len(raw_lines):
+        raise TamperError(
+            f"cannot append a gate-authority event: {journal_path} chain is broken — fail closed"
+        )
+    prev = verified[-1]["record_hash"] if verified else "genesis"
+    body = {
+        "record_id": f"rec-{len(verified) + 1:05d}",
+        "event": GATE_AUTHORITY,
+        "ref": gate,
+        "details": action,
+        "wired_rid": wired_rid,
+        "merged": False,
+    }
+    body["record_hash"] = stable_hash(
+        prev, json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True)
+    )
+    path = Path(journal_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        f.write(json.dumps(body, sort_keys=True) + "\n")
+    return body["record_id"]
+
+
 def derive_highwater(records: list[dict]) -> dict:
     """High-water = union of every case passing in a MERGED record, plus the
     definition hash each contract had when it first entered. Amendments and
-    retirements are deliberate, journaled human acts that move the baseline."""
+    retirements are deliberate, journaled human acts that move the baseline.
+
+    Contract-hash keys are canonicalized on read: journals written before
+    ``hash_epic_definitions`` keyed by canonical form (PR #181 review) may
+    carry raw-cased IDs (``CTR-BIL-001``), and without canonicalization here
+    every such contract would falsely read as *removed* against a new
+    canonical scorecard. The hash VALUES cover block content only, so they
+    compare identically across the change."""
     pass_set: set[str] = set()
     contract_hashes: dict[str, str] = {}
+    verifier_hashes: dict[str, str] = {}
     for rec in records:
         if rec.get("merged"):
             sc = rec.get("scorecard", {}) or {}
             pass_set.update(sc.get("pass_set", []) or [])
             for cid, h in (sc.get("contract_hashes", {}) or {}).items():
-                contract_hashes.setdefault(cid, h)
+                contract_hashes.setdefault(canonical_id(cid), h)
+            # Verifier-test hashes (#206): same first-entry-wins semantics.
+            # Journals written before the dimension existed carry no field and
+            # contribute nothing — tolerated unchanged, like `quality`.
+            for ref, h in (sc.get("verifier_test_hashes", {}) or {}).items():
+                verifier_hashes.setdefault(ref, h)
         for cid, h in (rec.get("amended", {}) or {}).items():
-            contract_hashes[cid] = h
+            contract_hashes[canonical_id(cid)] = h
         for cid in rec.get("retired", []) or []:
-            contract_hashes.pop(cid, None)
+            contract_hashes.pop(canonical_id(cid), None)
+        for ref, h in (rec.get("amended_verifiers", {}) or {}).items():
+            verifier_hashes[ref] = h
+        for ref in rec.get("retired_verifiers", []) or []:
+            verifier_hashes.pop(ref, None)
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
+        "verifier_test_hashes": verifier_hashes,
         "quality": derive_quality_highwater(records),
     }
 
 
 def violations(scorecard: dict, highwater: dict) -> dict:
     cur_pass = set(scorecard.get("pass_set", []))
-    cur_defs = scorecard.get("contract_hashes", {})
+    # Canonicalize both sides of the join (see derive_highwater) so a scorecard
+    # written by an older version cannot make canonical high-water keys look
+    # removed, and vice versa.
+    cur_defs = {canonical_id(c): h for c, h in (scorecard.get("contract_hashes", {}) or {}).items()}
     missing = sorted(set(highwater["pass_set"]) - cur_pass)
     weakened, removed = [], []
     for cid, h in sorted(highwater["contract_hashes"].items()):
@@ -504,7 +696,25 @@ def violations(scorecard: dict, highwater: dict) -> dict:
             removed.append(cid)
         elif cur_defs[cid] != h:
             weakened.append(cid)
-    return {"missing_tests": missing, "weakened_contracts": weakened, "removed_contracts": removed}
+    # Verifier-test bodies (#206): a high-water verifier test whose body hash
+    # changed was rewritten behind its still-green test ID (channel C1c); one
+    # that vanished was removed. Verifier refs are file::function keys, not
+    # stable IDs — no canonicalization. Highwater caches written before the
+    # dimension existed lack the key; tolerate them.
+    cur_v = scorecard.get("verifier_test_hashes", {}) or {}
+    vweakened, vremoved = [], []
+    for ref, h in sorted((highwater.get("verifier_test_hashes", {}) or {}).items()):
+        if ref not in cur_v:
+            vremoved.append(ref)
+        elif cur_v[ref] != h:
+            vweakened.append(ref)
+    return {
+        "missing_tests": missing,
+        "weakened_contracts": weakened,
+        "removed_contracts": removed,
+        "weakened_verifier_tests": vweakened,
+        "removed_verifier_tests": vremoved,
+    }
 
 
 # ---- subcommands ---------------------------------------------------------------
@@ -570,19 +780,38 @@ def cmd_score(args) -> int:
     cfg = load_config(repo_root(args.repo))
     contract_hashes = load_contract_hashes(cfg)
     pass_set: set[str] = set()
-    if not args.no_tests:
-        for suite in cfg.suites:
-            pass_set |= run_suite(cfg, suite)
+    test_files: dict[str, str] = {}
+    for suite in cfg.suites:
+        if args.no_tests:
+            break
+        ids, files = run_suite(cfg, suite)
+        pass_set |= ids
+        test_files.update(files)
     quality = {"skipped": "quality metrics disabled (--no-quality)"}
     if not args.no_quality:
         quality = score_quality(cfg, venv=args.venv, gobin=args.gobin)
+    # Verifier-test body hashes (#206): tests annotated `@cw-trace verifies`
+    # are goalposts — their bodies are hashed and ratcheted like contract
+    # definitions. Files the extractor cannot hash are SURFACED, not dropped.
+    vscan = scan_verifier_hashes(cfg.repo)
     sc = {
         "passed": len(pass_set),
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
+        "verifier_test_hashes": vscan.hashes,
+        "verifier_targets": vscan.targets,
+        "test_files": test_files,
+        "test_files_unresolved": sorted(cid for cid in pass_set if cid not in test_files),
         "tests_run": not args.no_tests,
         "quality": quality,
     }
+    if vscan.unscanned:
+        sc["verifier_unscanned"] = vscan.unscanned
+        sys.stderr.write(
+            "ratchet: verifier annotations the extractor could not hash "
+            "(see docs/ratchet.md — surfaced, never silently dropped):\n"
+            + "".join(f"  {reason}: {n}\n" for reason, n in sorted(vscan.unscanned.items()))
+        )
     _write_json(cfg.scorecard, sc)
     if "skipped" in quality:
         qmsg = f"quality={quality['skipped']}"
@@ -594,9 +823,26 @@ def cmd_score(args) -> int:
         )
     print(
         f"ratchet: scored — {len(pass_set)} passing case(s), "
-        f"{len(contract_hashes)} contract definition(s); {qmsg}"
+        f"{len(contract_hashes)} contract definition(s), "
+        f"{len(vscan.hashes)} verifier test hash(es); {qmsg}"
     )
     return 0
+
+
+def suspect_links_for(cfg: Config, sc: dict) -> list[dict]:
+    """Suspect links (#169) visible from THIS scorecard's contract hashes.
+
+    Cross-references the ``docs/quality/trace-links.json`` sidecar (written by
+    ``check_traceability.py --write-links`` once its gate passes) against the
+    CURRENT scorecard's ``contract_hashes``: a link recorded against a hash
+    that no longer matches means the contract it claims to guard/verify
+    changed since that claim was last validated. A definition-hash change with
+    surviving suspect links must be VISIBLE here, not silently absorbed into
+    "the ratchet held" — report-only (see docs/gate-rollout.md); it does not
+    change ``check``'s exit code.
+    """
+    sidecar = load_sidecar(cfg.repo / SIDECAR_RELPATH)
+    return find_suspect_links(sidecar, sc.get("contract_hashes", {}) or {})
 
 
 def cmd_check(args) -> int:
@@ -611,17 +857,42 @@ def cmd_check(args) -> int:
     qregs = quality_regressions(
         sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
     )
+    susp = suspect_links_for(cfg, sc)
     hard = {k: v[k] for k in ("missing_tests", "weakened_contracts", "removed_contracts")}
+    # Verifier-test findings (#206) are a NEW dimension: report-only per
+    # docs/gate-rollout.md until validated, blocking only under the opt-in
+    # --gate-verifier-tests flag (mirroring --gate-quality's rollout).
+    vfind = {k: v[k] for k in ("weakened_verifier_tests", "removed_verifier_tests")}
+    gate_verifier = getattr(args, "gate_verifier_tests", False)
     if args.format == "json":
-        print(json.dumps({**hard, "quality_regressions": qregs}, indent=2))
-    elif qregs:
-        tag = "VIOLATED (gated)" if args.gate_quality else "report-only"
-        sys.stderr.write(f"ratchet: complexity/churn regressions [{tag}]:\n")
-        for r in qregs:
+        print(json.dumps(
+            {**hard, **vfind, "quality_regressions": qregs, "suspect_links": susp}, indent=2))
+    else:
+        if any(vfind.values()):
+            tag = "VIOLATED (gated)" if gate_verifier else "report-only"
             sys.stderr.write(
-                f"  {r['metric']}: {r['current']} > limit {r['limit']} "
-                f"(best {r['best']}, +{r['delta']})\n"
+                f"ratchet: verifier-test body changes [{tag}] — a `@cw-trace verifies` "
+                "test was rewritten/removed behind its test ID (channel C1c; "
+                "see docs/ratchet.md):\n")
+            for ref in vfind["weakened_verifier_tests"]:
+                sys.stderr.write(f"  weakened: {ref}\n")
+            for ref in vfind["removed_verifier_tests"]:
+                sys.stderr.write(f"  removed:  {ref}\n")
+        if qregs:
+            tag = "VIOLATED (gated)" if args.gate_quality else "report-only"
+            sys.stderr.write(f"ratchet: complexity/churn regressions [{tag}]:\n")
+            for r in qregs:
+                sys.stderr.write(
+                    f"  {r['metric']}: {r['current']} > limit {r['limit']} "
+                    f"(best {r['best']}, +{r['delta']})\n"
+                )
+        if susp:
+            sys.stderr.write(
+                f"ratchet: {len(susp)} suspect link(s) [report-only] — a definition changed "
+                "since the link was last validated (see docs/traceability.md):\n"
             )
+            for s in susp:
+                sys.stderr.write(f"  {s['file']}:{s['line']} {s['verb']} {s['target']}\n")
     if any(hard.values()):
         if args.format != "json":
             sys.stderr.write(
@@ -630,6 +901,8 @@ def cmd_check(args) -> int:
                 f" weakened_contracts={hard['weakened_contracts']}"
                 f" removed_contracts={hard['removed_contracts']}\n"
             )
+        return 1
+    if gate_verifier and any(vfind.values()):
         return 1
     if args.gate_quality and qregs:
         return 1
@@ -646,6 +919,7 @@ def cmd_regressed(args) -> int:
     out["quality_regressions"] = quality_regressions(
         sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
     )
+    out["suspect_links"] = suspect_links_for(cfg, sc)
     print(json.dumps(out, indent=2))
     return 0
 
@@ -664,9 +938,56 @@ def cmd_record(args) -> int:
         status = "held"
     amended = {}
     for cid in args.amend or []:
+        cid = canonical_id(cid)  # match hash_epic_definitions' canonical keys
         if cid not in sc.get("contract_hashes", {}):
             raise RatchetError(f"--amend {cid}: not defined in the current epic docs")
         amended[cid] = sc["contract_hashes"][cid]
+    # Verifier-test re-baselining (#206): --amend-verifier moves one test's
+    # body baseline (a deliberate refactor).
+    cur_v = sc.get("verifier_test_hashes", {}) or {}
+    v_targets = sc.get("verifier_targets", {}) or {}
+    hw_v = prev_hw.get("verifier_test_hashes", {}) or {}
+    amended_verifiers = {}
+    for ref in args.amend_verifier or []:
+        if ref not in cur_v:
+            raise RatchetError(
+                f"--amend-verifier {ref}: no `@cw-trace verifies` test with that "
+                "ref in the current scorecard (run `score` first; ref form is "
+                "<relpath>::<function>)")
+        amended_verifiers[ref] = cur_v[ref]
+    # Amending a CONTRACT does NOT silently bless its verifier tests' new
+    # bodies (#206 soundness review): that would let a C1c rewrite ride along
+    # invisibly on an unrelated contract-wording amend. Instead, a verifier
+    # test of an amended contract whose body CHANGED vs the high-water mark
+    # must be acknowledged EXPLICITLY with --amend-verifier — so every blessed
+    # body change is a named, journaled, operator-visible act. (An unchanged
+    # body needs nothing: its hash already matches, no violation to clear.)
+    needs_explicit = []
+    for cid in amended:
+        for ref, targets in v_targets.items():
+            if cid not in targets or ref not in cur_v:
+                continue
+            if ref in hw_v and cur_v[ref] != hw_v[ref] and ref not in amended_verifiers:
+                needs_explicit.append(ref)
+    if needs_explicit:
+        raise RatchetError(
+            "--amend of a contract whose verifier test body ALSO changed must "
+            "bless that test explicitly (channel C1c — a body rewrite must not "
+            "ride along invisibly on a contract amend). Re-run adding: "
+            + " ".join(f"--amend-verifier {r}" for r in sorted(set(needs_explicit))))
+    # --retire-verifier removes a ref from the high-water mark (its test was
+    # legitimately deleted). Validate against the high-water — you can only
+    # retire what is actually tracked — so a typo'd ref is SURFACED, not a
+    # silent no-op (docs/gate-rollout.md doctrine). A ref absent from
+    # high-water is either a typo or an already-retired ref; either way the
+    # human should know their retire did nothing.
+    retired_verifiers = sorted(set(args.retire_verifier or []))
+    hw_v = prev_hw.get("verifier_test_hashes", {}) or {}
+    for ref in retired_verifiers:
+        if ref not in hw_v:
+            raise RatchetError(
+                f"--retire-verifier {ref}: not in the current high-water mark "
+                "(nothing to retire — check the ref, form is <relpath>::<function>)")
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
         "event": args.event,
@@ -675,7 +996,9 @@ def cmd_record(args) -> int:
         "merged": bool(args.merged),
         "scorecard": sc,
         "amended": amended,
-        "retired": sorted(args.retire or []),
+        "retired": sorted(canonical_id(c) for c in (args.retire or [])),
+        "amended_verifiers": amended_verifiers,
+        "retired_verifiers": retired_verifiers,
         "ratchet_status": status,
         "notes": args.notes,
     }
@@ -695,9 +1018,15 @@ def cmd_record(args) -> int:
 def cmd_recent(args) -> int:
     cfg = load_config(repo_root(args.repo))
     for rec in load_journal(cfg)[-args.n:]:
+        # gate-authority events (chief-wiggum#198) carry no ratchet_status/
+        # gate_result — tolerate their absence rather than KeyError.
+        if rec.get("event") == GATE_AUTHORITY:
+            print(f"- {rec['record_id']} [authority] {rec['event']} {rec['ref']} "
+                  f"action={rec.get('details')} wired_rid={rec.get('wired_rid')}")
+            continue
         print(
-            f"- {rec['record_id']} [{rec['ratchet_status']}] {rec['event']} {rec['ref']} "
-            f"gate={rec['gate_result']} merged={rec['merged']}: {rec.get('notes', '')}"
+            f"- {rec['record_id']} [{rec.get('ratchet_status', '?')}] {rec['event']} {rec['ref']} "
+            f"gate={rec.get('gate_result', '?')} merged={rec.get('merged', False)}: {rec.get('notes', '')}"
         )
     return 0
 
@@ -733,6 +1062,50 @@ def protected_hits(cfg: Config, changed: list[str]) -> list[str]:
     return sorted(f for f in changed if any(p.match(f) for p in patterns))
 
 
+def highwater_test_file_cue(cfg: Config, changed: list[str]) -> None:
+    """Report-only scrutiny cue (#207): note when the branch diff modifies a
+    file (or go package dir) hosting high-water pass-set tests. NEVER affects
+    the exit code — the blocking answer to test-body rewrites is the
+    verifier-hash dimension (#206); this is the day-one reviewer cue for
+    everything else. Degrades gracefully and VISIBLY: a broken journal chain
+    or missing scorecard says so instead of silently skipping."""
+    try:
+        hw_pass = set(derive_highwater(load_journal(cfg))["pass_set"])
+    except TamperError:
+        sys.stderr.write(
+            "ratchet: note — journal chain broken; high-water test-file cue "
+            "unavailable (run `check` for the failing record)\n")
+        return
+    if not hw_pass:
+        return
+    if not cfg.scorecard.is_file():
+        sys.stderr.write(
+            "ratchet: note — no scorecard; high-water test-file cue unavailable "
+            "(run `score` first)\n")
+        return
+    sc = json.loads(cfg.scorecard.read_text())
+    tf = sc.get("test_files", {}) or {}
+    hosts: dict[str, list[str]] = {}
+    for cid in sorted(hw_pass):
+        f = tf.get(cid)
+        if f:
+            hosts.setdefault(f, []).append(cid)
+    touched: dict[str, list[str]] = {}
+    for f in changed:
+        for host, cids in hosts.items():
+            if f == host or f.startswith(host.rstrip("/") + "/"):
+                touched.setdefault(host, cids)
+    if touched:
+        sys.stderr.write(
+            f"ratchet: note — {len(touched)} high-water test file(s) modified on "
+            "this branch; scrutinize the test diffs before merge (a body rewrite "
+            "keeps its test ID green — see docs/ratchet.md, channel C1c):\n")
+        for host, cids in sorted(touched.items()):
+            sys.stderr.write(f"  {host}\n")
+            for cid in cids:
+                sys.stderr.write(f"    hosts high-water case {cid}\n")
+
+
 def cmd_protected(args) -> int:
     cfg = load_config(repo_root(args.repo))
     proc = subprocess.run(
@@ -741,7 +1114,9 @@ def cmd_protected(args) -> int:
     )
     if proc.returncode != 0:
         raise RatchetError(f"git diff failed: {proc.stderr.strip()}")
-    hits = protected_hits(cfg, proc.stdout.splitlines())
+    changed = proc.stdout.splitlines()
+    hits = protected_hits(cfg, changed)
+    highwater_test_file_cue(cfg, changed)
     if hits:
         sys.stderr.write(
             "ratchet: PROTECTED PATHS TOUCHED — park for human review, do not merge:\n"
@@ -752,9 +1127,49 @@ def cmd_protected(args) -> int:
     return 0
 
 
+def _scanner_version() -> str:
+    """Hash-derived ``--scanner-version``: the source of this module plus its
+    finding-affecting local dependencies (hashing.py for
+    stable_hash/hash_epic_definitions, trace_ids.py for the shared stable-ID
+    grammar, trace_links.py for suspect-link propagation, and the lazily
+    imported quality engines churn.py/complexity.py that shape the
+    quality_regressions findings ``check`` reports). No hand-bumped constant to
+    forget (INV-fh-005).
+    @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    q_dir = here.parent / "quality"
+    return scanner_version(
+        here,
+        cw_dir / "hashing.py",
+        cw_dir / "trace_ids.py",
+        cw_dir / "trace_links.py",
+        cw_dir / "verifier_hashes.py",
+        q_dir / "churn.py",
+        q_dir / "complexity.py",
+    )
+
+
 def main() -> int:
+    # ratchet's CLI is subcommand-based (dest="cmd", required=True below), so
+    # --scanner-version can't be reached via `args.scanner_version` after
+    # parse_args() the way the single-positional gate scripts do — a missing
+    # subcommand would already have failed argparse's own validation. Checked
+    # directly against argv instead, so `ratchet.py --scanner-version` (no
+    # subcommand) works, prints, and exits 0 with no other action — same
+    # contract as the other four scanner-version gates.
+    if "--scanner-version" in sys.argv[1:]:
+        print(_scanner_version())
+        return 0
+
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--scanner-version",
+        action="store_true",
+        help="Print the hash-derived scanner version (source hash of this module + its "
+        "chief_wiggum deps) and exit; works with no subcommand",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -778,6 +1193,9 @@ def main() -> int:
         common(sp)
         if name == "check":
             sp.add_argument("--format", choices=["text", "json"], default="text")
+            sp.add_argument("--gate-verifier-tests", action="store_true",
+                            help="ALSO exit 1 on weakened/removed verifier-test bodies "
+                                 "(#206; report-only by default per docs/gate-rollout.md)")
             sp.add_argument("--gate-quality", action="store_true",
                             help="also block on complexity/churn regressions "
                                  "(off by default — report-only, see docs/gate-rollout.md)")
@@ -786,11 +1204,22 @@ def main() -> int:
 
     sp = sub.add_parser("record", help="append a hash-chained journal record")
     common(sp)
-    sp.add_argument("--event", required=True, choices=["baseline", "ticket", "wave", "epic-close"])
-    sp.add_argument("--ref", default="", help="ticket #, wave number, or epic slug")
+    sp.add_argument(
+        "--event", required=True,
+        choices=["baseline", "ticket", "wave", "epic-close", "gate-validation"],
+    )
+    sp.add_argument(
+        "--ref", default="",
+        help="ticket #, wave number, epic slug, or (for gate-validation) the gate name",
+    )
     sp.add_argument("--gate", default="pass", choices=["pass", "fail"])
     sp.add_argument("--merged", action="store_true", help="the change reached the default branch")
     sp.add_argument("--notes", default="")
+    sp.add_argument("--amend-verifier", action="append", metavar="TESTREF",
+                    help="re-baseline one verifier test's body hash "
+                         "(<relpath>::<function>; a deliberate, journaled refactor)")
+    sp.add_argument("--retire-verifier", action="append", metavar="TESTREF",
+                    help="drop a verifier test ref from the high-water mark")
     sp.add_argument("--amend", action="append", metavar="ID",
                     help="accept ID's current definition hash as the new baseline (human-approved)")
     sp.add_argument("--retire", action="append", metavar="ID",

@@ -103,7 +103,16 @@ def bucket(repo: str) -> dict:
 
 
 def lizard_ccn(files: list[str], lizard_bin: str | None) -> list[dict]:
-    """Per-function CCN + length via lizard --csv. Returns list of dicts."""
+    """Per-function CCN + length via lizard --csv. Returns list of dicts.
+
+    Each row also carries the source ``file`` lizard reported it against
+    (the CSV's 7th column) — added for #187's ``hotspots.py``, which needs
+    per-FILE complexity (grouping these rows by ``file``) rather than the
+    repo/language-wide distribution ``dist()`` computes. ``dist()`` and every
+    existing caller ignore unknown dict keys, so this is additive: reusing
+    ``lizard_ccn`` itself (CTR-fh-030's "complexity.lizard_ccn" reuse target)
+    rather than a second lizard invocation path.
+    """
     if not files or not lizard_bin:
         return []
     rows: list[dict] = []
@@ -112,10 +121,13 @@ def lizard_ccn(files: list[str], lizard_bin: str | None) -> list[dict]:
         r = run(lizard_bin, "--csv", *chunk)
         for line in csv.reader(io.StringIO(r.stdout)):
             # lizard csv: nloc,ccn,token,param,length,location,file,func,longname,start,end
-            if len(line) < 5:
+            if len(line) < 7:
                 continue
             try:
-                rows.append({"nloc": int(line[0]), "ccn": int(line[1]), "length": int(line[4])})
+                rows.append({
+                    "nloc": int(line[0]), "ccn": int(line[1]), "length": int(line[4]),
+                    "file": line[6],
+                })
             except ValueError:
                 continue
     return rows

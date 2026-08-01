@@ -1,0 +1,30 @@
+{
+  "$comment": "Synthetic FULLY-MATRIX-CAPPED cost-inputs fixture for tests/test_business_consultant.py -- every meter's capped_by names a key present in adopted-capped.json's matrix, so per-tier worst-case is finite (no capped_by:null, no -1 sentinel). Controlled numbers for exact arithmetic assertions, not a real vendor quote.",
+  "as_of": "2026-07-01",
+  "currency": "USD",
+  "flat_monthly": 5.0,
+  "tier_fixed": {
+    "T1": 0.0,
+    "T2": 40.0
+  },
+  "meters": [
+    {
+      "id": "email_send",
+      "unit": "send",
+      "rate": 0.002,
+      "unit_desc": "fixture transactional email, per send",
+      "capped_by": "emails_per_month",
+      "provenance": "operator-verified",
+      "verified_date": "2026-07-01"
+    },
+    {
+      "id": "media_delivery_hour",
+      "unit": "hour",
+      "rate": 0.06,
+      "unit_desc": "fixture media delivery, per hour",
+      "capped_by": "media_hours_per_month",
+      "provenance": "operator-verified",
+      "verified_date": "2026-07-01"
+    }
+  ]
+}
