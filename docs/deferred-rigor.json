@@ -1,0 +1,110 @@
+{
+  "$comment": "Deferred system-layer rigor index (chief-wiggum#171, #161). Each item is a DEFERRED decision litigated by the 2026-07-19 3-lens quorum (soundness-refuter / adoption-cost / completeness) — the designs are SETTLED; when an item's trigger fires, file a full issue from its settled_notes rather than relitigating. scripts/check_deferred_triggers.py evaluates the mechanical checks (report-only scrutiny cue, never a gate) and /reflect runs it each pass. Ticket-every-deferral doctrine: this file replaces the open index issue #171 as the durable home.",
+  "source_issues": [171, 161],
+  "items": [
+    {
+      "id": "reflexion-conformance-c4",
+      "title": "Reflexion conformance gate + C4 architecture.json",
+      "source_issue": 171,
+      "trigger": "repo >15 modules OR second human contributor",
+      "checks": [
+        {"kind": "module_count_gt", "value": 15},
+        {"kind": "human_contributors_gte", "value": 2}
+      ],
+      "settled_notes": "declared vs extracted graph diff; ArchUnit-style freeze store WITH owner/expiry/risk per frozen divergence (refuter #9); edges classified by evidence source, absence-claims only where extractor has channel authority (refuter #7); import-edge extraction ships EARLIER as a code_query emission (#159 follow-on)"
+    },
+    {
+      "id": "edge-contracts",
+      "title": "edges.json full edge contracts (retry/idempotency/dup-injection)",
+      "source_issue": 171,
+      "trigger": "first duplicate-delivery or retry-storm bug in prod",
+      "checks": [
+        {"kind": "telemetry_bug_keyword", "keywords": ["duplicate", "retry storm", "retry-storm", "double-send", "double send"]}
+      ],
+      "settled_notes": "idempotency contracts must name dedupe boundary + protected side effects; tests assert downstream effect cardinality under retry/concurrency/crash (refuter #11); external EDG- edges carry assumed-vs-probe-verified provider claims + required reconcile path (completeness #2); schema_ref + --against breaking-diff gate (completeness #5)"
+    },
+    {
+      "id": "trace-replayer",
+      "title": "Trace-conformance replayer",
+      "source_issue": 171,
+      "trigger": "first prod bug caused by a shipped state machine",
+      "checks": [
+        {"kind": "telemetry_bug_keyword", "keywords": ["state machine", "transition", "invalid state"]}
+      ],
+      "settled_notes": "events must come from an audited wrapper/storage layer, never sampled, else evidence-only (refuter #4-6); zero-observation guard via @cw-emits gate; per-entity replay != cross-entity invariants — history checkers are a separate rung (refuter #5). Already shipped now (free): new state machines emit {machine, entity_id, from, to, ts} under an OTel-conventioned name via /architect templates"
+    },
+    {
+      "id": "promql-bounded-liveness",
+      "title": "PromQL bounded-liveness thresholds",
+      "source_issue": 171,
+      "trigger": "first running system emitting the series",
+      "checks": [],
+      "settled_notes": "liveness -> bounded safety ('completes or dead-letters within T' = queue-age threshold); dlq named per async edge"
+    },
+    {
+      "id": "gate-attestations",
+      "title": "Gate attestations (ITE-6/DSSE, signed)",
+      "source_issue": 171,
+      "trigger": "external party contractually requires signed provenance",
+      "checks": [],
+      "settled_notes": "ratchet hash-chain journal is sufficient provenance until then; without key/code/journal separation signatures are theater (refuter #14)"
+    },
+    {
+      "id": "federation-registry",
+      "title": "Federation registry (trace-manifest.json, aggregator, can-i-deploy matrix)",
+      "source_issue": 171,
+      "trigger": ">=2 services in one product deploy independently AND a cross-service contract has broken in prod",
+      "checks": [
+        {"kind": "telemetry_bug_keyword", "keywords": ["cross-service", "contract break", "schema drift"]}
+      ],
+      "settled_notes": "never checkout-aggregate; per-repo CI manifests + central merge; manifests need negative-space checks vs self-reporting (refuter #15); verification results carry environment; ID lifecycle: status/superseded_by/owner, retired IDs leave orphan math (completeness #9)"
+    },
+    {
+      "id": "gate-validation-designer",
+      "title": "Automated gate-validation designer + mutation testing",
+      "source_issue": 171,
+      "trigger": ">5 gates make the manual protocol a real burden",
+      "checks": [
+        {"kind": "validated_gates_gt", "value": 5}
+      ],
+      "settled_notes": "seeds versioned separately from gate code; evasion seed classes mandatory; independent escape intake for the live matrix (refuter #18-20)"
+    },
+    {
+      "id": "security-tenancy-notation",
+      "title": "Security/tenancy/residency notation (trust_zone, region, security block per edge, data_class + carries reachability)",
+      "source_issue": 171,
+      "trigger": "first regulated/multi-tenant build post-Dogeared (SafeTrail-class) OR /saas-gate needs stable IDs for its probes",
+      "checks": [],
+      "settled_notes": "declared-graph label propagation only — NO taint analysis; rebind existing /saas-gate probes as verifies targets"
+    },
+    {
+      "id": "process-json",
+      "title": "process.json (PRC- approval chains, deploy windows, promotion order)",
+      "source_issue": 171,
+      "trigger": "second human joins deploys OR a compliance requirement demands recorded approvals",
+      "checks": [
+        {"kind": "human_contributors_gte", "value": 2}
+      ],
+      "settled_notes": "in-toto layout fields (functionaries, N-of-M, windows); break-glass record schema (scope, expiry, approver, incident ref) ships EARLIER inside the infra-writer issue"
+    },
+    {
+      "id": "migration-safety",
+      "title": "Migration safety (schema DDL single-writer, expand/contract sequencing)",
+      "source_issue": 171,
+      "trigger": "first multi-service schema migration",
+      "checks": [],
+      "settled_notes": "controls_field: schema.<store>; destructive step blocked while old-version writers registered"
+    },
+    {
+      "id": "gnosis-emission-cache",
+      "title": "Gnosis phase 2 — content-addressed emission cache",
+      "source_issue": 161,
+      "trigger": "query telemetry shows repeated whole-repo query shapes (writers/governs/map) are a real per-ticket cost, OR target repos grow beyond ~10^4 files",
+      "checks": [
+        {"kind": "telemetry_whole_repo_queries_gte", "value": 50},
+        {"kind": "file_count_gt", "value": 10000}
+      ],
+      "settled_notes": "Full settled design in issue #161 (do not weaken): per-file emission shards keyed (content_hash, scanner_source_hash), write-once CAS under ~/.chief-wiggum/index/<repo>/, path-free values, manifest-driven validity, claims never cached per-file, --no-cache dual-run zero-diff as the validation gate on a dirty worktree, /close-epic --gate coverage stays full-scan forever"
+    }
+  ]
+}
