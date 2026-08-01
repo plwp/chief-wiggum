@@ -126,7 +126,12 @@ target's current HEAD — the same `git_sha`/`--check` discipline as
 `scripts/hotspot_discovery.py`), and `Resolver.check_stale(payload)` returns a
 warning string when the recorded sha no longer matches HEAD — or when the
 field is missing entirely (unverifiable counts as a warning, never a silent
-pass). External trace-link entries carry `target_sha` per entry.
+pass). External trace-link entries carry `target_sha` per entry, and the
+trace-links sidecar (`quality/trace-links.json`) carries a top-level
+`target_sha` stamped at write time (additive; consumers tolerate its absence).
+The sha is provenance only: `verify` semantics remain hash re-anchoring — a
+link goes suspect when the content it was validated against re-hashes
+differently, which is strictly stronger than comparing shas.
 
 ## External trace-link store (`quality/external-links.json`)
 
@@ -165,6 +170,12 @@ Consumers:
 - `code_query.py` Plane B folds store entries in as a second annotation source,
   labeled `external-link-store`, so `orient` on an annotation-free sidecar
   target still gets real answers.
+
+Annotation sources are **additive**, by design and not by accident: in sidecar
+mode the external store is the sidecar-native source, but in-source `@cw-trace`
+annotations — if present in the target tree — still count exactly as they do
+in embedded mode. A repo mid-migration (or one that keeps a few in-source
+annotations deliberately) loses nothing by electing sidecar.
 
 ## Domain scope (`scope.json`)
 

@@ -440,7 +440,22 @@ def score_quality(cfg: Config, venv: str | None = None, gobin: str | None = None
         return {"skipped": f"quality engines unavailable: {e}"}
 
     repo = str(cfg.repo)
-    comp = _complexity.analyze(repo, venv=venv, gobin=gobin)
+
+    # #213 domain scope: quality baselines are computed over the IN-SCOPE
+    # population only. No scope file (the whole-repo default) means no filter
+    # at all — byte-identical to the pre-scope behavior. A malformed scope file
+    # skips the snapshot (fail-safe): it must never silently widen to whole-repo.
+    try:
+        scope = artifacts.load_scope_file(
+            artifacts.Resolver.resolve(cfg.repo).scope_path()
+        )
+    except ValueError as e:
+        return {"skipped": f"malformed scope file: {e}"}
+    path_filter = None if scope is None else (
+        lambda rel: artifacts.path_in_scope(scope, rel)
+    )
+
+    comp = _complexity.analyze(repo, venv=venv, gobin=gobin, path_filter=path_filter)
     if "skipped" in comp:
         return {"skipped": comp["skipped"], "note": comp.get("note")}
 
@@ -464,7 +479,7 @@ def score_quality(cfg: Config, venv: str | None = None, gobin: str | None = None
 
     # Relative churn = churned LOC (adds+deletes) / total tracked LOC. Nagappan &
     # Ball (2005): absolute churn is a poor signal; always normalise by size.
-    ch = _churn.analyze(repo, no_merges=True)
+    ch = _churn.analyze(repo, no_merges=True, path_filter=path_filter)
     churned = 0
     if "error" not in ch:
         c = ch.get("churn", {}) or {}

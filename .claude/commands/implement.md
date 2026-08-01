@@ -83,7 +83,7 @@ All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemin
 MILESTONE=$(gh issue view "$issue_number" --repo "$owner_repo" --json milestone -q '.milestone.title // empty')
 if [ -n "$MILESTONE" ]; then
   EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "$MILESTONE")
-  EPIC_DIR="$TARGET_REPO/docs/epics/$EPIC_SLUG"
+  EPIC_DIR="$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .epics_dir)/$EPIC_SLUG"
 fi
 ```
 

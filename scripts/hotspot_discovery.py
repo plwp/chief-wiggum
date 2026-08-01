@@ -88,6 +88,19 @@ def _default_out(target: str) -> str:
     return str(artifacts.Resolver.resolve(Path(target)).quality_dir() / "hotspots.json")
 
 
+def _scope_filter(target: str):
+    """Per-file scope predicate from the target's scope.json (#213 domain
+    scope): deciles are computed within scope. ``None`` when no scope file
+    exists (whole-repo — the unchanged default, identical output). A malformed
+    scope file raises ValueError (surfaced as an error by main; a typo must
+    never silently widen to whole-repo scope)."""
+    resolver = artifacts.Resolver.resolve(Path(target))
+    scope = artifacts.load_scope_file(resolver.scope_path())
+    if scope is None:
+        return None
+    return lambda rel: artifacts.path_in_scope(scope, rel)
+
+
 def render_text(result: dict) -> str:
     lines = [
         f"hotspots ({result['schema']}) @ {result.get('git_sha') or 'HEAD'} "
@@ -224,6 +237,12 @@ def main() -> int:
     if args.check:
         return run_check(target, out_path, venv=args.venv, gobin=args.gobin)
 
+    try:
+        path_filter = _scope_filter(target)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
     result = hotspots.discover(
         target,
         min_co=args.min_co,
@@ -233,6 +252,7 @@ def main() -> int:
         gobin=args.gobin,
         trend=not args.no_trend,
         dirty_ignore=_artifact_dirty_ignore(target, out_path),
+        path_filter=path_filter,
     )
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

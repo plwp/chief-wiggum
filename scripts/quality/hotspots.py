@@ -255,6 +255,7 @@ def discover(
     gobin: str | None = None,
     trend: bool = True,
     dirty_ignore: tuple[str, ...] = (DEFAULT_ARTIFACT_REL,),
+    path_filter=None,
 ) -> dict:
     """Compose churn x complexity x coupling into a ``hotspots/1`` record.
     Deterministic for a fixed ``(git_sha, window_days, normalization,
@@ -262,6 +263,13 @@ def discover(
     empty/no-history repo degrades to an empty ``hotspots`` list with a note,
     exactly like the reused engines do. All git walks are HEAD-based (never
     ``--all``), so unrelated local refs cannot change the output.
+
+    ``path_filter`` (optional predicate over the repo-relative path — #213
+    domain scope) restricts the RANKED POPULATION before normalization and
+    decile assignment: deciles are computed within scope, so a team's
+    tenth-decile file is the worst file it owns, not the worst file in the
+    monorepo. ``None`` (the default, and any all-pass filter — e.g. whole-repo
+    scope) leaves the output identical.
 
     @cw-trace guards CTR-fh-030 CTR-fh-031 CTR-fh-032 CTR-fh-033 INV-fh-001 INV-fh-007
     """
@@ -304,8 +312,12 @@ def discover(
 
     # Only files with BOTH churn history and complexity data are rankable —
     # a file lizard can't parse (or excluded from complexity's product-code
-    # bucket) simply has no complexity term to multiply.
-    candidate_files = sorted(set(churn_by_file) & set(complexity_by_file))
+    # bucket) simply has no complexity term to multiply. Out-of-scope files
+    # (#213 path_filter) leave the population BEFORE normalization/deciles.
+    candidate_files = sorted(
+        f for f in set(churn_by_file) & set(complexity_by_file)
+        if path_filter is None or path_filter(f)
+    )
     norm_churn = _normalize({f: churn_by_file[f] for f in candidate_files})
     norm_complexity = _normalize({f: complexity_by_file[f] for f in candidate_files})
 

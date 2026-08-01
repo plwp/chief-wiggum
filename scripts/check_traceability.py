@@ -699,6 +699,14 @@ def write_links_sidecar(
         annotations += scan_source(source_root)
     current_hashes = hash_epic_definitions(Path(epic_dir))
     body = build_sidecar(annotations, current_hashes, scanner_version=_scanner_version())
+    # Version binding (#213): stamp the target HEAD the sidecar was computed
+    # against. ADDITIVE key — load_sidecar/find_suspect_links tolerate its
+    # absence, so pre-existing sidecars keep loading. Suspect semantics remain
+    # hash re-anchoring (definition-hash compare), which is strictly stronger
+    # than a sha compare; the sha is provenance, not the verify mechanism.
+    body["target_sha"] = artifacts.head_sha(
+        Path(source_root) if source_root else Path(epic_dir)
+    )
     write_sidecar(path, body)
     return body
 

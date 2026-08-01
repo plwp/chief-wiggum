@@ -1051,3 +1051,37 @@ def test_cli_applicable_gate_prints_no_banner(tmp_path, capsys):
     captured = capsys.readouterr()
     assert json.loads(captured.out)["applicability"] == "applicable"
     assert "INAPPLICABLE" not in captured.err
+
+
+def test_write_links_sidecar_stamps_target_sha(tmp_path):
+    """#213 version binding: the sidecar carries the source repo's HEAD as an
+    ADDITIVE target_sha key (None outside a git repo — unverifiable, never a
+    crash); suspect detection stays hash-re-anchoring and ignores the stamp."""
+    import subprocess
+
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+
+    # Non-git source root -> stamped None (additive; consumers tolerate it).
+    body = ct.write_links_sidecar(epic, src, tmp_path / "links-nogit.json")
+    assert "target_sha" in body and body["target_sha"] is None
+
+    # Git source root -> the source repo's HEAD.
+    for args in (["init", "-q"], ["add", "-A"]):
+        subprocess.run(["git", "-C", str(src), *args], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(src), "-c", "user.name=T", "-c", "user.email=t@e.co",
+         "commit", "-q", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(src), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    links_path = tmp_path / "links-git.json"
+    body = ct.write_links_sidecar(epic, src, links_path)
+    assert body["target_sha"] == head
+    # The stamp is additive: loading + suspect detection behave as before.
+    reloaded = load_sidecar(links_path)
+    assert reloaded["target_sha"] == head
+    assert ct.check(epic, src, links_path=links_path).suspect_links == []

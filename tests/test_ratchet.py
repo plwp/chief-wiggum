@@ -953,3 +953,52 @@ def test_cmd_pathset_needs_no_ratchet_config(tmp_path, capsys):
     args = argparse.Namespace(repo=str(repo), base=base,
                               pathset_file=str(spec_file), report_only=False)
     assert ratchet.cmd_pathset(args) == 0
+
+
+@pytest.mark.skipif(shutil.which("lizard") is None,
+                    reason="lizard required for the quality snapshot")
+def test_score_quality_scope_filters_population(tmp_path, monkeypatch):
+    """#213 domain scope: quality baselines are computed over the IN-SCOPE
+    population only; removing the scope restores the whole-repo snapshot
+    exactly (no scope => identical to before)."""
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "scoped"
+    (repo / "app").mkdir(parents=True)
+    (repo / "vendored").mkdir()
+    (repo / "app" / "main.py").write_text(
+        "def f(x):\n    if x:\n        return 1\n    return 0\n"
+    )
+    (repo / "vendored" / "lib.py").write_text(
+        "def g(x):\n    if x:\n        return 1\n    return 0\n\n\n"
+        "def h(x):\n    if x:\n        return 2\n    return 0\n"
+    )
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@e.co",
+         "commit", "-q", "-m", "init"],
+        check=True, capture_output=True,
+    )
+
+    cfg = make_repo(tmp_path)
+    cfg.repo = repo
+    q_full = ratchet.score_quality(cfg)
+    assert "skipped" not in q_full, q_full
+
+    # scope.json at the meta root (embedded => <repo>/docs) excludes vendored/.
+    (repo / "docs").mkdir()
+    (repo / "docs" / "scope.json").write_text(json.dumps({"exclude": ["vendored/*"]}))
+    q_scoped = ratchet.score_quality(cfg)
+    assert "skipped" not in q_scoped, q_scoped
+    assert q_scoped["functions"] < q_full["functions"]
+    assert q_scoped["total_loc"] < q_full["total_loc"]
+    assert q_scoped["churned_loc"] < q_full["churned_loc"]
+
+    # No scope file => byte-identical to the pre-scope snapshot.
+    (repo / "docs" / "scope.json").unlink()
+    assert ratchet.score_quality(cfg) == q_full
+
+    # A malformed scope must never silently widen to whole-repo scope.
+    (repo / "docs" / "scope.json").write_text(json.dumps({"includes": ["app/*"]}))
+    q_bad = ratchet.score_quality(cfg)
+    assert "skipped" in q_bad and "includes" in q_bad["skipped"]
