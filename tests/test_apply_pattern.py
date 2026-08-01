@@ -41,9 +41,16 @@ def test_unknown_pattern_raises():
         apply_pattern.build_plan("nope", {}, now=FIXED_NOW)
 
 
-def test_candidate_pattern_raises():
+def test_candidate_pattern_raises(tmp_path):
+    # No real candidates remain (#139 promoted the last four), so pin the
+    # refusal behavior against a synthetic registry.
+    reg = tmp_path / "registry.json"
+    reg.write_text(json.dumps({
+        "patterns": [],
+        "candidates": [{"id": "someday", "title": "Someday", "category": "saas-infra",
+                        "status": "candidate", "summary": "not yet specified"}]}))
     with pytest.raises(apply_pattern.ApplyError, match="candidate"):
-        apply_pattern.build_plan("reconciliation-sweep", {}, now=FIXED_NOW)  # still a candidate
+        apply_pattern.build_plan("someday", {}, registry_path=reg, now=FIXED_NOW)
 
 
 def test_unknown_param_raises():
@@ -155,8 +162,8 @@ def test_catalog_lists_specified_with_applies_when():
     assert REAL in items
     assert items[REAL]["status"] == "specified"
     assert items[REAL]["applies_when"]  # non-empty selection criteria from the manifest
-    # candidates are listed too, flagged
-    assert any(c["status"] == "candidate" for c in apply_pattern.catalog())
+    # every entry is specified now — the last candidates were promoted (#139)
+    assert all(c["status"] == "specified" for c in apply_pattern.catalog())
 
 
 def test_cli_catalog_needs_no_target(tmp_path):

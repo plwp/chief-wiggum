@@ -416,7 +416,7 @@ surfaced a coherent set of reusable shapes. Two observations shaped how they lan
   behavioral data safe — the loop can read across tenants for analysis without
   leaking between them only atop a fail-closed, server-derived scoping layer.
 
-| Candidate | Category | One-liner |
+| Pattern (all now specified) | Category | One-liner |
 |--|--|--|
 | **multi-tenant-isolation** | saas-infra | Server-only tenant resolution → fail-closed tenant-scoped repository → standing cross-tenant isolation proof gate → quarantined cascade erasure. One multi-tenancy blueprint |
 | **provider-neutral-adapter** | multi-provider | Vendor-agnostic seam (neutral DTOs, unexported concrete types = compile-time swappability); behind it: signed-webhook-as-source-of-truth, sign-per-request access tokens, direct browser→CDN upload |
@@ -453,17 +453,18 @@ is **admin-gated**, because it's driven by end-user behavior (an injection surfa
 and touches pricing/paywall (a goalpost). Continuously improved, human always signs
 off on the ask for money.
 
-Supporting monetization candidates in `registry.json`:
+Supporting monetization/growth patterns, all now fully specified (chief-wiggum#139):
 
-| Candidate | Category | One-liner |
+| Pattern | Category | One-liner |
 |--|--|--|
-| **transactional-email-and-dunning** | process-loop | Idempotent, provider-neutral lifecycle messaging: welcome, activation nudge, re-engagement, failed-payment dunning with bounded retries + send-once keys. Recovery outcomes are retention signal |
+| **transactional-email-and-dunning** | process-loop | Idempotent, provider-neutral lifecycle messaging: transport-shaped send seam, atomic send-once keys, outbox, declared criticality. Dunning half flagged aspirational until a product builds it. Recovery outcomes are retention signal |
 | **referral-invite-loop** | process-loop | Invite → signed single-use expiring token → attribution → two-sided reward. Reuses the signed-token discipline; a self-serve growth loop |
-| **feature-entitlements** | saas-infra | One resolver: capability flags from tier + per-account overrides + grandfathering, queried identically by backend gates and frontend UI |
-| **self-serve-billing-portal** | saas-infra | User-managed plan / payment / seats; provider-hosted portal session + a webhook-authoritative local mirror. Kills the #1 support-ticket class |
+| **feature-entitlements** | saas-infra | One resolver: capability flags from tier + per-account overrides + explicit grandfathering, queried identically by backend gates and frontend UI; reuses entitlement-overlay's mined layering |
+| **self-serve-billing-portal** | saas-infra | User-managed plan / payment / seats; caller-scoped server-minted portal session + a webhook-authoritative single-writer local mirror. Kills the #1 support-ticket class |
 
-Fully specifying the remaining candidates (a `pattern.md` + `manifest.json` each)
-is future work; the registry structure is built to hold them.
+Every candidate in `registry.json` is now promoted — the `candidates` list is
+empty, and `check_patterns.py` will flag any new candidate that lingers
+unspecified as a dangling reference the moment a specified pattern depends on it.
 
 ## Stack profiles — the concrete layer (the factory)
 
