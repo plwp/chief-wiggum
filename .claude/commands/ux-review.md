@@ -80,7 +80,7 @@ For every journey, judge — citing the screenshot for each finding:
 8. **Responsive** — does the primary mobile journey hold up (especially if the product promises "on their phone")?
 9. **Expectation-setting** — does the funnel set expectations it later charges on (e.g. pricing/trial knowable *before* sign-up, not only in-app)?
 
-Synthesise via a **synthesis-worker** (contract: `docs/worker-contracts.md#synthesis-worker`, `model: "opus"`) given the epic/product goal, the journey manifest, and screenshot paths. It rates each finding `high` / `medium` / `low` (impact-on-user), names the persona and screenshot, and proposes a concrete fix. It also lists **confirmed strengths**.
+Synthesise via a **synthesis-worker** (contract: `docs/worker-contracts.md#synthesis-worker`) — *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"` — given the epic/product goal, the journey manifest, and screenshot paths. It rates each finding `high` / `medium` / `low` (impact-on-user), names the persona and screenshot, and proposes a concrete fix. It also lists **confirmed strengths**.
 
 ### Step 5: Report
 
