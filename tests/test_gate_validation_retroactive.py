@@ -320,6 +320,56 @@ def test_shipped_records_are_journaled_in_the_ratchet_chain():
         assert entries[rid]["ref"] == gate
 
 
+def test_ratchet_gate_is_journal_wired_blocking():
+    """#208: the verifier-test-hash dimension's promotion to blocking is a
+    JOURNALED fact, not workflow prose — the last gate-authority event for
+    `ratchet` in chief-wiggum's own hash-chained journal is `wire`, and the
+    shipped record still passes, so the tracked authority is `blocking` (a
+    later staleness/regression is then detectable as an auto-demotion)."""
+    import ratchet as ratchet_mod
+    journal = RECORDS_DIR.parent / "ratchet-journal.jsonl"
+    assert ratchet_mod.last_authority_action(journal, "ratchet") == "wire", (
+        "ratchet gate is not journal-wired — re-run check_gate_validation.py ratchet --wire")
+    report = gv.check("ratchet", RECORDS_DIR)
+    assert report.passing, report.to_dict()
+
+
+def test_workflow_adapters_consume_the_wired_verifier_gate():
+    """#208 (review finding): the journal says the gate is wired, but the
+    workflows are what actually CONSUME that authority — pin the command
+    adapters so removing the flag, the record check, or the downgrade
+    instruction fails a test instead of silently un-wiring the dimension."""
+    close_epic = (ROOT / ".claude" / "commands" / "close-epic.md").read_text()
+    implement = (ROOT / ".claude" / "commands" / "implement.md").read_text()
+    wave = (ROOT / ".claude" / "commands" / "implement-wave.md").read_text()
+
+    # /close-epic Step 2c2 checks the ratchet record like the other gates...
+    assert "check_gate_validation.py\" ratchet" in close_epic, (
+        "/close-epic no longer validates the ratchet gate's record before wiring")
+    # ...Step 2f passes the blocking flag, with the downgrade posture stated.
+    assert close_epic.count("--gate-verifier-tests") >= 2, (
+        "/close-epic no longer passes --gate-verifier-tests in the ratchet gate step")
+    assert "otherwise drop the flag" in close_epic, (
+        "/close-epic lost the downgrade-to-report-only-and-surface instruction")
+
+    # /implement Step 8 4b: same record-gated posture per ticket.
+    assert "--gate-verifier-tests" in implement, (
+        "/implement Step 8 no longer passes --gate-verifier-tests")
+    assert "check_gate_validation.py ratchet" in implement, (
+        "/implement Step 8 lost the record check guarding the flag")
+
+    # /implement-wave per-wave staging check: same posture (review finding —
+    # otherwise wave promotion is the one consumer where a C1c rewrite reaches
+    # main report-only and only blocks at epic close).
+    assert "--gate-verifier-tests" in wave, (
+        "/implement-wave per-wave check no longer passes --gate-verifier-tests")
+    assert "check_gate_validation.py ratchet" in wave, (
+        "/implement-wave lost the record check guarding the flag")
+
+    assert all("--amend-verifier" in t for t in (implement, close_epic, wave)), (
+        "the journaled human revision path (--amend-verifier) is no longer surfaced")
+
+
 # ==============================================================================
 # #184 — IT-fh-04: table-driven records for ALL FIVE further gates
 # ==============================================================================

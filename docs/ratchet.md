@@ -21,7 +21,7 @@ Three rules, all mechanical:
    **protected pathset**. A worker branch that touches them is *parked* for
    human review, never auto-merged.
 
-Plus two **report-only** dimensions:
+Plus two further dimensions (one validated-and-wired, one report-only):
 
 4. **Verifier-test bodies are goalposts too (#206).** The pass-set is keyed by
    test ID, so a high-water test's *body* can be rewritten to bless new
@@ -47,9 +47,15 @@ Plus two **report-only** dimensions:
    contract-wording amend (#206 soundness review); an unchanged body needs
    nothing. Annotations the extractor cannot hash (non-Python files, syntax
    errors, unattached or ambiguous annotations) are **counted and surfaced**
-   by `score`, never silently dropped. Report-only until its
-   [gate-validation record](gate-validation.md) passes: `check` prints
-   weakened/removed verifier tests; only `--gate-verifier-tests` blocks.
+   by `score`, never silently dropped. The dimension's
+   [gate-validation record](gate-validation.md) **passed** (journaled
+   `rec-00021`; wired `rec-00022` via `check_gate_validation.py ratchet
+   --wire`, chief-wiggum#208), so `/implement` Step 8 and `/close-epic`
+   Step 2f now pass `--gate-verifier-tests` whenever
+   `check_gate_validation.py ratchet --gate` confirms the record still
+   passes — with the standard downgrade-to-report-only-and-surface posture
+   if it ever goes stale. At the CLI the flag stays opt-in: a bare `check`
+   prints weakened/removed verifier tests without blocking.
    Authority boundary (v1): the hash covers the annotated test function's own
    source span — assertions relocated into a shared helper the test calls are
    a documented no-fire boundary (probed by the record's
@@ -218,16 +224,21 @@ scorecard (run `score` first), `4` journal tamper.
 - **`/architect`** — after committing epic artifacts: `score --no-tests` +
   `record --event baseline --merged`, so the contract definitions enter the
   high-water mark the moment they're approved.
-- **`/implement` Step 8** — after the full test suite: `score` + `check`. A
+- **`/implement` Step 8** — after the full test suite: `score` + `check
+  --gate-verifier-tests` (the flag is passed whenever `check_gate_validation.py
+  ratchet --gate` confirms the dimension's record still passes, #208). A
   violation is a hard blocker, same as a failing test.
 - **`/implement-wave`** — per-ticket: `protected` on each worker branch before
-  merging (hits ⇒ park the ticket for the human). Per-wave: `score` + `check`
-  on the staging branch before promoting to main, then `record --event wave
-  --merged` after the push.
-- **`/close-epic`** — `score` + `check` must report *held* or *advanced* across
-  the epic, then `record --event epic-close --merged`. Legitimate contract
-  revisions are journaled here with `--amend`/`--retire` — a deliberate,
-  visible human decision, not a silent edit.
+  merging (hits ⇒ park the ticket for the human). Per-wave: `score` + `check
+  --gate-verifier-tests` (same record-gated flag) on the staging branch before
+  promoting to main, then `record --event wave --merged` after the push.
+- **`/close-epic`** — `score` + `check --gate-verifier-tests` (same
+  record-gated flag as `/implement`, Step 2c2/2f) must report *held* or
+  *advanced* across the epic, then `record --event epic-close --merged`.
+  Legitimate contract revisions are journaled here with `--amend`/`--retire`,
+  and deliberate verifier-test revisions with
+  `--amend-verifier`/`--retire-verifier` — a deliberate, visible human
+  decision, not a silent edit.
 
 The **complexity/churn** dimension is not wired as a blocker anywhere yet: per
 [gate-rollout.md](gate-rollout.md) it ships report-only (`check` surfaces the
