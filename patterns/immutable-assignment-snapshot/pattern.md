@@ -51,11 +51,11 @@ because "edit silently changed everyone's assignment" is a classic latent bug).
 
 ## Invariant cluster
 
-| Generic ID | Invariant | Realized as (provenance) |
+| Generic ID | Invariant | Realized as (provenance; mechanism described — private-repo paths withheld per the registry provenance policy) |
 |--|--|--|
-| `INV-IAS-001` | Published version is write-once: no in-place patch (the version store exposes insert + find only). | dogeared-coach `db/store.go:95-118`; `models/course.go:20-40` |
-| `INV-IAS-002` | Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id. | `services/course.go:609-629`; `models/assignment.go:8-23` |
-| `INV-IAS-003` | Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate. | `services/assignment_view.go:364-389` |
+| `INV-IAS-001` | Published version is write-once: no in-place patch (the version store exposes insert + find only). | a shipped production SaaS (private): the version store exposes insert + find only — a published version has no update path |
+| `INV-IAS-002` | Editing creates a NEW version; outstanding assignments keep referencing the old immutable version id. | the edit path inserts a new version document; existing assignments keep the immutable version id they were created with |
+| `INV-IAS-003` | Composite-item fields are value-copied into the version at publish (snapshot), read from the pin at hydrate. | publish value-copies composite-item fields into the version document; hydrate reads them from the pinned version |
 
 ## Parameters
 

@@ -529,7 +529,7 @@
     "tests/test_factory_log.py::test_emit_consult_resolved_but_unpriced_model_still_records_tokens": "9e32d224a6e641cfd2f80ae7fc64c0da5deb764df68a4aab829ec40a4e12eac5",
     "tests/test_factory_log.py::test_emit_consult_unavailable_status_records_no_tokens_no_cost": "f0719e63ffa02ae98c9558ae627552e8e0ebf38c24c9049e50cda50f97b1514e",
     "tests/test_factory_log.py::test_emit_consult_unknown_usage_status_is_dropped_not_trusted": "10c6011deb2a78365879979c046a5ef506e3edc0376aaacd6a643560fd2e3e69",
-    "tests/test_factory_log.py::test_emit_consult_without_tokens_records_frequency": "c52cec811de7732154c571633fa2f6bd6a987d492f5c2460da0f90c4fdb88fdf",
+    "tests/test_factory_log.py::test_emit_consult_without_tokens_records_frequency": "fd549e0d2fb85bd42f7e7033c13d89ee0d1e65fd11e480b853064dbdc51deb62",
     "tests/test_gate_exit_modes.py::test_check_architecture_exit_mode_matrix": "48f9fa77cad6818ed9cda965c8d5adc74e163085e27b593ab20dcfab4f1205c4",
     "tests/test_gate_exit_modes.py::test_ci_scaffold_exit_mode_matrix": "b179d62d813a61c9fd938df33383a16941b7f89a66ef9bc52802c213c22b11bf",
     "tests/test_gate_exit_modes.py::test_gate_validation_report_only_exit_0_with_failing_envelope": "6be29ead9c1633426eb3378dc48aec78951d43177fe1f75412ccb46a35642a86",

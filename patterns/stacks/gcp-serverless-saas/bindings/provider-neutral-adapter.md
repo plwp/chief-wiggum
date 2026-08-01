@@ -1,7 +1,7 @@
 # Binding: `provider-neutral-adapter` → Go interface + webhooks (Cloudflare Stream exemplar)
 
 - **Realizes:** [`provider-neutral-adapter`](../../registry.json) (candidate; vendor-neutral)
-- **Tier:** T2 · **Vendor:** Cloudflare Stream (exemplar) · **Source:** `dogeared-coach`
+- **Tier:** T2 · **Vendor:** Cloudflare Stream (exemplar) · **Source:** a multi-provider booking/payments SaaS (private; the stack's T2 exemplar)
 
 The concrete shape of "put a swappable vendor behind a seam". Mined from the video
 integration, but the *same shape* is how this stack wraps Stripe, GCS, and any

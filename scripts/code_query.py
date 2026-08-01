@@ -360,7 +360,7 @@ def _same_file(loc_file: str, rel: str) -> bool:
 _WORD_RE = re.compile(r"[a-z0-9]+")
 # Below this length, a word must match EXACTLY — otherwise a short token like
 # "ui" would substring-match inside an unrelated longer word (e.g. hides
-# inside "builder"). Validated against a real repo (dogeared-coach): the naive
+# inside "builder"). Validated against a real production repo: the naive
 # substring version bound `ui/src/App.tsx` to a `course-builder` ui-spec page
 # purely because "ui" is a substring of "builder" — a false artifact binding
 # that undermines the whole point of `orient`. At/above this length, a plain
@@ -404,7 +404,7 @@ def _fuzzy_word_match(a: str, b: str) -> bool:
 #
 # #185: the all-words guard above (kept — see ERROR CASES) still over-matches
 # when a pattern's literal words are ALL common: an entity name that recurs
-# across dozens of an epic's own operations (dogeared-coach's "provider" was
+# across dozens of an epic's own operations (the mined repo's "provider" was
 # the real-world trigger — a file named `auth-provider.tsx` word-matched ~30
 # unrelated provider operations, because many of them reduce to the bare word
 # "providers" once params are stripped). The fix stays lexical and stdlib-only
@@ -432,7 +432,7 @@ _MAX_COMMON_WORD_DF = 0.4
 # entity word) self-blocks the same way at df=1.0. Threshold interaction:
 # at total_docs >= 5, a word must appear in >40% of documents to be common —
 # i.e. at least 3 of 5 — so a genuinely-shared entity word still needs real
-# recurrence before it loses binding weight, while the dogeared-coach
+# recurrence before it loses binding weight, while the mined repo's
 # "provider" case (5 of 8 documents) stays blocked.
 _MIN_CORPUS_DOCS = 5
 

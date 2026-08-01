@@ -1,4 +1,4 @@
-// #185 regression fixture: mirrors the real dogeared-coach false positive —
+// #185 regression fixture: mirrors a real production false positive —
 // a file whose path lexically contains only the epic's common entity word
 // ("provider") must NOT inherit contracts.json/ui-spec.json operations that
 // mention "provider" and nothing more specific. No @cw-trace annotation and

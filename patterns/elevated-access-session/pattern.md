@@ -68,15 +68,15 @@ managed-auth custom token); the "identity provider" is your auth vendor.
 Realized 1:1 in the provenance app; the invariant ids are stamped directly in the
 guard's code comments there.
 
-| Generic ID | Invariant | Realized as (provenance) |
+| Generic ID | Invariant | Realized as (provenance; mechanism described — private-repo paths withheld per the registry provenance policy) |
 |--|--|--|
-| `INV-EAS-001` | TTL enforced against the session's own `iat`, independent of the IdP token life. | dogeared-coach `INV-ADM-003`; `middleware/impersonation_guard.go:31-34,87-89` |
-| `INV-EAS-002` | Revocable per-session; revocation lookup is fail-closed. | `INV-ADM-004`; `middleware/impersonation_guard.go:140-182` |
-| `INV-EAS-003` | No nested impersonation. | `INV-ADM-005`; `middleware/impersonation_guard.go` |
-| `INV-EAS-004` | Future-skew guard: `imp.iat` more than tolerance ahead is rejected. | `INV-ADM-009` (code); `middleware/impersonation_guard.go:36-38,98-108` |
-| `INV-EAS-005` | Deny-listed from operator plane + auth-factor + destructive/GDPR, boundary-checked prefix; rules exported for the banner. | `INV-ADM-006/007`; `middleware/impersonation_deny_list.go:32-156` |
-| `INV-EAS-006` | Every impersonated write is dual-identity audited, fail-closed, before the mutation. | `INV-ADM-008`; `middleware/impersonation_audit.go:82-110` |
-| `INV-EAS-007` | Un-forgeable at the signing root: the session is minted by the trusted signer with an actor claim the caller cannot self-assert. | `INV-ADM-009`; `handlers/admin_impersonate.go:146-214` |
+| `INV-EAS-001` | TTL enforced against the session's own `iat`, independent of the IdP token life. | a shipped production SaaS (private) `INV-ADM-003`: the guard enforces TTL against the session's own `iat` claim |
+| `INV-EAS-002` | Revocable per-session; revocation lookup is fail-closed. | `INV-ADM-004`: per-session revocation record checked on every request, fail-closed |
+| `INV-EAS-003` | No nested impersonation. | `INV-ADM-005`: the guard refuses to mint from an already-impersonated session |
+| `INV-EAS-004` | Future-skew guard: `imp.iat` more than tolerance ahead is rejected. | `INV-ADM-009` (code): future-skew rejection in the guard |
+| `INV-EAS-005` | Deny-listed from operator plane + auth-factor + destructive/GDPR, boundary-checked prefix; rules exported for the banner. | `INV-ADM-006/007`: boundary-checked prefix deny-list; the rules are exported for the UI banner |
+| `INV-EAS-006` | Every impersonated write is dual-identity audited, fail-closed, before the mutation. | `INV-ADM-008`: dual-identity audit written before every impersonated mutation, fail-closed |
+| `INV-EAS-007` | Un-forgeable at the signing root: the session is minted by the trusted signer with an actor claim the caller cannot self-assert. | `INV-ADM-009`: minted only by the trusted signing root with an actor claim the caller cannot self-assert |
 
 ## Parameters
 

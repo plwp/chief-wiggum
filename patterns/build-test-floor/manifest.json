@@ -21,13 +21,13 @@
   ],
 
   "invariants": {
-    "$comment": "The cluster this pattern guarantees; grounded in chief-wiggum's OWN floor (the factory held to this pattern) + dogeared-coach's zero-cost trigger.",
+    "$comment": "The cluster this pattern guarantees; grounded in chief-wiggum's OWN floor (the factory held to this pattern) + a shipped production SaaS's zero-cost trigger (private; paths withheld).",
     "cluster": [
       {"id": "INV-BTF-001", "statement": "One entrypoint is the whole gate, and CI runs that same command, so green-locally predicts green-in-CI.", "realized_as": {"app": "chief-wiggum", "code": "Makefile (lint/test) == .github/workflows/ci.yml (run: make lint / make test)"}},
       {"id": "INV-BTF-002", "statement": "Polyglot: every language in the repo is set up and gated (build + lint + test), not just one.", "realized_as": {"app": "chief-wiggum", "code": ".github/workflows/ci.yml (Python + Node setup; make lint = ruff + py_compile + CW gates)"}},
       {"id": "INV-BTF-003", "statement": "Fail-closed: any step failing or a required tool missing fails the floor; never a silent skip.", "realized_as": {"app": "chief-wiggum", "code": "make step-failure semantics; each gate exits non-zero on violation"}},
       {"id": "INV-BTF-004", "statement": "Pre-condition for merge/deploy: CI runs the floor on every PR; no deploy proceeds without it.", "realized_as": {"app": "chief-wiggum", "code": ".github/workflows/ci.yml (on: pull_request); deployment-release INV-DRL floor-gated"}},
-      {"id": "INV-BTF-005", "statement": "(optional) Zero-cost-until-opt-in: manual-dispatch CI for cost-sensitive private repos; the local mirror still gives the full gate for free.", "realized_as": {"app": "dogeared-coach", "code": ".github/workflows/ci.yml (workflow_dispatch-only to save private-repo Actions minutes)"}}
+      {"id": "INV-BTF-005", "statement": "(optional) Zero-cost-until-opt-in: manual-dispatch CI for cost-sensitive private repos; the local mirror still gives the full gate for free.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "the CI workflow triggers on manual dispatch only to save private-repo Actions minutes; the local mirror remains the full gate"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"}
     ]
   },
 

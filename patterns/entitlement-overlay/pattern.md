@@ -62,13 +62,13 @@ through billing (then just change the plan).
 
 ## Invariant cluster
 
-| Generic ID | Invariant | Realized as (provenance) |
+| Generic ID | Invariant | Realized as (provenance; mechanism described — private-repo paths withheld per the registry provenance policy) |
 |--|--|--|
-| `INV-EO-001` | Floor-raising: `effective(field) = max(base, overlay)` per field; overlay only ever raises. | dogeared-coach `INV-BIL-010`; `services/plan.go:257-305` |
-| `INV-EO-002` | Grant-only writer: only upward grants (paid tiers, reason required, audited), blocked from impersonated/suspended sessions. | `INV-BIL-011`; `services/admin_provider.go:222-263` |
-| `INV-EO-003` | Unlimited (`-1` sentinel) beats finite in BOTH directions, or a naive `max` silently lowers an unlimited plan. | `services/plan.go:307-320` (`maxCap`) |
-| `INV-EO-004` | Orthogonal source of truth: payer tier persisted separately; reconcile recomputes `max(payer, overlay)` so a comp is never reverted. | `INV-BIL-009`; `services/billing_reconcile.go:271-275` |
-| `INV-EO-005` | Single enforcement seam reads EFFECTIVE limits, not the raw payer tier. | `INV-ADM-010`; `services/plan.go EffectiveLimits` |
+| `INV-EO-001` | Floor-raising: `effective(field) = max(base, overlay)` per field; overlay only ever raises. | a shipped production SaaS (private) `INV-BIL-010`: per-field max(base, overlay) computed in the plan read-model |
+| `INV-EO-002` | Grant-only writer: only upward grants (paid tiers, reason required, audited), blocked from impersonated/suspended sessions. | `INV-BIL-011`: the grant endpoint accepts only upward, reasoned, audited grants and refuses impersonated/suspended sessions |
+| `INV-EO-003` | Unlimited (`-1` sentinel) beats finite in BOTH directions, or a naive `max` silently lowers an unlimited plan. | a `maxCap` helper where the `-1` unlimited sentinel dominates any finite value in both argument orders |
+| `INV-EO-004` | Orthogonal source of truth: payer tier persisted separately; reconcile recomputes `max(payer, overlay)` so a comp is never reverted. | `INV-BIL-009`: reconcile recomputes max(payer, overlay), so a comp is never reverted |
+| `INV-EO-005` | Single enforcement seam reads EFFECTIVE limits, not the raw payer tier. | `INV-ADM-010`: every gate reads the `EffectiveLimits` seam, never the raw payer tier |
 
 ## Parameters
 

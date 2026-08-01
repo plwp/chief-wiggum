@@ -1,5 +1,5 @@
 {
-  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/entitlement-overlay/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; realized in dogeared-coach admin comps.",
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/entitlement-overlay/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). Promoted from candidate; realized in a shipped production SaaS's admin comp subsystem (private; path provenance held out of the public registry per the provenance policy).",
   "id": "entitlement-overlay",
   "version": 1,
   "title": "Floor-Raising Entitlement Overlay (admin comps)",
@@ -23,13 +23,13 @@
   ],
 
   "invariants": {
-    "$comment": "The cluster this pattern guarantees; grounded in dogeared-coach admin comps (services/plan.go + billing_reconcile.go + admin_provider.go).",
+    "$comment": "The cluster this pattern guarantees; grounded in a shipped production SaaS's admin comp subsystem (private; paths withheld).",
     "cluster": [
-      {"id": "INV-EO-001", "statement": "Floor-raising: effective(field) = max(base, overlay) per field; overlay only ever raises.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-010", "code": "services/plan.go:257-305"}},
-      {"id": "INV-EO-002", "statement": "Grant-only writer: only upward grants (paid tiers, reason required, audited), blocked from impersonated/suspended sessions.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-011", "code": "services/admin_provider.go:222-263"}},
-      {"id": "INV-EO-003", "statement": "Unlimited (-1 sentinel) beats finite in BOTH directions, or a naive max silently lowers an unlimited plan.", "realized_as": {"app": "dogeared-coach", "code": "services/plan.go:307-320 (maxCap)"}},
-      {"id": "INV-EO-004", "statement": "Orthogonal source of truth: payer tier persisted separately; reconcile recomputes max(payer, overlay) so a comp is never reverted.", "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-009", "code": "services/billing_reconcile.go:271-275"}},
-      {"id": "INV-EO-005", "statement": "Single enforcement seam reads EFFECTIVE limits, not the raw payer tier.", "realized_as": {"app": "dogeared-coach", "id": "INV-ADM-010", "code": "services/plan.go EffectiveLimits"}}
+      {"id": "INV-EO-001", "statement": "Floor-raising: effective(field) = max(base, overlay) per field; overlay only ever raises.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "id": "INV-BIL-010", "code": "effective limits computed as per-field max(base tier caps, overlay) in the plan read-model"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"},
+      {"id": "INV-EO-002", "statement": "Grant-only writer: only upward grants (paid tiers, reason required, audited), blocked from impersonated/suspended sessions.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "id": "INV-BIL-011", "code": "the admin grant endpoint accepts only upward comp grants with a required reason, audited, and refuses impersonated or suspended sessions"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"},
+      {"id": "INV-EO-003", "statement": "Unlimited (-1 sentinel) beats finite in BOTH directions, or a naive max silently lowers an unlimited plan.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "a maxCap helper in which the -1 unlimited sentinel dominates any finite value in both argument orders"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"},
+      {"id": "INV-EO-004", "statement": "Orthogonal source of truth: payer tier persisted separately; reconcile recomputes max(payer, overlay) so a comp is never reverted.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "id": "INV-BIL-009", "code": "billing reconcile persists the payer tier separately and recomputes max(payer, overlay), so a comp is never reverted"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"},
+      {"id": "INV-EO-005", "statement": "Single enforcement seam reads EFFECTIVE limits, not the raw payer tier.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "id": "INV-ADM-010", "code": "every quota and gate check reads the EffectiveLimits seam, never the raw payer tier"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"}
     ]
   },
 

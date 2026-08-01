@@ -56,7 +56,7 @@ cost-sensitive private repo — but the *local mirror* is non-negotiable regardl
 | `INV-BTF-002` | Polyglot: every language in the repo is set up and gated (build + lint + test), not just one. | chief-wiggum `ci.yml` (sets up Python **and** Node; `make lint` = ruff + py_compile + the CW gates) |
 | `INV-BTF-003` | Fail-closed: any step failing or a required tool missing fails the floor — never a silent skip. | `make` step-failure semantics; each gate exits non-zero on violation |
 | `INV-BTF-004` | Pre-condition for merge/deploy: CI runs the floor on every PR; no deploy proceeds without it. | chief-wiggum `ci.yml` (`on: pull_request`); `deployment-release` `INV-DRL` floor-gated |
-| `INV-BTF-005` | *(optional)* Zero-cost-until-opt-in: CI triggers on manual dispatch for cost-sensitive private repos; the local mirror still gives the full gate for free. | dogeared-coach `ci.yml` (`workflow_dispatch`-only to save private-repo Actions minutes) |
+| `INV-BTF-005` | *(optional)* Zero-cost-until-opt-in: CI triggers on manual dispatch for cost-sensitive private repos; the local mirror still gives the full gate for free. | a shipped production SaaS (private): CI is `workflow_dispatch`-only to save private-repo Actions minutes; the local mirror remains the full gate |
 
 ## Parameters
 

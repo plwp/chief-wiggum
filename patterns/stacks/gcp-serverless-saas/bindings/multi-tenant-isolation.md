@@ -1,13 +1,13 @@
 # Binding: `multi-tenant-isolation` → two variants on GCP Serverless SaaS
 
 - **Realizes:** [`multi-tenant-isolation`](../../registry.json) (candidate; vendor-neutral)
-- **Tier:** T1 (variant A) / T2 (variant B) · **Source:** `booking-forms`, `dogeared-coach`
+- **Tier:** T1 (variant A) / T2 (variant B) · **Source:** two shipped production apps (private; the stack's T1 + T2 exemplars)
 
 Two genuinely different concrete realizations mined from two shipped apps. They are
 **not** better/worse — they sit at different points on the cost/isolation curve.
 Pick by whether tenants share a running process.
 
-## Variant A — build-time isolation (T1, cheapest) · `booking-forms`
+## Variant A — build-time isolation (T1, cheapest) · the T1 exemplar (a multi-tenant booking frontend, private)
 
 **One deployment artifact per tenant.** Tenants never share a running frontend.
 
@@ -45,7 +45,7 @@ Pick by whether tenants share a running process.
 doesn't scale past a handful of known tenants (every tenant is a build + a secret +
 a hosting site) and has no self-serve tenant creation.
 
-## Variant B — runtime server-derived scoping (T2, scalable) · `dogeared-coach`
+## Variant B — runtime server-derived scoping (T2, scalable) · the T2 exemplar (a multi-provider booking/payments SaaS, private)
 
 **Tenants share a running process; isolation is enforced in every query.**
 

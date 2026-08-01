@@ -1,7 +1,7 @@
 # Binding: `deployment-release` → keyless WIF on GCP + GitHub Actions
 
 - **Realizes:** [`deployment-release`](../../../deployment-release) (vendor-neutral spec)
-- **Tier:** T1+ · **Vendor:** GitHub Actions + GCP Workload Identity Federation · **Source:** `booking-forms`, `dogeared-coach`
+- **Tier:** T1+ · **Vendor:** GitHub Actions + GCP Workload Identity Federation · **Source:** two shipped production apps (private; the stack's T1 + T2 exemplars)
 
 The concrete pipeline for the abstract build → stage → promote pattern. This is the
 most consistent shape across the mined apps and the reference for the whole stack.

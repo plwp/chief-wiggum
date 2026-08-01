@@ -1,4 +1,4 @@
-"""Tests for domain_to_formal.py — the duplicat-rex DomainModel → formal model bridge.
+"""Tests for domain_to_formal.py — the agentic-cloner DomainModel → formal model bridge.
 
 All logic here is pure transformation (dict in, dict out), so these are direct
 behavioural assertions on synthetic domain-model fragments.
