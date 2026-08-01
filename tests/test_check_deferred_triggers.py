@@ -45,8 +45,34 @@ def test_shipped_index_is_valid_and_covers_both_source_issues():
 def test_report_only_exit_zero_even_when_triggers_fire():
     res = _run("--repo", str(REPO_ROOT))
     assert res.returncode == 0, res.stderr
-    # CW's own state: 7 validation records > 5 — the exact check fires.
-    assert "[      FIRED] gate-validation-designer" in res.stdout
+    # gate-validation-designer FIRED (7 records > 5) and was then BUILT (#218):
+    # the row stays, evaluation is skipped, the answer is on record.
+    assert "[      BUILT] gate-validation-designer" in res.stdout
+    assert "built: #218" in res.stdout
+
+
+def test_built_item_skips_evaluation_and_keeps_the_row(tmp_path):
+    """An item with a `built` field reports BUILT without running its checks —
+    the trigger's FIRED state is answered, not silenced, and the row is never
+    removed from the index."""
+    result = cdt.evaluate_item(
+        {"id": "i", "title": "t", "trigger": ">5 gates", "built": "#218",
+         "checks": [{"kind": "validated_gates_gt", "value": 0}]},  # would FIRE
+        None, tmp_path / "absent.jsonl")
+    assert result["status"] == "BUILT"
+    assert result["built"] == "#218"
+    assert result["checks"] == []  # evaluation skipped
+
+
+def test_built_item_never_reaches_the_fired_summary(tmp_path):
+    index = tmp_path / "index.json"
+    index.write_text(json.dumps({"items": [
+        {"id": "done", "title": "t", "trigger": "x", "built": "#218",
+         "settled_notes": "n", "checks": [{"kind": "validated_gates_gt", "value": 0}]}]}))
+    res = _run("--index", str(index))
+    assert res.returncode == 0, res.stderr
+    assert "FIRED:" not in res.stdout
+    assert "[      BUILT] done" in res.stdout
 
 
 def test_json_format_round_trips():

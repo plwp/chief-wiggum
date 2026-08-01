@@ -1,0 +1,79 @@
+{
+  "gate": "ratchet",
+  "extracted_from": "ratchet.json",
+  "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds ratchet` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
+  "seeds": [
+    {
+      "seed_id": "rt-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "docs/epics/gv-ratchet/contracts.md: the REQUIRES wording of CTR-rt-001 is changed (name bound 'no longer than 64 characters' -> 'of any length whatsoever') \u2014 a genuine definition change, not a whitespace reformat",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "rt-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "docs/epics/gv-ratchet/models/contracts.json: CTR-rt-002's ensures text is changed (soft-delete -> hard-delete). The weakening is expressed as a STRUCTURED JSON contract block rather than markdown prose; hash_epic_definitions walks JSON via walk_json_ids, so the JSON declaration path is hashed too \u2014 an omission only if it were not",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "rt-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "the whole docs/epics/gv-ratchet/ tree is MOVED to docs/archive/gv-ratchet/ (outside the configured epic_docs scan root) rather than deleting a block outright \u2014 indirection through directory/config restructuring. CTR-rt-001 and CTR-rt-002 no longer resolve under docs/epics, so both are reported as removed_contracts",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "rt-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "a CONFLICTING redefinition of CTR-rt-001 (REQUIRES/ENSURES gutted to 'nothing') is placed in docs/epics/gv-ratchet/justifications/waiver.md. If the subtree were scanned, the combined definition hash would change and the weakened_contracts gate would fire; hash_epic_definitions excludes justifications/ by design (is_justification_path \u2014 a waiver's own id names the contract it waives, never a new declaration) \u2014 a certified NON-coverage boundary, so the ratchet correctly does not fire",
+      "expected": "no-fire"
+    },
+    {
+      "seed_id": "rt-verifier-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "test_ratchet_fixture_smoke.py: the annotated verifier test test_widget_addition's assertion is inverted (assert _sum_holds(1,1,2) -> assert True) while its test ID stays green \u2014 the exact C1c tamper from the goalpost-integrity experiment (docs/paper/experiment/): pass-set unchanged, contracts unchanged, only the verifier body hash moves. weakened_verifier_tests must fire (#206)",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "rt-verifier-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "test_ratchet_fixture_smoke.py: the weakened check hides inside a nested lambda scope WITHIN the annotated test function rather than as a bare assertion \u2014 still inside the hashed function span, so the body hash moves and weakened_verifier_tests must fire",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "rt-verifier-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "test_ratchet_fixture_smoke.py: the shared helper _sum_holds the annotated test calls is weakened (return True) while the test's own span is untouched. The v1 hash covers the annotated function's own source span ONLY, so this is a certified NON-coverage boundary \u2014 the dimension correctly does not fire, and the boundary is stated in the authority assumptions rather than silently claimed as covered",
+      "expected": "no-fire"
+    },
+    {
+      "seed_id": "rt-verifier-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "widget_test.go: an annotated verifier test in a language the v1 extractor does not cover. No fire \u2014 and `score` SURFACES the file as unscanned (verifier_unscanned) rather than staying silent; the surfacing behavior is asserted by tests/test_verifier_hashes.py::test_scan_surfaces_unhashable_annotations",
+      "expected": "no-fire"
+    }
+  ]
+}

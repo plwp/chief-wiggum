@@ -64,10 +64,11 @@
       "title": "Automated gate-validation designer + mutation testing",
       "source_issue": 171,
       "trigger": ">5 gates make the manual protocol a real burden",
+      "built": "#218",
       "checks": [
         {"kind": "validated_gates_gt", "value": 5}
       ],
-      "settled_notes": "seeds versioned separately from gate code; evasion seed classes mandatory; independent escape intake for the live matrix (refuter #18-20)"
+      "settled_notes": "seeds versioned separately from gate code; evasion seed classes mandatory; independent escape intake for the live matrix (refuter #18-20) (built: #218 — scripts/gate_validation_designer.py shipped report-only; teeth pending its own validation record per docs/gate-rollout.md)"
     },
     {
       "id": "security-tenancy-notation",

@@ -1,0 +1,43 @@
+{
+  "gate": "ci_scaffold",
+  "extracted_from": "ci_scaffold.json",
+  "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds ci_scaffold` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
+  "seeds": [
+    {
+      "seed_id": "ci-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "corpus_digest": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": "the only workflow (.github/workflows/ci.yml) is deleted \u2014 the textbook 'no CI on main' state; detect_ci returns ci_present=false",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "ci-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "corpus_digest": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": ".github/workflows/ exists but the ci.yml is replaced with a non-workflow README.md (no .yml/.yaml suffix). The directory is present but holds no workflow \u2014 still MISSING by the detector's own definition, so it fires",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "ci-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "corpus_digest": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": "the workflow is renamed ci.yml -> deploy-then-test.yaml (a real, valid, differently-named workflow). The detector requires SOME .yml/.yaml under .github/workflows/, not a specific filename, so a legitimately-named workflow correctly does NOT trip a false 'missing CI' finding",
+      "expected": "no-fire"
+    },
+    {
+      "seed_id": "ci-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "corpus_digest": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": ".github/workflows/ci.yml is present with a valid suffix but its CONTENT is a no-op workflow that runs no build or tests. detect_ci is presence+extension only and never reads content, so it accepts it as ci_present=true \u2014 a documented under-sampling boundary (the gate proves a workflow file EXISTS, not that it runs a real build/test)",
+      "expected": "no-fire"
+    }
+  ]
+}
