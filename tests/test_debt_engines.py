@@ -428,6 +428,32 @@ def test_cluster_scope_filter_drops_members_and_small_classes():
     assert [c["size"] for c in classes] == [3]
 
 
+def test_cluster_scope_dropped_classes_land_in_boundary_out():
+    """C2 (#216): a class with >= 2 total spans that falls below 2 in-scope
+    members is boundary evidence, not silence — full pre-filter member list."""
+    boundary: list[dict] = []
+    classes = clones.cluster(
+        "/repo", FAKE_DUPLICATES, path_filter=lambda rel: rel != "src/e.py",
+        boundary_out=boundary,
+    )
+    assert [c["size"] for c in classes] == [3]
+    assert len(boundary) == 1
+    assert boundary[0]["size"] == 2
+    assert [m["file"] for m in boundary[0]["members"]] == ["src/d.py", "src/e.py"]
+
+
+def test_analyze_returns_boundary_classes(tmp_path, monkeypatch):
+    fake_report = {"statistics": {}, "duplicates": FAKE_DUPLICATES}
+    monkeypatch.setattr(duplication, "run_jscpd", lambda repo, workdir: (fake_report, None))
+    result = clones.analyze("/repo", str(tmp_path),
+                            path_filter=lambda rel: rel != "src/e.py")
+    assert [c["size"] for c in result["clone_classes"]] == [3]
+    assert [c["size"] for c in result["boundary_classes"]] == [2]
+    # unfiltered: nothing is boundary
+    result_all = clones.analyze("/repo", str(tmp_path))
+    assert result_all["boundary_classes"] == []
+
+
 def test_cluster_content_hash_is_content_stable():
     one = clones.cluster("/repo", FAKE_DUPLICATES)[0]["content_hash"]
     moved = [dict(d, firstFile=dict(d["firstFile"], start=d["firstFile"]["start"] + 100),

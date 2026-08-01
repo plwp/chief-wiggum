@@ -5,11 +5,71 @@ Group related issues into a coherent epic with a dependency graph, integration r
 ## Usage
 ```
 /plan-epic <owner/repo> [epic description or issue numbers]
+/plan-epic <owner/repo> --from-debt [--budget-count N] [--budget-severity-floor S] [--budget-cluster-cap N]
 ```
 
 ## Parameters
 - `owner/repo`: GitHub repository in `owner/repo` format
 - Optional: free-text epic description ("multi-tenant auth") or explicit issue numbers ("#12 #15 #18")
+- `--from-debt`: plan a **remediation epic** from the debt inventory instead of the backlog (see below); requires at least one budget flag
+
+## `--from-debt` mode: remediation epic from the debt inventory
+
+Turns `debt.json` (chief-wiggum#214, produced by `scripts/debt_inventory.py`
+or `/adopt`) into a budgeted, dependency-ordered remediation epic. The
+mechanics are in the tested script — the workflow's job is to run it and then
+feed its ticket plan through the NORMAL epic flow below. See
+`docs/remediation.md` for the full doctrine.
+
+### Step F1: Run the planner (budget is REQUIRED)
+
+```bash
+python3 "$CW_HOME/scripts/plan_from_debt.py" plan "$owner_repo" \
+  --budget-count 5            # and/or --budget-severity-floor medium and/or --budget-cluster-cap 8
+```
+
+It refuses (exit 2) without at least one budget flag — an unbudgeted
+remediation epic is unbounded scope. Counts/caps must be >= 1, and
+`--budget-severity-floor low` alone is refused too ('low' excludes nothing —
+combine it with a count/cap). It writes `remediation-plan.json` +
+`remediation-plan.md` to the resolver quality dir (`--debt PATH` / `--out DIR`
+to override). Clustering is mechanical with documented precedence: (a) one
+ticket per clone class, (b) module/directory, (c) change-coupling merge —
+recorded in the plan's `clustering.precedence`. Each ticket's derived pathset
+sanctions only IN-SCOPE files; out-of-scope locations of partially-in-scope
+items ride separately as `boundary_locations` (informational, never
+sanctioned), and the plan records `baseline_ids` for `verify`'s
+moved-not-resolved check.
+
+### Step F2: File boundary referrals (report, never auto-fix)
+
+For each entry in the plan's `boundary_referrals` (items whose every location
+is outside the #213 domain scope, plus the engine-captured entries from
+`debt.json`'s `boundary` section — e.g. clone classes dropped for
+out-of-scope members), create an issue **for the owning team** using the
+pre-filled `issue_title`/`issue_body` (rendered from
+`templates/boundary-finding.md`). These findings are NEVER ticketed into the
+remediation epic and never fixed from our side.
+
+### Step F3: Create the epic tickets
+
+For each entry in the plan's `tickets` (dependency-ordered), create an issue
+via the tracker with:
+- the plan's `title`, labeled **`refactor`** (this drives `/implement`'s
+  refactor ticket-kind — characterization tests before any code change)
+- a body carrying the ticket's **`DEBT-` ids**, `locations`, severity rollup,
+  and derived `pathset` verbatim (traceability for debt: fix commits reference
+  the ids, and `/close-epic` re-runs the inventory to prove they're gone)
+- grandfathered ids marked as such (remediating them before expiry is the
+  point — chief-wiggum#215)
+
+Then continue with the normal flow: Step 3's dependency graph comes straight
+from each ticket's `depends_on`, Step 5's "Not in This Epic" section lists the
+plan's `excluded` items with their reasons (`over_budget` /
+`below_severity_floor` / `over_cluster_cap`) — **leftover inventory is the
+normal end state, not a failure** — and Step 6 records the epic as usual.
+`/close-epic`'s remediation-acceptance step (`plan_from_debt.py verify`) is
+this epic's acceptance test.
 
 ## Workflow
 

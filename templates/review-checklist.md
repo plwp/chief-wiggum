@@ -2,6 +2,24 @@
 
 Score each item: **PASS**, **FAIL** (with one-line justification), or **N/A**.
 
+## Behavior Preservation (refactor tickets — evaluate FIRST for `kind: refactor`)
+
+For `kind: refactor` tickets (a `/plan-epic --from-debt` ticket, or any ticket labeled `refactor`), this section comes before everything else — a refactor that changes behavior has failed regardless of how clean the code is. N/A for other ticket kinds.
+
+- [ ] Characterization/golden tests pinning CURRENT behavior were committed and green BEFORE the first refactor commit (baseline commit precedes refactor commits in history)
+- [ ] No characterization test was weakened, deleted, or re-pinned to new values during the refactor — a deliberate behavior change is a different ticket, not a refactor
+- [ ] The diff is structural: no user-visible output, API response, error message, or persisted format changed
+- [ ] Mutation results (where a tool ran) show the pinned tests actually kill mutants in the refactored files; where no tool exists, the gap is stated, not silent
+
+## Scope Discipline (adopted repos — all ticket kinds)
+
+For repos with an adoption record (chief-wiggum#215), score these against the declared pathset and the review context's flagged sections. N/A for non-adopted repos.
+
+- [ ] Every changed file is inside the declared pathset (or the declaration was updated with a stated reason) — no unexplained out-of-pathset hunks
+- [ ] No in-diff opportunistic fixes: nothing was "improved while in here" outside the ticket's scope
+- [ ] No unfiled discoveries: anything found mid-ticket (dead code, clone, smell) was filed as a `DEBT-` candidate (`debt_inventory.py append-candidate`) or an issue — found ≠ fixed, but found ≠ forgotten either
+- [ ] No collateral improvement: zero formatting-only, rename-only, or style-only hunks outside the declared pathset
+
 ## Correctness
 - [ ] Every acceptance criterion from the ticket has at least one test that verifies it
 - [ ] All error paths are handled — not just the happy path
