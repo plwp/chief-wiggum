@@ -37,7 +37,11 @@ from pathlib import Path
 
 from . import population
 
-MARKER_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b")
+# `(?<!context\.)`: Go's stdlib `context.TODO()` is an API call, not a
+# deferred-work marker — caught live on a real Go validation corpus (2 of 7
+# "TODO"s were context.TODO() call sites). Only the qualified form is
+# excluded: bare `TODO(author):` attribution markers still count.
+MARKER_RE = re.compile(r"\b(?<!context\.)(TODO|FIXME|HACK|XXX)\b")
 TRAILING_CHARS = 80
 
 

@@ -93,6 +93,14 @@ GO_ASSERT_RE = re.compile(
     r"(?i:(check|verify|expect|assert)\w*\()",
 )
 GO_FUNC_RE = re.compile(r"^func\s+(Test\w+)\s*\(", re.MULTILINE)
+# Helper delegation: a call passing `t` (or `s.t`/`&s.t`) as an argument —
+# `runScenario(t, tc)`, `h.check(s.t, got)`. Such a test DELEGATES its
+# assertions to a local helper (the dgrd pattern: helper calls require.* on
+# the caller's t); it is never flagged assertion-free, and never verified
+# either — counted under the `helper_delegated` bucket, stated as unverified.
+# `func(` is excluded so a t.Run closure signature alone doesn't count as
+# delegation.
+GO_HELPER_DELEGATE_RE = re.compile(r"\b(?!func\b)\w+\s*\(\s*(&?\w+\.)?t\s*[,)]")
 
 SKIP_PATTERNS = {
     "python": re.compile(r"@pytest\.mark\.skip(if)?\b|pytest\.skip\(|@unittest\.skip"),
@@ -121,20 +129,28 @@ def _test_stem(rel: str) -> str | None:
     return None
 
 
-def _find_orphans(files: list[str]) -> list[dict]:
-    non_test = [f for f in files if not population.is_test_file(f)]
+def _find_orphans(corpus: list[str], scope: set[str] | None = None) -> list[dict]:
+    """Orphan findings under the doctrine **detection repo-wide, authority
+    in-scope** (same as check_single_writer): the EXISTENCE corpus — which
+    subjects/stems/package dirs exist — is the FULL pre-scope population
+    (``corpus``), so a test whose subject lives in a scope-excluded path is
+    NOT orphaned. Findings are emitted only for test files in ``scope``
+    (``None`` = everything)."""
+    non_test = [f for f in corpus if not population.is_test_file(f)]
     non_test_set = set(non_test)
     stems = {Path(f).stem for f in non_test}
-    dir_parts = {part for f in files for part in Path(f).parts[:-1]}
+    dir_parts = {part for f in corpus for part in Path(f).parts[:-1]}
     by_dir_nontest_go = {}
     for f in non_test:
         if f.endswith(".go"):
             by_dir_nontest_go.setdefault(str(Path(f).parent), True)
 
     orphans: list[dict] = []
-    for rel in files:
+    for rel in corpus:
         if not population.is_test_file(rel):
             continue
+        if scope is not None and rel not in scope:
+            continue  # authority in-scope: never flag an out-of-scope test
         stem = _test_stem(rel)
         if stem is None or stem.lower() in GENERIC_STEMS:
             continue
@@ -214,10 +230,15 @@ def _python_assertion_free(rel: str, text: str) -> tuple[list[dict], bool]:
     return findings, True
 
 
-def _go_assertion_free(rel: str, text: str) -> list[dict]:
-    """Regex tier: each top-level ``func TestXxx`` body without an
-    assertion-ish call. Bodies are delimited by the next top-level ``func``."""
+def _go_assertion_free(rel: str, text: str) -> tuple[list[dict], int]:
+    """Regex tier: ``(findings, helper_delegated)`` — each top-level ``func
+    TestXxx`` body without an assertion-ish call is a finding UNLESS it passes
+    ``t`` to a local function (helper delegation, the known FP class caught on
+    a real Go corpus): those are counted, not flagged — the delegation is
+    stated, the helper's assertions are unverified. Bodies are delimited by
+    the next top-level ``func``."""
     findings: list[dict] = []
+    helper_delegated = 0
     matches = list(GO_FUNC_RE.finditer(text))
     all_funcs = list(re.finditer(r"^func\s", text, re.MULTILINE))
     for m in matches:
@@ -229,12 +250,15 @@ def _go_assertion_free(rel: str, text: str) -> list[dict]:
                 break
         body = text[start:end]
         if not GO_ASSERT_RE.search(body):
+            if GO_HELPER_DELEGATE_RE.search(body):
+                helper_delegated += 1
+                continue
             line = text.count("\n", 0, m.start()) + 1
             findings.append({
                 "file": rel, "line": line, "kind": "assertion_free_test",
                 "symbol": m.group(1),
             })
-    return findings
+    return findings, helper_delegated
 
 
 # --- skipped / quarantined ----------------------------------------------------
@@ -254,16 +278,39 @@ def _skipped(rel: str, text: str, lang: str) -> list[dict]:
     return findings
 
 
+def assertion_scan_gap(engines: dict) -> str | None:
+    """One shared line for this engine's ``unscanned.assertion_scan`` note,
+    taking a debt envelope's ``engines`` sub-dict — every debt-rendering
+    surface (debt_inventory's report, quality_slop_gate's debt block,
+    quality/report.py's debt section) prints the gap rather than silently
+    implying JS/TS assertion health."""
+    th = (engines or {}).get("test_health") or {}
+    gap = (th.get("unscanned") or {}).get("assertion_scan") or {}
+    if not gap:
+        return None
+    return (
+        "assertion scan not run (test_health): "
+        + ", ".join(f"{k}: {v} file(s)" for k, v in sorted(gap.items()))
+        + " — absence of a finding there is not evidence of health"
+    )
+
+
 # --- composition --------------------------------------------------------------
 
 
 def analyze(repo: str, path_filter=None) -> dict:
     files = population.tracked_source(repo, path_filter=path_filter)
     test_files = [f for f in files if population.is_test_file(f)]
+    # Detection repo-wide, authority in-scope: subject EXISTENCE is judged
+    # against the full pre-scope population, findings only for in-scope tests.
+    corpus = population.tracked_source(repo) if path_filter is not None else files
 
-    findings: list[dict] = list(_find_orphans(files))
+    findings: list[dict] = list(
+        _find_orphans(corpus, scope=set(files) if path_filter is not None else None)
+    )
     unparsable: list[str] = []
     unscanned_assertion_langs: dict[str, int] = {}
+    helper_delegated_go = 0
 
     for rel in test_files:
         lang = population.lang_of(rel)
@@ -278,7 +325,9 @@ def analyze(repo: str, path_filter=None) -> dict:
                 unparsable.append(rel)
             findings.extend(fnd)
         elif lang == "go":
-            findings.extend(_go_assertion_free(rel, text))
+            fnd, delegated = _go_assertion_free(rel, text)
+            helper_delegated_go += delegated
+            findings.extend(fnd)
         else:
             unscanned_assertion_langs[lang] = unscanned_assertion_langs.get(lang, 0) + 1
         findings.extend(_skipped(rel, text, lang))
@@ -292,6 +341,15 @@ def analyze(repo: str, path_filter=None) -> dict:
         "mapping": MAPPING,
         "counts_by_kind": counts,
         "unparsable": unparsable,
+        "helper_delegated": {
+            "go": helper_delegated_go,
+            "note": (
+                "Go test functions with no direct assertion that pass t to a "
+                "local helper — delegation is stated, the helper's assertions "
+                "are UNVERIFIED (never flagged assertion-free, never proven "
+                "healthy; see docs/debt-inventory.md authority boundary)"
+            ),
+        },
         "unscanned": {
             "assertion_scan": unscanned_assertion_langs,
             "note": "JS/TS assertion-freeness is not scanned in v1 — absence of a finding there is not evidence of health",

@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402 — #213 meta-location resolver (debt.json lookup)
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from quality import duplication, survival  # noqa: E402
+from quality import duplication, survival, test_health  # noqa: E402
 
 # GitClear [VENDOR] reference bands — direction is credible, exact multiples are
 # framing-dependent (corroborated directionally by DORA 2024, not independently
@@ -196,8 +196,14 @@ def format_report(sv: dict, dup: dict) -> str:
 def load_debt(target: str) -> dict | None:
     """The #214 debt inventory for this target, read from the resolver-
     determined quality dir. Missing/unparsable -> None (the block reports its
-    absence honestly; it never fabricates emptiness)."""
-    p = artifacts.Resolver.resolve(target).quality_dir() / "debt.json"
+    absence honestly; it never fabricates emptiness). A malformed election/
+    scope (the resolver's ValueError) NEVER propagates — the gate's exit must
+    stay a pure slop verdict — it comes back as ``{"config_error": ...}`` for
+    the report-only block to state."""
+    try:
+        p = artifacts.Resolver.resolve(target).quality_dir() / "debt.json"
+    except ValueError as exc:
+        return {"config_error": str(exc)}
     if not p.is_file():
         return None
     try:
@@ -221,6 +227,13 @@ def format_debt_block(debt: dict | None) -> str:
         )
         lines.append("")
         return "\n".join(lines)
+    if debt.get("config_error"):
+        lines.append(
+            f"- debt inventory unavailable: {debt['config_error']} — config "
+            "needs repair"
+        )
+        lines.append("")
+        return "\n".join(lines)
     counts = debt.get("counts") or {}
     total = sum(sum(v.values()) for v in counts.values())
     lines.append(f"- {total} item(s) at target_sha {debt.get('target_sha')}")
@@ -233,6 +246,9 @@ def format_debt_block(debt: dict | None) -> str:
             "  - unscanned languages (dead_code): "
             + ", ".join(f"{k}: {v} file(s)" for k, v in sorted(uns.items()))
         )
+    gap = test_health.assertion_scan_gap(debt.get("engines") or {})
+    if gap:
+        lines.append(f"  - {gap}")
     if debt.get("authority"):
         lines.append(f"- authority: {debt['authority']}")
     lines.append("")
@@ -308,7 +324,8 @@ def _scanner_version() -> str:
     hash inputs — omitting them was the exact CTR-fh-041 silent-staleness class
     this gate's own dep-completeness test polices. artifacts.py (#213/#214)
     resolves WHERE the debt.json signal block is read from — a resolution
-    change changes what this gate prints, so it versions too.
+    change changes what this gate prints, so it versions too. test_health.py
+    supplies the shared assertion-scan-gap line the debt block prints (#214).
     @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
@@ -319,6 +336,7 @@ def _scanner_version() -> str:
         cw_dir / "hashing.py",
         q_dir / "survival.py",
         q_dir / "duplication.py",
+        q_dir / "test_health.py",
     )
 
 

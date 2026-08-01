@@ -350,3 +350,156 @@ def test_debt_handle_round_trips_through_show(target, tmp_path):
 def test_orient_without_debt_json_has_no_debt_facts(target, tmp_path):
     envelope = code_query.cmd_orient(target, "lib.py", None)
     assert [f for f in envelope["facts"] if f["kind"] == "debt"] == []
+
+
+# --- blast radius honors the scope predicate (F1) -----------------------------
+
+
+def test_blast_radius_never_names_scope_excluded_partners(target, tmp_path):
+    """Coupling is detected over the full history, but an out-of-scope partner
+    must never appear in blast_radius — same predicate as the population."""
+    (target / "excluded").mkdir()
+    (target / "src").mkdir()
+    for i in range(4):  # DEFAULT_MIN_CO co-changes: app.py + both partners
+        (target / "app.py").write_text(
+            "from lib import used\n"
+            "# TODO: replace used() with the real call\n"
+            f"print(used())  # rev {i}\n"
+        )
+        (target / "excluded" / "helper.py").write_text(f"h = {i}\n")
+        (target / "src" / "partner.py").write_text(f"p = {i}\n")
+        _commit_all(target, f"co-change {i}")
+    scope_dir = target / "docs"
+    scope_dir.mkdir(exist_ok=True)
+    (scope_dir / "scope.json").write_text(json.dumps({"exclude": ["excluded/*"]}))
+
+    env = _run_inventory(target, tmp_path)
+    todo = next(i for i in env["items"] if i["engine"] == "markers")
+    partner_files = {p["file"] for p in todo["blast_radius"]["coupling_partners"]}
+    assert "src/partner.py" in partner_files, env["scope"]
+    assert not any(f.startswith("excluded/") for f in partner_files)
+    # and no item anywhere carries an out-of-scope partner
+    for item in env["items"]:
+        for p in item["blast_radius"]["coupling_partners"]:
+            assert not p["file"].startswith("excluded/")
+
+
+# --- engines sub-envelope carries counts, not payloads (F7) -------------------
+
+
+def test_engine_envelope_strips_clone_payload_but_keeps_counts():
+    res = {
+        "engine": "clones", "clone_pairs_reported": 3,
+        "clone_classes": [{"content_hash": "aa", "size": 2, "members": []}],
+        "findings": [{"x": 1}],
+    }
+    out = debt_inventory._engine_envelope(res)
+    assert "clone_classes" not in out and "findings" not in out
+    assert out["clone_class_count"] == 1
+    assert out["clone_pairs_reported"] == 3
+
+
+def test_envelope_engines_never_carry_payload_keys(target, tmp_path):
+    env = _run_inventory(target, tmp_path)
+    for sub in env["engines"].values():
+        assert "findings" not in sub
+        assert "clone_classes" not in sub
+
+
+# --- slop gate: malformed config is reported, never a crash (F4) --------------
+
+
+def test_slop_gate_malformed_election_becomes_config_error_block(tmp_path, monkeypatch):
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-home"))
+    repo = tmp_path / "bare"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    ep = artifacts.election_path(artifacts.derive_target_id(repo))
+    ep.parent.mkdir(parents=True, exist_ok=True)
+    ep.write_text("{not json")
+
+    debt = quality_slop_gate.load_debt(str(repo))  # must not raise
+    assert debt and debt.get("config_error")
+    block = quality_slop_gate.format_debt_block(debt)
+    assert "debt inventory unavailable" in block
+    assert "config needs repair" in block
+    # the gate's exit stays a pure slop verdict — debt never reaches findings
+    sv = {"status": "skipped", "detail": "x"}
+    dup = {"status": "skipped", "detail": "x"}
+    assert quality_slop_gate.has_findings(sv, dup) == []
+
+
+# --- sidecar handles dereference through the resolver (F3) --------------------
+
+
+def test_debt_handle_round_trips_through_show_under_sidecar_election(target, tmp_path):
+    import artifacts
+
+    artifacts.elect(target, "sidecar", backing="local")
+    resolver = artifacts.Resolver.resolve(str(target))
+    qdir = resolver.quality_dir()
+    qdir.mkdir(parents=True, exist_ok=True)
+    env = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd"), qdir / "debt.json", resolver=resolver)
+    (qdir / "debt.json").write_text(json.dumps(env))
+    assert not (target / "docs").exists(), "sidecar mode must not write the target"
+
+    envelope = code_query.cmd_orient(target, "lib.py", None)
+    handle = next(f["handle"] for f in envelope["facts"] if f["kind"] == "debt")
+    shown = code_query.cmd_show(target, handle, None)
+    assert shown["facts"], shown["summary"]
+    assert "dead_helper" in "\n".join(shown["facts"][0]["block"])
+
+
+def test_hotspot_handle_round_trips_through_show_under_sidecar_election(target, tmp_path):
+    """Pre-existing gap fixed by the same shared helper: hotspot pseudo-handles
+    must dereference under a sidecar election too."""
+    import artifacts
+
+    artifacts.elect(target, "sidecar", backing="local")
+    qdir = artifacts.Resolver.resolve(str(target)).quality_dir()
+    qdir.mkdir(parents=True, exist_ok=True)
+    (qdir / "hotspots.json").write_text(json.dumps({
+        "hotspots": [{"file": "lib.py", "decile": 10, "score": 0.9,
+                      "coupled_with": []}],
+    }))
+    shown = code_query.cmd_show(target, "docs/quality/hotspots.json#hotspots[lib.py]", None)
+    assert shown["facts"], shown["summary"]
+    assert '"decile": 10' in "\n".join(shown["facts"][0]["block"])
+
+
+# --- assertion-scan gap prints on every surface (F8) --------------------------
+
+
+def test_assertion_scan_gap_prints_in_all_three_debt_surfaces(target, tmp_path):
+    (target / "web").mkdir()
+    (target / "web" / "app.ts").write_text("export const x = 1;\n")
+    (target / "web" / "app.test.ts").write_text("it('x', () => {});\n")
+    _commit_all(target, "add unscanned-language test file")
+    env = _run_inventory(target, tmp_path)
+
+    report = debt_inventory.format_report(env)
+    assert "assertion scan not run (test_health): typescript: 1 file(s)" in report
+
+    block = quality_slop_gate.format_debt_block(env)
+    assert "assertion scan not run (test_health)" in block
+
+    engines = {"churn": {}, "complexity": {}, "process": {}, "survival": {"skipped": "x"},
+               "duplication": {"skipped": "x"}, "trend": {}, "debt": env}
+    md = quality_report.render_markdown(engines, quality_report.build_combined(engines), charts=[])
+    assert "assertion scan not run (test_health)" in md
+
+
+def test_items_carry_target_sha_and_unknown_languages_surface(target, tmp_path):
+    """codex review (#214): per-item target_sha per the documented schema, and
+    unknown-extension source files surface in dead_code unscanned counts."""
+    (target / "widget.lua").write_text("-- lua is not a known language\nx = 1\n")
+    _commit_all(target, "add lua")
+    inv = _run_inventory(target, tmp_path)
+    assert inv["items"], "expected findings from the seeded fixture"
+    for item in inv["items"]:
+        assert item["target_sha"] == inv["target_sha"]
+    unscanned = inv["engines"]["dead_code"]["unscanned"]
+    assert any("unknown-language (.lua)" in k for k in unscanned), unscanned

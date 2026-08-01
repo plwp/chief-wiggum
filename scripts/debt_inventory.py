@@ -33,7 +33,9 @@ the next inventory. Clone classes span files, so their path component is empty
 
 **Blast radius:** change-coupling partners from ``quality/process.py``
 (``compute_coupling``/``partners_by_file`` — the ONE coupling engine,
-INV-fh-001) joined with the file's hotspot decile when
+INV-fh-001), filtered through the same #213 scope predicate as the population
+(an out-of-scope partner never appears in ``blast_radius``), joined with the
+file's hotspot decile when
 ``<quality_dir>/hotspots.json`` exists. When it doesn't, ``hotspot_decile`` is
 null and the envelope says so — absence is stated, never implied.
 
@@ -208,6 +210,16 @@ def _merge_duplicate_ids(items: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
+def _engine_envelope(res: dict) -> dict:
+    """Engine sub-envelope: metadata only, never finding payloads (the items
+    list carries the data). clones' ``clone_classes`` payload is stripped the
+    same way ``findings`` is — its count stays."""
+    out = {k: v for k, v in res.items() if k not in ("findings", "clone_classes")}
+    if "clone_classes" in res:
+        out["clone_class_count"] = len(res["clone_classes"])
+    return out
+
+
 # --- blast radius -------------------------------------------------------------
 
 
@@ -287,6 +299,16 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
     decile_of, hotspots_available = _load_hotspot_deciles(quality_dir)
     coupling_pairs = process.compute_coupling(repo)
     partners = process.partners_by_file(coupling_pairs)
+    if path_filter is not None:
+        # Coupling is DETECTED over the full git history (the one coupling
+        # engine sees everything), but blast_radius is an authority surface:
+        # a partner outside the #213 scope must never appear in it. Same
+        # predicate as the population; if every partner drops, the empty
+        # coupling list reflects that honestly.
+        partners = {
+            f: [p for p in ps if path_filter(p["file"])]
+            for f, ps in partners.items()
+        }
 
     items: list[dict] = []
     items += _dead_code_items(engine_results["dead_code"], decile_of)
@@ -297,10 +319,14 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
     _attach_blast_radius(items, partners, decile_of, hotspots_available)
 
     previous = _previous_seen(out_path)
+    sha = artifacts.head_sha(str(repo))
     for item in items:
         prev = previous.get(item["id"])
         item["first_seen"] = (prev or {}).get("first_seen") or now
         item["last_seen"] = now
+        # Per-item target_sha per the documented schema — the SHA the finding
+        # was last observed at (envelope carries it too; items are quoted alone).
+        item["target_sha"] = sha
 
     # Deterministic order: severity desc, engine, id.
     sev_rank = {s: i for i, s in enumerate(reversed(SEVERITY_ORDER))}
@@ -325,8 +351,7 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
             "null for every item; run scripts/hotspot_discovery.py to populate it"
         ),
         "engines": {
-            name: {k: v for k, v in res.items() if k != "findings"}
-            for name, res in engine_results.items()
+            name: _engine_envelope(res) for name, res in engine_results.items()
         },
         "unscanned_languages": unscanned,
         "counts": counts,
@@ -382,6 +407,9 @@ def format_report(envelope: dict) -> str:
     if envelope["unscanned_languages"]:
         uns = ", ".join(f"{k}: {v} file(s)" for k, v in sorted(envelope["unscanned_languages"].items()))
         lines.append(f"- unscanned languages (dead_code): {uns}")
+    gap = test_health.assertion_scan_gap(envelope["engines"])
+    if gap:
+        lines.append(f"- {gap}")
     if envelope.get("hotspots_note"):
         lines.append(f"- {envelope['hotspots_note']}")
     top = envelope["items"][:10]

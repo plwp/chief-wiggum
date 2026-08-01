@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import os
 
+from . import test_health
+
 
 def _weighted_complexity(battery: dict) -> dict:
     """Aggregate cyclomatic/cognitive across languages, weighted by function count."""
@@ -322,6 +324,9 @@ def render_markdown(engines: dict, combined: dict, charts: list[str]) -> str:
         if uns:
             lines.append("- unscanned languages (dead_code): "
                          + ", ".join(f"{k}: {v} file(s)" for k, v in sorted(uns.items())))
+        gap = test_health.assertion_scan_gap(debt.get("engines") or {})
+        if gap:
+            lines.append(f"- {gap}")
         top = (debt.get("items") or [])[:8]
         if top:
             lines.append("")

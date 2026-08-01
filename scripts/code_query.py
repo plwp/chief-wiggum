@@ -1758,7 +1758,25 @@ def _show_pseudo_handle(repo_root: Path, handle: str, epics: list[Epic],
     (IDs + handles + one-line summaries); the actual declared content is only
     ever served here, read live from Plane A."""
     rel, _, fragment = handle.partition("#")
-    full = Path(repo_root) / _norm(rel)
+    norm = _norm(rel)
+    full = Path(repo_root) / norm
+    if not full.is_file() and norm.startswith("docs/"):
+        # Sidecar election (#213): `docs/`-rooted meta handles (hotspots.json
+        # and debt.json under docs/quality/, epic models under docs/epics/)
+        # live beneath the resolver's meta root, not the target tree. Resolve
+        # through the SAME resolver every emitter used, so every emitted
+        # handle round-trips — this covers the debt AND hotspot handle paths
+        # (one shared helper). A malformed election falls through to the
+        # honest not-found envelope.
+        try:
+            candidate = (
+                artifacts.Resolver.resolve(Path(repo_root)).meta_root
+                / norm[len("docs/"):]
+            )
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.is_file():
+            full = candidate
     if not full.is_file():
         return _unscanned_envelope(
             f"{rel} not found under {repo_root}", query_provenance=_query_provenance(repo_root, epics)

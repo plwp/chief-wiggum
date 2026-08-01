@@ -63,6 +63,31 @@ def is_test_file(path: str) -> bool:
     return bool(re.search(r"(^|/)(tests?|__tests__|e2e)/", path))
 
 
+def unknown_language_files(repo: str, path_filter=None) -> dict[str, int]:
+    """Tracked, non-excluded, non-generated files whose extension maps to NO
+    known language — counted by extension so engines can surface them as
+    unscanned instead of silently dropping them (codex review, #214). Files
+    with no extension are keyed "(none)". Doc/asset extensions that are
+    never source (md, json, yml, txt, images, lock) are not counted."""
+    NON_SOURCE = {".md", ".rst", ".txt", ".json", ".yaml", ".yml", ".toml",
+                  ".ini", ".cfg", ".lock", ".svg", ".png", ".jpg", ".gif",
+                  ".ico", ".css", ".scss", ".html", ".xml", ".csv", ".sum",
+                  ".mod", ".work", ".example", ".sample", ".gitignore", ""}
+    counts: dict[str, int] = {}
+    for f in complexity.tracked_files(repo):
+        if GENERATED_RE.search(f):
+            continue
+        if lang_of(f) is not None:
+            continue
+        if path_filter is not None and not path_filter(f):
+            continue
+        ext = ("." + f.rsplit(".", 1)[1].lower()) if "." in f.rsplit("/", 1)[-1] else ""
+        if ext in NON_SOURCE:
+            continue
+        counts[ext or "(none)"] = counts.get(ext or "(none)", 0) + 1
+    return counts
+
+
 def tracked_source(repo: str, path_filter=None) -> list[str]:
     """Repo-relative (git-style, forward-slash) source files in the scan
     population: tracked, non-excluded, non-generated, a known language, and

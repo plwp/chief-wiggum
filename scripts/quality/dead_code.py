@@ -5,9 +5,10 @@ Per-language tiers, mirroring the emitters layer's tiered posture:
 
   - **Python**: ``vulture`` when importable (the precise tier); else a
     conservative built-in AST pass. The built-in tier flags only module-level
-    functions/classes in PRODUCTION files whose identifier appears exactly
-    once (its own ``def``/``class`` line) across the identifier tokens of the
-    ENTIRE scanned population, tests included. Deliberate precision limits
+    functions/classes in in-scope PRODUCTION files whose identifier appears
+    exactly once (its own ``def``/``class`` line) across the identifier tokens
+    of the ENTIRE repo population — pre-scope, tests included (detection
+    repo-wide, authority in-scope: a use from a scope-excluded file is a use). Deliberate precision limits
     (conservative = fewer false positives, more misses):
       * any other mention counts as a use — strings, comments, ``__all__``
         entries, re-exports — so dynamically-dispatched code is under-flagged,
@@ -280,11 +281,21 @@ def _knip_pass(repo: str) -> tuple[list[dict] | None, str | None]:
 def analyze(repo: str, path_filter=None) -> dict:
     """Per-language dead-symbol findings over the #213-scoped population.
 
+    Scope doctrine (same as check_single_writer): **detection repo-wide,
+    authority in-scope**. The USE corpus is always the FULL repo population
+    (pre-scope) — a symbol used from an out-of-scope file is NOT dead —
+    while findings are emitted only for in-scope files. The staticcheck and
+    knip tiers already see the whole module/project; only their FINDINGS are
+    re-filtered to the population rules, never their evidence.
+
     Every language present in the population is accounted for: scanned (a
     tier ran), or counted in ``unscanned`` with the skip reason — never
     silently empty.
     """
     files = population.tracked_source(repo, path_filter=path_filter)
+    # Detection corpus: the full-repo population, pre-scope. Identical to
+    # `files` when no scope filter applies.
+    corpus = population.tracked_source(repo) if path_filter is not None else files
     by_lang: dict[str, list[str]] = {}
     for f in files:
         by_lang.setdefault(population.lang_of(f), []).append(f)
@@ -297,21 +308,28 @@ def analyze(repo: str, path_filter=None) -> dict:
     py_all = by_lang.get("python", [])
     if py_all:
         py_prod = [f for f in py_all if not population.is_test_file(f)]
-        vul = _vulture_pass(repo, py_prod)
+        # Vulture scavenges the PRE-SCOPE production population so a use from
+        # an excluded file counts as a use; findings then narrow to in-scope.
+        py_prod_corpus = [
+            f for f in corpus
+            if population.lang_of(f) == "python" and not population.is_test_file(f)
+        ]
+        vul = _vulture_pass(repo, py_prod_corpus)
         if vul is not None:
-            py_findings = [x for x in vul if path_filter is None or path_filter(x["file"])]
+            in_scope_prod = set(py_prod)
+            py_findings = [x for x in vul if x["file"] in in_scope_prod]
             languages["python"] = {"tier": "vulture", "files": len(py_all),
                                    "findings": len(py_findings)}
         else:
-            py_findings, unparsable = _builtin_python_pass(repo, py_prod, files)
+            py_findings, unparsable = _builtin_python_pass(repo, py_prod, corpus)
             languages["python"] = {
                 "tier": "builtin-ast", "files": len(py_all),
                 "findings": len(py_findings), "unparsable": unparsable,
                 "note": (
                     "conservative built-in pass (vulture not importable): flags only "
                     "un-decorated module-level defs/classes whose identifier never "
-                    "appears anywhere else in the scanned population — under-reports "
-                    "by design; install vulture for the precise tier"
+                    "appears anywhere else in the full repo population (pre-scope) — "
+                    "under-reports by design; install vulture for the precise tier"
                 ),
             }
         findings.extend(py_findings)
@@ -362,6 +380,12 @@ def analyze(repo: str, path_filter=None) -> dict:
             elif languages.get("javascript"):
                 languages["javascript"]["findings"] = len(ts_findings)
             findings.extend(ts_findings)
+
+    # Files whose extension maps to no known language never entered the
+    # population at all — surface them so an unsupported language is a
+    # visible gap, not a silent omission (codex review, #214).
+    for ext, n in population.unknown_language_files(repo, path_filter).items():
+        unscanned[f"unknown-language ({ext})"] = n
 
     return {
         "engine": "dead_code",

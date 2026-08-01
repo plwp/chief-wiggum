@@ -25,8 +25,17 @@ Four engines under `scripts/quality/`, all consuming the same population:
 tracked files, minus the existing quality-engine exclusions
 (`complexity.EXCLUDE_RE`: docs/vendor/node_modules/dist/migrations/…), minus
 generated artifacts (`*_pb2.py`, `*.pb.go`, `*.min.js`, lockfiles — see
-`quality/population.py`), filtered by the #213 `Resolver.in_scope` predicate —
-computed **within scope**, not over the full repo. Every engine degrades
+`quality/population.py`), filtered by the #213 `Resolver.in_scope` predicate.
+
+**Scope doctrine — detection repo-wide, authority in-scope** (the same
+doctrine as `check_single_writer`): FINDINGS are emitted only for in-scope
+files, but the EVIDENCE corpus is always the full repo, pre-scope. A symbol
+used from a scope-excluded file is NOT dead (dead_code's builtin token corpus
+and vulture scavenge population are pre-scope; staticcheck/knip already see
+the whole module/project and only their findings are re-filtered), and a test
+whose subject exists in a scope-excluded path is NOT orphaned (test_health's
+existence corpus is pre-scope). Scope narrows whose debt it is — it never
+manufactures phantom findings. Every engine degrades
 gracefully (`{"skipped": ...}`) when its tool is absent, and dead-code reports
 skipped languages as **unscanned counts** — absence of a finding in an
 unscanned language is never presented as health (the `code_query` posture).
@@ -57,8 +66,10 @@ never regex-guessed.
 Envelope: `schema`, `generated_at`, `target_sha` (mandatory —
 `Resolver.stamp`), `authority` (printed verbatim by the CLI, hotspots-style),
 `scope` (the #213 scope summary), `hotspots_available`/`hotspots_note`,
-`engines` (per-engine sub-envelopes minus their findings), `unscanned_languages`
-(dead-code's skipped-tier file counts), `counts` (engine × severity), `items`.
+`engines` (per-engine sub-envelopes minus their finding payloads — `findings`
+and clones' `clone_classes` are stripped since the items carry the data;
+counts stay, e.g. `clone_class_count`), `unscanned_languages` (dead-code's
+skipped-tier file counts), `counts` (engine × severity), `items`.
 
 Per item:
 
@@ -69,7 +80,7 @@ Per item:
 | `severity` | mechanical rubric below |
 | `symbol` | symbol name / marker text / clone content hash |
 | `locations` | `["file:line", …]` — every span/occurrence |
-| `blast_radius` | `{coupling_partners, hotspot_decile}` — coupling from `quality/process.py` (`compute_coupling`, the ONE coupling engine, INV-fh-001); `hotspot_decile` joined from `hotspots.json` when it exists, else `null` with the absence stated in the envelope |
+| `blast_radius` | `{coupling_partners, hotspot_decile}` — coupling from `quality/process.py` (`compute_coupling`, the ONE coupling engine, INV-fh-001), partners filtered through the same #213 scope predicate as the population (an out-of-scope partner never appears; if all partners drop, the empty list says so honestly); `hotspot_decile` joined from `hotspots.json` when it exists, else `null` with the absence stated in the envelope |
 | `target_sha` | inherited from the envelope stamp |
 | `first_seen` / `last_seen` | ISO timestamps; `first_seen` preserved across runs by stable-ID match against the previous `debt.json` |
 
@@ -119,6 +130,22 @@ Printed verbatim by the CLI and carried in every envelope:
 > addressable work item, not a verdict; the absence of a finding in an
 > unscanned language is NOT evidence of health (unscanned language counts are
 > included in this envelope).
+
+Known false-positive classes, named and bounded:
+
+- **Go helper delegation** (found on a real Go validation corpus): a test
+  function whose only "assertion" is a call to a local helper that receives
+  `t` (`runScenario(t, tc)` — the helper calls `require.*`/`t.Fatal` inside)
+  contains no assertion-ish token itself. The regex tier cannot verify the
+  helper's body, so such tests are **never flagged** `assertion_free_test`;
+  they are counted under the engine envelope's `helper_delegated` bucket
+  (`test_health.helper_delegated.go`) — delegation is *stated*, the helper's
+  assertions are *unverified*. Detection: a call passing `t` (or `x.t`/`&x.t`)
+  as an argument inside an otherwise assertion-free body.
+- **JS/TS assertion-freeness is not scanned in v1** — the gap is carried in
+  `test_health.unscanned.assertion_scan` and printed by every debt-rendering
+  surface (the inventory report, the slop-gate debt block, the quality
+  report's debt section), never left invisible.
 
 ## Report-only status and gate-promotion path
 

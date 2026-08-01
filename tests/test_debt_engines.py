@@ -88,6 +88,22 @@ def test_markers_lowercase_todo_not_flagged(tmp_path):
     assert markers.analyze(str(repo))["findings"] == []
 
 
+def test_markers_go_context_todo_call_not_flagged(tmp_path):
+    """Live-caught FP class on a real Go corpus: Go's stdlib `context.TODO()`
+    is an API call, not a deferred-work marker. `TODO(author):` attribution
+    still counts."""
+    repo = _make_repo(tmp_path, {
+        "pkg/a.go": (
+            "package pkg\n"
+            "func f() { _ = seed(context.TODO(), conn) }\n"
+            "// TODO(pat): replace context.TODO with a request context\n"
+        ),
+    })
+    result = markers.analyze(str(repo))
+    assert [f["line"] for f in result["findings"]] == [3]
+    assert result["findings"][0]["text"].startswith("replace context.TODO")
+
+
 def test_markers_skips_vendored_and_generated(tmp_path):
     repo = _make_repo(tmp_path, {
         "node_modules/x.js": "// TODO vendored\n",
@@ -482,3 +498,122 @@ def test_duplication_skip_shape_unchanged(monkeypatch, tmp_path):
     result = duplication.analyze(str(tmp_path), workdir=str(tmp_path / "wd"))
     assert result["skipped"] == "jscpd/node not found"
     assert "note" in result
+
+
+# --- scope doctrine: detection repo-wide, authority in-scope (F2) -------------
+
+
+def test_builtin_dead_use_from_scope_excluded_file_counts_as_use(tmp_path, monkeypatch):
+    """A symbol whose ONLY use lives in a scope-excluded file is NOT dead —
+    the USE corpus is the full pre-scope population."""
+    monkeypatch.setattr(dead_code, "_vulture_pass", lambda *a, **k: None)
+    repo = _make_repo(tmp_path, {
+        "lib.py": "def used_from_outside():\n    return 1\n",
+        "excluded/consumer.py": "from lib import used_from_outside\nused_from_outside()\n",
+    })
+    in_scope = lambda rel: not rel.startswith("excluded/")  # noqa: E731
+    result = dead_code.analyze(str(repo), path_filter=in_scope)
+    assert result["findings"] == []  # use-from-excluded kills the dead flag
+
+
+def test_builtin_dead_findings_only_for_in_scope_files(tmp_path, monkeypatch):
+    """Authority in-scope: a genuinely dead symbol in an EXCLUDED file is
+    never a finding; the same symbol in scope still is."""
+    monkeypatch.setattr(dead_code, "_vulture_pass", lambda *a, **k: None)
+    repo = _make_repo(tmp_path, {
+        "lib.py": "def dead_in_scope():\n    return 1\n",
+        "excluded/old.py": "def dead_outside():\n    return 2\n",
+    })
+    in_scope = lambda rel: not rel.startswith("excluded/")  # noqa: E731
+    result = dead_code.analyze(str(repo), path_filter=in_scope)
+    assert {f["symbol"] for f in result["findings"]} == {"dead_in_scope"}
+
+
+@pytest.mark.skipif(not HAS_VULTURE, reason="vulture not importable")
+def test_vulture_dead_use_from_scope_excluded_file_counts_as_use(tmp_path):
+    repo = _make_repo(tmp_path, {
+        "lib.py": "def used_from_outside():\n    return 1\n",
+        "excluded/consumer.py": (
+            "from lib import used_from_outside\nprint(used_from_outside())\n"
+        ),
+    })
+    in_scope = lambda rel: not rel.startswith("excluded/")  # noqa: E731
+    result = dead_code.analyze(str(repo), path_filter=in_scope)
+    assert result["languages"]["python"]["tier"] == "vulture"
+    assert not any(f["symbol"] == "used_from_outside" for f in result["findings"])
+    # authority: findings never name the excluded file either
+    assert all(in_scope(f["file"]) for f in result["findings"])
+
+
+def test_orphan_subject_in_scope_excluded_path_is_not_orphaned(tmp_path):
+    """A test whose subject exists in a scope-excluded path is NOT orphaned —
+    the EXISTENCE corpus is the full pre-scope population."""
+    repo = _make_repo(tmp_path, {
+        "excluded/billing.py": "x = 1\n",
+        "tests/test_billing.py": "def test_b():\n    assert True\n",
+        "tests/test_gone.py": "def test_g():\n    assert True\n",
+    })
+    in_scope = lambda rel: not rel.startswith("excluded/")  # noqa: E731
+    result = test_health.analyze(str(repo), path_filter=in_scope)
+    orphans = [f["file"] for f in result["findings"] if f["kind"] == "orphaned_test"]
+    # subject-in-excluded kills the orphan flag; the truly-gone one stays
+    assert orphans == ["tests/test_gone.py"]
+
+
+def test_orphan_findings_never_emitted_for_out_of_scope_tests(tmp_path):
+    repo = _make_repo(tmp_path, {
+        "app.py": "x = 1\n",
+        "excluded/tests/test_vanished.py": "def test_v():\n    assert True\n",
+    })
+    in_scope = lambda rel: not rel.startswith("excluded/")  # noqa: E731
+    result = test_health.analyze(str(repo), path_filter=in_scope)
+    assert [f for f in result["findings"] if f["kind"] == "orphaned_test"] == []
+
+
+# --- Go helper delegation (F5) ------------------------------------------------
+
+
+def test_go_helper_delegated_test_not_flagged_assertion_free(tmp_path):
+    """The dgrd FP class: a test whose only 'assertion' is a local helper
+    receiving t (the helper calls require.* inside) is NOT assertion-free —
+    it lands in the helper_delegated bucket, stated as unverified."""
+    repo = _make_repo(tmp_path, {
+        "pkg/a.go": "package pkg\n",
+        "pkg/a_test.go": (
+            "package pkg\n\nimport (\n\t\"testing\"\n\n"
+            "\t\"github.com/stretchr/testify/require\"\n)\n\n"
+            "func TestDelegated(t *testing.T) {\n\trunScenario(t, 42)\n}\n\n"
+            "func TestHollow(t *testing.T) {\n\t_ = compute()\n}\n\n"
+            "func runScenario(t *testing.T, x int) {\n\trequire.Equal(t, 42, x)\n}\n"
+        ),
+    })
+    result = test_health.analyze(str(repo))
+    hollow = [f for f in result["findings"] if f["kind"] == "assertion_free_test"]
+    assert [h["symbol"] for h in hollow] == ["TestHollow"]
+    assert result["helper_delegated"]["go"] == 1
+    assert "UNVERIFIED" in result["helper_delegated"]["note"]
+
+
+def test_go_helper_delegation_matches_receiver_field_t(tmp_path):
+    repo = _make_repo(tmp_path, {
+        "pkg/a.go": "package pkg\n",
+        "pkg/a_test.go": (
+            "package pkg\n\nimport \"testing\"\n\n"
+            "func TestSuiteStyle(t *testing.T) {\n\ts := suite{t: t}\n\trunHelper(s.t, 1)\n}\n"
+        ),
+    })
+    result = test_health.analyze(str(repo))
+    assert [f for f in result["findings"] if f["kind"] == "assertion_free_test"] == []
+    assert result["helper_delegated"]["go"] == 1
+
+
+# --- assertion-scan gap line (F8) ---------------------------------------------
+
+
+def test_assertion_scan_gap_line_states_the_unscanned_languages():
+    engines = {"test_health": {"unscanned": {"assertion_scan": {"typescript": 3, "javascript": 1}}}}
+    line = test_health.assertion_scan_gap(engines)
+    assert "javascript: 1 file(s)" in line and "typescript: 3 file(s)" in line
+    assert "not evidence of health" in line
+    assert test_health.assertion_scan_gap({"test_health": {"unscanned": {"assertion_scan": {}}}}) is None
+    assert test_health.assertion_scan_gap({}) is None
