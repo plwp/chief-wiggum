@@ -4,6 +4,7 @@
     "writers": 7,
     "violations": 2,
     "boundary": 0,
+    "grandfathered": 0,
     "malformed": 0
   },
   "applicability": "applicable",
@@ -157,6 +158,7 @@
     }
   ],
   "boundary": [],
+  "grandfathered": [],
   "malformed": [],
   "warnings": []
 }

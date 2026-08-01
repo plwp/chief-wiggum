@@ -12,7 +12,7 @@ A collection of portable workflow contracts, scripts, and Claude Code slash-comm
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — defines contracts, invariants, and integration tests before implementation, validates cross-cutting quality after.
 - **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, and independent verification per ticket.
 - **Wave level**: `/implement-wave` — parallel implementation of an entire epic in dependency-ordered waves. Each wave runs multiple `/implement` loops concurrently in isolated worktrees, merges to main, then starts the next wave.
-- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/ship`, `/update`, `/stitch-audit`, `/code-metrics`, `/status`, `/ux-review`, `/tutorial-video`, `/business-consultant`.
+- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/adopt`, `/ship`, `/update`, `/stitch-audit`, `/code-metrics`, `/status`, `/ux-review`, `/tutorial-video`, `/business-consultant`.
 
 ## Key Principles
 
@@ -214,6 +214,7 @@ Skills are invoked from any target repo that has chief-wiggum configured as a sk
 /seed owner/repo                # Architecture brainstorm & issue seeding
 /design owner/repo              # Product design: mockups → human choice → docs/design/
 /apply-pattern owner/repo --pattern <id>  # Install a registry pattern's invariant-cluster contract pack
+/adopt owner/repo               # Brownfield entry: survey → elect → real-test baseline → grandfather → adoption record
 
 # Epic flow (the core loop)
 /plan-epic owner/repo           # Group issues into epic with dependency graph

@@ -226,6 +226,15 @@ defined, has no effect (not reported as JUSTIFIED — there's nothing to waive).
 Note the `justifications/` subtree is excluded from ID/hash scanning (a
 waiver's own `"id"` field names the CTR/INV it waives, not a new declaration).
 
+**Adoption grandfathers (#215)** mirror the same mechanics for brownfield
+repos: the checker resolves `<meta root>/adoption/grandfathered.json`
+(written by `adopt.py grandfather`; override with `--grandfather PATH`),
+keyed `check_traceability:uncovered:<ID>` / `check_traceability:untested:<ID>`.
+A gap matching a **non-expired** entry moves into `grandfathered_contracts`
+(reported, non-blocking under `--gate coverage`); an **expired** entry does
+not waive — the gap blocks again, labeled **EXPIRED grandfather**. See
+[adopt.md](adopt.md) and `chief_wiggum.grandfather`.
+
 ## Coverage-requirement alternatives (#169)
 
 By default any `verifies` link — from a test, probe, policy, or telemetry

@@ -62,6 +62,16 @@ import emitters  # noqa: E402
 # an unresolved entry is surfaced as a warning, never dropped.
 from chief_wiggum import external_links  # noqa: E402
 
+# Grandfather waivers (#215 F5): `adopt.py grandfather` records pre-adoption
+# baseline findings in <meta root>/adoption/grandfathered.json — for THIS gate,
+# keyed `check_traceability:uncovered:<STABLE-ID>` /
+# `check_traceability:untested:<STABLE-ID>` (see chief_wiggum.grandfather for
+# the full key grammar). Mirrors the JUSTIFIED-waiver mechanics: a gap matching
+# a NON-EXPIRED entry moves into `grandfathered_contracts` (reported, never a
+# silent pass) and does not block coverage; an EXPIRED entry does NOT waive —
+# the gap goes back to blocking, labeled "EXPIRED grandfather".
+from chief_wiggum import grandfather as cw_grandfather  # noqa: E402
+
 # The declared language support matrix (#162) — SOURCE_EXTS below is derived
 # from it (tier-1 + generic-tier extensions) plus this checker's own
 # verification-artifact extensions. The emitter fallback chain (scripts/emitters/)
@@ -157,6 +167,13 @@ class TraceReport:
     justified_contracts: list[dict] = field(default_factory=list)
     expired_justifications: list[dict] = field(default_factory=list)
     invalid_justifications: list[dict] = field(default_factory=list)
+    # Grandfather waivers (#215 F5): a coverage gap matching a NON-EXPIRED
+    # adoption-grandfather entry moves here (out of uncovered/untested — it
+    # does not block under --gate coverage). An EXPIRED entry does NOT waive:
+    # its gap STAYS in uncovered/untested (blocks again — visible pressure)
+    # and is additionally listed here so the report can label it.
+    grandfathered_contracts: list[dict] = field(default_factory=list)
+    expired_grandfathers: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
     # defines ZERO stable IDs AND no @cw-trace annotations exist anywhere —
@@ -179,6 +196,8 @@ class TraceReport:
             "justified_contracts": len(self.justified_contracts),
             "expired_justifications": len(self.expired_justifications),
             "invalid_justifications": len(self.invalid_justifications),
+            "grandfathered": len(self.grandfathered_contracts),
+            "expired_grandfathers": len(self.expired_grandfathers),
         }
 
     @property
@@ -206,6 +225,8 @@ class TraceReport:
             "justified_contracts": self.justified_contracts,
             "expired_justifications": self.expired_justifications,
             "invalid_justifications": self.invalid_justifications,
+            "grandfathered_contracts": self.grandfathered_contracts,
+            "expired_grandfathers": self.expired_grandfathers,
             "warnings": self.warnings,
         }
 
@@ -443,6 +464,7 @@ def _scanner_version() -> str:
         cw_dir / "trace_emission.py",
         cw_dir / "trace_links.py",
         cw_dir / "external_links.py",
+        cw_dir / "grandfather.py",
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "languages.py",
@@ -573,6 +595,38 @@ def apply_justifications(
     report.expired_justifications = expired
 
 
+def apply_grandfathers(
+    report: TraceReport,
+    entries: dict[str, dict],
+    *,
+    today: date | None = None,
+) -> None:
+    """Apply adoption-grandfather waivers (#215 F5) to a built report, in place.
+
+    ``entries`` is the ``id -> entry`` map from
+    ``<meta root>/adoption/grandfathered.json`` (``chief_wiggum.grandfather``).
+    Keys for this gate: ``check_traceability:uncovered:<ID>`` /
+    ``check_traceability:untested:<ID>``. Mirrors ``apply_justifications``: a
+    NON-EXPIRED entry moves the gap out of uncovered/untested into
+    ``grandfathered_contracts``; an EXPIRED entry does NOT waive — the gap
+    stays blocking and is listed in ``expired_grandfathers`` for labeling.
+    """
+    today = today or date.today()
+    for gap, gaps in (("uncovered", report.uncovered_contracts),
+                      ("untested", report.untested_contracts)):
+        for cid in list(gaps):
+            entry = entries.get(f"check_traceability:{gap}:{cid}")
+            if entry is None:
+                continue
+            record = {"id": cid, "gap": gap, "expiry": entry.get("expiry"),
+                      "owner": entry.get("owner"), "reason": entry.get("reason")}
+            if cw_grandfather.is_expired(entry, today):
+                report.expired_grandfathers.append(record)  # stays blocking
+            else:
+                gaps.remove(cid)
+                report.grandfathered_contracts.append(record)
+
+
 def check(
     epic_dir: str | Path,
     source_root: str | Path | None = None,
@@ -581,6 +635,7 @@ def check(
     changed_since: str | None = None,
     links_path: str | Path | None = None,
     external_links_path: str | Path | None = None,
+    grandfather_path: str | Path | None = None,
     today: date | None = None,
 ) -> TraceReport:
     """Build the trace report. ``links_path`` (#169, optional), when given, is
@@ -590,9 +645,13 @@ def check(
     e.g. the very first validation). ``external_links_path`` (#213 Phase C,
     optional) is the symbol-anchored external link store: verified-ok entries
     join the annotation set for coverage math; suspect entries are surfaced
-    (never satisfying coverage); unresolved entries become warnings. ``today``
-    (optional) overrides the clock used for justification-expiry checks;
-    defaults to the real today."""
+    (never satisfying coverage); unresolved entries become warnings.
+    ``grandfather_path`` (#215 F5, optional) is the adoption grandfather file
+    (``<meta root>/adoption/grandfathered.json``) — non-expired entries waive
+    matching coverage gaps into ``grandfathered_contracts``, expired entries
+    block again (see ``apply_grandfathers``). ``today`` (optional) overrides
+    the clock used for justification/grandfather-expiry checks; defaults to
+    the real today."""
     schema = schema or load_schema()
     defined = extract_defined_ids(epic_dir)
     coverage_requirements = extract_coverage_requirements(epic_dir)
@@ -673,6 +732,13 @@ def check(
 
     justifications, invalid_justifications = load_justifications(epic_dir)
     apply_justifications(report, justifications, invalid_justifications, today=today)
+
+    if grandfather_path is not None:
+        gf_entries, gf_warning = cw_grandfather.load_entries(grandfather_path)
+        if gf_warning:
+            report.warnings.append(gf_warning)
+        if gf_entries:
+            apply_grandfathers(report, gf_entries, today=today)
     return report
 
 
@@ -741,6 +807,20 @@ def render_markdown(report: TraceReport) -> str:
             f"({d.get('reason', 'definition hash changed since this link was validated')})"
             for d in report.suspect_links
         ]
+    if report.grandfathered_contracts:
+        lines += ["", "## Grandfathered (pre-adoption baseline — waived, non-blocking)", ""]
+        lines += [
+            f"- {g['id']} ({g['gap']}) — {g.get('reason') or 'pre-adoption baseline'} "
+            f"(owner {g.get('owner') or '?'}, expires {g.get('expiry') or '?'})"
+            for g in report.grandfathered_contracts
+        ]
+    if report.expired_grandfathers:
+        lines += ["", "## EXPIRED grandfathers (no longer waive — these gaps block again)", ""]
+        lines += [
+            f"- {g['id']} ({g['gap']}) — EXPIRED grandfather (expiry {g.get('expiry') or '?'}); "
+            "re-triage or remediate (docs/adopt.md)"
+            for g in report.expired_grandfathers
+        ]
     if report.justified_contracts:
         lines += ["", "## Justified (waived, ticket-tracked)", ""]
         lines += [
@@ -797,6 +877,16 @@ def main(argv: list[str] | None = None) -> int:
         f"<meta quality dir>/{external_links.STORE_NAME} when the target's elected footprint "
         "mode is sidecar; unused otherwise. Verified-ok entries count as annotations; "
         "suspect entries are surfaced and never satisfy coverage.",
+    )
+    parser.add_argument(
+        "--grandfather",
+        metavar="PATH",
+        help="Path to the adoption grandfather file (#215; adopt.py writes "
+        f"<meta root>/{cw_grandfather.GRANDFATHER_RELPATH}). Defaults to that resolver "
+        "location for the --source target. Keys for this gate: "
+        "check_traceability:uncovered:<ID> / check_traceability:untested:<ID>. "
+        "Non-expired entries waive matching gaps (reported under Grandfathered); "
+        "EXPIRED entries block again.",
     )
     parser.add_argument(
         "--write-links",
@@ -856,10 +946,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         external_links_path = None
 
+    if args.grandfather:
+        grandfather_path = Path(args.grandfather)
+    else:
+        # Default: the --source target's resolved adoption grandfather file
+        # (#215). Missing file degrades to graceful absence inside check().
+        grandfather_path = resolver.meta_root / cw_grandfather.GRANDFATHER_RELPATH
+
     try:
         report = check(
             args.epic_dir, args.source, schema=schema, changed_since=args.changed_since,
             links_path=links_path, external_links_path=external_links_path,
+            grandfather_path=grandfather_path,
         )
     except ManifestError as exc:
         # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:

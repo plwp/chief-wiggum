@@ -163,6 +163,12 @@ DEFAULT_PROTECTED = [
     # The domain scope is a goalpost too (#213): widening scope.json widens
     # what a worker's diff may touch — a worker must not edit its own leash.
     "docs/scope.json",
+    # Adoption artifacts are goalposts (#215): adoption.json is the brownfield
+    # SWITCH (it flips repo-wide scope discipline), and grandfathered.json is
+    # the amnesty file — a worker editing either could re-classify the repo or
+    # grandfather its own new findings. Embedded-mode location; a sidecar
+    # election keeps them outside the tree (unwritable by workers) entirely.
+    "docs/adoption/*.json",
 ]
 
 

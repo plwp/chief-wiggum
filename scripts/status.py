@@ -20,6 +20,9 @@ Sections (text) / keys (json):
 - **patterns** — adopted registry patterns (``<patterns_dir>/adopted.json``).
 - **debt** — counts by severity from ``<quality_dir>/debt.json`` when the
   debt inventory exists (#214), else ``no inventory``.
+- **adoption** — the brownfield adoption record (#215):
+  ``<meta_root>/adoption/adoption.json`` + grandfather counts, nearest expiry,
+  and prominent EXPIRED warnings from ``grandfathered.json``.
 
 Usage::
 
@@ -33,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -47,6 +51,9 @@ JOURNAL_NAME = ratchet.JOURNAL_NAME
 DEBT_NAME = "debt.json"
 ADOPTED_NAME = "adopted.json"
 VALIDATION_DIRNAME = "validation"
+ADOPTION_DIRNAME = "adoption"
+ADOPTION_NAME = "adoption.json"
+GRANDFATHER_NAME = "grandfathered.json"
 
 
 def _load_json(path: Path) -> dict | list | None:
@@ -153,6 +160,43 @@ def debt_counts(quality_dir: Path) -> dict | None:
     return counts
 
 
+def adoption_status(meta_root: Path) -> dict | None:
+    """The #215 adoption record + grandfather pressure, or None when the
+    target was never adopted (CW-built, or pre-adoption). Grandfather expiry
+    is VISIBLE PRESSURE: counts, the nearest expiry, and any already-expired
+    entry ids are surfaced here — expired grandfathers warn prominently."""
+    adir = meta_root / ADOPTION_DIRNAME
+    rec = _load_json(adir / ADOPTION_NAME)
+    if not isinstance(rec, dict):
+        return None
+    gf = _load_json(adir / GRANDFATHER_NAME)
+    entries = (gf.get("entries") or []) if isinstance(gf, dict) else []
+    expiries = sorted(
+        e.get("expiry") for e in entries
+        if isinstance(e, dict) and isinstance(e.get("expiry"), str)
+    )
+    today = date.today()
+    expired = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        exp = e.get("expiry")
+        try:
+            is_expired = date.fromisoformat(exp) < today if isinstance(exp, str) else True
+        except ValueError:
+            is_expired = True  # unparseable expiry is expired, never a silent pass
+        if is_expired and e.get("id"):
+            expired.append(e["id"])
+    return {
+        "brownfield": bool(rec.get("brownfield")),
+        "adopted_at": rec.get("adopted_at"),
+        "mode": rec.get("mode"),
+        "grandfathered": len(entries),
+        "nearest_expiry": expiries[0] if expiries else None,
+        "expired": sorted(expired),
+    }
+
+
 def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
     """Everything /status shows, as one JSON-ready dict. Read-only."""
     resolver = artifacts.Resolver.resolve(Path(target).resolve(), cw_home=cw_home)
@@ -173,6 +217,7 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
         "ratchet": rt,
         "patterns": adopted_patterns(resolver.patterns_dir()),
         "debt": debt_counts(quality_dir),
+        "adoption": adoption_status(resolver.meta_root),
     }
 
 
@@ -226,6 +271,28 @@ def render_text(status: dict) -> str:
         lines.append("inventory present, zero items")
     else:
         lines.append("  ".join(f"{sev}: {n}" for sev, n in sorted(debt.items())))
+    lines += ["", "## Adoption", ""]
+    adoption = status.get("adoption")
+    if adoption is None:
+        lines.append("no adoption record (CW-built, or /adopt not yet run)")
+    else:
+        lines.append(
+            f"brownfield: {str(adoption['brownfield']).lower()} | "
+            f"adopted {adoption.get('adopted_at') or '?'} | mode {adoption.get('mode') or '?'}"
+        )
+        if adoption["grandfathered"]:
+            lines.append(
+                f"grandfathered: {adoption['grandfathered']} finding(s), "
+                f"nearest expiry {adoption.get('nearest_expiry') or '?'}"
+            )
+        else:
+            lines.append("grandfathered: none")
+        if adoption["expired"]:
+            lines.append(
+                f"WARNING: {len(adoption['expired'])} EXPIRED grandfather(s): "
+                + ", ".join(adoption["expired"])
+                + " — expiry passed; re-triage or remediate (docs/adopt.md)"
+            )
     return "\n".join(lines) + "\n"
 
 

@@ -327,13 +327,34 @@ def render_markdown(engines: dict, combined: dict, charts: list[str]) -> str:
         gap = test_health.assertion_scan_gap(debt.get("engines") or {})
         if gap:
             lines.append(f"- {gap}")
+        # Grandfathered labeling (#215): pre-adoption-baseline items stay in
+        # the inventory; this section labels them, and EXPIRED ones loudly.
+        # Expired-ness is computed LIVE at render time (#215 F8): the stored
+        # grandfather_expired flag is a build-time snapshot — a debt.json
+        # built before an expiry date must still render EXPIRED after it.
+        from chief_wiggum.grandfather import expired_live  # noqa: PLC0415
+        gf_items = [i for i in (debt.get("items") or [])
+                    if isinstance(i, dict) and i.get("grandfathered")]
+        if gf_items:
+            lines.append(f"- grandfathered: {len(gf_items)} item(s) (pre-adoption "
+                         "baseline — labeled, non-blocking; expiry is visible "
+                         "pressure, not amnesty)")
+        gf_expired = sorted(i["id"] for i in gf_items
+                            if expired_live(i) and i.get("id"))
+        if gf_expired:
+            lines.append("- **EXPIRED grandfather**: " + ", ".join(gf_expired)
+                         + " — expiry passed; re-triage or remediate (docs/adopt.md)")
         top = (debt.get("items") or [])[:8]
         if top:
             lines.append("")
             lines.append("Top items (severity-ranked):")
             for item in top:
                 loc = item.get("locations", ["?"])[0]
-                lines.append(f"  - `{item.get('id')}` [{item.get('severity')}] "
+                tag = ""
+                if item.get("grandfathered"):
+                    tag = (" [EXPIRED grandfather]" if expired_live(item)
+                           else " [grandfathered]")
+                lines.append(f"  - `{item.get('id')}` [{item.get('severity')}]{tag} "
                              f"{item.get('engine')}/{item.get('kind')} `{loc}` — "
                              f"{str(item.get('detail', ''))[:100]}")
         if debt.get("authority"):

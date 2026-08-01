@@ -164,6 +164,15 @@ internal/admin/handlers.go:     func ChangePlan(...)      { p.StripePlan = ... }
 
 and exits `1` — the exact regression that shipped silently before this check.
 
+**Adoption grandfathers (#215)**: on an adopted brownfield repo the checker
+resolves `<meta root>/adoption/grandfathered.json` (written by
+`adopt.py grandfather`; override with `--grandfather PATH`), keyed
+`check_single_writer:<INV-id>:<field>:<file>`. A violation matching a
+**non-expired** entry is reported under `grandfathered` (never blocking under
+`--gate coverage`); an **expired** entry does not waive — the violation blocks
+again, labeled **EXPIRED grandfather**. See [adopt.md](adopt.md) and
+`chief_wiggum.grandfather`.
+
 ## Infra extension: terraform drift as sanctioned-writer enforcement (#165)
 
 The single-writer idiom above inventories *code* writers of a field. Some
