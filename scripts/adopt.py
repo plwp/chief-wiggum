@@ -27,13 +27,27 @@ Subcommands mirror the adoption sequence:
                    on the JUSTIFIED-waiver shape (reason/owner/expiry). Expiry
                    is VISIBLE PRESSURE, not amnesty: grandfathered findings
                    stay in the inventory, labeled; only NEW findings are
-                   gate-eligible.
+                   gate-eligible. Re-running against an EXISTING
+                   grandfathered.json REFUSES by default (a second sweep would
+                   amnesty POST-adoption findings) and prints the exact delta;
+                   ``--extend`` performs it explicitly and loudly, preserving
+                   the original ``created_at`` and the original entries'
+                   expiry (only NEW entries get a fresh expiry).
 - ``record``       ``<meta root>/adoption/adoption.json`` — THE brownfield
                    switch (#216 reads it; /architect reads it in place of the
                    ``IS_NEW_PRODUCT`` file-existence heuristic).
 - ``run``          the whole sequence, printing each step. The election runs
                    first (it decides where the survey persists); then survey →
-                   baseline → grandfather → record.
+                   baseline → grandfather → record. A target whose
+                   adoption.json already exists refuses unless ``--re-adopt``
+                   — re-adoption is an explicit operator act, never a side
+                   effect of re-running the arrow.
+
+Standalone ``survey``/``baseline``/``grandfather``/``record`` require a prior
+footprint election (``adopt elect`` / ``adopt run``): with no election file the
+resolver silently defaults to EMBEDDED and would write the target's own tree —
+embedded mode must be an explicit choice, so the un-elected case refuses
+(exit 2) instead of guessing.
 
 The coverage-baseline attempt is honest by construction: it runs the test
 command the way ``run_verification.py`` detects it and parses pass/fail counts
@@ -42,17 +56,21 @@ unparsed, never fabricated; no detected runner is stated as exactly that.
 
 /adopt never writes the target tree in sidecar mode: survey/grandfather/record
 artifacts live under the resolver meta root, junit reports are re-pointed to
-the workdir, and pytest cache/bytecode writes are suppressed.
+the workdir, and every test run (the survey's coverage attempt AND the
+baseline's ratchet score) suppresses Python bytecode and the pytest cache via
+the CHILD ENVIRONMENT — ``PYTHONDONTWRITEBYTECODE=1`` plus
+``PYTEST_ADDOPTS="-p no:cacheprovider"`` — so the suppression reaches pytest
+even when the suite command goes through ``make``/a wrapper script.
 
 Usage:
     python3 scripts/adopt.py survey  [owner/repo] [--repo PATH] [--format text|json]
     python3 scripts/adopt.py elect   [owner/repo] [--repo PATH] [--mode sidecar|embedded]
                                      [--backing local|git] [--scope-from-codeowners]
     python3 scripts/adopt.py baseline [owner/repo] [--repo PATH] [--workdir DIR]
-    python3 scripts/adopt.py grandfather [owner/repo] [--repo PATH]
+    python3 scripts/adopt.py grandfather [owner/repo] [--repo PATH] [--extend]
                                      [--expiry YYYY-MM-DD | --expiry-days N] [--owner NAME]
     python3 scripts/adopt.py record  [owner/repo] [--repo PATH]
-    python3 scripts/adopt.py run     [owner/repo] [--repo PATH] [...]
+    python3 scripts/adopt.py run     [owner/repo] [--repo PATH] [--re-adopt] [...]
 """
 
 from __future__ import annotations
@@ -64,6 +82,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -131,6 +150,46 @@ def _now_iso() -> str:
 
 def adoption_dir(resolver: artifacts.Resolver) -> Path:
     return resolver.meta_root / ADOPTION_DIRNAME
+
+
+def _require_election(target: Path) -> artifacts.Resolver:
+    """Resolver for a target that HAS a footprint election (F4 on #215).
+
+    Standalone survey/baseline/grandfather/record must never fall through to
+    the resolver's silent embedded default and write the target's own tree:
+    with no election file they refuse (exit 2) — embedded is a choice the
+    operator records (``adopt elect --mode embedded``), never a fallback.
+    ``elect`` and ``run`` are unaffected (they ARE the electing steps).
+    """
+    target_id = artifacts.derive_target_id(target)
+    if artifacts.load_election(target_id) is None:
+        raise AdoptError(
+            "no footprint election for this target — run `adopt elect` "
+            "(or `adopt run`) first; embedded mode is an explicit choice")
+    return artifacts.Resolver.resolve(target)
+
+
+@contextmanager
+def _no_cache_child_env():
+    """Suppress Python bytecode + the pytest cache for CHILD processes (F3 on
+    #215): ``PYTHONDONTWRITEBYTECODE=1`` and ``PYTEST_ADDOPTS`` gaining
+    ``-p no:cacheprovider`` in ``os.environ`` for the duration. Environment-
+    based on purpose — ratchet's ``run_suite`` inherits the parent env
+    (``shell=True``), so this reaches pytest even when the suite cmd is
+    ``make test`` or a wrapper script, where flag-appending cannot."""
+    saved = {k: os.environ.get(k) for k in ("PYTHONDONTWRITEBYTECODE", "PYTEST_ADDOPTS")}
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    os.environ["PYTEST_ADDOPTS"] = (
+        (saved["PYTEST_ADDOPTS"] or "") + " -p no:cacheprovider"
+    ).strip()
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _write_json(path: Path, body: dict) -> None:
@@ -229,8 +288,10 @@ def coverage_baseline(target: Path) -> dict:
     """A REAL run of the test command the way ``run_verification.py`` detects
     it (``chief_wiggum.verification`` detection + planning), with pass/fail
     counts parsed from the output. No detected runner is SAID, not papered
-    over. The run is sandboxed against tree writes: pytest cache and Python
-    bytecode are suppressed (the target tree must stay clean)."""
+    over. The run is sandboxed against tree writes in the CHILD ENV — Python
+    bytecode and the pytest cache are suppressed via PYTHONDONTWRITEBYTECODE
+    + PYTEST_ADDOPTS, which reaches pytest even through make/wrappers (the
+    target tree must stay clean)."""
     detection = verification.detect_project(target)
     planned = verification.plan_steps(target, ["test"], detection)
     if not planned:
@@ -242,11 +303,15 @@ def coverage_baseline(target: Path) -> dict:
                     "(detection: chief_wiggum.verification.detect_project)",
         }
     steps: list[dict] = []
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": (
+            (os.environ.get("PYTEST_ADDOPTS") or "") + " -p no:cacheprovider"
+        ).strip(),
+    }
     for step in planned:
         cmd = list(step.command)
-        if "pytest" in cmd:
-            cmd += ["-p", "no:cacheprovider"]
         try:
             proc = subprocess.run(
                 cmd, cwd=step.cwd, capture_output=True, text=True,
@@ -388,11 +453,21 @@ def gate_verdicts(
                       "(ci_scaffold --scaffold can write one)",
         }
 
-    slop_reason = "git history present — report-only survival/duplication signals computable"
-    if age_days is not None and age_days < 14:
-        slop_reason += f" (repo is {age_days} day(s) old — 2-week survival self-skips until "
-        slop_reason += "history reaches 14 days)"
-    v["quality_slop_gate"] = {"verdict": "applicable", "reason": slop_reason}
+    if age_days is None:
+        # F9 (#215): "git history present" may only be claimed when a commit
+        # actually exists — an empty/unreadable history has no survival or
+        # duplication signal to compute.
+        v["quality_slop_gate"] = {
+            "verdict": "report-only",
+            "reason": "no readable commit history — survival/duplication signals need "
+                      "git history; report-only until the first commit exists",
+        }
+    else:
+        slop_reason = "git history present — report-only survival/duplication signals computable"
+        if age_days < 14:
+            slop_reason += f" (repo is {age_days} day(s) old — 2-week survival self-skips until "
+            slop_reason += "history reaches 14 days)"
+        v["quality_slop_gate"] = {"verdict": "applicable", "reason": slop_reason}
 
     v["saas_gate"] = {
         "verdict": "inapplicable",
@@ -488,7 +563,7 @@ def format_survey(doc: dict) -> str:
 
 def cmd_survey(args) -> int:
     target = Path(resolve_target(args.owner_repo, args.repo))
-    resolver = artifacts.Resolver.resolve(target)
+    resolver = _require_election(target)
     doc = build_survey(target, resolver)
     out = adoption_dir(resolver) / SURVEY_NAME
     _write_json(out, doc)
@@ -606,27 +681,61 @@ def _workdir(args, target: Path) -> Path:
 
 def cmd_baseline(args) -> int:
     target = Path(resolve_target(args.owner_repo, args.repo))
-    resolver = artifacts.Resolver.resolve(target)
+    resolver = _require_election(target)
     workdir = _workdir(args, target)
     workdir.mkdir(parents=True, exist_ok=True)
 
     # (a) ratchet: init (module call), re-point junit reports out of the tree,
-    # then a REAL scored run — never --no-tests: the pass-set baseline is the
-    # honest outcome of running the detected suites, whatever that outcome is.
+    # then a REAL scored run — never --no-tests when suites exist: the pass-set
+    # baseline is the honest outcome of running the detected suites, whatever
+    # that outcome is. When NO suite exists (or none yields a single case), an
+    # empty pass-set must NOT be journaled as a real test run (F7 on #215):
+    # score falls back to --no-tests semantics (tests_run: false) and the
+    # journal note says exactly that.
     print("adopt: [baseline] ratchet init...")
     rc = ratchet.cmd_init(argparse.Namespace(repo=str(target), force=False))
     if rc != 0:
         raise AdoptError(f"ratchet init failed (exit {rc})")
     cfg_path = resolver.quality_dir() / ratchet.CONFIG_NAME
     _retarget_suite_reports(cfg_path, workdir)
-    print("adopt: [baseline] ratchet score (real test run — never --no-tests)...")
-    rc = ratchet.cmd_score(argparse.Namespace(
-        repo=str(target), no_tests=False, no_quality=False, venv=None, gobin=None))
-    if rc != 0:
-        raise AdoptError(f"ratchet score failed (exit {rc})")
+    no_suites = not ratchet.load_config(target).suites
+    if no_suites:
+        print("adopt: [baseline] no test suites detected — scoring with "
+              "--no-tests semantics (tests_run: false)...")
+    else:
+        print("adopt: [baseline] ratchet score (real test run — never --no-tests)...")
+
+    def _score(no_tests: bool) -> None:
+        with _no_cache_child_env():
+            rc = ratchet.cmd_score(argparse.Namespace(
+                repo=str(target), no_tests=no_tests, no_quality=False,
+                venv=None, gobin=None))
+        if rc != 0:
+            raise AdoptError(f"ratchet score failed (exit {rc})")
+
+    _score(no_tests=no_suites)
+    empty_baseline = no_suites
+    if not no_suites:
+        sc = json.loads((resolver.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+        if not sc.get("pass_set"):
+            # Suites were configured but produced ZERO passing cases — an
+            # empty pass-set journaled as tests_run would look like a real,
+            # honest baseline. Re-score as not-run and say so.
+            _score(no_tests=True)
+            empty_baseline = True
+    notes = "adoption baseline"
+    if empty_baseline:
+        print("adopt: no test suites ran — pass-set baseline EMPTY (recorded as not-run)")
+        survey = _load_json(adoption_dir(resolver) / SURVEY_NAME)
+        if survey and not (survey.get("test_run") or {}).get("detected", True):
+            # Survey verdict cross-check: the survey already said no runner —
+            # the baseline agrees rather than silently diverging.
+            print("adopt: consistent with the survey verdict — no test runner detected")
+        notes = ("adoption baseline — no test suites ran; pass-set EMPTY, "
+                 "recorded as not-run (tests_run: false)")
     rc = ratchet.cmd_record(argparse.Namespace(
         repo=str(target), event="baseline", ref="adoption", gate="pass",
-        merged=True, notes="adoption baseline",
+        merged=True, notes=notes,
         amend=None, retire=None, amend_verifier=None, retire_verifier=None))
     if rc != 0:
         raise AdoptError(f"ratchet record failed (exit {rc})")
@@ -667,6 +776,10 @@ def _gate_finding_entries(resolver: artifacts.Resolver, target: Path,
         import check_traceability as ct  # noqa: PLC0415
         for epic_dir in sorted(p for p in epics.iterdir() if p.is_dir()):
             report = ct.check(epic_dir, target)
+            # Key format consumed by check_traceability's grandfather reading
+            # (chief_wiggum.grandfather):
+            #   check_traceability:uncovered:<STABLE-ID>
+            #   check_traceability:untested:<STABLE-ID>
             for cid in report.uncovered_contracts:
                 entries.append(_entry(f"check_traceability:uncovered:{cid}",
                                       owner, expiry, "check_traceability"))
@@ -675,7 +788,10 @@ def _gate_finding_entries(resolver: artifacts.Resolver, target: Path,
                                       owner, expiry, "check_traceability"))
             sw = check_single_writer.check(epic_dir, target)
             for v in sw.violations:
-                key = ":".join(str(v.get(k, "?")) for k in ("invariant", "field", "file"))
+                # Key format consumed by check_single_writer's grandfather
+                # reading (chief_wiggum.grandfather):
+                #   check_single_writer:<INV-id>:<field>:<file>
+                key = ":".join(str(v.get(k, "?")) for k in ("invariant_id", "field", "file"))
                 entries.append(_entry(f"check_single_writer:{key}",
                                       owner, expiry, "check_single_writer"))
     except Exception as exc:  # noqa: BLE001 — surfaced, never adoption-blocking
@@ -697,7 +813,7 @@ def _entry(finding_id: str, owner: str, expiry: str, engine: str) -> dict:
 
 def cmd_grandfather(args) -> int:
     target = Path(resolve_target(args.owner_repo, args.repo))
-    resolver = artifacts.Resolver.resolve(target)
+    resolver = _require_election(target)
     debt_path = resolver.quality_dir() / "debt.json"
     debt = _load_json(debt_path)
     if debt is None:
@@ -720,15 +836,50 @@ def cmd_grandfather(args) -> int:
     ]
     entries += _gate_finding_entries(resolver, target, args.owner, expiry)
 
+    out = adoption_dir(resolver) / GRANDFATHER_NAME
+    existing = _load_json(out)
     body = resolver.stamp({
         "schema": GRANDFATHER_SCHEMA,
         "created_at": _now_iso(),
         "default_expiry": expiry,
         "entries": entries,
     })
-    out = adoption_dir(resolver) / GRANDFATHER_NAME
+    amnestied = 0
+    if existing is not None:
+        # F1 (#215): re-grandfathering is AMNESTY for every finding that
+        # appeared since adoption. Refuse by default, printing the exact
+        # delta; --extend performs it explicitly and loudly, preserving the
+        # ORIGINAL created_at and the original entries' expiry (only the NEW
+        # entries get a fresh expiry from now).
+        old_entries = [e for e in (existing.get("entries") or [])
+                       if isinstance(e, dict) and e.get("id")]
+        old_ids = {e["id"] for e in old_entries}
+        new_entries = [e for e in entries if e["id"] not in old_ids]
+        new_ids = sorted(e["id"] for e in new_entries)
+        if not getattr(args, "extend", False):
+            raise AdoptError(
+                f"grandfathered.json already exists at {out} — refusing to "
+                "re-grandfather (a second sweep would amnesty POST-adoption "
+                f"findings). {len(new_ids)} finding(s) would be newly added: "
+                f"{', '.join(new_ids) or '(none)'}. Re-run with --extend to "
+                "amnesty them explicitly.")
+        print(f"adopt: --extend amnestying {len(new_ids)} POST-adoption "
+              f"finding(s) (new-entry expiry {expiry}): "
+              f"{', '.join(new_ids) or '(none)'}")
+        amnestied = len(new_ids)
+        body = resolver.stamp({
+            "schema": GRANDFATHER_SCHEMA,
+            "created_at": existing.get("created_at"),  # original, preserved
+            "extended_at": _now_iso(),
+            "default_expiry": existing.get("default_expiry"),
+            "entries": old_entries + new_entries,  # original expiries kept
+        })
     _write_json(out, body)
-    print(f"adopt: grandfathered {len(entries)} finding(s) (expiry {expiry}) -> {out}")
+    if existing is None:
+        print(f"adopt: grandfathered {len(entries)} finding(s) (expiry {expiry}) -> {out}")
+    else:
+        print(f"adopt: grandfathered {len(body['entries'])} finding(s) "
+              f"({amnestied} newly amnestied) -> {out}")
     print("adopt: expiry is visible pressure, not amnesty — grandfathered items stay "
           "in the inventory, labeled; only NEW findings are gate-eligible")
     return 0
@@ -755,7 +906,7 @@ def _nearest_expiry(entries: list[dict]) -> str | None:
 
 def cmd_record(args) -> int:
     target = Path(resolve_target(args.owner_repo, args.repo))
-    resolver = artifacts.Resolver.resolve(target)
+    resolver = _require_election(target)
     adir = adoption_dir(resolver)
     survey = _load_json(adir / SURVEY_NAME)
     if survey is None:
@@ -808,6 +959,18 @@ def cmd_record(args) -> int:
 
 
 def cmd_run(args) -> int:
+    # F1 (#215): re-running the whole arrow on an already-adopted target is a
+    # re-adoption — an explicit operator act, never a side effect. The check
+    # uses the CURRENT resolver state (an adopted target has an election, so
+    # the meta root resolves to where the record actually lives).
+    target = Path(resolve_target(args.owner_repo, args.repo))
+    rec = _load_json(adoption_dir(artifacts.Resolver.resolve(target)) / ADOPTION_NAME)
+    if rec is not None and not getattr(args, "re_adopt", False):
+        raise AdoptError(
+            f"already adopted (adopted_at {rec.get('adopted_at')}) — "
+            "re-adoption is an explicit operator act; re-run with --re-adopt "
+            "(and `grandfather --extend` semantics if you mean to amnesty "
+            "post-adoption findings)")
     # The election comes FIRST: it decides where every subsequent artifact
     # (survey included) persists. Surveying before electing would write the
     # survey to the embedded default — i.e. into the very target tree a
@@ -889,6 +1052,10 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"expiry horizon in days (default {DEFAULT_EXPIRY_DAYS})")
         sp.add_argument("--owner", default=DEFAULT_OWNER,
                         help="owner recorded on every grandfather entry")
+        sp.add_argument("--extend", action="store_true",
+                        help="explicitly amnesty POST-adoption findings into an EXISTING "
+                             "grandfathered.json (refused by default; original created_at "
+                             "and original entries' expiry are preserved)")
 
     sp = sub.add_parser("grandfather",
                         help="waive the baseline findings (JUSTIFIED-waiver shape, with expiry)")
@@ -898,12 +1065,15 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("record", help="write the adoption record (the brownfield switch)")
     common(sp)
 
-    sp = sub.add_parser("run", help="survey -> elect -> baseline -> grandfather -> record")
+    sp = sub.add_parser("run", help="elect -> survey -> baseline -> grandfather -> record")
     common(sp)
     elect_flags(sp)
     sp.add_argument("--workdir", default=None, help="scratch dir (default: session tmp)")
     grandfather_flags(sp)
     sp.add_argument("--format", choices=["text", "json"], default="text")
+    sp.add_argument("--re-adopt", dest="re_adopt", action="store_true",
+                    help="explicitly re-run the arrow on an already-adopted target "
+                         "(refused by default — re-adoption is an operator act)")
 
     args = parser.parse_args(argv)
     dispatch = {

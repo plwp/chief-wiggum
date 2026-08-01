@@ -15,7 +15,9 @@
     "suspect_links": 0,
     "justified_contracts": 0,
     "expired_justifications": 0,
-    "invalid_justifications": 0
+    "invalid_justifications": 0,
+    "grandfathered": 0,
+    "expired_grandfathers": 0
   },
   "applicability": "applicable",
   "soundness_ok": false,
@@ -54,5 +56,7 @@
   "justified_contracts": [],
   "expired_justifications": [],
   "invalid_justifications": [],
+  "grandfathered_contracts": [],
+  "expired_grandfathers": [],
   "warnings": []
 }

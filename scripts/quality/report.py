@@ -329,6 +329,10 @@ def render_markdown(engines: dict, combined: dict, charts: list[str]) -> str:
             lines.append(f"- {gap}")
         # Grandfathered labeling (#215): pre-adoption-baseline items stay in
         # the inventory; this section labels them, and EXPIRED ones loudly.
+        # Expired-ness is computed LIVE at render time (#215 F8): the stored
+        # grandfather_expired flag is a build-time snapshot — a debt.json
+        # built before an expiry date must still render EXPIRED after it.
+        from chief_wiggum.grandfather import expired_live  # noqa: PLC0415
         gf_items = [i for i in (debt.get("items") or [])
                     if isinstance(i, dict) and i.get("grandfathered")]
         if gf_items:
@@ -336,7 +340,7 @@ def render_markdown(engines: dict, combined: dict, charts: list[str]) -> str:
                          "baseline — labeled, non-blocking; expiry is visible "
                          "pressure, not amnesty)")
         gf_expired = sorted(i["id"] for i in gf_items
-                            if i.get("grandfather_expired") and i.get("id"))
+                            if expired_live(i) and i.get("id"))
         if gf_expired:
             lines.append("- **EXPIRED grandfather**: " + ", ".join(gf_expired)
                          + " — expiry passed; re-triage or remediate (docs/adopt.md)")
@@ -348,7 +352,7 @@ def render_markdown(engines: dict, combined: dict, charts: list[str]) -> str:
                 loc = item.get("locations", ["?"])[0]
                 tag = ""
                 if item.get("grandfathered"):
-                    tag = (" [EXPIRED grandfather]" if item.get("grandfather_expired")
+                    tag = (" [EXPIRED grandfather]" if expired_live(item)
                            else " [grandfathered]")
                 lines.append(f"  - `{item.get('id')}` [{item.get('severity')}]{tag} "
                              f"{item.get('engine')}/{item.get('kind')} `{loc}` — "

@@ -73,6 +73,16 @@ Mitigate with precise ``sanctioned_writers`` and ``--exclude``. Because of this,
 new single-write-path invariant on a common field as **report-only first** (no ``--gate``)
 and confirm the finding set is clean before making it a ``coverage`` blocker.
 
+**Adoption grandfathers (#215 F5)**: ``adopt.py grandfather`` records pre-adoption
+baseline violations in ``<meta root>/adoption/grandfathered.json``, keyed for this
+gate as ``check_single_writer:<INV-id>:<field>:<file>`` (canonical invariant id,
+controlled-field path, repo-relative file — see ``chief_wiggum.grandfather``).
+Mirroring the JUSTIFIED-waiver mechanics: an in-domain violation matching a
+NON-EXPIRED entry is reported under ``grandfathered`` (never silently dropped) and
+does NOT count toward the ``--gate coverage`` exit; an EXPIRED entry does NOT waive
+— the violation blocks again, labeled "EXPIRED grandfather". ``--grandfather PATH``
+overrides the resolver default.
+
 Backward-compatible: invariants without the metadata are skipped (degrade
 gracefully), exactly like ``check_traceability.py`` when IDs are absent.
 
@@ -100,6 +110,7 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -114,6 +125,10 @@ import artifacts  # noqa: E402
 # regex tier -> skip-with-warning. Used by scan_writers/unsupported_extension_counts
 # below to surface files with NO emitter coverage instead of dropping them silently.
 import emitters  # noqa: E402
+
+# Adoption-grandfather waivers (#215 F5) — the shared reader both blocking
+# gates use; key grammar + expiry posture documented there.
+from chief_wiggum import grandfather as cw_grandfather  # noqa: E402
 
 # The declared language support matrix (#162) — SOURCE_EXTS below is derived
 # from it (tier-1 + generic-tier extensions), and the emitter fallback chain
@@ -262,6 +277,11 @@ class SingleWriterReport:
     # motivating incident: an out-of-domain writer of our controlled field must
     # stay VISIBLE without blocking our merges. Empty unless --scope was given.
     boundary: list[dict] = field(default_factory=list)
+    # Adoption-grandfathered violations (#215 F5): in-domain violations whose
+    # key matches a NON-EXPIRED grandfather entry move here — reported, never
+    # blocking. An EXPIRED entry does NOT waive: its violation STAYS in
+    # `violations` (blocks again) carrying grandfather_expired/expiry labels.
+    grandfathered: list[dict] = field(default_factory=list)
     malformed: list[dict] = field(default_factory=list)     # bad metadata (soundness)
     warnings: list[str] = field(default_factory=list)
     # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
@@ -278,6 +298,7 @@ class SingleWriterReport:
             "writers": len(self.writers),
             "violations": len(self.violations),
             "boundary": len(self.boundary),
+            "grandfathered": len(self.grandfathered),
             "malformed": len(self.malformed),
         }
 
@@ -302,6 +323,7 @@ class SingleWriterReport:
             "writers": self.writers,
             "violations": self.violations,
             "boundary": self.boundary,
+            "grandfathered": self.grandfathered,
             "malformed": self.malformed,
             "warnings": self.warnings,
         }
@@ -617,6 +639,7 @@ def _scanner_version() -> str:
         here,
         here.parent / "artifacts.py",
         cw_dir / "annotations.py",
+        cw_dir / "grandfather.py",
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "write_emission.py",
@@ -657,6 +680,46 @@ def unsupported_extension_counts(
     return counts
 
 
+# --- adoption grandfathers (#215 F5) ----------------------------------------
+
+
+def grandfather_key(violation: dict) -> str:
+    """The grandfather-file key for one violation — EXACTLY what
+    ``adopt.py grandfather`` writes: ``check_single_writer:`` + the
+    invariant id, controlled-field path, and repo-relative file, colon-joined
+    (see chief_wiggum.grandfather's key grammar)."""
+    return "check_single_writer:" + ":".join(
+        str(violation.get(k, "?")) for k in ("invariant_id", "field", "file"))
+
+
+def _apply_grandfathers(report: SingleWriterReport, entries: dict[str, dict],
+                        *, today: date | None = None) -> None:
+    """Apply adoption-grandfather waivers to a built report, in place —
+    mirroring the JUSTIFIED-waiver mechanics (chief_wiggum.trace_links): a
+    NON-EXPIRED entry moves the violation to ``grandfathered`` (reported,
+    never blocking); an EXPIRED entry does NOT waive — the violation stays in
+    ``violations`` (blocks again) with ``grandfather_expired``/``expiry``
+    labels for the renderer."""
+    today = today or date.today()
+    remaining: list[dict] = []
+    for v in report.violations:
+        entry = entries.get(grandfather_key(v))
+        if entry is None:
+            remaining.append(v)
+            continue
+        if cw_grandfather.is_expired(entry, today):
+            remaining.append({**v, "grandfather_expired": True,
+                              "grandfather_expiry": entry.get("expiry")})
+        else:
+            report.grandfathered.append({
+                **v, "grandfathered": True,
+                "grandfather_expiry": entry.get("expiry"),
+                "grandfather_owner": entry.get("owner"),
+                "grandfather_reason": entry.get("reason"),
+            })
+    report.violations = remaining
+
+
 # --- top-level check --------------------------------------------------------
 
 
@@ -666,6 +729,8 @@ def check(
     exclude: list[str] | None = None,
     changed_since: str | None = None,
     scope: dict | None = None,
+    grandfather_path: str | Path | None = None,
+    today: date | None = None,
 ) -> SingleWriterReport:
     """``scope`` (chief-wiggum#213 Phase D, optional) is a parsed scope.json
     document ({"include": [...], "exclude": [...]}). When given, detection
@@ -674,7 +739,12 @@ def check(
     writers outside scope are BOUNDARY findings — surfaced in
     ``report.boundary`` with ``boundary: true``, never violations, never
     affecting the exit code. ``None`` (no --scope) is byte-identical to the
-    pre-scope behavior."""
+    pre-scope behavior. ``grandfather_path`` (#215 F5, optional) is the
+    adoption grandfather file: an in-domain violation whose key
+    (``check_single_writer:<INV-id>:<field>:<file>``) matches a NON-EXPIRED
+    entry moves to ``report.grandfathered`` (non-blocking); an EXPIRED entry
+    leaves the violation blocking, labeled. ``today`` overrides the
+    expiry-check clock (defaults to the real today)."""
     report = SingleWriterReport()
     invariants, malformed = collect_invariants(epic_dir)
     report.invariants = [inv.to_dict() for inv in invariants]
@@ -727,6 +797,12 @@ def check(
             in_domain = writers
         report.writers = [w.to_dict() for w in in_domain]
         report.violations = [w.to_dict() for w in in_domain if not w.sanctioned]
+        if grandfather_path is not None:
+            gf_entries, gf_warning = cw_grandfather.load_entries(grandfather_path)
+            if gf_warning:
+                report.warnings.append(gf_warning)
+            if gf_entries:
+                _apply_grandfathers(report, gf_entries, today=today)
         # Surface any invariant whose controlled field has NO writer at all — the
         # sanctioned path may be missing/misnamed (a soft warning, not a violation).
         # Skipped under --changed-since: a ticket-scoped scan is EXPECTED to miss
@@ -767,7 +843,8 @@ def render_text(report: SingleWriterReport) -> str:
         "# Single-Writer Audit",
         "",
         f"Single-write-path invariants: {c['invariants']}",
-        f"Writers found: {c['writers']}  |  Violations: {c['violations']}  |  Malformed metadata: {c['malformed']}",
+        f"Writers found: {c['writers']}  |  Violations: {c['violations']}  |  "
+        f"Grandfathered: {c['grandfathered']}  |  Malformed metadata: {c['malformed']}",
         "",
         f"- Soundness (metadata well-formed): {'OK' if report.soundness_ok else 'FINDINGS'}",
         f"- Coverage (no unsanctioned writer): {'OK' if report.coverage_ok else 'FINDINGS'}",
@@ -784,11 +861,24 @@ def render_text(report: SingleWriterReport) -> str:
         lines += ["", "## Unsanctioned writers (single-write-path violations)", ""]
         for v in report.violations:
             sym = f" in {v['symbol']}()" if v.get("symbol") else ""
+            expired = ""
+            if v.get("grandfather_expired"):
+                expired = (f" [EXPIRED grandfather — expiry "
+                           f"{v.get('grandfather_expiry') or '?'} passed; blocks again]")
             lines.append(
                 f"- {v['invariant_id']} field `{v['field']}` written at "
-                f"{v['file']}:{v['line']}{sym}"
+                f"{v['file']}:{v['line']}{sym}{expired}"
             )
             lines.append(f"    {v['text']}")
+    if report.grandfathered:
+        lines += ["", "## Grandfathered writers (pre-adoption baseline — waived, non-blocking)", ""]
+        for v in report.grandfathered:
+            sym = f" in {v['symbol']}()" if v.get("symbol") else ""
+            lines.append(
+                f"- {v['invariant_id']} field `{v['field']}` written at "
+                f"{v['file']}:{v['line']}{sym} "
+                f"(expires {v.get('grandfather_expiry') or '?'})"
+            )
     if report.writers and not report.violations:
         lines += ["", "## Sanctioned writers", ""]
         for w in report.writers:
@@ -852,6 +942,16 @@ def main(argv: list[str] | None = None) -> int:
         "coverage=unsanctioned writers)",
     )
     parser.add_argument(
+        "--grandfather",
+        metavar="PATH",
+        help="Path to the adoption grandfather file (#215; adopt.py writes "
+        f"<meta root>/{cw_grandfather.GRANDFATHER_RELPATH}). Defaults to that resolver "
+        "location for the --source target. Keys for this gate: "
+        "check_single_writer:<INV-id>:<field>:<file>. Non-expired entries waive "
+        "matching violations (reported under Grandfathered); EXPIRED entries "
+        "block again.",
+    )
+    parser.add_argument(
         "--changed-since",
         metavar="REF",
         help="Scope the --source scan to files changed since REF (via git diff + the "
@@ -905,9 +1005,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
 
+    if args.grandfather:
+        grandfather_path = Path(args.grandfather)
+    else:
+        # Default: the --source target's resolved adoption grandfather file
+        # (#215). Missing file degrades to graceful absence inside check().
+        grandfather_path = (
+            artifacts.Resolver.resolve(Path(args.source or ".")).meta_root
+            / cw_grandfather.GRANDFATHER_RELPATH
+        )
+
     try:
         report = check(args.epic_dir, args.source, exclude=args.exclude,
-                       changed_since=args.changed_since, scope=scope)
+                       changed_since=args.changed_since, scope=scope,
+                       grandfather_path=grandfather_path)
     except ManifestError as exc:
         # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
         # a usage error, reported concisely — never a traceback.

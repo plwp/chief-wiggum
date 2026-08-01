@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402 — #213 meta-location resolver (debt.json lookup)
+from chief_wiggum.grandfather import expired_live  # noqa: E402 — #215 F8 render overlay
 from chief_wiggum.hashing import scanner_version  # noqa: E402
 from quality import duplication, survival, test_health  # noqa: E402
 
@@ -242,6 +243,9 @@ def format_debt_block(debt: dict | None) -> str:
         lines.append(f"  - {engine}: {parts}")
     # Grandfathered items (#215): pre-adoption baseline debt stays in the
     # inventory, labeled here; EXPIRED grandfathers surface prominently.
+    # Expired-ness is computed LIVE at render time (#215 F8) — the stored
+    # grandfather_expired flag is a build-time snapshot, so a debt.json built
+    # before an expiry date must still render EXPIRED here after it passes.
     items = [i for i in (debt.get("items") or []) if isinstance(i, dict)]
     grandfathered = [i for i in items if i.get("grandfathered")]
     if grandfathered:
@@ -250,7 +254,7 @@ def format_debt_block(debt: dict | None) -> str:
             "labeled, non-blocking; expiry is visible pressure, not amnesty)"
         )
     expired = sorted(i["id"] for i in grandfathered
-                     if i.get("grandfather_expired") and i.get("id"))
+                     if expired_live(i) and i.get("id"))
     if expired:
         lines.append(
             "  - EXPIRED grandfather: " + ", ".join(expired)
@@ -350,6 +354,10 @@ def _scanner_version() -> str:
         here,
         here.parent / "artifacts.py",
         cw_dir / "hashing.py",
+        # #215 F8: the live grandfather-expiry overlay decides which debt items
+        # this gate's report-only block labels EXPIRED — print-shaping, so it
+        # versions (same dep-completeness doctrine as test_health.py below).
+        cw_dir / "grandfather.py",
         q_dir / "survival.py",
         q_dir / "duplication.py",
         q_dir / "test_health.py",

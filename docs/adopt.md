@@ -42,8 +42,17 @@ Mechanics live in `scripts/adopt.py`; the `/adopt` command is a thin adapter
    Journaled as a merged `baseline` record (`--notes "adoption baseline"`).
    Quality dimensions (complexity/churn) baseline at current values — `score`
    snapshots them. From day one: **debt cannot grow**. Junit reports are
-   re-pointed outside the target tree and pytest cache/bytecode writes are
-   suppressed — in sidecar mode the baseline run leaves the target byte-clean.
+   re-pointed outside the target tree, and the suite run's **child
+   environment** sets `PYTHONDONTWRITEBYTECODE=1` plus
+   `PYTEST_ADDOPTS="-p no:cacheprovider"` — env-based so the suppression
+   reaches pytest even through `make`/wrapper commands — leaving the target
+   tree genuinely byte-clean in sidecar mode. **Empty baselines are recorded
+   as not-run**: when no suite is detected (or the configured suites yield
+   zero passing cases), the score falls back to `--no-tests` semantics
+   (`tests_run: false`), prints `no test suites ran — pass-set baseline EMPTY
+   (recorded as not-run)`, cross-checks the survey's no-runner verdict, and
+   the journal note says exactly that — an empty pass-set is never journaled
+   as a real test run.
 4. **Debt inventory baseline** — the #214 inventory
    (`debt_inventory.build_inventory`) written to the resolver quality dir's
    `debt.json`: the adoption debt baseline.
@@ -57,8 +66,21 @@ Mechanics live in `scripts/adopt.py`; the `/adopt` command is a thin adapter
 performs the **election first** — the election decides where the survey (and
 every later artifact) persists, so surveying before electing would write the
 survey into the embedded default, i.e. the very target tree a sidecar adoption
-exists to keep clean. Step-by-step adoptions should elect first for the same
-reason.
+exists to keep clean. Step-by-step adoptions **must** elect first: standalone
+`survey`/`baseline`/`grandfather`/`record` on a target with **no election
+file refuse** (exit 2, "embedded mode is an explicit choice") rather than
+falling through to the resolver's silent embedded default and writing the
+target's own tree.
+
+**Re-adoption is an explicit operator act.** `run` on a target whose
+`adoption.json` already exists refuses ("already adopted (adopted_at …)")
+unless `--re-adopt` is passed. Likewise `grandfather` against an existing
+`grandfathered.json` refuses by default, printing the exact ids that would be
+**newly added** (those are post-adoption findings — waiving them is amnesty,
+not baselining); `--extend` performs it explicitly with a loud "amnestying N
+POST-adoption finding(s)" line, preserving the original `created_at` and the
+original entries' expiry (only the new entries get a fresh expiry from now,
+and the file gains `extended_at`).
 
 ## Adoption-record schema (`adoption/1`)
 
@@ -108,14 +130,41 @@ beyond it). Default expiry: **+90 days** (`--expiry` / `--expiry-days`).
   `"grandfather_expiry"`, `"grandfather_expired"`) and every surfacing layer
   labels them: the code-metrics debt section, the slop-gate debt block,
   `code_query orient` facts, and `/status`. An expired grandfather surfaces as
-  **EXPIRED grandfather**, prominently, everywhere.
-- **Only NEW findings are gate-eligible.** Nothing blocks on debt today (the
+  **EXPIRED grandfather**, prominently, everywhere. The stored
+  `grandfather_expired` flag is a **build-time snapshot**; every renderer
+  recomputes expired-ness **live** from `grandfather_expiry` vs today
+  (`chief_wiggum.grandfather.expired_live`), so an inventory built before the
+  expiry date still shows EXPIRED once it passes.
+- **The blocking gates read the file.** `check_traceability` and
+  `check_single_writer` resolve `<meta root>/adoption/grandfathered.json` for
+  their `--source` target (override: `--grandfather PATH`), mirroring the
+  JUSTIFIED-waiver mechanics: a finding whose key matches a **non-expired**
+  entry is reported under a *Grandfathered* section (counts + JSON field) and
+  does **not** count toward the blocking exit under `--gate`; an **expired**
+  entry does not waive — the finding blocks again, labeled **EXPIRED
+  grandfather**. Keys are exactly what `adopt.py` writes (documented in
+  `chief_wiggum.grandfather`): `check_traceability:uncovered:<ID>` /
+  `check_traceability:untested:<ID>` and
+  `check_single_writer:<INV-id>:<field>:<file>`.
+- **Only NEW findings are gate-eligible.** For debt, nothing blocks today (the
   inventory is report-only per [gate-rollout.md](gate-rollout.md)), so the
   honoring is the labeling plus #216's consumption: when debt-driven
   back-pressure arrives, a grandfathered (unexpired) finding is non-blocking
   by construction, and a finding absent from the grandfather file is new and
   gate-eligible. An **expired** grandfather is no longer a waiver — re-triage
   or remediate.
+- **Debt-id inheritance nuance.** `DEBT-` ids are content-anchored
+  (`engine + normalized path + anchor`, never a line number): a finding that
+  is fixed and later **reintroduced with the same anchor in the same file**
+  (e.g. the identical TODO text, the same dead symbol name) reuses the old id
+  and therefore **inherits its grandfather entry**. The waiver follows the
+  finding's *identity*, not its occurrence — a reintroduction that matters
+  should be caught in review, and a changed anchor (different text/symbol)
+  mints a fresh, gate-eligible id.
+- **The adoption artifacts are goalposts.** `ratchet.py protected` parks any
+  worker diff touching `docs/adoption/*.json` (embedded mode) — a worker must
+  not flip the brownfield switch or amnesty its own findings; a sidecar
+  election keeps the files outside the tree entirely.
 - An unparseable expiry counts as **expired**, never a silent pass (same
   posture as the JUSTIFIED-waiver `is_expired`).
 

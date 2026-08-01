@@ -51,11 +51,20 @@ ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 **New-product check.** DST (deterministic-simulation testing, FoundationDB/TigerBeetle/Antithesis-style) is only cheap if determinism is designed in from day one — retrofitting it into a codebase with wall-clock reads and unseeded randomness scattered through business logic is brutal. This is the one window where it's free, so detect whether this is the epic that first architects the product. **The adoption record is authoritative** (#215): a repo `/adopt` has run on carries `<meta root>/adoption/adoption.json` with `brownfield: true` — it is NOT a new product, however empty its epic dirs look (this fixes the misclassification of imported code CW never touched). Only when no adoption record exists does the file-existence heuristic apply as fallback:
 
 ```bash
-META_ROOT=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | python3 -c "import sys,json; print(json.load(sys.stdin)['meta_root'])")
+# FAIL CLOSED: if the resolver errors (malformed election/scope), STOP and fix the
+# config — an empty META_ROOT must never silently fall through to the heuristic
+# and misclassify an adopted repo as a new product.
+META_ROOT=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | python3 -c "import sys,json; print(json.load(sys.stdin)['meta_root'])") || {
+  echo "artifacts.py show failed for $TARGET_REPO — fix the election/config before the new-product check (never classify on a resolver error)" >&2
+  exit 1
+}
 if [ -f "$META_ROOT/adoption/adoption.json" ]; then
   IS_NEW_PRODUCT=false   # adopted brownfield — the record, not file existence, decides
 else
-  IS_NEW_PRODUCT=$([ ! -d "$TARGET_REPO/docs/epics" ] && [ ! -f "$TARGET_REPO/docs/quality/ratchet.json" ] && echo true || echo false)
+  # No adoption record: heuristic over the RESOLVED meta root (sidecar-aware —
+  # a sidecar-elected repo keeps its epics/ratchet state OUTSIDE the tree, so
+  # probing the raw target tree would misread an established sidecar repo as new).
+  IS_NEW_PRODUCT=$([ ! -d "$META_ROOT/epics" ] && [ ! -f "$META_ROOT/quality/ratchet.json" ] && echo true || echo false)
 fi
 ```
 

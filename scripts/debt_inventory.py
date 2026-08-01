@@ -67,6 +67,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402 — #213 meta-location resolver
+from chief_wiggum.grandfather import expired_live  # noqa: E402 — #215 F8 render overlay
 from quality import clones, dead_code, markers, process, test_health  # noqa: E402
 
 SCHEMA = "debt/1"
@@ -479,9 +480,16 @@ def format_report(envelope: dict) -> str:
             f"- grandfathered: {gf['count']} item(s) (pre-adoption baseline — "
             "labeled, non-blocking; expiry is visible pressure, not amnesty)"
         )
-    if gf.get("expired"):
+    # Expired-ness is computed LIVE at render time (#215 F8): the stored
+    # grandfather_expired flag is a build-time snapshot — an inventory built
+    # before an expiry date must still render EXPIRED after it passes.
+    expired_now = sorted(
+        i["id"] for i in envelope.get("items") or []
+        if isinstance(i, dict) and i.get("id") and expired_live(i)
+    )
+    if expired_now:
         lines.append(
-            "- EXPIRED grandfather: " + ", ".join(gf["expired"])
+            "- EXPIRED grandfather: " + ", ".join(expired_now)
             + " — expiry passed; re-triage or remediate (see docs/adopt.md)"
         )
     top = envelope["items"][:10]
@@ -493,7 +501,7 @@ def format_report(envelope: dict) -> str:
             more = f" (+{len(item['locations']) - 1} more)" if len(item["locations"]) > 1 else ""
             tag = ""
             if item.get("grandfathered"):
-                tag = (" [EXPIRED grandfather]" if item.get("grandfather_expired")
+                tag = (" [EXPIRED grandfather]" if expired_live(item)
                        else " [grandfathered]")
             lines.append(f"  {item['id']} [{item['severity']}]{tag} {item['engine']}/{item['kind']} "
                          f"{loc}{more} — {item['detail'][:100]}")

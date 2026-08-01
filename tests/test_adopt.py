@@ -88,16 +88,16 @@ def assert_no_cw_meta(target: Path) -> None:
 
 
 def _tracked_clean(target: Path) -> bool:
+    """STRICT byte-clean check (#215 F3): NO exclusions. The baseline/survey
+    runs suppress bytecode + the pytest cache in the child env
+    (PYTHONDONTWRITEBYTECODE / PYTEST_ADDOPTS), so __pycache__ and
+    .pytest_cache must genuinely not appear — the mechanism is real, the test
+    is not lenient."""
     out = subprocess.run(
         ["git", "-C", str(target), "status", "--porcelain"],
         capture_output=True, text=True, check=True,
     ).stdout
-    # __pycache__/.pytest_cache from the target's own test run are not CW writes
-    lines = [
-        ln for ln in out.splitlines()
-        if ln.strip() and "__pycache__" not in ln and ".pytest_cache" not in ln
-    ]
-    return lines == []
+    return [ln for ln in out.splitlines() if ln.strip()] == []
 
 
 # --- survey ----------------------------------------------------------------------
@@ -155,12 +155,26 @@ def test_survey_no_runner_says_so(user_dir, tmp_path):
     assert doc["gates"]["ratchet"]["verdict"] == "report-only"
 
 
-def test_survey_embedded_default_writes_target_docs(user_dir, tmp_path):
-    """Without an election the resolver default is embedded — survey.json goes
-    to <target>/docs/adoption (the documented embedded contract)."""
+def test_survey_explicit_embedded_election_writes_target_docs(user_dir, tmp_path):
+    """With an EXPLICIT embedded election, survey.json goes to
+    <target>/docs/adoption (the documented embedded contract)."""
     target = make_target(tmp_path / "t")
+    artifacts.elect(target, "embedded")
     assert adopt.main(["survey", "--repo", str(target)]) == 0
     assert (target / "docs" / "adoption" / "survey.json").is_file()
+
+
+@pytest.mark.parametrize("subcmd", ["survey", "baseline", "grandfather", "record"])
+def test_standalone_subcommands_refuse_without_election(user_dir, tmp_path, capsys, subcmd):
+    """F4 (#215): with NO election file, standalone subcommands refuse (exit 2)
+    instead of silently defaulting to embedded and writing the target tree —
+    embedded mode is an explicit choice."""
+    target = make_target(tmp_path / "t")
+    assert adopt.main([subcmd, "--repo", str(target)]) == 2
+    err = capsys.readouterr().err
+    assert "no footprint election" in err
+    assert "embedded mode is an explicit choice" in err
+    assert_no_cw_meta(target)
 
 
 # --- elect -----------------------------------------------------------------------
@@ -226,9 +240,12 @@ def test_baseline_real_test_run_and_journal(user_dir, tmp_path):
     debt = json.loads((qd / "debt.json").read_text())
     ids = [i["id"] for i in debt["items"]]
     assert any(i.startswith("DEBT-") for i in ids)  # the TODO marker
-    # the target tree stays clean: no junit report, no docs/, nothing CW
+    # the target tree stays clean: no junit report, no docs/, nothing CW —
+    # and genuinely byte-clean (F3): no bytecode, no pytest cache anywhere
     assert_no_cw_meta(target)
     assert not (target / ".ratchet-junit.xml").exists()
+    assert not list(target.rglob("__pycache__"))
+    assert not list(target.rglob(".pytest_cache"))
     assert _tracked_clean(target)
     # ratchet check holds against its own fresh baseline
     rc = ratchet.cmd_check(argparse.Namespace(
@@ -418,6 +435,261 @@ def test_status_without_adoption_record(user_dir, tmp_path):
     assert "no adoption record" in status.render_text(st)
 
 
+# --- F7: empty pass-set baseline is recorded as not-run --------------------------
+
+
+def test_baseline_no_test_repo_records_not_run(user_dir, tmp_path, capsys):
+    """A repo with no test runner must NOT journal an empty pass-set as a real
+    test run: the score falls back to --no-tests semantics (tests_run: false),
+    the message says so, and the journal note says exactly that (F7)."""
+    target = make_target(tmp_path / "t", with_tests=False, with_pyproject=False)
+    artifacts.elect(target, "sidecar", backing="local")
+    assert adopt.main(["survey", "--repo", str(target)]) == 0
+    capsys.readouterr()
+    assert adopt.main(["baseline", "--repo", str(target),
+                       "--workdir", str(tmp_path / "wd")]) == 0
+    out = capsys.readouterr().out
+    assert "no test suites ran — pass-set baseline EMPTY (recorded as not-run)" in out
+    # survey verdict cross-check: the survey said no runner, the baseline agrees
+    assert "consistent with the survey verdict" in out
+    resolver = artifacts.Resolver.resolve(target)
+    sc = json.loads((resolver.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+    assert sc["tests_run"] is False
+    assert sc["pass_set"] == []
+    records = ratchet.load_journal(ratchet.load_config(Path(target)))
+    assert records[-1]["event"] == "baseline"
+    assert "EMPTY" in records[-1]["notes"]
+    assert "not-run" in records[-1]["notes"]
+
+
+# --- F1: re-grandfather amnesty + re-adoption guards -----------------------------
+
+
+def test_grandfather_refuses_regrandfather_by_default(user_dir, tmp_path, capsys):
+    target = make_target(tmp_path / "t")
+    _run_through_baseline(target, tmp_path)
+    assert adopt.main(["grandfather", "--repo", str(target)]) == 0
+    capsys.readouterr()
+    assert adopt.main(["grandfather", "--repo", str(target)]) == 2
+    err = capsys.readouterr().err
+    assert "refusing to re-grandfather" in err
+    assert "0 finding(s) would be newly added: (none)" in err
+    assert "--extend" in err
+
+
+def test_grandfather_extend_amnesties_delta_preserving_originals(user_dir, tmp_path, capsys):
+    target = make_target(tmp_path / "t")
+    resolver = _run_through_baseline(target, tmp_path)
+    assert adopt.main(["grandfather", "--repo", str(target)]) == 0
+    gf_path = resolver.meta_root / "adoption" / "grandfathered.json"
+    original = json.loads(gf_path.read_text())
+    original_expiries = {e["id"]: e["expiry"] for e in original["entries"]}
+
+    # a POST-adoption finding appears: new TODO marker -> new DEBT- id
+    (target / "app.py").write_text((target / "app.py").read_text()
+                                   + "\n# TODO: post-adoption debt\n")
+    out_path = resolver.quality_dir() / "debt.json"
+    envelope = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd2"), out_path, resolver=resolver)
+    out_path.write_text(json.dumps(envelope, indent=2) + "\n")
+    new_ids = {i["id"] for i in envelope["items"]} - set(original_expiries)
+    assert len(new_ids) == 1
+    new_id = new_ids.pop()
+
+    # refusal prints the EXACT delta (the post-adoption finding's id)
+    capsys.readouterr()
+    assert adopt.main(["grandfather", "--repo", str(target)]) == 2
+    err = capsys.readouterr().err
+    assert "1 finding(s) would be newly added" in err
+    assert new_id in err
+
+    # --extend performs it, loudly, preserving created_at + original expiries
+    assert adopt.main(["grandfather", "--repo", str(target), "--extend",
+                       "--expiry", "2031-06-30"]) == 0
+    out = capsys.readouterr().out
+    assert "amnestying 1 POST-adoption finding(s)" in out
+    assert new_id in out
+    doc = json.loads(gf_path.read_text())
+    assert doc["created_at"] == original["created_at"]
+    assert doc["extended_at"]
+    by_id = {e["id"]: e for e in doc["entries"]}
+    for eid, expiry in original_expiries.items():
+        assert by_id[eid]["expiry"] == expiry  # originals keep their expiry
+    assert by_id[new_id]["expiry"] == "2031-06-30"  # new entry: fresh expiry
+
+
+def test_run_refuses_readoption_without_flag(user_dir, tmp_path, capsys):
+    target = make_target(tmp_path / "t")
+    assert adopt.main(["run", "--repo", str(target),
+                       "--workdir", str(tmp_path / "wd")]) == 0
+    capsys.readouterr()
+    assert adopt.main(["run", "--repo", str(target),
+                       "--workdir", str(tmp_path / "wd")]) == 2
+    err = capsys.readouterr().err
+    assert "already adopted (adopted_at" in err
+    assert "explicit operator act" in err
+    # --re-adopt (+ --extend for the grandfather step) re-runs the arrow
+    assert adopt.main(["run", "--repo", str(target), "--re-adopt", "--extend",
+                       "--workdir", str(tmp_path / "wd")]) == 0
+
+
+# --- F5: the blocking gates read the grandfather file ----------------------------
+
+
+def _gf_file(tmp_path: Path, entries: list[dict]) -> Path:
+    p = tmp_path / "grandfathered.json"
+    p.write_text(json.dumps({"schema": "grandfather/1", "entries": entries}))
+    return p
+
+
+def _future() -> str:
+    return (date.today() + timedelta(days=30)).isoformat()
+
+
+def test_traceability_gate_honors_grandfathers(tmp_path):
+    import check_traceability as ct
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text(
+        "## Contracts\n\n**CTR-app-001**: first\n\n**CTR-app-002**: second\n")
+    entries = [
+        {"id": "check_traceability:uncovered:CTR-app-001", "expiry": _future()},
+        {"id": "check_traceability:untested:CTR-app-001", "expiry": _future()},
+    ]
+    report = ct.check(epic, grandfather_path=_gf_file(tmp_path, entries))
+    # the pre-existing (grandfathered) gap is waived out of the blocking lists
+    assert "CTR-app-001" not in report.uncovered_contracts
+    assert "CTR-app-001" not in report.untested_contracts
+    assert {g["id"] for g in report.grandfathered_contracts} == {"CTR-app-001"}
+    assert report.counts["grandfathered"] == 2  # uncovered + untested
+    # the NEW gap (absent from the file) still blocks
+    assert "CTR-app-002" in report.uncovered_contracts
+    assert not report.coverage_ok
+    assert "Grandfathered (pre-adoption baseline" in ct.render_markdown(report)
+
+    # waiving every gap satisfies coverage
+    entries += [
+        {"id": "check_traceability:uncovered:CTR-app-002", "expiry": _future()},
+        {"id": "check_traceability:untested:CTR-app-002", "expiry": _future()},
+    ]
+    report = ct.check(epic, grandfather_path=_gf_file(tmp_path, entries))
+    assert report.coverage_ok
+
+    # EXPIRED entries do NOT waive: the gaps block again, labeled
+    for e in entries:
+        e["expiry"] = "2020-01-01"
+    report = ct.check(epic, grandfather_path=_gf_file(tmp_path, entries))
+    assert not report.coverage_ok
+    assert "CTR-app-001" in report.uncovered_contracts
+    assert {g["id"] for g in report.expired_grandfathers} == {"CTR-app-001", "CTR-app-002"}
+    assert "EXPIRED grandfather" in ct.render_markdown(report)
+
+
+def test_traceability_cli_grandfather_gate(tmp_path, capsys):
+    import check_traceability as ct
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("**CTR-app-001**: only\n")
+    gf = _gf_file(tmp_path, [
+        {"id": "check_traceability:uncovered:CTR-app-001", "expiry": _future()},
+        {"id": "check_traceability:untested:CTR-app-001", "expiry": _future()},
+    ])
+    assert ct.main([str(epic), "--gate", "coverage", "--grandfather", str(gf)]) == 0
+    capsys.readouterr()
+    # expired -> blocks again through the CLI too
+    gf = _gf_file(tmp_path, [
+        {"id": "check_traceability:uncovered:CTR-app-001", "expiry": "2020-01-01"},
+        {"id": "check_traceability:untested:CTR-app-001", "expiry": "2020-01-01"},
+    ])
+    assert ct.main([str(epic), "--gate", "coverage", "--grandfather", str(gf)]) == 1
+
+
+def test_single_writer_gate_honors_grandfathers(tmp_path):
+    import check_single_writer as sw
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text(
+        "**INV-bil-001**: single write path\n"
+        "<!-- @cw-writes INV-bil-001 controls_field=provider.stripe_plan "
+        "sanctioned_writers=ReconcileStripe -->\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "admin.go").write_text(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n")
+    key = "check_single_writer:INV-bil-001:provider.stripe_plan:admin.go"
+    gf = _gf_file(tmp_path, [{"id": key, "expiry": _future()}])
+    report = sw.check(epic, src, grandfather_path=gf)
+    # the pre-existing violation is waived: reported, never blocking
+    assert report.violations == []
+    assert len(report.grandfathered) == 1
+    assert report.grandfathered[0]["file"] == "admin.go"
+    assert report.coverage_ok
+    assert "Grandfathered writers" in sw.render_text(report)
+
+    # a NEW violation (a second writer absent from the file) still blocks
+    (src / "sneaky.go").write_text(
+        "func Sneaky(p *Provider, v string) {\n\tp.StripePlan = v\n}\n")
+    report = sw.check(epic, src, grandfather_path=gf)
+    assert [v["file"] for v in report.violations] == ["sneaky.go"]
+    assert not report.coverage_ok
+
+    # EXPIRED entry does NOT waive: the old violation blocks again, labeled
+    gf = _gf_file(tmp_path, [{"id": key, "expiry": "2020-01-01"}])
+    report = sw.check(epic, src, grandfather_path=gf)
+    assert {v["file"] for v in report.violations} == {"admin.go", "sneaky.go"}
+    expired = next(v for v in report.violations if v["file"] == "admin.go")
+    assert expired["grandfather_expired"] is True
+    assert "EXPIRED grandfather" in sw.render_text(report)
+
+
+# --- F8: expiry is computed LIVE at render time ----------------------------------
+
+
+def test_render_surfaces_compute_expiry_live(user_dir, tmp_path, monkeypatch):
+    """An inventory built with a FUTURE expiry (stored grandfather_expired:
+    false) must still surface EXPIRED once the clock passes the expiry — the
+    slop-gate debt block, the quality-report debt section, and code_query's
+    debt facts all overlay the stored snapshot with a live compare."""
+    import code_query
+    from chief_wiggum import grandfather as cw_gf
+    from quality import report as quality_report
+
+    target = make_target(tmp_path / "t")
+    assert adopt.main(["run", "--repo", str(target),
+                       "--workdir", str(tmp_path / "wd")]) == 0
+    resolver = artifacts.Resolver.resolve(target)
+    gf_path = resolver.meta_root / "adoption" / "grandfathered.json"
+    doc = json.loads(gf_path.read_text())
+    for e in doc["entries"]:
+        e["expiry"] = "2030-06-30"  # future at build time
+    gf_path.write_text(json.dumps(doc))
+    out_path = resolver.quality_dir() / "debt.json"
+    envelope = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd2"), out_path, resolver=resolver)
+    out_path.write_text(json.dumps(envelope, indent=2) + "\n")
+    assert all(i["grandfather_expired"] is False
+               for i in envelope["items"] if i.get("grandfathered"))
+    # built before expiry: nothing renders EXPIRED yet
+    assert "EXPIRED grandfather" not in quality_slop_gate.format_debt_block(envelope)
+
+    # the clock passes the expiry (build-time snapshot now stale)
+    class _Future(date):
+        @classmethod
+        def today(cls):
+            return cls(2031, 1, 1)
+
+    monkeypatch.setattr(cw_gf, "date", _Future)
+    assert "EXPIRED grandfather" in debt_inventory.format_report(envelope)
+    assert "EXPIRED grandfather" in quality_slop_gate.format_debt_block(envelope)
+    md = quality_report.render_markdown({"debt": envelope}, {"summary": {}}, [])
+    assert "EXPIRED grandfather" in md
+    facts = code_query._debt_facts_for_file(Path(target), "app.py")
+    assert facts, "app.py's TODO marker must produce a debt fact"
+    assert any(f.statement.startswith("[EXPIRED grandfather]") for f in facts)
+    assert all(f.extra["grandfather_expired"] for f in facts
+               if f.extra.get("grandfathered"))
+
+
 # --- verdict logic (pure) --------------------------------------------------------
 
 
@@ -431,7 +703,19 @@ def test_gate_verdicts_pure():
     assert v["ratchet"]["verdict"] == "report-only"
     assert v["debt_inventory"]["verdict"] == "report-only"
     assert ".zig" in v["debt_inventory"]["reason"]
+    assert "git history present" in v["quality_slop_gate"]["reason"]
     assert "14 days" in v["quality_slop_gate"]["reason"]
+
+    # F9 (#215): "git history present" only when a commit exists — with no
+    # readable history the slop gate degrades to report-only and says why.
+    v = adopt.gate_verdicts(
+        has_epic_ids=False, has_single_writer_invariants=False,
+        has_architecture_model=False, suites=[], ci_present=False,
+        source_files=0, unknown_extensions={}, age_days=None,
+    )
+    assert v["quality_slop_gate"]["verdict"] == "report-only"
+    assert "git history present" not in v["quality_slop_gate"]["reason"]
+    assert "no readable commit history" in v["quality_slop_gate"]["reason"]
 
     v = adopt.gate_verdicts(
         has_epic_ids=True, has_single_writer_invariants=True,

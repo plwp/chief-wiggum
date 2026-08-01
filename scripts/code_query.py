@@ -964,16 +964,20 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
             continue
         # Grandfathered labeling (#215): a pre-adoption-baseline item is
         # STATED as such (and an expired grandfather loudly so) — the fact
-        # stays in the answer either way; only the label changes.
+        # stays in the answer either way; only the label changes. Expired-ness
+        # is computed LIVE at answer time (#215 F8): the stored flag is a
+        # build-time snapshot, and orient answers must not show a passed
+        # expiry as still-waived just because the inventory predates it.
         gf_tag = ""
         gf_extra: dict = {}
         if item.get("grandfathered"):
-            gf_tag = ("[EXPIRED grandfather] " if item.get("grandfather_expired")
-                      else "[grandfathered] ")
+            from chief_wiggum.grandfather import expired_live  # noqa: PLC0415
+            gf_expired = expired_live(item)
+            gf_tag = "[EXPIRED grandfather] " if gf_expired else "[grandfathered] "
             gf_extra = {
                 "grandfathered": True,
                 "grandfather_expiry": item.get("grandfather_expiry"),
-                "grandfather_expired": bool(item.get("grandfather_expired")),
+                "grandfather_expired": gf_expired,
             }
         facts.append(Fact(
             kind="debt",
