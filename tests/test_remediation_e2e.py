@@ -217,13 +217,20 @@ def test_full_miniature_remediation_epic(adopted, tmp_path):
     _git(repo, "reset", "-q", "--hard", "HEAD~1")  # undo the creep, stay clean
 
     # ---- found ≠ fixed: file a mid-ticket discovery, leave the diff alone ---
+    # (F2: it lands in the MODE-INDEPENDENT pending store under the isolated
+    # user dir — never the target tree, never any debt.json directly)
+    cand_env = {"CHIEF_WIGGUM_USER_DIR": str(tmp_path / "cw-home"),
+                "PATH": __import__("os").environ["PATH"]}
     cand_out = subprocess.run(
         [sys.executable, str(SCRIPTS / "debt_inventory.py"), "append-candidate",
          "--repo", str(repo), "--engine", "manual", "--path", "pricing.py",
          "--note", "rounding rule duplicated in the invoicing sheet"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=cand_env,
     )
     assert cand_out.returncode == 0 and "candidate DEBT-" in cand_out.stdout
+    pending = debt_inventory.load_pending(resolver)
+    assert len(pending) == 1 and pending[0]["candidate"] is True
+    cand_id = pending[0]["id"]
 
     # ---- prevention signals over the refactor diff (report-only) ------------
     signals = subprocess.run(
@@ -238,32 +245,40 @@ def test_full_miniature_remediation_epic(adopted, tmp_path):
     assert sig["signals"]["assertion_free_tests_added"]["findings"] == []
 
     # ---- acceptance: fresh inventory; verify fails BEFORE merge-state fix ---
-    # (fresh run on the refactor branch: the ticketed ids must be gone)
+    # (fresh run on the refactor branch: the ticketed ids must be gone; the
+    # scratch-dir inventory still carries the pending candidate — F2)
     fresh_dir = tmp_path / "fresh"
     fresh_dir.mkdir()
     fresh_env = debt_inventory.build_inventory(
         str(repo), str(tmp_path / "wd2"), fresh_dir / "debt.json", resolver=resolver)
     (fresh_dir / "debt.json").write_text(json.dumps(fresh_env, indent=2))
+    assert cand_id in {i["id"] for i in fresh_env["items"]}, (
+        "scratch-dir inventory must retain pending candidates")
 
     verify = subprocess.run(
         [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "verify",
+         "--repo", str(repo),
          "--plan", str(quality_dir / "remediation-plan.json"),
-         "--debt", str(fresh_dir / "debt.json")],
-        capture_output=True, text=True,
+         "--debt", str(fresh_dir / "debt.json"), "--format", "json"],
+        capture_output=True, text=True, env=cand_env,
     )
     assert verify.returncode == 0, verify.stdout + verify.stderr
-    assert "0 unresolved" in verify.stdout
+    result = json.loads(verify.stdout)
+    assert result["ok"] is True
+    assert result["unresolved"] == [] and result["moved"] == []
+    assert set(result["resolved"]) == ticketed_ids
 
     # negative control: verified against the STALE baseline inventory, the
     # ticketed ids are still present -> exit 1 listing them
     stale = subprocess.run(
         [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "verify",
+         "--repo", str(repo),
          "--plan", str(quality_dir / "remediation-plan.json"),
-         "--debt", str(quality_dir / "debt.json")],
-        capture_output=True, text=True,
+         "--debt", str(quality_dir / "debt.json"), "--format", "json"],
+        capture_output=True, text=True, env=cand_env,
     )
     assert stale.returncode == 1
-    assert "UNRESOLVED" in stale.stdout
+    assert {u["id"] for u in json.loads(stale.stdout)["unresolved"]} == ticketed_ids
 
     # ---- sidecar hygiene: the whole loop wrote NOTHING into the target ------
     status = _git(repo, "status", "--porcelain").stdout

@@ -37,11 +37,18 @@ debt.json ──► /plan-epic --from-debt ──► refactor tickets (/implemen
    directories.
 
 Each ticket carries its `DEBT-` ids, all locations, a severity rollup, a
-**derived sanctioned pathset** (the items' location files, in the exact
-`{"paths": [...], "source": "..."}` shape `ratchet.py pathset` consumes) plus
-an empty `collateral` slot declared at approach time, and `depends_on` —
-tickets whose pathsets (or coupling partners) overlap are serialized;
-disjoint tickets can share a wave.
+**derived sanctioned pathset** (the items' **in-scope** location files, in
+the exact `{"paths": [...], "source": "..."}` shape `ratchet.py pathset`
+consumes) plus an empty `collateral` slot declared at approach time, and
+`depends_on` — tickets whose pathsets (or coupling partners) overlap are
+serialized; disjoint tickets can share a wave. A partially-out-of-scope item
+(e.g. a clone class with one foot in another team's tree) never smuggles
+out-of-scope files into the sanctioned pathset: those locations are listed
+separately as the ticket's `boundary_locations` — informational, feeds the
+referral conversation, never sanctioned. The plan also records
+`baseline_ids` — the full id population at plan time — which is what lets
+`verify` tell a genuinely NEW id from one that existed when the plan was
+cut.
 
 ### Budgets are required
 
@@ -52,6 +59,11 @@ scope"*) unless at least one of:
 - `--budget-severity-floor low|medium|high` — items below the floor left
   behind;
 - `--budget-cluster-cap N` — max items per ticket (least severe trimmed).
+
+Counts and caps must be **>= 1** (a budget of 0 or less is vacuous, refused
+at the CLI), and `--budget-severity-floor low` **alone** does not satisfy the
+requirement — 'low' is the lowest severity, so it excludes nothing; combine
+it with a count and/or cap (exit 2 explains this).
 
 Everything left behind is recorded in the plan's `excluded` list with its
 reason (`over_budget` / `below_severity_floor` / `over_cluster_cap`).
@@ -67,6 +79,14 @@ domain scope, is **never ticketed**. It lands in the plan's
 evidence, and an explicit no-auto-fix statement. A fix from outside the
 owning team pollutes their churn history and produces diffs they have no
 reason to trust — the issue is the hand-off.
+
+Referrals also draw on `debt.json`'s dedicated **`boundary` section** — the
+engine-captured wholly-out-of-scope evidence the #214 engines would
+otherwise drop before the inventory (see
+[debt-inventory.md](debt-inventory.md) for exactly what IS and ISN'T
+captured there: clone classes dropped for out-of-scope members are; marker /
+dead-code / test-health findings in out-of-scope files are not, because
+those corpora are scope-narrowed at the source).
 
 ### Grandfathered items are valid input
 
@@ -116,8 +136,15 @@ wreck churn metrics, and produce PRs the owning team won't trust.
 - **Found ≠ fixed** — anything discovered mid-ticket is filed **in the same
   turn** as a `DEBT-` candidate (`debt_inventory.py append-candidate --repo X
   --engine manual --path F --note "..."` — same stable-ID mechanics, `engine:
-  manual`, `candidate: true`, carried forward by later engine runs) or as an
-  issue, and left untouched in the diff. Scope discipline must not cost
+  manual`, `candidate: true`) or as an issue, and left untouched in the diff.
+  Candidates live in the **mode-independent pending store**
+  (`<user_dir>/pending/<target-id>/candidates.json`) — never the target tree
+  (embedded mode writes nothing in-tree) and never a particular `debt.json`
+  (a scratch-dir inventory can't lose them); every `build_inventory` run
+  merges them in, and only the explicit operator act
+  `debt_inventory.py resolve-candidate --repo X --id DEBT-...` removes one.
+  `append-candidate` refuses (exit 2) an id that collides with an engine
+  finding — engines own their evidence. Scope discipline must not cost
   information, or agents will smuggle fixes.
 - **No collateral improvement** — formatting-only, rename-only, and
   style-only hunks outside the declared pathset are scope creep by
@@ -138,9 +165,14 @@ appended to `/implement`'s review context (Step 7) and the wave report:
   functions (JS/TS unscanned in v1, stated).
 
 It always exits 0, has no `--gate` flag, and states its own authority
-boundary. Promotion to a blocking gate requires the full
-[gate-validation.md](gate-validation.md) protocol — ship the signal, prove
-precision, then argue about teeth.
+boundary. Git's C-style quoted paths (unicode/space filenames under the
+default `core.quotepath`) are unquoted before scanning; a changed path that
+still fails to resolve is counted under `unscanned_files` with a reason —
+never silently clean. Any unexpected failure prints an honest error block
+("prevention signals unavailable: … — treat as not-run, not clean") so the
+review context always receives *something*, and still exits 0. Promotion to
+a blocking gate requires the full [gate-validation.md](gate-validation.md)
+protocol — ship the signal, prove precision, then argue about teeth.
 
 ## Acceptance: `/close-epic` re-runs the inventory
 
@@ -148,14 +180,27 @@ For a remediation epic, `/close-epic` Step 2k re-runs `debt_inventory.py`
 fresh and runs:
 
 ```bash
-python3 scripts/plan_from_debt.py verify --plan <remediation-plan.json> --debt <fresh debt.json>
+python3 scripts/plan_from_debt.py verify --repo <target> --plan <remediation-plan.json> --debt <fresh debt.json>
 ```
 
-Exit 1 lists every **ticketed** id still present — blocking. An id may be
-explicitly waived instead of fixed via the `adopt.py grandfather --extend`
-path (loud, reasoned, expiring); `verify` accepts only **post-plan**,
-non-expired grandfathers as waivers. Budgeted-out leftovers and boundary
-referrals are never checked — they were never claimed.
+Exit 1 lists every **ticketed** id still present — blocking. Absence alone is
+not enough: an id whose content **anchor** (every item exposes the exact
+anchor its id was derived from; clone classes use the member-content hash)
+reappears under a NEW id — one not in the plan's `baseline_ids` — was
+**moved, not resolved** (a `git mv` rename survives the probe) and is listed
+as `MOVED old -> new` and counted unresolved. **Stated boundary of the
+anchor compare:** rewording a marker (TODO/FIXME text) mints a new anchor,
+so a reworded-not-fixed marker is not caught as moved — it surfaces in the
+informational **new-ids-in-ticket-files report** ("new debt appeared in the
+ticket's own files — review before closing"), which never fails the run.
+Ticketed **candidates** resolve against the pending store (absent = the
+operator ran `resolve-candidate`), never against the fresh inventory. An id
+may be explicitly waived instead of fixed via the `adopt.py grandfather
+--extend` path (loud, reasoned, expiring); `verify` accepts only
+**post-plan** (the entry's own `created_at` postdates the plan's
+`generated_at` — entries without timestamps never waive), non-expired
+grandfathers as waivers. Budgeted-out leftovers and boundary referrals are
+never checked — they were never claimed.
 
 ## What proves it
 

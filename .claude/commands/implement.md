@@ -361,7 +361,7 @@ Launch an **implementation worker** (contract: `docs/worker-contracts.md#impleme
   python3 "$CW_HOME/scripts/debt_inventory.py" append-candidate --repo "$TARGET_REPO" \
     --engine manual --path "pkg/orders/handler.py:88" --note "duplicate retry loop, clone of billing.py"
   ```
-  (or file a tracker issue for anything bigger than a code smell). Scope discipline must not cost information — the inventory is the pressure valve. No opportunistic fixes, no drive-by formatting/renames outside the declared pathset: those hunks get flagged in review and parked.
+  (or file a tracker issue for anything bigger than a code smell). Candidates land in the **mode-independent pending store** (`~/.chief-wiggum/pending/<target-id>/candidates.json`) — never the target tree, so this works identically in embedded and sidecar mode, and every future inventory run merges them in automatically. A candidate leaves the store only via the explicit operator act `debt_inventory.py resolve-candidate --repo X --id DEBT-...` (after actually fixing it in a reviewed change) — never as a side effect of an engine re-run. Scope discipline must not cost information — the pending store is the pressure valve. No opportunistic fixes, no drive-by formatting/renames outside the declared pathset: those hunks get flagged in review and parked.
 
 The worker should:
 1. Implement the approved approach — the primary objective is **making the failing tests from Step 5 turn green**

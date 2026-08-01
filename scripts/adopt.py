@@ -801,12 +801,16 @@ def _gate_finding_entries(resolver: artifacts.Resolver, target: Path,
 
 def _entry(finding_id: str, owner: str, expiry: str, engine: str) -> dict:
     # Modeled on the JUSTIFIED-waiver shape (chief_wiggum.trace_links):
-    # reason/owner/expiry per entry, scoped to a finding ID.
+    # reason/owner/expiry per entry, scoped to a finding ID. The per-entry
+    # created_at (#216 F8) is what lets plan_from_debt.py verify demand that a
+    # waiver POSTDATE the remediation plan — an entry without a timestamp
+    # (pre-#216 files) never waives a ticketed id.
     return {
         "id": finding_id,
         "reason": "pre-adoption baseline",
         "owner": owner,
         "expiry": expiry,
+        "created_at": _now_iso(),
         "source_engine": engine,
     }
 

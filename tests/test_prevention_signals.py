@@ -55,6 +55,24 @@ def test_parse_added_ranges_reads_unified_zero_hunks():
     assert added == {"x.py": [(1, 3), (12, 12)]}
 
 
+def test_parse_added_ranges_unquotes_c_style_paths():
+    """F7: git's default core.quotepath emits C-style quoted paths for
+    unicode/space filenames — they must decode to the real path."""
+    diff = (
+        'diff --git "a/p\\303\\244 th.py" "b/p\\303\\244 th.py"\n'
+        '--- "a/p\\303\\244 th.py"\n+++ "b/p\\303\\244 th.py"\n'
+        "@@ -0,0 +1,2 @@\n+a\n+b\n"
+    )
+    added = prevention_signals.parse_added_ranges(diff)
+    assert added == {"pä th.py": [(1, 2)]}
+
+
+def test_unquote_git_path_passthrough_and_escapes():
+    assert prevention_signals.unquote_git_path("b/plain.py") == "b/plain.py"
+    assert prevention_signals.unquote_git_path('"b/a\\tb.py"') == "b/a\tb.py"
+    assert prevention_signals.unquote_git_path('"b/q\\"uote.py"') == 'b/q"uote.py'
+
+
 # --- (a) new duplication (pure join, no jscpd needed) -------------------------
 
 
@@ -182,6 +200,63 @@ def test_cli_exits_zero_on_broken_base_ref(repo):
     )
     assert proc.returncode == 0
     assert "prevention_signals" in proc.stderr
+
+
+def test_unicode_space_filename_is_scanned_not_dropped(repo):
+    """F7 end-to-end: a changed file whose name needs C-style quoting still
+    gets its added dead export flagged (the path resolved), and nothing lands
+    in the unresolved-files bucket."""
+    (repo / "pä th.py").write_text(
+        "def quoted_dead():\n    return 1\n"
+    )
+    _commit_all(repo, "add unicode/space filename")
+    env = prevention_signals.build_signals(str(repo), "main", str(repo.parent / "wd"))
+    dc = env["signals"]["dead_code_introduced"]
+    assert [f["symbol"] for f in dc["findings"]] == ["quoted_dead"]
+    assert [f["file"] for f in dc["findings"]] == ["pä th.py"]
+    assert env["unscanned_files"]["count"] == 0
+
+
+def test_unresolvable_changed_path_is_counted_with_reason(repo, monkeypatch):
+    """F7: a changed path that still fails to resolve in the working tree is
+    counted under unscanned_files with a reason — never silently clean."""
+    diff = ('--- "a/no\\303\\244 such.py"\n+++ "b/no\\303\\244 such.py"\n'
+            "@@ -0,0 +1,2 @@\n+a\n+b\n")
+    monkeypatch.setattr(prevention_signals, "_git_diff", lambda r, b: diff)
+    env = prevention_signals.build_signals(str(repo), "main", str(repo.parent / "wd"))
+    assert env["unscanned_files"]["count"] == 1
+    assert env["unscanned_files"]["files"] == ["noä such.py"]
+    assert "not scanned, not clean" in env["unscanned_files"]["reason"]
+    report = prevention_signals.format_report(env)
+    assert "unscanned changed path(s): 1" in report
+    assert "noä such.py" in report
+
+
+def test_cli_any_exception_prints_honest_error_block(repo, monkeypatch, capsys):
+    """C4: NO prevention-signal failure may vanish — any exception yields an
+    error block on stdout (the review context) and exit 0."""
+    monkeypatch.setattr(
+        prevention_signals, "build_signals",
+        lambda *a, **k: (_ for _ in ()).throw(TypeError("engine exploded")))
+    monkeypatch.setattr(sys, "argv", [
+        "prevention_signals.py", "--repo", str(repo), "--base", "main",
+        "--workdir", str(repo.parent / "wd")])
+    rc = prevention_signals.main()
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "prevention signals unavailable: engine exploded" in out.out
+    assert "treat as not-run, not clean" in out.out
+
+    # json format keeps the contract too
+    monkeypatch.setattr(sys, "argv", [
+        "prevention_signals.py", "--repo", str(repo), "--base", "main",
+        "--workdir", str(repo.parent / "wd"), "--format", "json"])
+    rc = prevention_signals.main()
+    out = capsys.readouterr()
+    assert rc == 0
+    doc = json.loads(out.out)
+    assert doc["error"] == "engine exploded"
+    assert "not-run, not clean" in doc["note"]
 
 
 def test_text_report_names_each_signal(repo):

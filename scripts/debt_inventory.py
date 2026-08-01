@@ -48,24 +48,36 @@ Usage:
         [--out DIR] [--workdir DIR] [--format text|json]
     python3 scripts/debt_inventory.py append-candidate [owner/repo] [--repo PATH]
         --engine manual --path FILE[:LINE] --note "..." [--severity low]
-        [--out DIR]
+    python3 scripts/debt_inventory.py resolve-candidate [owner/repo] [--repo PATH]
+        --id DEBT-...
 
 ``--out DIR`` writes ``debt.json`` (and reads the previous one for
 first_seen/last_seen continuity) under DIR instead of the resolver-determined
 quality dir — for read-only validation runs against repos whose meta must not
 be written.
 
-**``append-candidate`` — found ≠ fixed (#216):** on adopted repos, anything
-discovered mid-ticket (dead code nearby, a clone, a smell) is filed in the
-SAME turn as a candidate item and left untouched in the diff — scope
-discipline must not cost information. The item uses the same stable-ID
-mechanics (``engine + normalized path + content anchor``, here the normalized
-note text), carries ``engine: manual`` and ``candidate: true``, and the next
-full engine run preserves it: candidates are hand-filed observations, not
-engine findings, so an engine re-run neither confirms nor removes them —
-resolving one means fixing it and deleting/superseding the candidate in a
-reviewed change (or a later engine finding at the same address making it
-redundant).
+**``append-candidate`` — found ≠ fixed (#216):** anything discovered
+mid-ticket (dead code nearby, a clone, a smell) is filed in the SAME turn as a
+candidate item and left untouched in the diff — scope discipline must not
+cost information. The item uses the same stable-ID mechanics (``engine +
+normalized path + content anchor``, here the normalized note text) and
+carries ``engine: manual`` and ``candidate: true``. Candidates live in a
+**mode-independent pending store** at
+``<user_dir>/pending/<target-id>/candidates.json`` (``artifacts.user_dir`` —
+NEVER the target tree, never docs/quality), so filing one is not a write into
+the goalpost surface in embedded mode and is never lost to a scratch-dir
+``--out`` inventory run. ``build_inventory`` merges pending candidates into
+``items`` on every run regardless of ``out_path``; an engine finding landing
+on the same id supersedes the candidate. Removing one is an explicit operator
+act: ``debt_inventory.py resolve-candidate --repo X --id DEBT-...`` — never a
+side effect of an engine re-run. Old-layout candidates found embedded in an
+existing ``debt.json`` are adopted into the pending store once (stated in the
+envelope and report).
+
+**``anchor`` (#216 F1):** every item exposes the exact content-anchor string
+used in its id derivation, so consumers (``plan_from_debt.py verify``) can
+detect moved-not-resolved findings path-independently: a ``git mv`` changes
+the id (path component) but not the anchor.
 """
 
 from __future__ import annotations
@@ -126,6 +138,7 @@ def _dead_code_items(result: dict, decile_of: dict[str, int]) -> list[dict]:
             severity = _bump(severity)
         items.append({
             "id": debt_id("dead_code", f["file"], f["symbol"]),
+            "anchor": f["symbol"],
             "engine": "dead_code",
             "kind": f.get("kind", "unused"),
             "severity": severity,
@@ -142,6 +155,7 @@ def _clone_items(result: dict) -> list[dict]:
         severity = "high" if cls["size"] >= 3 else "medium"
         items.append({
             "id": debt_id("clones", "", cls["content_hash"]),
+            "anchor": cls["content_hash"],
             "engine": "clones",
             "kind": "clone_class",
             "severity": severity,
@@ -168,6 +182,7 @@ def _test_health_items(result: dict) -> list[dict]:
         kind = f["kind"]
         items.append({
             "id": debt_id("test_health", f["file"], f"{kind}:{f.get('symbol', '')}"),
+            "anchor": f"{kind}:{f.get('symbol', '')}",
             "engine": "test_health",
             "kind": kind,
             "severity": severity_by_kind.get(kind, "low"),
@@ -194,6 +209,7 @@ def _marker_items(result: dict, decile_of: dict[str, int]) -> list[dict]:
             severity = "medium" if decile_of.get(f["file"], 0) >= 9 else "low"
         item = grouped.setdefault(iid, {
             "id": iid,
+            "anchor": anchor,
             "engine": "markers",
             "kind": f["kind"],
             "severity": severity,
@@ -228,11 +244,14 @@ def _merge_duplicate_ids(items: list[dict]) -> list[dict]:
 
 def _engine_envelope(res: dict) -> dict:
     """Engine sub-envelope: metadata only, never finding payloads (the items
-    list carries the data). clones' ``clone_classes`` payload is stripped the
-    same way ``findings`` is — its count stays."""
-    out = {k: v for k, v in res.items() if k not in ("findings", "clone_classes")}
+    list carries the data). clones' ``clone_classes``/``boundary_classes``
+    payloads are stripped the same way ``findings`` is — their counts stay."""
+    out = {k: v for k, v in res.items()
+           if k not in ("findings", "clone_classes", "boundary_classes")}
     if "clone_classes" in res:
         out["clone_class_count"] = len(res["clone_classes"])
+    if "boundary_classes" in res:
+        out["boundary_class_count"] = len(res["boundary_classes"])
     return out
 
 
@@ -315,7 +334,11 @@ def _apply_grandfather(items: list[dict], resolver: artifacts.Resolver,
     """Mark grandfathered items IN PLACE — they stay in the inventory (visible
     pressure), labeled so every surfacing layer (code-metrics debt section,
     slop-gate block, orient facts) can say so; expired grandfathers are
-    flagged prominently. Returns the envelope's ``grandfather`` block."""
+    flagged prominently. Returns the envelope's ``grandfather`` block.
+
+    ``grandfather_created_at`` carries the ENTRY's own timestamp (#216 F8):
+    ``plan_from_debt.py verify`` only accepts a waiver whose entry POSTDATES
+    the plan — an entry without a timestamp (pre-#216 files) never waives."""
     entries, gf_file = _load_grandfather(resolver)
     expired_ids: list[str] = []
     count = 0
@@ -326,6 +349,8 @@ def _apply_grandfather(items: list[dict], resolver: artifacts.Resolver,
         count += 1
         item["grandfathered"] = True
         item["grandfather_expiry"] = entry.get("expiry")
+        item["grandfather_created_at"] = (
+            entry.get("extended_at") or entry.get("created_at"))
         item["grandfather_expired"] = _grandfather_expired(entry.get("expiry"), today)
         if item["grandfather_expired"]:
             expired_ids.append(item["id"])
@@ -351,20 +376,66 @@ def _previous_seen(out_path: Path) -> dict[str, dict]:
 
 
 def _previous_candidates(out_path: Path) -> list[dict]:
-    """``candidate: true`` items from the previous debt.json. Candidates are
-    hand-filed observations (``append-candidate``, #216 found≠fixed), not
-    engine findings — an engine re-run neither confirms nor removes them, so
-    the inventory CARRIES them forward verbatim instead of silently dropping
-    them on rebuild. They exit the inventory only by an explicit act (fixed +
-    removed in a reviewed change)."""
+    """``candidate: true`` items embedded in a previous debt.json — the OLD
+    (pre-pending-store) layout. Used only for the one-time migration in
+    ``build_inventory``: old-layout candidates are adopted into the pending
+    store so they can never again vacuously resolve against a scratch-dir
+    inventory (#216 F2). An envelope that already carries a
+    ``pending_candidates`` block is NEW-layout — the pending store is
+    authoritative for it, so nothing migrates (otherwise every rebuild would
+    resurrect candidates the operator explicitly resolve-candidate'd)."""
     if not out_path.is_file():
         return []
     try:
         doc = json.loads(out_path.read_text())
     except (OSError, json.JSONDecodeError):
         return []
+    if not isinstance(doc, dict) or "pending_candidates" in doc:
+        return []
     return [item for item in doc.get("items", []) or []
             if isinstance(item, dict) and item.get("id") and item.get("candidate")]
+
+
+# --- pending candidate store (#216 F2) ----------------------------------------
+#
+# Candidates are hand-filed observations, not engine findings. They live in a
+# MODE-INDEPENDENT store under the CW user dir — never the target tree (no
+# goalpost write in embedded mode), never a particular debt.json (no vacuous
+# resolution when verify re-runs the inventory into a scratch dir). An engine
+# re-run neither confirms nor removes them; removal is the explicit
+# ``resolve-candidate`` operator act.
+
+
+PENDING_SCHEMA = "pending-candidates/1"
+
+
+def pending_path(resolver: artifacts.Resolver) -> Path:
+    """``<user_dir>/pending/<target-id>/candidates.json`` for a target."""
+    return artifacts.user_dir() / "pending" / Path(resolver.target_id) / "candidates.json"
+
+
+def load_pending(resolver: artifacts.Resolver) -> list[dict]:
+    """Candidate items currently in the pending store (missing/unparsable ->
+    empty — an unreadable store files nothing and resolves nothing)."""
+    p = pending_path(resolver)
+    if not p.is_file():
+        return []
+    try:
+        doc = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [i for i in (doc.get("items") or []) if isinstance(i, dict) and i.get("id")]
+
+
+def save_pending(resolver: artifacts.Resolver, items: list[dict]) -> Path:
+    p = pending_path(resolver)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "schema": PENDING_SCHEMA,
+        "target_id": resolver.target_id,
+        "items": items,
+    }, indent=2) + "\n")
+    return p
 
 
 def build_inventory(repo: str, workdir: str, out_path: Path,
@@ -417,12 +488,54 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
         # was last observed at (envelope carries it too; items are quoted alone).
         item["target_sha"] = sha
 
-    # Manual candidates (#216 append-candidate) carried forward verbatim: an
-    # engine run cannot re-observe them, so their seen timestamps and
-    # target_sha stay as filed. An engine finding that lands on the same id
-    # (identical anchor) supersedes the candidate.
+    # Manual candidates (#216 F2) come from the MODE-INDEPENDENT pending store
+    # — merged on every build regardless of out_path, so a scratch-dir
+    # (--out) inventory retains them and verify cannot vacuously resolve
+    # them. An engine run cannot re-observe a candidate, so its seen
+    # timestamps and target_sha stay as filed; an engine finding that lands
+    # on the same id (identical anchor) supersedes it. Old-layout candidates
+    # embedded in the previous debt.json are adopted into the pending store
+    # ONCE (stated in the envelope + report).
     engine_ids = {item["id"] for item in items}
-    items += [c for c in _previous_candidates(out_path) if c["id"] not in engine_ids]
+    pending = load_pending(resolver)
+    pending_ids = {c["id"] for c in pending}
+    migrated = [c for c in _previous_candidates(out_path)
+                if c["id"] not in pending_ids]
+    if migrated:
+        pending = pending + migrated
+        save_pending(resolver, pending)
+    items += [c for c in pending if c["id"] not in engine_ids]
+    pending_block = {
+        "file": str(pending_path(resolver)),
+        "count": len(pending),
+        "migrated": sorted(c["id"] for c in migrated),
+    }
+
+    # Boundary findings (#216 C2): wholly-out-of-scope evidence captured where
+    # the engines make it cheap. Clones: classes with >= 2 total spans that
+    # fell below 2 in-scope members. Markers/dead_code/test_health emit no
+    # boundary findings — their finding corpora are already scope-narrowed at
+    # the source, so out-of-scope instances are never observed (that is the
+    # boundary of the boundary, stated in boundary_note).
+    boundary_items: list[dict] = []
+    for cls in engine_results["clones"].get("boundary_classes") or []:
+        boundary_items.append({
+            "id": debt_id("clones", "", cls["content_hash"]),
+            "anchor": cls["content_hash"],
+            "engine": "clones",
+            "kind": "clone_class",
+            "severity": "high" if cls["size"] >= 3 else "medium",
+            "symbol": cls["content_hash"],
+            "boundary": True,
+            "locations": [f"{m['file']}:{m['start_line']}" for m in cls["members"]],
+            "detail": (
+                f"clone class of {cls['size']} span(s), ~{cls['lines']} lines each "
+                f"(content hash {cls['content_hash']}) — fewer than 2 spans in "
+                "scope; owning-team debt, refer, never auto-fix"
+            ),
+            "target_sha": sha,
+        })
+    boundary_items.sort(key=lambda x: x["id"])
 
     # Grandfathered items (#215): marked, never removed — pre-adoption debt is
     # visible pressure, and expiry makes it LOUD, not amnestied.
@@ -456,6 +569,16 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
         "unscanned_languages": unscanned,
         "counts": counts,
         "grandfather": grandfather,
+        "pending_candidates": pending_block,
+        "boundary": boundary_items,
+        "boundary_note": (
+            "boundary captures wholly-out-of-scope evidence only where an "
+            "engine sees it cheaply: clone classes dropped for out-of-scope "
+            "members (>= 2 total spans). markers/dead_code/test_health corpora "
+            "are scope-narrowed at the source, so their out-of-scope findings "
+            "are never observed — absence from this section is NOT evidence "
+            "the out-of-scope code is clean."
+        ),
         "items": items,
     })
     return envelope
@@ -518,6 +641,24 @@ def format_report(envelope: dict) -> str:
         lines.append(
             f"- grandfathered: {gf['count']} item(s) (pre-adoption baseline — "
             "labeled, non-blocking; expiry is visible pressure, not amnesty)"
+        )
+    pend = envelope.get("pending_candidates") or {}
+    if pend.get("migrated"):
+        lines.append(
+            f"- migrated {len(pend['migrated'])} old-layout candidate(s) into "
+            f"the pending store ({pend.get('file')}): "
+            + ", ".join(pend["migrated"])
+        )
+    if pend.get("count"):
+        lines.append(
+            f"- pending candidates: {pend['count']} (store: {pend.get('file')} — "
+            "removal is the explicit resolve-candidate act, never an engine re-run)"
+        )
+    boundary = envelope.get("boundary") or []
+    if boundary:
+        lines.append(
+            f"- boundary: {len(boundary)} wholly-out-of-scope finding(s) — "
+            "owning-team referrals (plan_from_debt boundary_referrals), never ticketed"
         )
     # Expired-ness is computed LIVE at render time (#215 F8): the stored
     # grandfather_expired flag is a build-time snapshot — an inventory built
@@ -584,42 +725,51 @@ def run(args: argparse.Namespace) -> int:
     return 0  # report-only, always
 
 
+class CandidateCollisionError(ValueError):
+    """The derived candidate id belongs to a NON-candidate (engine) item —
+    engines own their evidence; a hand-filed note may not shadow it (#216 F6)."""
+
+
 def append_candidate(target: str, engine: str, path: str, note: str,
-                     severity: str, out_dir: Path,
+                     severity: str, resolver: artifacts.Resolver | None = None,
                      now: str | None = None) -> tuple[dict, bool]:
-    """Append (or refresh) a manual candidate item in ``debt.json`` — the
-    #216 found≠fixed hook. Same stable-ID mechanics as engine items: the
-    anchor is the NORMALIZED note text, so re-filing the same observation on
-    the same file is idempotent (one item, refreshed ``last_seen``), and a
-    reworded note is a different observation with a fresh id. Returns
-    ``(item, created)``."""
+    """Append (or refresh) a manual candidate item in the PENDING STORE
+    (``<user_dir>/pending/<target-id>/candidates.json``) — the #216
+    found≠fixed hook. Mode-independent: never writes the target tree
+    (embedded) or any debt.json (a scratch-dir inventory run can't lose it).
+    Same stable-ID mechanics as engine items: the anchor is the NORMALIZED
+    note text, so re-filing the same observation on the same file is
+    idempotent (one item, refreshed ``last_seen``), and a reworded note is a
+    different observation with a fresh id. Raises ``CandidateCollisionError``
+    when the derived id belongs to a non-candidate item in the current
+    inventory — engines own their evidence. Returns ``(item, created)``."""
     now = now or datetime.now(timezone.utc).isoformat()
+    resolver = resolver or artifacts.Resolver.resolve(target)
     file_part, _, line_part = path.partition(":")
     location = f"{file_part}:{line_part or 0}"
-    iid = debt_id(engine, file_part, _norm_text(note))
+    anchor = _norm_text(note)
+    iid = debt_id(engine, file_part, anchor)
 
-    out_path = out_dir / "debt.json"
-    if out_path.is_file():
-        envelope = json.loads(out_path.read_text())
-    else:
-        # No inventory yet: a minimal debt/1 envelope holding only candidates.
-        # It is NOT an engine run — the authority line says so.
-        envelope = {
-            "schema": SCHEMA,
-            "generated_at": now,
-            "authority": (
-                "manual candidate items only — no engine scan has run; run "
-                "scripts/debt_inventory.py to build the full inventory"
-            ),
-            "engines": {},
-            "unscanned_languages": {},
-            "counts": {},
-            "grandfather": {"file": None, "count": 0, "expired": []},
-            "items": [],
-        }
+    # F6: refuse to shadow an engine finding. The current inventory (resolver
+    # quality dir) is the engines' evidence surface; a candidate landing on a
+    # non-candidate id would let a hand-filed note masquerade as (or later
+    # supersede the provenance of) mechanical evidence.
+    debt_file = resolver.quality_dir() / "debt.json"
+    if debt_file.is_file():
+        try:
+            doc = json.loads(debt_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            doc = {}
+        for i in doc.get("items") or []:
+            if isinstance(i, dict) and i.get("id") == iid and not i.get("candidate"):
+                raise CandidateCollisionError(
+                    f"candidate id {iid} collides with an engine finding "
+                    f"({i.get('engine')}/{i.get('kind')} at "
+                    f"{(i.get('locations') or ['?'])[0]}) — engines own their "
+                    "evidence; reword the note or reference the engine item")
 
-    items = envelope.setdefault("items", [])
-    existing = next((i for i in items if isinstance(i, dict) and i.get("id") == iid), None)
+    items = load_pending(resolver)
+    existing = next((i for i in items if i.get("id") == iid), None)
     if existing is not None:
         existing["last_seen"] = now
         if location not in existing.get("locations", []):
@@ -628,6 +778,7 @@ def append_candidate(target: str, engine: str, path: str, note: str,
     else:
         item = {
             "id": iid,
+            "anchor": anchor,
             "engine": engine,
             "kind": "candidate",
             "candidate": True,
@@ -642,23 +793,28 @@ def append_candidate(target: str, engine: str, path: str, note: str,
         }
         items.append(item)
         created = True
-
-    # Keep the envelope's rollup honest: recompute counts over ALL items.
-    counts: dict[str, dict[str, int]] = {}
-    for i in items:
-        counts.setdefault(i["engine"], {})[i["severity"]] = (
-            counts.get(i["engine"], {}).get(i["severity"], 0) + 1
-        )
-    envelope["counts"] = counts
-    out_path.write_text(json.dumps(envelope, indent=2) + "\n")
+    save_pending(resolver, items)
     return item, created
+
+
+def resolve_candidate(resolver: artifacts.Resolver, iid: str) -> dict | None:
+    """Remove one candidate from the pending store — the explicit operator
+    act that resolves it (#216 F2). Returns the removed item, or None when the
+    id is not pending."""
+    items = load_pending(resolver)
+    match = next((i for i in items if i.get("id") == iid), None)
+    if match is None:
+        return None
+    save_pending(resolver, [i for i in items if i.get("id") != iid])
+    return match
 
 
 def run_append_candidate(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="debt_inventory.py append-candidate",
-        description="file a mid-ticket discovery as a DEBT- candidate item "
-                    "(found ≠ fixed, chief-wiggum#216) — same turn, untouched diff",
+        description="file a mid-ticket discovery as a DEBT- candidate item in "
+                    "the pending store (found ≠ fixed, chief-wiggum#216) — "
+                    "same turn, untouched diff, never the target tree",
     )
     parser.add_argument("owner_repo", nargs="?", default=None)
     parser.add_argument("--repo", default=None, help="direct local repo path")
@@ -668,25 +824,51 @@ def run_append_candidate(argv: list[str]) -> int:
     parser.add_argument("--note", required=True,
                         help="what was found (the content anchor for the stable id)")
     parser.add_argument("--severity", choices=list(SEVERITY_ORDER), default="low")
-    parser.add_argument("--out", default=None,
-                        help="directory holding debt.json (default: resolver quality dir)")
     args = parser.parse_args(argv)
 
     target = resolve_target(args.owner_repo, args.repo)
     resolver = artifacts.Resolver.resolve(target)
-    out_dir = Path(args.out).expanduser() if args.out else resolver.quality_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    item, created = append_candidate(
-        target, args.engine, args.path, args.note, args.severity, out_dir)
+    try:
+        item, created = append_candidate(
+            target, args.engine, args.path, args.note, args.severity,
+            resolver=resolver)
+    except CandidateCollisionError as exc:
+        print(f"debt_inventory: {exc}", file=sys.stderr)
+        return 2
     verb = "filed" if created else "already filed (last_seen refreshed)"
     print(f"debt_inventory: candidate {item['id']} {verb} — {args.path}: {args.note}")
-    print(f"  inventory: {out_dir / 'debt.json'}")
+    print(f"  pending store: {pending_path(resolver)}")
+    return 0
+
+
+def run_resolve_candidate(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="debt_inventory.py resolve-candidate",
+        description="remove one candidate from the pending store — the "
+                    "explicit operator act that resolves it (chief-wiggum#216)",
+    )
+    parser.add_argument("owner_repo", nargs="?", default=None)
+    parser.add_argument("--repo", default=None, help="direct local repo path")
+    parser.add_argument("--id", required=True, help="the DEBT- candidate id to resolve")
+    args = parser.parse_args(argv)
+
+    target = resolve_target(args.owner_repo, args.repo)
+    resolver = artifacts.Resolver.resolve(target)
+    removed = resolve_candidate(resolver, args.id)
+    if removed is None:
+        print(f"debt_inventory: {args.id} is not in the pending store "
+              f"({pending_path(resolver)}) — nothing to resolve", file=sys.stderr)
+        return 1
+    print(f"debt_inventory: candidate {args.id} resolved (removed from "
+          f"{pending_path(resolver)})")
     return 0
 
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "append-candidate":
         return run_append_candidate(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "resolve-candidate":
+        return run_resolve_candidate(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="mechanical debt inventory (DEBT- stable IDs; report-only)",
     )

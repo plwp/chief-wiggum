@@ -505,69 +505,237 @@ def test_items_carry_target_sha_and_unknown_languages_surface(target, tmp_path):
     assert any("unknown-language (.lua)" in k for k in unscanned), unscanned
 
 
-# --- append-candidate (#216 found ≠ fixed) ------------------------------------
+# --- append-candidate (#216 found ≠ fixed, F2 pending store) ------------------
 
 
-def test_append_candidate_files_stable_manual_item(target, tmp_path):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
+def _resolver(target):
+    import artifacts
+    return artifacts.Resolver.resolve(str(target))
+
+
+def test_append_candidate_files_stable_manual_item_in_pending_store(target, tmp_path):
+    resolver = _resolver(target)
     item, created = debt_inventory.append_candidate(
         str(target), "manual", "lib.py:12", "duplicated retry loop, dedupe later",
-        "low", out_dir)
+        "low", resolver=resolver)
     assert created
     assert item["id"].startswith("DEBT-") and len(item["id"]) == 5 + 10
     assert item["engine"] == "manual" and item["candidate"] is True
     assert item["kind"] == "candidate"
+    assert item["anchor"] == "duplicated retry loop, dedupe later"
     assert item["locations"] == ["lib.py:12"]
-    doc = json.loads((out_dir / "debt.json").read_text())
+    store = debt_inventory.pending_path(resolver)
+    assert store.is_file()
+    assert str(tmp_path / "cw-home") in str(store), "store lives in the CW user dir"
+    doc = json.loads(store.read_text())
+    assert doc["schema"] == "pending-candidates/1"
     assert [i["id"] for i in doc["items"]] == [item["id"]]
-    assert doc["counts"]["manual"]["low"] == 1
+    # never the target tree, never docs/quality
+    assert not (target / "docs").exists()
 
 
 def test_append_candidate_is_idempotent_on_same_note(target, tmp_path):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
+    resolver = _resolver(target)
     a, created_a = debt_inventory.append_candidate(
-        str(target), "manual", "lib.py", "Dead   helper NEARBY", "low", out_dir)
+        str(target), "manual", "lib.py", "Dead   helper NEARBY", "low", resolver=resolver)
     b, created_b = debt_inventory.append_candidate(
-        str(target), "manual", "lib.py", "dead helper nearby", "low", out_dir)
+        str(target), "manual", "lib.py", "dead helper nearby", "low", resolver=resolver)
     assert created_a and not created_b
     assert a["id"] == b["id"], "normalized note text is the content anchor"
-    doc = json.loads((out_dir / "debt.json").read_text())
-    assert len(doc["items"]) == 1
+    assert len(debt_inventory.load_pending(resolver)) == 1
     c, created_c = debt_inventory.append_candidate(
-        str(target), "manual", "lib.py", "a different observation", "low", out_dir)
+        str(target), "manual", "lib.py", "a different observation", "low", resolver=resolver)
     assert created_c and c["id"] != a["id"]
 
 
-def test_append_candidate_into_existing_inventory_and_engine_rerun_preserves_it(
-        target, tmp_path):
-    out_dir = tmp_path / "out"
-    env1 = _run_inventory(target, tmp_path, out=out_dir)
-    n_engine_items = len(env1["items"])
+def test_engine_rerun_and_scratch_dir_inventory_retain_candidates(target, tmp_path):
+    """F2: candidates merge into EVERY inventory build regardless of out_path
+    — a scratch-dir fresh inventory (the verify flow) must retain them, so a
+    ticketed candidate can never vacuously resolve."""
+    resolver = _resolver(target)
     item, _ = debt_inventory.append_candidate(
-        str(target), "manual", "app.py", "smell spotted mid-ticket", "medium", out_dir)
-    doc = json.loads((out_dir / "debt.json").read_text())
-    assert len(doc["items"]) == n_engine_items + 1
+        str(target), "manual", "app.py", "smell spotted mid-ticket", "medium",
+        resolver=resolver)
 
-    # a full engine re-run carries the candidate forward — filing it must not
-    # be undone by the next inventory build
-    env2 = _run_inventory(target, tmp_path, out=out_dir)
-    ids = {i["id"] for i in env2["items"]}
-    assert item["id"] in ids
-    kept = next(i for i in env2["items"] if i["id"] == item["id"])
+    env = _run_inventory(target, tmp_path, out=tmp_path / "out")
+    kept = next(i for i in env["items"] if i["id"] == item["id"])
     assert kept["candidate"] is True and kept["engine"] == "manual"
 
+    scratch = _run_inventory(target, tmp_path, out=tmp_path / "scratch")
+    assert item["id"] in {i["id"] for i in scratch["items"]}, (
+        "scratch-dir inventory must retain pending candidates")
 
-def test_append_candidate_cli_prints_id_and_writes_resolver_quality_dir(target, tmp_path):
+
+def test_resolve_candidate_is_the_explicit_operator_act(target, tmp_path):
+    resolver = _resolver(target)
+    item, _ = debt_inventory.append_candidate(
+        str(target), "manual", "lib.py", "note to resolve", "low", resolver=resolver)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "debt_inventory.py"), "resolve-candidate",
+         "--repo", str(target), "--id", item["id"]],
+        capture_output=True, text=True,
+        env={"CHIEF_WIGGUM_USER_DIR": str(tmp_path / "cw-home"),
+             "PATH": __import__("os").environ["PATH"]},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert debt_inventory.load_pending(resolver) == []
+    # gone from the next inventory build too
+    env = _run_inventory(target, tmp_path, out=tmp_path / "after")
+    assert item["id"] not in {i["id"] for i in env["items"]}
+    # resolving an unknown id is a loud no-op (exit 1)
+    again = subprocess.run(
+        [sys.executable, str(SCRIPTS / "debt_inventory.py"), "resolve-candidate",
+         "--repo", str(target), "--id", item["id"]],
+        capture_output=True, text=True,
+        env={"CHIEF_WIGGUM_USER_DIR": str(tmp_path / "cw-home"),
+             "PATH": __import__("os").environ["PATH"]},
+    )
+    assert again.returncode == 1
+    assert "not in the pending store" in again.stderr
+
+
+def test_old_layout_candidates_migrate_into_pending_store_once(target, tmp_path):
+    """An existing debt.json carrying embedded candidates (the pre-F2 layout)
+    is adopted into the pending store on the next build, stated in the
+    envelope."""
+    resolver = _resolver(target)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    old_item = {
+        "id": debt_inventory.debt_id("manual", "lib.py", "old layout note"),
+        "engine": "manual", "kind": "candidate", "candidate": True,
+        "severity": "low", "symbol": "old layout note",
+        "locations": ["lib.py:0"], "detail": "manual candidate: old layout note",
+        "first_seen": "2026-01-01T00:00:00+00:00",
+        "last_seen": "2026-01-01T00:00:00+00:00",
+    }
+    (out_dir / "debt.json").write_text(json.dumps(
+        {"schema": "debt/1", "items": [old_item]}))
+    env = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd"), out_dir / "debt.json")
+    assert env["pending_candidates"]["migrated"] == [old_item["id"]]
+    assert old_item["id"] in {i["id"] for i in debt_inventory.load_pending(resolver)}
+    assert old_item["id"] in {i["id"] for i in env["items"]}
+    report = debt_inventory.format_report(env)
+    assert "migrated 1 old-layout candidate(s)" in report
+
+    # second build: already adopted, no re-migration
+    (out_dir / "debt.json").write_text(json.dumps(env))
+    env2 = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd"), out_dir / "debt.json")
+    assert env2["pending_candidates"]["migrated"] == []
+    assert old_item["id"] in {i["id"] for i in env2["items"]}
+
+
+def test_resolved_candidate_is_not_resurrected_by_rebuild(target, tmp_path):
+    """Regression: a rebuild against a NEW-layout debt.json (which still
+    embeds the merged candidate items) must NOT re-migrate a candidate the
+    operator explicitly resolved — the pending store is authoritative for
+    new-layout envelopes."""
+    resolver = _resolver(target)
+    item, _ = debt_inventory.append_candidate(
+        str(target), "manual", "lib.py", "resolve me then stay gone", "low",
+        resolver=resolver)
+    out_dir = tmp_path / "out"
+    env1 = _run_inventory(target, tmp_path, out=out_dir)
+    assert item["id"] in {i["id"] for i in env1["items"]}
+
+    assert debt_inventory.resolve_candidate(resolver, item["id"])
+    env2 = _run_inventory(target, tmp_path, out=out_dir)  # same out_path
+    assert item["id"] not in {i["id"] for i in env2["items"]}
+    assert env2["pending_candidates"]["migrated"] == []
+    assert debt_inventory.load_pending(resolver) == []
+
+
+def test_append_candidate_cli_embedded_mode_writes_nothing_in_tree(target, tmp_path):
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "debt_inventory.py"), "append-candidate",
          "--repo", str(target), "--engine", "manual",
          "--path", "lib.py:4", "--note", "clone of app.py loop"],
         capture_output=True, text=True,
+        env={"CHIEF_WIGGUM_USER_DIR": str(tmp_path / "cw-home"),
+             "PATH": __import__("os").environ["PATH"]},
     )
     assert proc.returncode == 0, proc.stderr
     assert "candidate DEBT-" in proc.stdout
-    doc = json.loads((target / "docs" / "quality" / "debt.json").read_text())
-    assert doc["items"][0]["candidate"] is True
-    assert "no engine scan has run" in doc["authority"]
+    assert "pending store" in proc.stdout
+    # embedded-mode target: the append wrote NOTHING into the target tree
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"],
+        capture_output=True, text=True, check=True).stdout
+    assert status.strip() == ""
+    assert not (target / "docs").exists()
+    resolver = _resolver(target)
+    assert len(debt_inventory.load_pending(resolver)) == 1
+
+
+def test_append_candidate_refuses_engine_finding_collision(target, tmp_path):
+    """F6: a candidate whose derived id lands on a NON-candidate item is
+    refused — engines own their evidence."""
+    _run_inventory(target, tmp_path, out=target / "docs" / "quality")
+    # dead_code anchor for lib.py is the symbol name; note normalizing to the
+    # same string under the same engine derives the SAME id
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "debt_inventory.py"), "append-candidate",
+         "--repo", str(target), "--engine", "dead_code",
+         "--path", "lib.py", "--note", "dead_helper"],
+        capture_output=True, text=True,
+        env={"CHIEF_WIGGUM_USER_DIR": str(tmp_path / "cw-home"),
+             "PATH": __import__("os").environ["PATH"]},
+    )
+    assert proc.returncode == 2
+    assert "collides with an engine finding" in proc.stderr
+    assert "engines own their evidence" in proc.stderr
+    resolver = _resolver(target)
+    assert debt_inventory.load_pending(resolver) == []
+
+
+def test_envelope_boundary_section_from_dropped_clone_classes(target, tmp_path, monkeypatch):
+    """C2: clone classes dropped for out-of-scope members surface in the
+    envelope's `boundary` section as boundary items; the note states what is
+    NOT captured (markers/dead_code/test_health are scope-narrowed at the
+    source)."""
+    def fake_analyze(repo, workdir, path_filter=None, name=None):
+        return {
+            "repo": "target", "engine": "clones", "clone_pairs_reported": 1,
+            "clone_classes": [],
+            "boundary_classes": [{
+                "content_hash": "beefbeefcafecafe", "size": 2, "lines": 8,
+                "tokens": 40,
+                "members": [
+                    {"file": "theirs/a.py", "start_line": 1, "end_line": 8},
+                    {"file": "theirs/b.py", "start_line": 5, "end_line": 12},
+                ],
+            }],
+        }
+
+    monkeypatch.setattr(debt_inventory.clones, "analyze", fake_analyze)
+    env = _run_inventory(target, tmp_path)
+    assert len(env["boundary"]) == 1
+    b = env["boundary"][0]
+    assert b["boundary"] is True and b["engine"] == "clones"
+    assert b["anchor"] == "beefbeefcafecafe"
+    assert b["id"] == debt_inventory.debt_id("clones", "", "beefbeefcafecafe")
+    assert b["locations"] == ["theirs/a.py:1", "theirs/b.py:5"]
+    # boundary items never leak into items or counts
+    assert b["id"] not in {i["id"] for i in env["items"]}
+    assert "clones" not in env["counts"]
+    assert "scope-narrowed at the source" in env["boundary_note"]
+    assert env["engines"]["clones"]["boundary_class_count"] == 1
+    assert "boundary_classes" not in env["engines"]["clones"]
+    report = debt_inventory.format_report(env)
+    assert "boundary: 1 wholly-out-of-scope finding(s)" in report
+
+
+def test_items_expose_their_id_anchor(target, tmp_path):
+    """F1(a): every item exposes the exact content anchor its id was derived
+    from, so verify can compare identities path-independently."""
+    env = _run_inventory(target, tmp_path)
+    assert env["items"]
+    for item in env["items"]:
+        assert item.get("anchor"), item["id"]
+        # the anchor + engine + path re-derive the id for single-file items
+    dead = next(i for i in env["items"] if i["engine"] == "dead_code")
+    assert dead["anchor"] == dead["symbol"]
+    assert dead["id"] == debt_inventory.debt_id(
+        "dead_code", dead["locations"][0].rsplit(":", 1)[0], dead["anchor"])

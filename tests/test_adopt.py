@@ -281,6 +281,9 @@ def test_grandfather_waiver_shape(user_dir, tmp_path):
         assert e["owner"] == "pat"
         assert e["expiry"] == expected_expiry
         assert e["source_engine"]
+        # #216 F8: per-entry timestamp — what lets plan_from_debt verify
+        # demand a waiver POSTDATE the plan (entries without one never waive)
+        assert e["created_at"]
     assert_no_cw_meta(target)
 
 
@@ -360,6 +363,9 @@ def test_debt_inventory_marks_grandfathered(user_dir, tmp_path):
     for i in marked:
         assert i["grandfather_expiry"]
         assert i["grandfather_expired"] is False
+        # #216 F8: the entry's own timestamp rides on the item so verify can
+        # require a waiver to postdate the plan
+        assert i["grandfather_created_at"]
     gf = envelope["grandfather"]
     assert gf["count"] == len(marked)
     assert gf["expired"] == []

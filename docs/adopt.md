@@ -120,10 +120,14 @@ Consumers:
 ## Grandfathering semantics
 
 `grandfathered.json` (`grandfather/1`): one entry per baseline finding —
-`{id, reason: "pre-adoption baseline", owner, expiry, source_engine}` — the
-JUSTIFIED-waiver shape (`reason`/`owner`/`expiry`), scoped to finding IDs
-(`DEBT-` ids from the inventory; `<gate>:<kind>:<id>` keys for gate findings
-beyond it). Default expiry: **+90 days** (`--expiry` / `--expiry-days`).
+`{id, reason: "pre-adoption baseline", owner, expiry, created_at,
+source_engine}` — the JUSTIFIED-waiver shape (`reason`/`owner`/`expiry`),
+scoped to finding IDs (`DEBT-` ids from the inventory; `<gate>:<kind>:<id>`
+keys for gate findings beyond it). Default expiry: **+90 days** (`--expiry` /
+`--expiry-days`). The per-entry `created_at` (chief-wiggum#216 F8) is what
+lets `plan_from_debt.py verify` demand that a remediation-epic waiver
+POSTDATE the plan — entries without timestamps (pre-#216 files) never waive
+a ticketed id.
 
 - **Expiry = visible pressure, not amnesty.** Grandfathered findings stay
   **in** the inventory — `debt_inventory` marks them (`"grandfathered": true`,

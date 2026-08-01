@@ -294,7 +294,7 @@ TICKETED id:
 ```bash
 QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)
 python3 "$CW_HOME/scripts/debt_inventory.py" --repo "$TARGET_REPO" --out "$CW_TMP/close-epic/fresh-debt"
-python3 "$CW_HOME/scripts/plan_from_debt.py" verify \
+python3 "$CW_HOME/scripts/plan_from_debt.py" verify --repo "$TARGET_REPO" \
   --plan "$QUALITY_DIR/remediation-plan.json" \
   --debt "$CW_TMP/close-epic/fresh-debt/debt.json"
 ```
@@ -302,15 +302,27 @@ python3 "$CW_HOME/scripts/plan_from_debt.py" verify \
 `verify` exits 1 listing every ticketed `DEBT-` id still present in the fresh
 inventory — a **blocking** finding: the ticket that claimed it was not
 actually remediated (or the "fix" changed the code without removing the
-finding). Only **ticketed** ids are checked: budgeted-out leftovers and
-boundary referrals are the normal end state, never a close failure. An id may
-be **explicitly waived** instead of fixed — via the `adopt.py grandfather
---extend` path (a loud operator act recording reason/owner/expiry;
-chief-wiggum#215) *after* planning; `verify` reports those as WAIVED and
-passes. A pre-plan grandfather does NOT waive (remediating it was the
-ticket's point), and an expired grandfather never waives. Once `verify`
-passes, refresh the real inventory in `$QUALITY_DIR` (run `debt_inventory.py`
-without `--out`) so the trend line records the drop.
+finding). It also blocks on **MOVED** ids (#216 F1): a ticketed id absent
+from the fresh inventory whose content anchor reappears under a NEW id (e.g.
+a `git mv` that renamed the file without fixing the finding) is renamed, not
+resolved — listed as `MOVED old -> new`. Ticketed **candidate** ids resolve
+against the pending store, not the fresh inventory (#216 F2): fix the thing,
+then run `debt_inventory.py resolve-candidate --repo "$TARGET_REPO" --id
+DEBT-...` — the explicit operator act (pass `--repo` to `verify` so it can
+read the store). Only **ticketed** ids are checked: budgeted-out leftovers
+and boundary referrals are the normal end state, never a close failure. NEW
+ids that appeared in a ticket's own pathset files are printed as an
+informational report ("review before closing") — never a failure; note that
+a REWORDED marker mints a new anchor and surfaces there, not as MOVED (the
+stated anchor-compare boundary). An id may be **explicitly waived** instead
+of fixed — via the `adopt.py grandfather --extend` path (a loud operator act
+recording reason/owner/expiry; chief-wiggum#215) *after* planning; `verify`
+reports those as WAIVED and passes, but only when the grandfather entry's own
+timestamp POSTDATES the plan's `generated_at` (#216 F8) — a pre-plan
+grandfather does NOT waive (remediating it was the ticket's point), an
+expired grandfather never waives, and an entry without a timestamp never
+waives. Once `verify` passes, refresh the real inventory in `$QUALITY_DIR`
+(run `debt_inventory.py` without `--out`) so the trend line records the drop.
 
 ### Step 3: Integration test execution
 

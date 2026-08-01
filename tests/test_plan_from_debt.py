@@ -165,6 +165,45 @@ def test_cli_refuses_without_any_budget(target, tmp_path):
     assert "unbudgeted remediation epic is unbounded scope" in proc.stderr
 
 
+@pytest.mark.parametrize("flag,value", [
+    ("--budget-count", "0"), ("--budget-count", "-3"),
+    ("--budget-cluster-cap", "0"), ("--budget-cluster-cap", "-1"),
+])
+def test_cli_refuses_vacuous_or_negative_budgets(target, tmp_path, flag, value):
+    """F5: a count/cap below 1 is a vacuous budget, not a plan — exit 2."""
+    _debt([_item("DEBT-aaaa000001")], tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "plan",
+         "--repo", str(target), "--debt", str(tmp_path / "debt.json"),
+         flag, value],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "must be >= 1" in proc.stderr
+
+
+def test_cli_refuses_severity_floor_low_alone(target, tmp_path):
+    """C3: 'low' is the lowest severity — a floor of low excludes nothing, so
+    it does not satisfy the budget requirement on its own."""
+    _debt([_item("DEBT-aaaa000001")], tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "plan",
+         "--repo", str(target), "--debt", str(tmp_path / "debt.json"),
+         "--budget-severity-floor", "low"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "excludes nothing" in proc.stderr
+    # combined with a real bound it is accepted
+    ok = subprocess.run(
+        [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "plan",
+         "--repo", str(target), "--debt", str(tmp_path / "debt.json"),
+         "--budget-severity-floor", "low", "--budget-count", "1"],
+        capture_output=True, text=True,
+    )
+    assert ok.returncode == 0, ok.stderr
+
+
 # --- boundary findings --------------------------------------------------------
 
 
@@ -193,6 +232,50 @@ def test_marked_boundary_item_is_referred_even_in_scope(target, tmp_path):
     plan = _plan(items, target, tmp_path, count=10)
     assert plan["tickets"] == []
     assert [r["id"] for r in plan["boundary_referrals"]] == ["DEBT-mark000001"]
+
+
+def test_mixed_scope_clone_ticket_sanctions_only_in_scope_files(target, tmp_path):
+    """F3: a clone class with one foot outside the domain scope is workable
+    (>= 1 in-scope file) but its derived pathset must NOT sanction the
+    out-of-scope file — that lands in boundary_locations, informational."""
+    (target / "docs").mkdir(exist_ok=True)
+    (target / "docs" / "scope.json").write_text(json.dumps({"include": ["ours/*"]}))
+    items = [
+        _item("DEBT-clone00001", engine="clones", severity="high",
+              locations=["ours/x.py:1", "theirs/y.py:9"], symbol="cafecafe"),
+    ]
+    plan = _plan(items, target, tmp_path, count=10)
+    assert len(plan["tickets"]) == 1
+    ticket = plan["tickets"][0]
+    assert ticket["pathset"]["paths"] == ["ours/x.py"]
+    assert ticket["boundary_locations"] == ["theirs/y.py:9"]
+    md = plan_from_debt.render_plan_md(plan)
+    assert "never sanctioned" in md and "theirs/y.py:9" in md
+
+
+def test_debt_boundary_section_feeds_referrals(target, tmp_path):
+    """C2: engine-captured boundary findings (debt.json's `boundary` section)
+    become referrals alongside marked/out-of-scope items, deduped by id."""
+    import artifacts
+    debt_file = tmp_path / "debt.json"
+    debt_file.write_text(json.dumps({
+        "schema": "debt/1", "target_sha": "abc123",
+        "items": [_item("DEBT-aaaa000001", locations=["pkg/a.py:1"])],
+        "boundary": [{
+            "id": "DEBT-bound00001", "engine": "clones", "kind": "clone_class",
+            "severity": "medium", "boundary": True,
+            "locations": ["theirs/a.py:1", "theirs/b.py:5"],
+            "detail": "clone class dropped for out-of-scope members",
+        }],
+    }))
+    resolver = artifacts.Resolver.resolve(str(target))
+    plan = plan_from_debt.build_plan(
+        plan_from_debt.load_debt(debt_file), str(debt_file), resolver,
+        budget_count=10, severity_floor=None, cluster_cap=None)
+    assert [r["id"] for r in plan["boundary_referrals"]] == ["DEBT-bound00001"]
+    assert "DEBT-bound00001" in plan["baseline_ids"]
+    assert all(i != "DEBT-bound00001"
+               for t in plan["tickets"] for i in t["debt_ids"])
 
 
 # --- grandfather handling -----------------------------------------------------
@@ -323,10 +406,18 @@ def test_plan_cli_writes_json_and_markdown(target, tmp_path):
 # --- verify (the /close-epic acceptance test) ---------------------------------
 
 
-def _mini_plan(ticketed: list[str], grandfathered: list[str] | None = None) -> dict:
+def _mini_plan(ticketed: list[str], grandfathered: list[str] | None = None,
+               items: list[dict] | None = None,
+               baseline_ids: list[str] | None = None,
+               pathset: list[str] | None = None,
+               generated_at: str = "2026-06-01T00:00:00+00:00") -> dict:
     return {"schema": "remediation-plan/1",
+            "generated_at": generated_at,
+            "baseline_ids": baseline_ids if baseline_ids is not None else ticketed,
             "tickets": [{"id": "RT-001", "debt_ids": ticketed,
-                         "grandfathered_ids": grandfathered or []}]}
+                         "grandfathered_ids": grandfathered or [],
+                         "items": items or [],
+                         "pathset": {"paths": pathset or [], "source": "test"}}]}
 
 
 def test_verify_clean_when_ticketed_ids_gone():
@@ -352,9 +443,11 @@ def test_verify_only_checks_ticketed_ids_leftovers_are_normal():
 
 
 def test_verify_post_plan_grandfather_is_explicit_waiver():
+    # F8: the waiving entry's own timestamp postdates the plan's created_at.
     plan = _mini_plan(["DEBT-aaaa000001"])
     fresh = {"items": [{"id": "DEBT-aaaa000001", "grandfathered": True,
-                        "grandfather_expiry": "2999-01-01"}]}
+                        "grandfather_expiry": "2999-01-01",
+                        "grandfather_created_at": "2026-07-01T00:00:00+00:00"}]}
     result = plan_from_debt.verify_plan(plan, fresh)
     assert result["ok"]
     assert [w["id"] for w in result["waived"]] == ["DEBT-aaaa000001"]
@@ -365,7 +458,8 @@ def test_verify_pre_plan_grandfather_is_not_a_waiver():
     # unresolved, not waived.
     plan = _mini_plan(["DEBT-aaaa000001"], grandfathered=["DEBT-aaaa000001"])
     fresh = {"items": [{"id": "DEBT-aaaa000001", "grandfathered": True,
-                        "grandfather_expiry": "2999-01-01"}]}
+                        "grandfather_expiry": "2999-01-01",
+                        "grandfather_created_at": "2026-07-01T00:00:00+00:00"}]}
     result = plan_from_debt.verify_plan(plan, fresh)
     assert not result["ok"]
 
@@ -373,8 +467,239 @@ def test_verify_pre_plan_grandfather_is_not_a_waiver():
 def test_verify_expired_grandfather_does_not_waive():
     plan = _mini_plan(["DEBT-aaaa000001"])
     fresh = {"items": [{"id": "DEBT-aaaa000001", "grandfathered": True,
-                        "grandfather_expiry": "2000-01-01"}]}
+                        "grandfather_expiry": "2000-01-01",
+                        "grandfather_created_at": "2026-07-01T00:00:00+00:00"}]}
     assert not plan_from_debt.verify_plan(plan, fresh)["ok"]
+
+
+def test_verify_stale_grandfather_entry_never_waives():
+    """F8: a grandfather entry whose timestamp PREDATES the plan — or that
+    carries no timestamp at all (pre-#216 files) — never waives a ticketed
+    id. Only a post-plan `adopt.py grandfather --extend` mints a waiver."""
+    plan = _mini_plan(["DEBT-aaaa000001"])  # generated_at 2026-06-01
+    predates = {"items": [{"id": "DEBT-aaaa000001", "grandfathered": True,
+                           "grandfather_expiry": "2999-01-01",
+                           "grandfather_created_at": "2026-01-01T00:00:00+00:00"}]}
+    result = plan_from_debt.verify_plan(plan, predates)
+    assert not result["ok"] and result["waived"] == []
+
+    no_ts = {"items": [{"id": "DEBT-aaaa000001", "grandfathered": True,
+                        "grandfather_expiry": "2999-01-01"}]}
+    result = plan_from_debt.verify_plan(plan, no_ts)
+    assert not result["ok"] and result["waived"] == []
+
+    # a hand-built plan with no created_at cannot be waived against either
+    plan_no_ts = _mini_plan(["DEBT-aaaa000001"])
+    del plan_no_ts["generated_at"]
+    fresh = {"items": [{"id": "DEBT-aaaa000001", "grandfathered": True,
+                        "grandfather_expiry": "2999-01-01",
+                        "grandfather_created_at": "2026-07-01T00:00:00+00:00"}]}
+    assert not plan_from_debt.verify_plan(plan_no_ts, fresh)["ok"]
+
+
+# --- verify: moved-not-resolved (F1) ------------------------------------------
+
+
+def test_verify_moved_id_is_unresolved_not_resolved():
+    """F1: the ticketed id is gone but a NEW id (not in baseline_ids) carries
+    the SAME anchor — a rename, not a fix. Listed as moved, counted
+    unresolved."""
+    plan = _mini_plan(
+        ["DEBT-aaaa000001"],
+        items=[{"id": "DEBT-aaaa000001", "engine": "dead_code",
+                "kind": "function", "severity": "low",
+                "detail": "dead symbol", "anchor": "dead_helper"}])
+    fresh = {"items": [{"id": "DEBT-new0000001", "anchor": "dead_helper",
+                        "engine": "dead_code", "severity": "low",
+                        "locations": ["renamed/lib.py:4"],
+                        "detail": "builtin-ast: function symbol dead_helper"}]}
+    result = plan_from_debt.verify_plan(plan, fresh)
+    assert not result["ok"]
+    assert result["resolved"] == [] and result["unresolved"] == []
+    assert result["moved"] == [{
+        "id": "DEBT-aaaa000001", "ticket": "RT-001", "new_id": "DEBT-new0000001",
+        "new_locations": ["renamed/lib.py:4"],
+        "detail": "builtin-ast: function symbol dead_helper"}]
+
+
+def test_verify_genuine_fix_still_resolves_with_anchors():
+    plan = _mini_plan(
+        ["DEBT-aaaa000001"],
+        items=[{"id": "DEBT-aaaa000001", "engine": "dead_code",
+                "kind": "function", "severity": "low",
+                "detail": "dead symbol", "anchor": "dead_helper"}])
+    fresh = {"items": [{"id": "DEBT-other00001", "anchor": "something_else",
+                        "engine": "markers", "severity": "low",
+                        "locations": ["pkg/z.py:1"]}]}
+    result = plan_from_debt.verify_plan(plan, fresh)
+    assert result["ok"] and result["resolved"] == ["DEBT-aaaa000001"]
+    assert result["moved"] == []
+
+
+def test_verify_baseline_id_with_same_anchor_is_not_moved():
+    """An item that ALREADY existed at plan time (id in baseline_ids) never
+    counts as the moved target — only NEW ids do."""
+    plan = _mini_plan(
+        ["DEBT-aaaa000001"],
+        items=[{"id": "DEBT-aaaa000001", "engine": "markers", "kind": "TODO",
+                "severity": "low", "detail": "todo", "anchor": "todo:fix me"}],
+        baseline_ids=["DEBT-aaaa000001", "DEBT-old0000001"])
+    fresh = {"items": [{"id": "DEBT-old0000001", "anchor": "todo:fix me",
+                        "engine": "markers", "severity": "low",
+                        "locations": ["other.py:9"]}]}
+    result = plan_from_debt.verify_plan(plan, fresh)
+    assert result["ok"] and result["resolved"] == ["DEBT-aaaa000001"]
+
+
+def test_verify_reworded_marker_is_reported_not_failed():
+    """Stated boundary: rewording a TODO mints a NEW anchor, so the moved
+    check cannot catch it — but landing in the ticket's own pathset files it
+    shows up in the informational new-ids report (never a failure)."""
+    plan = _mini_plan(
+        ["DEBT-aaaa000001"],
+        items=[{"id": "DEBT-aaaa000001", "engine": "markers", "kind": "TODO",
+                "severity": "low", "detail": "todo", "anchor": "todo:old wording"}],
+        pathset=["pkg/a.py"])
+    fresh = {"items": [{"id": "DEBT-reword0001", "anchor": "todo:new wording",
+                        "engine": "markers", "severity": "low",
+                        "locations": ["pkg/a.py:3"], "detail": "TODO: new wording"}]}
+    result = plan_from_debt.verify_plan(plan, fresh)
+    assert result["ok"], "reworded marker is the stated boundary — not a failure"
+    assert result["resolved"] == ["DEBT-aaaa000001"]
+    assert [n["id"] for n in result["new_in_ticket_files"]] == ["DEBT-reword0001"]
+    assert result["new_in_ticket_files"][0]["tickets"] == ["RT-001"]
+
+
+def test_verify_new_id_outside_ticket_files_is_not_reported():
+    plan = _mini_plan(
+        ["DEBT-aaaa000001"],
+        items=[{"id": "DEBT-aaaa000001", "engine": "markers", "kind": "TODO",
+                "severity": "low", "detail": "todo", "anchor": "todo:x"}],
+        pathset=["pkg/a.py"])
+    fresh = {"items": [{"id": "DEBT-far0000001", "anchor": "todo:elsewhere",
+                        "engine": "markers", "severity": "low",
+                        "locations": ["unrelated/z.py:1"]}]}
+    result = plan_from_debt.verify_plan(plan, fresh)
+    assert result["ok"] and result["new_in_ticket_files"] == []
+
+
+def test_verify_rename_probe_end_to_end(target, tmp_path):
+    """The exact id-drift probe: `git mv` the file so the dead export
+    SURVIVES under a new path — verify must fail with a MOVED entry; after a
+    genuine fix it passes."""
+    import artifacts
+    import debt_inventory
+
+    (target / "lib.py").write_text(
+        "def used():\n    return 1\n\n\ndef dead_helper():\n    return 2\n")
+    (target / "app.py").write_text("from lib import used\nprint(used())\n")
+    subprocess.run(["git", "-C", str(target), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(target), "commit", "-q", "-m", "seed2", "--no-verify"],
+                   check=True, capture_output=True)
+    resolver = artifacts.Resolver.resolve(str(target))
+    out = tmp_path / "inv"
+    out.mkdir()
+    env = debt_inventory.build_inventory(str(target), str(tmp_path / "wd"), out / "debt.json")
+    (out / "debt.json").write_text(json.dumps(env))
+    dead = next(i for i in env["items"] if i["engine"] == "dead_code")
+
+    plan = plan_from_debt.build_plan(
+        env, str(out / "debt.json"), resolver,
+        budget_count=10, severity_floor=None, cluster_cap=None)
+    assert any(dead["id"] in t["debt_ids"] for t in plan["tickets"])
+
+    # the probe: rename, don't fix — the dead export survives at a new path
+    subprocess.run(["git", "-C", str(target), "mv", "lib.py", "moved_lib.py"],
+                   check=True, capture_output=True)
+    (target / "app.py").write_text("from moved_lib import used\nprint(used())\n")
+    subprocess.run(["git", "-C", str(target), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(target), "commit", "-q", "-m", "rename probe",
+                    "--no-verify"], check=True, capture_output=True)
+    fresh = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd2"), tmp_path / "fresh" / "debt.json")
+    result = plan_from_debt.verify_plan(plan, fresh)
+    assert not result["ok"], "rename-not-fix must fail verify"
+    moved = [m for m in result["moved"] if m["id"] == dead["id"]]
+    assert moved and moved[0]["new_locations"][0].startswith("moved_lib.py:")
+    assert moved[0]["new_id"] != dead["id"]
+
+    # a genuine fix resolves
+    (target / "moved_lib.py").write_text("def used():\n    return 1\n")
+    subprocess.run(["git", "-C", str(target), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(target), "commit", "-q", "-m", "real fix",
+                    "--no-verify"], check=True, capture_output=True)
+    fixed = debt_inventory.build_inventory(
+        str(target), str(tmp_path / "wd3"), tmp_path / "fixed" / "debt.json")
+    result2 = plan_from_debt.verify_plan(plan, fixed)
+    assert dead["id"] in result2["resolved"]
+    assert not [m for m in result2["moved"] if m["id"] == dead["id"]]
+
+
+# --- verify: candidates resolve against the pending store (F2) ----------------
+
+
+def test_verify_ticketed_candidate_checks_pending_store_not_inventory(target, tmp_path):
+    import artifacts
+    import debt_inventory
+
+    resolver = artifacts.Resolver.resolve(str(target))
+    cand, _ = debt_inventory.append_candidate(
+        str(target), "manual", "seed.txt", "candidate to remediate", "low",
+        resolver=resolver)
+    plan = _mini_plan(
+        [cand["id"]],
+        items=[{"id": cand["id"], "engine": "manual", "kind": "candidate",
+                "severity": "low", "detail": cand["detail"],
+                "candidate": True, "anchor": cand["anchor"]}])
+
+    # candidate ABSENT from the fresh inventory but still pending -> unresolved
+    fresh_empty = {"items": []}
+    pending = {i["id"] for i in debt_inventory.load_pending(resolver)}
+    result = plan_from_debt.verify_plan(plan, fresh_empty, pending_ids=pending)
+    assert not result["ok"]
+    assert "pending store" in result["unresolved"][0]["detail"]
+
+    # resolve-candidate (the operator act) -> resolved, even though a fresh
+    # inventory would still be consulted for everything else
+    assert debt_inventory.resolve_candidate(resolver, cand["id"])
+    pending = {i["id"] for i in debt_inventory.load_pending(resolver)}
+    result = plan_from_debt.verify_plan(plan, fresh_empty, pending_ids=pending)
+    assert result["ok"] and result["resolved"] == [cand["id"]]
+
+
+def test_verify_cli_reads_pending_store_for_candidates(target, tmp_path):
+    import artifacts
+    import debt_inventory
+
+    resolver = artifacts.Resolver.resolve(str(target))
+    cand, _ = debt_inventory.append_candidate(
+        str(target), "manual", "seed.txt", "cli candidate", "low", resolver=resolver)
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(json.dumps(_mini_plan(
+        [cand["id"]],
+        items=[{"id": cand["id"], "engine": "manual", "kind": "candidate",
+                "severity": "low", "detail": cand["detail"],
+                "candidate": True, "anchor": cand["anchor"]}])))
+    fresh = tmp_path / "fresh.json"
+    fresh.write_text(json.dumps({"schema": "debt/1", "items": []}))
+
+    env = {"CHIEF_WIGGUM_USER_DIR": str(tmp_path / "cw-home"),
+           "PATH": __import__("os").environ["PATH"]}
+    still_pending = subprocess.run(
+        [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "verify",
+         "--repo", str(target), "--plan", str(plan_file), "--debt", str(fresh)],
+        capture_output=True, text=True, env=env,
+    )
+    assert still_pending.returncode == 1
+    assert "pending store" in still_pending.stdout
+
+    assert debt_inventory.resolve_candidate(resolver, cand["id"])
+    resolved = subprocess.run(
+        [sys.executable, str(SCRIPTS / "plan_from_debt.py"), "verify",
+         "--repo", str(target), "--plan", str(plan_file), "--debt", str(fresh)],
+        capture_output=True, text=True, env=env,
+    )
+    assert resolved.returncode == 0, resolved.stdout + resolved.stderr
 
 
 def test_verify_cli_exit_codes(tmp_path):

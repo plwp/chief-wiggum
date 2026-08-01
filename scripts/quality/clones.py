@@ -12,7 +12,11 @@ places is one class with size 2 vs 5, not an undifferentiated pair soup.
 
 The #213 scope filter applies to class MEMBERS: an out-of-scope span leaves
 the class, and a class below 2 in-scope members disappears (a clone with one
-foot outside the domain is not this team's debt item).
+foot outside the domain is not this team's debt item). Classes dropped THAT
+WAY — >= 2 total spans but < 2 in-scope — are not silently discarded: they are
+returned as ``boundary_classes`` (full member list, pre-filter), so the debt
+inventory can record them in its ``boundary`` section for owning-team
+referrals (chief-wiggum#216 C2) instead of losing them at the engine.
 
 Skipped (``{"skipped": ...}``) when jscpd/node is absent — same graceful
 degrade as ``duplication.py``.
@@ -68,10 +72,16 @@ def _rel(repo: str, name: str) -> str:
     return p.as_posix()
 
 
-def cluster(repo: str, duplicates: list[dict], path_filter=None) -> list[dict]:
+def cluster(repo: str, duplicates: list[dict], path_filter=None,
+            boundary_out: list[dict] | None = None) -> list[dict]:
     """Cluster jscpd duplicate PAIRS into clone classes keyed by normalized
     span content hash. Deterministic: classes sorted (size desc, hash asc);
-    members sorted (file, start_line)."""
+    members sorted (file, start_line).
+
+    When ``path_filter`` drops a class below 2 in-scope members despite >= 2
+    TOTAL spans, the class (full pre-filter member list) is appended to
+    ``boundary_out`` when provided — the caller's boundary-referral evidence
+    (chief-wiggum#216 C2), never an in-scope finding."""
     classes: dict[str, dict] = {}
     for dup in duplicates:
         # jscpd may emit fragment as an EMPTY string (observed on real repos)
@@ -98,8 +108,10 @@ def cluster(repo: str, duplicates: list[dict], path_filter=None) -> list[dict]:
             "lines": int(dup.get("lines", 0) or 0),
             "tokens": int(dup.get("tokens", 0) or 0),
             "members": set(),
+            "all_members": set(),
         })
         for rel, start, end in members:
+            cls["all_members"].add((rel, start, end))
             if path_filter is not None and not path_filter(rel):
                 continue
             cls["members"].add((rel, start, end))
@@ -108,7 +120,21 @@ def cluster(repo: str, duplicates: list[dict], path_filter=None) -> list[dict]:
     for cls in classes.values():
         members = sorted(cls["members"])
         if len(members) < 2:
-            continue  # a class needs >= 2 in-scope spans to be a clone at all
+            # A class needs >= 2 in-scope spans to be a clone HERE; with >= 2
+            # total spans it is still a real clone — someone else's (boundary).
+            all_members = sorted(cls["all_members"])
+            if boundary_out is not None and len(all_members) >= 2:
+                boundary_out.append({
+                    "content_hash": cls["content_hash"],
+                    "size": len(all_members),
+                    "lines": cls["lines"],
+                    "tokens": cls["tokens"],
+                    "members": [
+                        {"file": f, "start_line": s, "end_line": e}
+                        for f, s, e in all_members
+                    ],
+                })
+            continue
         out.append({
             "content_hash": cls["content_hash"],
             "size": len(members),
@@ -119,6 +145,8 @@ def cluster(repo: str, duplicates: list[dict], path_filter=None) -> list[dict]:
             ],
         })
     out.sort(key=lambda c: (-c["size"], c["content_hash"]))
+    if boundary_out is not None:
+        boundary_out.sort(key=lambda c: (-c["size"], c["content_hash"]))
     return out
 
 
@@ -129,12 +157,17 @@ def analyze(repo: str, workdir: str, path_filter=None, name: str | None = None) 
     if skip is not None:
         return {"repo": name, "engine": "clones", **skip}
     duplicates = data.get("duplicates") or []
-    classes = cluster(repo, duplicates, path_filter=path_filter)
+    boundary: list[dict] = []
+    classes = cluster(repo, duplicates, path_filter=path_filter,
+                      boundary_out=boundary)
     return {
         "repo": name,
         "engine": "clones",
         "clone_pairs_reported": len(duplicates),
         "clone_classes": classes,
+        # Classes with >= 2 total spans that fell below 2 in-scope members —
+        # boundary evidence for the owning team, never in-scope findings.
+        "boundary_classes": boundary,
     }
 
 

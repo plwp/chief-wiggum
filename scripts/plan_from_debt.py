@@ -11,8 +11,22 @@ ticket plan** that `/plan-epic --from-debt` consumes. Three subcommands:
                pathset`` consumes (chief-wiggum#213 parking machinery).
 - ``verify``   the /close-epic acceptance test: every TICKETED DEBT- id must
                be gone from a FRESH inventory (or explicitly waived post-plan
-               via the ``adopt.py grandfather --extend`` path). Exit 1 listing
-               unresolved ids; exit 0 clean.
+               via the ``adopt.py grandfather --extend`` path). An id that
+               merely MOVED — a new item (id not in the plan's recorded
+               ``baseline_ids``) carrying the SAME content anchor, e.g. a
+               ``git mv`` that renamed the path without fixing the finding —
+               counts UNRESOLVED (#216 F1). Ticketed CANDIDATE ids resolve
+               against the pending store, not the fresh inventory (#216 F2).
+               NEW ids that appeared in the tickets' own pathset files are
+               REPORTED (never a failure) for review before closing. Exit 1
+               listing unresolved/moved ids; exit 0 clean.
+
+**Anchor-compare boundary (stated):** the moved check compares content
+anchors, which for markers is the kind + normalized marker text — REWORDING a
+TODO/FIXME mints a new anchor, so a reworded-not-fixed marker is NOT caught as
+moved; it surfaces in the new-ids-in-ticket-files report instead (review
+before closing). Clone classes compare by member-content hash (the anchor),
+fully path-independent.
 
 **Clustering precedence (documented, mechanical):**
 
@@ -65,6 +79,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402 — #213 meta-location resolver
+import debt_inventory  # noqa: E402 — pending candidate store (#216 F2)
 from chief_wiggum.grandfather import expired_live  # noqa: E402 — #215 live expiry
 from debt_inventory import SEVERITY_ORDER, resolve_target  # noqa: E402
 
@@ -87,6 +102,26 @@ BUDGET_REFUSAL = (
     "an unbudgeted remediation epic is unbounded scope — pass --budget-count "
     "and/or --budget-severity-floor and/or --budget-cluster-cap"
 )
+
+FLOOR_LOW_REFUSAL = (
+    "--budget-severity-floor low excludes nothing ('low' is the lowest "
+    "severity) — it is not a budget on its own; combine it with "
+    "--budget-count and/or --budget-cluster-cap"
+)
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for budget counts/caps: >= 1, or the budget is vacuous
+    (0) / nonsensical (negative) — refuse loudly (#216 F5)."""
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"{n} is not a valid budget (must be >= 1 — a budget of 0 or less "
+            "is vacuous, not a plan)")
+    return n
 
 
 # --- helpers ------------------------------------------------------------------
@@ -277,12 +312,27 @@ def _ticket_title(cluster: dict) -> str:
     return f"refactor: remediate {n} debt item(s) in {cluster['key']}/"
 
 
-def build_tickets(clusters: list[dict], debt_file: str) -> list[dict]:
+def build_tickets(clusters: list[dict], debt_file: str, in_scope=None) -> list[dict]:
     tickets = []
     for n, cluster in enumerate(clusters, start=1):
         tid = f"RT-{n:03d}"
         items = cluster["items"]
-        files = sorted({f for i in items for f in _item_files(i)})
+        all_files = sorted({f for i in items for f in _item_files(i)})
+        # F3: the derived SANCTIONED pathset carries only in-scope files — a
+        # partially-out-of-scope item (e.g. a clone class with one foot in
+        # another team's tree) must not smuggle out-of-scope files into the
+        # sanctioned set. Out-of-scope locations are listed separately as
+        # boundary_locations: informational, feeds the referral note, never
+        # sanctioned.
+        if in_scope is None:
+            files = all_files
+            boundary_locations: list[str] = []
+        else:
+            files = [f for f in all_files if in_scope(f)]
+            boundary_locations = sorted({
+                loc for i in items for loc in i.get("locations") or []
+                if not in_scope(_loc_file(loc))
+            })
         partner_files = set().union(*[_partner_files(i) for i in items]) if items else set()
         tickets.append({
             "id": tid,
@@ -293,10 +343,11 @@ def build_tickets(clusters: list[dict], debt_file: str) -> list[dict]:
             "grandfathered_ids": sorted(i["id"] for i in items if i.get("grandfathered")),
             "severity_rollup": _rollup(items),
             "locations": sorted({loc for i in items for loc in i.get("locations") or []}),
-            # The derived sanctioned pathset: the items' location files. The
-            # `collateral` slot is DECLARED at approach time (/implement Step 4)
-            # — callers/tests that must move with the refactor — and appended
-            # by the `pathset` subcommand.
+            "boundary_locations": boundary_locations,
+            # The derived sanctioned pathset: the items' IN-SCOPE location
+            # files. The `collateral` slot is DECLARED at approach time
+            # (/implement Step 4) — callers/tests that must move with the
+            # refactor — and appended by the `pathset` subcommand.
             "pathset": {
                 "paths": files,
                 "source": f"plan_from_debt {tid} ({debt_file})",
@@ -304,8 +355,10 @@ def build_tickets(clusters: list[dict], debt_file: str) -> list[dict]:
             "collateral": [],
             "depends_on": [],
             "items": [
-                {k: i.get(k) for k in ("id", "engine", "kind", "severity", "detail")
-                 } | ({"grandfathered": True} if i.get("grandfathered") else {})
+                {k: i.get(k) for k in ("id", "engine", "kind", "severity", "detail")}
+                | ({"grandfathered": True} if i.get("grandfathered") else {})
+                | ({"candidate": True} if i.get("candidate") else {})
+                | ({"anchor": i["anchor"]} if i.get("anchor") else {})
                 for i in items
             ],
             "_partner_files": sorted(partner_files),  # stripped before emit
@@ -377,7 +430,7 @@ def build_plan(debt: dict, debt_file: str, resolver: artifacts.Resolver,
     clusters = cluster_items(workable)
     clusters, over_cap = apply_cluster_cap(clusters, cluster_cap)
     clusters, over_budget = order_and_budget(clusters, budget_count)
-    tickets = build_tickets(clusters, debt_file)
+    tickets = build_tickets(clusters, debt_file, in_scope=resolver.in_scope)
 
     excluded = (
         [{"id": i["id"], "engine": i.get("engine"), "severity": i.get("severity"),
@@ -388,6 +441,15 @@ def build_plan(debt: dict, debt_file: str, resolver: artifacts.Resolver,
             "reason": "over_budget"} for i in over_budget]
     )
     excluded.sort(key=lambda e: (e["reason"], e["id"]))
+    # C2: the inventory's dedicated `boundary` section (engine-captured
+    # wholly-out-of-scope evidence, e.g. clone classes dropped for
+    # out-of-scope members) feeds referrals ALONGSIDE marked/out-of-scope
+    # items — the engines no longer drop that evidence on the floor.
+    seen_boundary = {i["id"] for i in boundary}
+    boundary = boundary + [
+        b for b in debt.get("boundary") or []
+        if isinstance(b, dict) and b.get("id") and b["id"] not in seen_boundary
+    ]
     referrals = build_boundary_referrals(
         boundary, resolver.scope_summary(), debt.get("target_sha"))
 
@@ -398,6 +460,14 @@ def build_plan(debt: dict, debt_file: str, resolver: artifacts.Resolver,
         "debt_file": str(debt_file),
         "debt_sha256": hashlib.sha256(Path(debt_file).read_bytes()).hexdigest(),
         "debt_target_sha": debt.get("target_sha"),
+        # F1: the full id population at plan time (items + boundary section).
+        # verify uses this to tell a NEW id (moved/appeared work) from one
+        # that already existed when the plan was cut.
+        "baseline_ids": sorted(
+            {i["id"] for i in items}
+            | {b["id"] for b in debt.get("boundary") or []
+               if isinstance(b, dict) and b.get("id")}
+        ),
         "budget": {
             "count": budget_count,
             "severity_floor": severity_floor,
@@ -439,6 +509,9 @@ def render_plan_md(plan: dict) -> str:
         lines.append(f"  - debt ids: {', '.join(t['debt_ids'])}")
         lines.append(f"  - severity: {r.get('high', 0)} high / {r.get('medium', 0)} medium / {r.get('low', 0)} low")
         lines.append(f"  - pathset: {', '.join(t['pathset']['paths']) or '(none)'}")
+        if t.get("boundary_locations"):
+            lines.append("  - boundary locations (out-of-scope, informational, "
+                         "never sanctioned): " + ", ".join(t["boundary_locations"]))
     if plan["excluded"]:
         lines.append("")
         lines.append("## Excluded (deliberately left behind)")
@@ -471,46 +544,129 @@ def derive_pathset(ticket: dict, extra_collateral: list[str] | None = None) -> d
 # --- verify -------------------------------------------------------------------
 
 
-def verify_plan(plan: dict, fresh_debt: dict) -> dict:
+def _postdates_plan(entry_ts: str | None, plan_ts: str | None) -> bool:
+    """True iff the grandfather entry's timestamp strictly postdates the
+    plan's created_at (#216 F8). Fail closed: a missing/unparseable timestamp
+    on EITHER side never waives — a pre-#216 entry (no created_at) or a
+    hand-built plan (no generated_at) cannot silently amnesty a ticketed id."""
+    if not isinstance(entry_ts, str) or not isinstance(plan_ts, str):
+        return False
+    try:
+        return datetime.fromisoformat(entry_ts) > datetime.fromisoformat(plan_ts)
+    except ValueError:
+        return False
+
+
+def verify_plan(plan: dict, fresh_debt: dict,
+                pending_ids: set[str] | frozenset[str] = frozenset()) -> dict:
     """The /close-epic acceptance check: every TICKETED id gone from the fresh
     inventory, or explicitly waived POST-plan. Only ticketed ids are checked —
     budgeted-out leftovers and boundary referrals are the normal end state.
 
-    A waiver must be explicit relative to the plan: an id that was ALREADY
-    grandfathered at plan time was ticketed knowingly (remediating it before
-    expiry was the point), so its survival is unresolved, not waived. An id
-    that is newly grandfathered (non-expired) in the FRESH inventory was
-    amnestied after planning — only ``adopt.py grandfather --extend`` (a loud,
-    explicit operator act with a reason) can do that."""
+    **Moved is not resolved (#216 F1):** a ticketed id absent from the fresh
+    inventory only counts resolved if NO new item — id not in the plan's
+    recorded ``baseline_ids`` — carries the SAME content anchor. Anchors are
+    path-independent (clone classes: the member-content hash), so a ``git
+    mv`` that renames the finding's file without fixing it is caught as
+    ``moved`` (old id -> new id + new location) and counted UNRESOLVED.
+    Stated boundary: marker REWORDING mints a new anchor and is not caught
+    here — it lands in the informational new-ids report instead.
+
+    **Candidates resolve against the pending store (#216 F2):** a ticketed
+    candidate id is resolved IFF absent from ``pending_ids`` (the operator
+    ran ``debt_inventory.py resolve-candidate``), never by its absence from
+    the fresh inventory.
+
+    **A waiver must be explicit relative to the plan:** an id that was
+    ALREADY grandfathered at plan time was ticketed knowingly (remediating it
+    before expiry was the point), so its survival is unresolved, not waived.
+    A waiving grandfather entry must both be non-expired AND carry a
+    timestamp that POSTDATES the plan (#216 F8) — only the loud
+    ``adopt.py grandfather --extend`` operator act mints those; entries
+    without timestamps never waive.
+
+    **Informational (never a failure):** NEW ids whose location files
+    intersect a ticket's pathset files are listed in ``new_in_ticket_files``
+    — new debt appeared in the ticket's own files; review before closing."""
     plan_grandfathered = {i for t in plan.get("tickets") or []
                           for i in t.get("grandfathered_ids") or []}
+    tickets = plan.get("tickets") or []
     ticketed: dict[str, str] = {}
-    for t in plan.get("tickets") or []:
+    plan_item_meta: dict[str, dict] = {}
+    for t in tickets:
         for i in t.get("debt_ids") or []:
             ticketed.setdefault(i, t.get("id", "?"))
+        for item in t.get("items") or []:
+            if isinstance(item, dict) and item.get("id"):
+                plan_item_meta.setdefault(item["id"], item)
 
     fresh = {i["id"]: i for i in fresh_debt.get("items") or []
              if isinstance(i, dict) and i.get("id")}
+    baseline = set(plan.get("baseline_ids") or [])
+    new_items = [i for iid, i in sorted(fresh.items())
+                 if iid not in baseline and iid not in ticketed]
+    anchor_of_new: dict[str, dict] = {}
+    for i in new_items:
+        if i.get("anchor"):
+            anchor_of_new.setdefault(i["anchor"], i)
 
-    resolved, waived, unresolved = [], [], []
+    plan_ts = plan.get("generated_at")
+    resolved, waived, unresolved, moved = [], [], [], []
     for iid, tid in sorted(ticketed.items()):
+        meta = plan_item_meta.get(iid) or {}
+        if meta.get("candidate"):
+            if iid in pending_ids:
+                unresolved.append({
+                    "id": iid, "ticket": tid,
+                    "severity": meta.get("severity"),
+                    "detail": "candidate still in the pending store — resolving "
+                              "it is the explicit operator act "
+                              "(debt_inventory.py resolve-candidate)"})
+            else:
+                resolved.append(iid)
+            continue
         item = fresh.get(iid)
         if item is None:
-            resolved.append(iid)
+            match = anchor_of_new.get(meta.get("anchor") or "")
+            if match is not None:
+                moved.append({
+                    "id": iid, "ticket": tid, "new_id": match["id"],
+                    "new_locations": match.get("locations") or [],
+                    "detail": (match.get("detail") or "")[:100]})
+            else:
+                resolved.append(iid)
         elif (item.get("grandfathered") and not expired_live(item)
-              and iid not in plan_grandfathered):
+              and iid not in plan_grandfathered
+              and _postdates_plan(item.get("grandfather_created_at"), plan_ts)):
             waived.append({"id": iid, "ticket": tid,
                            "expiry": item.get("grandfather_expiry")})
         else:
             unresolved.append({"id": iid, "ticket": tid,
                                "severity": item.get("severity"),
                                "detail": (item.get("detail") or "")[:100]})
+
+    # (c) informational: NEW ids that landed in a ticket's own pathset files.
+    new_in_ticket_files = []
+    for i in new_items:
+        files = set(_item_files(i))
+        hit_tickets = sorted({
+            t.get("id", "?") for t in tickets
+            if files & set((t.get("pathset") or {}).get("paths") or [])
+        })
+        if hit_tickets:
+            new_in_ticket_files.append({
+                "id": i["id"], "tickets": hit_tickets,
+                "locations": i.get("locations") or [],
+                "detail": (i.get("detail") or "")[:100]})
+
     return {
         "ticketed": len(ticketed),
         "resolved": resolved,
         "waived": waived,
         "unresolved": unresolved,
-        "ok": not unresolved,
+        "moved": moved,
+        "new_in_ticket_files": new_in_ticket_files,
+        "ok": not unresolved and not moved,
     }
 
 
@@ -526,6 +682,12 @@ def cmd_plan(args) -> int:
     if args.budget_count is None and args.budget_severity_floor is None \
             and args.budget_cluster_cap is None:
         print(f"plan_from_debt: {BUDGET_REFUSAL}", file=sys.stderr)
+        return 2
+    if (args.budget_count is None and args.budget_cluster_cap is None
+            and args.budget_severity_floor == SEVERITY_ORDER[0]):
+        # F5/C3: a floor of 'low' excludes nothing — alone it is a vacuous
+        # budget, not a bound.
+        print(f"plan_from_debt: {FLOOR_LOW_REFUSAL}", file=sys.stderr)
         return 2
     target, resolver = _resolve(args)
     debt_file = Path(args.debt) if args.debt else resolver.quality_dir() / "debt.json"
@@ -594,22 +756,45 @@ def cmd_verify(args) -> int:
     except (OSError, ValueError, json.JSONDecodeError, FileNotFoundError) as exc:
         print(f"plan_from_debt: {exc}", file=sys.stderr)
         return 2
-    result = verify_plan(plan, fresh)
+
+    # Ticketed CANDIDATE ids resolve against the pending store (#216 F2) —
+    # only resolve the target (and read the store) when the plan has any.
+    has_candidates = any(
+        isinstance(item, dict) and item.get("candidate")
+        for t in plan.get("tickets") or [] for item in t.get("items") or []
+    )
+    pending_ids: set[str] = set()
+    if has_candidates:
+        target = resolve_target(args.owner_repo, args.repo)
+        resolver = artifacts.Resolver.resolve(target)
+        pending_ids = {i["id"] for i in debt_inventory.load_pending(resolver)}
+
+    result = verify_plan(plan, fresh, pending_ids=pending_ids)
     if args.format == "json":
         print(json.dumps(result, indent=2))
     else:
         print(f"remediation verify: {len(result['resolved'])}/{result['ticketed']} "
               f"ticketed DEBT- id(s) resolved, {len(result['waived'])} waived, "
+              f"{len(result['moved'])} moved, "
               f"{len(result['unresolved'])} unresolved")
         for w in result["waived"]:
             print(f"  WAIVED {w['id']} ({w['ticket']}) — post-plan grandfather, "
                   f"expiry {w['expiry']} (adopt.py grandfather --extend)")
+        for m in result["moved"]:
+            print(f"  MOVED {m['id']} -> {m['new_id']} ({m['ticket']}) at "
+                  f"{', '.join(m['new_locations']) or '?'} — same content anchor "
+                  "at a new path: renamed, not resolved")
         for u in result["unresolved"]:
             print(f"  UNRESOLVED {u['id']} ({u['ticket']}) [{u['severity']}] {u['detail']}")
+        for n in result["new_in_ticket_files"]:
+            print(f"  NEW {n['id']} in {', '.join(n['tickets'])} pathset file(s) "
+                  f"({', '.join(n['locations']) or '?'}) — new debt appeared in "
+                  "the ticket's own files; review before closing (informational)")
     if not result["ok"]:
-        print("plan_from_debt: ticketed DEBT- ids remain in the fresh inventory — "
-              "the remediation epic's acceptance test FAILED (fix them, or waive "
-              "explicitly via adopt.py grandfather --extend)", file=sys.stderr)
+        print("plan_from_debt: ticketed DEBT- ids remain (present, moved, or "
+              "still pending) — the remediation epic's acceptance test FAILED "
+              "(fix them, resolve candidates explicitly, or waive via "
+              "adopt.py grandfather --extend)", file=sys.stderr)
         return 1
     return 0
 
@@ -625,12 +810,13 @@ def main() -> int:
     sp.add_argument("--repo", default=None, help="direct local repo path")
     sp.add_argument("--debt", default=None,
                     help="debt.json path (default: resolver quality dir)")
-    sp.add_argument("--budget-count", type=int, default=None,
-                    help="max tickets in the epic")
+    sp.add_argument("--budget-count", type=_positive_int, default=None,
+                    help="max tickets in the epic (>= 1)")
     sp.add_argument("--budget-severity-floor", choices=list(SEVERITY_ORDER), default=None,
-                    help="items below this severity are excluded")
-    sp.add_argument("--budget-cluster-cap", type=int, default=None,
-                    help="max items per ticket")
+                    help="items below this severity are excluded ('low' alone "
+                         "excludes nothing — combine with a count/cap)")
+    sp.add_argument("--budget-cluster-cap", type=_positive_int, default=None,
+                    help="max items per ticket (>= 1)")
     sp.add_argument("--out", default=None,
                     help="directory for remediation-plan.{json,md} (default: "
                          "resolver quality dir)")
@@ -650,7 +836,13 @@ def main() -> int:
     sp.set_defaults(fn=cmd_pathset)
 
     sp = sub.add_parser("verify", help="/close-epic acceptance: every ticketed "
-                                       "DEBT- id gone from a fresh inventory")
+                                       "DEBT- id gone from a fresh inventory "
+                                       "(moved-not-resolved caught by anchor; "
+                                       "candidates checked against the pending store)")
+    sp.add_argument("owner_repo", nargs="?", default=None)
+    sp.add_argument("--repo", default=None,
+                    help="direct local repo path (needed to read the pending "
+                         "candidate store when the plan tickets candidates)")
     sp.add_argument("--plan", required=True, help="remediation-plan.json")
     sp.add_argument("--debt", required=True, help="FRESH debt.json (re-run the inventory)")
     sp.add_argument("--format", choices=["text", "json"], default="text")

@@ -71,11 +71,24 @@ and clones' `clone_classes` are stripped since the items carry the data;
 counts stay, e.g. `clone_class_count`), `unscanned_languages` (dead-code's
 skipped-tier file counts), `counts` (engine × severity), `items`.
 
+The envelope also carries a **`boundary` section** (#216 C2) — wholly
+out-of-scope evidence captured where an engine sees it cheaply: clone classes
+with >= 2 total spans that fell below 2 in-scope members (full pre-filter
+member list, `boundary: true`, never counted in `counts` or `items`).
+`plan_from_debt.py` turns these into owning-team referrals. **What ISN'T
+captured** (`boundary_note` states it): markers, dead code, and test-health
+findings in out-of-scope files — those corpora are scope-narrowed at the
+source, so out-of-scope instances are never observed; absence from the
+boundary section is NOT evidence the out-of-scope code is clean. A
+`pending_candidates` block names the pending store, its count, and any
+old-layout candidates migrated on this run.
+
 Per item:
 
 | Field | Meaning |
 | --- | --- |
 | `id` | `DEBT-` + first 10 hex of sha256 over `engine \0 normalized-path \0 anchor` |
+| `anchor` | the exact content-anchor string used in the id derivation (#216 F1) — path-independent identity, what `plan_from_debt.py verify` uses to catch moved-not-resolved findings across a `git mv` |
 | `engine` / `kind` | producing engine and finding kind (`clone_class`, `orphaned_test`, `TODO`, …) |
 | `severity` | mechanical rubric below |
 | `symbol` | symbol name / marker text / clone content hash |
@@ -178,9 +191,22 @@ validation corpus for the precision exercise is dogeared (CW-built, embedded)
 
 The inventory's primary consumer is `/plan-epic --from-debt`
 (`scripts/plan_from_debt.py`): `DEBT-` items are clustered (clone class →
-module → change-coupling) into budgeted refactor tickets, `/close-epic`
-re-runs this inventory as the remediation epic's acceptance test, and
-mid-ticket discoveries flow back in via `debt_inventory.py append-candidate`
-(`engine: manual`, `candidate: true` — carried forward across engine re-runs,
-since an engine can neither confirm nor remove a hand-filed observation). See
+module → change-coupling) into budgeted refactor tickets, and `/close-epic`
+re-runs this inventory as the remediation epic's acceptance test.
+
+Mid-ticket discoveries flow back in via `debt_inventory.py append-candidate`
+(`engine: manual`, `candidate: true`). Candidates live in the
+**mode-independent pending store**
+(`<user_dir>/pending/<target-id>/candidates.json` via `artifacts.user_dir` —
+never the target tree, never docs/quality), so filing one writes nothing
+in-tree in embedded mode and a scratch-dir `--out` inventory run still
+carries it (`build_inventory` merges pending candidates on every run; an
+engine finding on the same id supersedes). An engine can neither confirm nor
+remove a hand-filed observation — removal is the explicit operator act
+`debt_inventory.py resolve-candidate --repo X --id DEBT-...`, which is also
+what `plan_from_debt.py verify` checks for ticketed candidates (the fresh
+inventory is not consulted for them). `append-candidate` refuses (exit 2)
+when the derived id collides with a NON-candidate item — engines own their
+evidence. Old-layout candidates embedded in an existing `debt.json` are
+adopted into the pending store once, stated in the envelope and report. See
 [remediation.md](remediation.md).

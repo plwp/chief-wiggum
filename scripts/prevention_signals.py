@@ -64,15 +64,49 @@ HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 # --- diff parsing -------------------------------------------------------------
 
 
+_C_ESCAPES = {"n": 10, "t": 9, "r": 13, "a": 7, "b": 8, "f": 12, "v": 11,
+              '"': 34, "\\": 92}
+
+
+def unquote_git_path(name: str) -> str:
+    """Undo git's C-style path quoting (#216 F7): with ``core.quotepath``
+    default-on, a path with spaces/unicode arrives as ``"b/p\\303\\244 th.py"``
+    — octal byte escapes inside double quotes. An unquoted name passes
+    through unchanged."""
+    if not (name.startswith('"') and name.endswith('"') and len(name) >= 2):
+        return name
+    body = name[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c != "\\":
+            out.extend(c.encode("utf-8"))
+            i += 1
+            continue
+        i += 1
+        if i >= len(body):
+            break
+        e = body[i]
+        if e in "01234567":
+            out.append(int(body[i:i + 3], 8))
+            i += 3
+        else:
+            out.append(_C_ESCAPES.get(e, ord(e)))
+            i += 1
+    return out.decode("utf-8", errors="replace")
+
+
 def parse_added_ranges(diff_text: str) -> dict[str, list[tuple[int, int]]]:
     """file -> [(start, end)] 1-indexed inclusive ADDED-line ranges in the new
     file, from ``git diff --unified=0`` output. Deleted-only hunks (length 0)
-    add no range."""
+    add no range. C-style quoted paths (spaces/unicode under git's default
+    ``core.quotepath``) are unquoted first (#216 F7)."""
     out: dict[str, list[tuple[int, int]]] = {}
     current: str | None = None
     for line in diff_text.splitlines():
         if line.startswith("+++ "):
-            name = line[4:].strip()
+            name = unquote_git_path(line[4:].strip())
             current = None if name == "/dev/null" else name.removeprefix("b/")
             continue
         m = HUNK_RE.match(line)
@@ -157,6 +191,11 @@ def _dead_code_introduced(repo: str, added: dict[str, list[tuple[int, int]]]) ->
     if not py_prod:
         return {"tier": "builtin-ast", "findings": [], "unscanned": unscanned}
     corpus = population.tracked_source(repo)  # detection repo-wide, always
+    # F7: git ls-files C-quotes unusual paths too, so a changed file with a
+    # unicode/space name may be absent from the corpus even though the diff
+    # side has been unquoted — the changed files themselves must always be in
+    # the scan corpus (their own def tokens need counting).
+    corpus = sorted(set(corpus) | set(py_prod))
     all_findings, _unparsable = dead_code._builtin_python_pass(repo, py_prod, corpus)
     findings = [f for f in all_findings if _in_added(added, f["file"], f["line"])]
     return {
@@ -199,6 +238,10 @@ def _assertion_free_added(repo: str, added: dict[str, list[tuple[int, int]]]) ->
 
 def build_signals(repo: str, base: str, workdir: str) -> dict:
     added = parse_added_ranges(_git_diff(repo, base))
+    # F7: a changed path that does not resolve in the working tree (a quoting
+    # form we failed to decode, or a path outside the checkout) is counted as
+    # UNSCANNED with a reason — never silently treated as clean.
+    unresolved = sorted(f for f in added if not (Path(repo) / f).is_file())
     signals = {
         "new_duplication": _new_duplication(repo, workdir, added),
         "dead_code_introduced": _dead_code_introduced(repo, added),
@@ -215,6 +258,12 @@ def build_signals(repo: str, base: str, workdir: str) -> dict:
         "target_sha": artifacts.head_sha(repo),
         "authority": AUTHORITY.format(base=base),
         "changed_files": len(added),
+        "unscanned_files": {
+            "count": len(unresolved),
+            "files": unresolved,
+            "reason": ("changed path did not resolve in the working tree "
+                       "(quoted/renamed/deleted form?) — not scanned, not clean"),
+        },
         "counts": counts,
         "signals": signals,
     }
@@ -257,6 +306,12 @@ def format_report(env: dict) -> str:
     if af.get("unscanned"):
         uns = ", ".join(f"{k}: {v} file(s)" for k, v in sorted(af["unscanned"].items()))
         lines.append(f"    (assertion scan not run for: {uns})")
+    unres = env.get("unscanned_files") or {}
+    if unres.get("count"):
+        lines.append(f"- unscanned changed path(s): {unres['count']} — "
+                     f"{unres['reason']}:")
+        for f in unres["files"]:
+            lines.append(f"    {f}")
     return "\n".join(lines)
 
 
@@ -280,9 +335,19 @@ def main() -> int:
 
     try:
         envelope = build_signals(target, args.base, workdir)
-    except RuntimeError as exc:
-        # Even a broken diff range must not block a workflow that calls this
-        # unconditionally: state the failure, exit 0 (report-only, always).
+    except Exception as exc:  # noqa: BLE001 — C4: NO failure may vanish
+        # Even a broken diff range — or any unexpected engine crash — must
+        # not block a workflow that calls this unconditionally, AND must not
+        # leave the review context empty-handed: emit an honest error block
+        # on stdout (the review context) and exit 0 (report-only, always).
+        note = (f"prevention signals unavailable: {exc} — treat as not-run, "
+                "not clean")
+        if args.format == "json":
+            print(json.dumps({"schema": SCHEMA, "base": args.base,
+                              "error": str(exc), "note": note}, indent=2))
+        else:
+            print("## Prevention signals — ERROR (report-only)")
+            print(note)
         print(f"prevention_signals: {exc}", file=sys.stderr)
         return 0
 

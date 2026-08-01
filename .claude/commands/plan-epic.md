@@ -29,17 +29,25 @@ python3 "$CW_HOME/scripts/plan_from_debt.py" plan "$owner_repo" \
 ```
 
 It refuses (exit 2) without at least one budget flag — an unbudgeted
-remediation epic is unbounded scope. It writes `remediation-plan.json` +
+remediation epic is unbounded scope. Counts/caps must be >= 1, and
+`--budget-severity-floor low` alone is refused too ('low' excludes nothing —
+combine it with a count/cap). It writes `remediation-plan.json` +
 `remediation-plan.md` to the resolver quality dir (`--debt PATH` / `--out DIR`
 to override). Clustering is mechanical with documented precedence: (a) one
 ticket per clone class, (b) module/directory, (c) change-coupling merge —
-recorded in the plan's `clustering.precedence`.
+recorded in the plan's `clustering.precedence`. Each ticket's derived pathset
+sanctions only IN-SCOPE files; out-of-scope locations of partially-in-scope
+items ride separately as `boundary_locations` (informational, never
+sanctioned), and the plan records `baseline_ids` for `verify`'s
+moved-not-resolved check.
 
 ### Step F2: File boundary referrals (report, never auto-fix)
 
 For each entry in the plan's `boundary_referrals` (items whose every location
-is outside the #213 domain scope), create an issue **for the owning team**
-using the pre-filled `issue_title`/`issue_body` (rendered from
+is outside the #213 domain scope, plus the engine-captured entries from
+`debt.json`'s `boundary` section — e.g. clone classes dropped for
+out-of-scope members), create an issue **for the owning team** using the
+pre-filled `issue_title`/`issue_body` (rendered from
 `templates/boundary-finding.md`). These findings are NEVER ticketed into the
 remediation epic and never fixed from our side.
 
