@@ -684,7 +684,9 @@ def test_scanner_version_includes_both_checker_sources():
         scripts / "check_single_writer.py",
         scripts / "check_traceability.py",
         cw / "trace_ids.py", cw / "annotations.py",
-        cw / "trace_emission.py", cw / "write_emission.py", cw / "languages.py",
+        cw / "trace_emission.py", cw / "write_emission.py",
+        cw / "external_links.py",
+        cw / "languages.py",
         cw / "manifest.py", cw / "hashing.py",
     )
     assert code_query._scanner_version() == expected
@@ -710,3 +712,52 @@ def test_discover_epics_reads_sidecar_meta_root(tmp_path, monkeypatch):
     assert [e.slug for e in epics] == ["checkout"]
     assert "CTR-order-001" in epics[0].defined
     assert not (repo / "docs").exists()
+
+
+def test_orient_includes_external_link_store_facts(tmp_path, monkeypatch):
+    """#213 Phase C: in sidecar mode the external link store is Plane B's
+    second annotation source — an entry anchored in a file shows up in that
+    file's orient output, marked `source: external-link-store` with its
+    symbol handle."""
+    import artifacts
+    from chief_wiggum import external_links
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    (repo / "order.py").write_text(
+        "def create_order(start, end):\n    assert start <= end\n    return True\n"
+    )
+    artifacts.elect(repo, "sidecar")
+    resolver = artifacts.Resolver.resolve(repo)
+    edir = resolver.epic_dir("checkout")
+    edir.mkdir(parents=True)
+    (edir / "contracts.md").write_text(
+        "### CTR-order-001 — valid date range\nREQUIRES: start <= end\n"
+    )
+    store = resolver.quality_dir() / external_links.STORE_NAME
+    external_links.add_link(store, repo, "order.py", "create_order", "guards",
+                            ["CTR-order-001"], use_lsp=False)
+
+    out = code_query.cmd_orient(repo, "order.py", None)
+    ext = [f for f in out["facts"] if f.get("source") == "external-link-store"]
+    assert ext, f"no external-link fact in orient output: {out['facts']}"
+    fact = ext[0]
+    assert fact["id"] == "CTR-order-001"
+    assert fact["handle"] == "order.py::create_order"
+    assert fact["symbol"] == "create_order"
+    assert fact["verb"] == "guards"
+    assert fact["epic"] == "checkout"
+
+    # The verb surface sees the same entry as an annotation fact.
+    guards = code_query.cmd_guards(repo, "CTR-order-001", None)
+    ext_ann = [f for f in guards["facts"] if f.get("source") == "external-link-store"]
+    assert ext_ann and ext_ann[0]["handle"] == "order.py::create_order"
+
+    # Embedded mode (no election) reads no store: same repo shape without the
+    # election yields no external facts (byte-identical status quo).
+    repo2 = tmp_path / "target2"
+    repo2.mkdir()
+    (repo2 / "order.py").write_text("def create_order():\n    return True\n")
+    out2 = code_query.cmd_orient(repo2, "order.py", None)
+    assert not [f for f in out2["facts"] if f.get("source") == "external-link-store"]

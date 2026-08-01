@@ -803,3 +803,119 @@ def test_cli_default_links_path_routes_through_sidecar_election(tmp_path, monkey
     assert sidecar_links.is_file()
     assert load_sidecar(sidecar_links)["links"]
     assert not (src / "docs").exists()
+
+
+# --- external trace-link store (#213 Phase C) ---------------------------------
+
+
+_XL_CODE = (
+    "def create_order(start_date, end_date):\n"
+    "    assert start_date <= end_date\n"
+    "    return True\n"
+)
+_XL_TEST = (
+    "def test_create_order():\n"
+    "    assert True\n"
+)
+
+
+def _sidecar_target_with_external_links(tmp_path, monkeypatch):
+    """A sidecar-elected target with ZERO in-source annotations: the contract's
+    only guards/verifies claims live in the external link store."""
+    import artifacts
+    from chief_wiggum import external_links
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    epic = _epic_with_ctr(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text(_XL_CODE)
+    (src / "test_order.py").write_text(_XL_TEST)
+    artifacts.elect(src, "sidecar")
+    store = artifacts.Resolver.resolve(src).quality_dir() / external_links.STORE_NAME
+    external_links.add_link(store, src, "order.py", "create_order", "guards",
+                            ["CTR-order-001"], use_lsp=False)
+    external_links.add_link(store, src, "test_order.py", "test_create_order", "verifies",
+                            ["CTR-order-001"], use_lsp=False)
+    return epic, src, store
+
+
+def test_external_store_alone_satisfies_coverage_in_sidecar_mode(tmp_path, monkeypatch, capsys):
+    """A contract whose ONLY guards/verifies come from the external store
+    passes coverage in sidecar mode — an external `verifies` counts exactly
+    like an in-source `@cw-trace verifies`. No in-tree CW files needed."""
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["coverage_ok"] is True
+    assert out["uncovered_contracts"] == [] and out["untested_contracts"] == []
+    assert not (src / "docs").exists()
+
+
+def test_suspect_external_link_stops_satisfying_coverage_and_is_reported(tmp_path, monkeypatch, capsys):
+    """Editing the anchored symbol flips the store entry to suspect: it no
+    longer satisfies coverage (hash drift => re-verify, not trust) and shows
+    up in suspect_links with its source marked."""
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    (src / "order.py").write_text(_XL_CODE.replace("start_date <= end_date", "True"))
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert out["coverage_ok"] is False
+    assert out["uncovered_contracts"] == ["CTR-order-001"]  # guards link went suspect
+    external_suspects = [s for s in out["suspect_links"]
+                         if s.get("source") == "external-link-store"]
+    assert external_suspects and external_suspects[0]["target"] == "CTR-order-001"
+    assert external_suspects[0]["symbol"] == "create_order"
+    assert out["suspect_contracts"] == ["CTR-order-001"]
+    # The untouched verifies anchor still counts.
+    assert out["untested_contracts"] == []
+
+
+def test_unresolved_external_link_is_surfaced_never_dropped(tmp_path, monkeypatch, capsys):
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    (src / "order.py").unlink()
+    rc = ct.main([str(epic), "--source", str(src), "--format", "json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["coverage_ok"] is False
+    assert any("order.py::create_order" in w and "unresolved" in w for w in out["warnings"])
+
+
+def test_explicit_external_links_flag_works_in_embedded_mode(tmp_path):
+    """--external-links <path> reads the store even without a sidecar election."""
+    from chief_wiggum import external_links
+
+    epic = _epic_with_ctr(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text(_XL_CODE)
+    (src / "test_order.py").write_text(_XL_TEST)
+    store = tmp_path / "external-links.json"
+    external_links.add_link(store, src, "order.py", "create_order", "guards",
+                            ["CTR-order-001"], use_lsp=False)
+    external_links.add_link(store, src, "test_order.py", "test_create_order", "verifies",
+                            ["CTR-order-001"], use_lsp=False)
+    r = ct.check(epic, src, external_links_path=store)
+    assert r.coverage_ok is True
+
+    # Without the store the same repo has zero annotations for the contract.
+    r2 = ct.check(epic, src)
+    assert r2.coverage_ok is False
+
+
+def test_external_link_to_undefined_id_is_dangling(tmp_path):
+    """Ok external entries face the same defined-ID join as in-source
+    annotations — a link to an undeclared ID reports dangling."""
+    from chief_wiggum import external_links
+
+    epic = _epic_with_ctr(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text(_XL_CODE)
+    store = tmp_path / "external-links.json"
+    external_links.add_link(store, src, "order.py", "create_order", "guards",
+                            ["CTR-ghost-999"], use_lsp=False)
+    r = ct.check(epic, src, external_links_path=store)
+    assert any(d["target"] == "CTR-ghost-999" for d in r.dangling)

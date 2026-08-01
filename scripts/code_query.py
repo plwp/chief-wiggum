@@ -73,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 import check_single_writer  # noqa: E402
 import check_traceability  # noqa: E402
+from chief_wiggum import external_links  # noqa: E402 — sidecar link store (#213 Phase C)
 from chief_wiggum.hashing import scanner_version  # noqa: E402
 from chief_wiggum.trace_ids import DEFINE_RE, ID_KINDS  # noqa: E402
 
@@ -328,6 +329,8 @@ def _scanner_version() -> str:
     # inputs for the same reason.
     # artifacts.py resolves WHERE epic/quality meta is read from (#213) —
     # a resolution change changes what a query returns, so it versions too.
+    # external_links.py (#213 Phase C) is Plane B's second annotation source in
+    # sidecar mode — its entry/tier semantics shape annotation facts.
     return scanner_version(
         here,
         here.parent / "artifacts.py",
@@ -335,6 +338,7 @@ def _scanner_version() -> str:
         here.parent / "check_traceability.py",
         cw_dir / "trace_ids.py", cw_dir / "annotations.py",
         cw_dir / "trace_emission.py", cw_dir / "write_emission.py",
+        cw_dir / "external_links.py",
         cw_dir / "languages.py",
         cw_dir / "manifest.py", cw_dir / "hashing.py",
     )
@@ -563,6 +567,18 @@ def _sm_invariants_for_states(sm: dict, states: set[str]) -> list[dict]:
     return out
 
 
+def _external_link_entries(repo_root: Path) -> list[dict]:
+    """Plane B's second annotation source (#213 Phase C): entries from the
+    symbol-anchored external link store, for targets whose elected footprint
+    mode is sidecar. Embedded mode (no store) yields [] — byte-identical
+    behavior for every existing repo. Read live each call, never memoized."""
+    resolver = artifacts.Resolver.resolve(Path(repo_root))
+    if resolver.mode != "sidecar":
+        return []
+    store = external_links.load_links(resolver.quality_dir() / external_links.STORE_NAME)
+    return [e for e in store.get("links", []) if isinstance(e, dict)]
+
+
 def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> list[Fact]:
     """Shared computation behind `orient` and `governs <path>`: every fact that
     governs `rel`, tagged `exact` (direct annotation / precise code_location
@@ -572,6 +588,7 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
     text = full.read_text()
     suffix = full.suffix
     direct_anns = check_traceability.emit_source_annotations(rel, text, suffix)
+    ext_entries = [e for e in _external_link_entries(root) if _norm(e.get("file", "")) == rel]
     prov = _file_provenance(root, rel)
 
     facts: list[Fact] = []
@@ -597,6 +614,35 @@ def governing_facts_for_file(repo_root: Path, rel: str, epics: list[Epic]) -> li
                 proximity=0,
                 prod=(ann.verb != "verifies"),
             ))
+
+        # (a2) Direct: external-link-store entries anchored in THIS file
+        # targeting a defined ID (#213 Phase C — sidecar mode's replacement for
+        # in-source annotations). Same fact shape as (a), marked with its
+        # source so the consumer can tell an external claim from an in-source
+        # one; the handle is the symbol anchor, not a line.
+        for entry in ext_entries:
+            verb = entry.get("verb", "")
+            for cid in entry.get("ids", []) or []:
+                cid = check_traceability.canonical_id(str(cid))
+                if cid not in epic.defined:
+                    continue
+                facts.append(Fact(
+                    kind="invariant" if cid.startswith("INV-") else "contract",
+                    id=cid,
+                    statement=epic.statement_for(cid) or f"{verb} target",
+                    handle=f"{rel}::{entry.get('symbol')}",
+                    epic=epic.slug,
+                    extra={
+                        "verb": verb,
+                        "relation": "direct",
+                        "source": "external-link-store",
+                        "symbol": entry.get("symbol"),
+                    },
+                    provenance=prov,
+                    exact=True,
+                    proximity=0,
+                    prod=(verb != "verifies"),
+                ))
 
         # (b) Artifact-derived, exact: transition-map code_locations bound to this file.
         tmap = epic.models.get("transition-map.json")
@@ -1012,7 +1058,23 @@ def cmd_writers(repo_root: Path, target: str, epic: str | None, limit: int = DEF
 
 
 def _all_source_annotations(repo_root: Path) -> list:
-    return check_traceability.scan_source(repo_root)
+    anns = check_traceability.scan_source(repo_root)
+    # Second annotation source (#213 Phase C): external-link-store entries fold
+    # into the same Annotation stream (sidecar mode only — embedded yields
+    # nothing). The symbol anchor rides along as a dynamic attribute so
+    # _annotation_fact can mark the fact's source without restructuring the
+    # shared Annotation dataclass.
+    for entry in _external_link_entries(repo_root):
+        rel = entry.get("file", "")
+        verb = entry.get("verb", "")
+        source_kind = check_traceability.classify_source_kind(rel, Path(rel).suffix)
+        for cid in entry.get("ids", []) or []:
+            ann = check_traceability.Annotation(
+                verb, check_traceability.canonical_id(str(cid)), rel, 0, source_kind
+            )
+            ann.external_symbol = entry.get("symbol")
+            anns.append(ann)
+    return anns
 
 
 def _all_epic_annotations(epics: list[Epic]) -> list:
@@ -1038,13 +1100,25 @@ def _annotation_fact(ann, epics: list[Epic], repo_root: Path, *, exact: bool = T
     is_epic_doc = ann.source_kind in ID_KINDS
     handle_file = str(Path("docs") / "epics" / owner.slug / ann.file) if (is_epic_doc and owner) else ann.file
     prod = ann.source_kind not in ("test", "probe", "policy", "telemetry")
+    # External-link-store annotations (#213 Phase C) anchor to a SYMBOL, not a
+    # line — the handle is `file::symbol` and the fact is marked with its source.
+    symbol = getattr(ann, "external_symbol", None)
+    extra = {"verb": ann.verb, "source_kind": ann.source_kind}
+    if symbol is not None:
+        extra["source"] = "external-link-store"
+        extra["symbol"] = symbol
+        handle = f"{handle_file}::{symbol}"
+        statement = f"{ann.verb} @ {handle} ({ann.source_kind})"
+    else:
+        handle = f"{handle_file}:{ann.line}"
+        statement = f"{ann.verb} @ {handle} ({ann.source_kind})"
     return Fact(
         kind="annotation",
         id=ann.target,
-        statement=f"{ann.verb} @ {handle_file}:{ann.line} ({ann.source_kind})",
-        handle=f"{handle_file}:{ann.line}",
+        statement=statement,
+        handle=handle,
         epic=owner.slug if owner else None,
-        extra={"verb": ann.verb, "source_kind": ann.source_kind},
+        extra=extra,
         provenance=_file_provenance(repo_root, handle_file),
         exact=exact,
         proximity=0,
