@@ -126,16 +126,17 @@ Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the
 
 ### Step 2c2: Gate-validation check (docs/gate-validation.md)
 
-Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e keep their existing `--gate coverage` enforcement unchanged:
+Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, and before Step 2f passes `--gate-verifier-tests` to `ratchet.py check`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e/2f keep their existing enforcement unchanged:
 
 ```bash
 python3 "$CW_HOME/scripts/check_gate_validation.py" check_traceability --validation-dir "$CW_HOME/docs/quality/validation" --gate
 python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --validation-dir "$CW_HOME/docs/quality/validation" --gate
+python3 "$CW_HOME/scripts/check_gate_validation.py" ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate
 ```
 
 (A target repo that hosts gates of its own keeps their records at the same relative path in that repo — `docs/quality/validation/<gate>.json`, sibling to its ratchet journal — and this step checks them the same way.)
 
-**If either exits non-zero (no record, a stale/forged one, or a failing one), do not pass `--gate coverage` to that checker in the corresponding step below** — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
+**If any exits non-zero (no record, a stale/forged one, or a failing one), do not pass the corresponding blocking flag in the step below** — for `check_traceability`/`check_single_writer` that flag is `--gate coverage`; for `ratchet` it is `--gate-verifier-tests` (the ratchet's core pass-set/contract-hash check in Step 2f stays hard-blocking regardless — only the verifier-test dimension's blocking authority is governed by the record, per chief-wiggum#208) — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
 
 If a checker that was previously wired blocking (`check_gate_validation.py ... --wire` was run for it earlier) shows `"authority": {"demoted": true, ...}` in this step's JSON output, its record went stale or missing/invalid WHILE blocking — surface the printed `DEMOTION` instruction (`previous_authority`/`demotion_reason`) verbatim in the close report alongside the coverage finding above (see `docs/gate-validation.md`'s "Auto-demotion" section, chief-wiggum#198); this is the same instruction-surfacing pattern as the escape-driven `demotion_check` in "Demotion: an escape a seed class should have caught," just triggered by staleness instead of a production escape.
 
@@ -173,15 +174,17 @@ Any writer of a controlled field whose enclosing symbol/file is **not** in `sanc
 
 ### Step 2f: Ratchet gate
 
-If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact and no contract definition weakened or removed since the `/architect` baseline:
+If the repo has `docs/quality/ratchet.json` (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
-python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO"
+python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
 python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
 ```
 
-A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
+Pass `--gate-verifier-tests` only if Step 2c2's `check_gate_validation.py ratchet --gate` passed; otherwise drop the flag (the check still *prints* `weakened_verifier_tests`/`removed_verifier_tests` findings report-only — surface them in the close report) and direct the operator to the gate-validation protocol, same as 2d/2e.
+
+A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. A `weakened_verifier_tests`/`removed_verifier_tests` violation (chief-wiggum#206, channel C1c) means a test annotated `@cw-trace verifies` — the executable expression of a contract — was rewritten or dropped behind its still-green test ID; fix the code, or if the verifier test was *deliberately* revised, journal it via `ratchet.py record --amend-verifier <ref>` (a human act, same semantics as `--amend` for contracts). `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \

@@ -322,12 +322,12 @@ Run the integration check **on the staging branch, before promoting to main**:
 2. **Linting**: `golangci-lint run ./...` / `npx eslint` — zero high-severity findings
 3. **Build**: Verify the project compiles/builds cleanly
 4. **Smoke test**: If services can be started, start them and verify health endpoints respond
-5. **Ratchet check** (if the repo has `docs/quality/ratchet.json`, see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set or weaken any contract definition:
+5. **Ratchet check** (if the repo has `docs/quality/ratchet.json`, see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID:
    ```bash
    python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
-   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO"
+   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
    ```
-   A violation is a hard blocker exactly like a test failure: fix it on the staging branch (or drop the offending ticket's merge from the wave) before promoting. Never resolve a violation by editing the contract or the journal.
+   Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (same record-gated posture as `/implement` Step 8 and `/close-epic` Step 2f, chief-wiggum#208); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings in the wave log. A violation is a hard blocker exactly like a test failure: fix it on the staging branch (or drop the offending ticket's merge from the wave) before promoting. Never resolve a violation by editing the contract, a verifier test, or the journal — a deliberate revision is a journaled human act (`record --amend`/`--amend-verifier`).
 6. **Single-writer / traceability quick check** (report-only, wave-scoped) — if the epic has `docs/epics/<slug>/`, scope both checkers to what THIS wave changed with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`):
    ```bash
    python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" \
