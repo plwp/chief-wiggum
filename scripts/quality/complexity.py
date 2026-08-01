@@ -87,10 +87,18 @@ def tracked_files(repo: str) -> list[str]:
     return [f for f in out if not EXCLUDE_RE.search(f)]
 
 
-def bucket(repo: str) -> dict:
-    """Return {lang: {'src': [abs], 'test': [abs]}}."""
+def bucket(repo: str, path_filter=None) -> dict:
+    """Return {lang: {'src': [abs], 'test': [abs]}}.
+
+    ``path_filter`` (optional predicate over the git-style repo-relative path)
+    restricts the population — #213 domain scope: quality baselines are
+    computed over the in-scope population only. ``None`` (the default) keeps
+    the whole-repo behavior byte-identical.
+    """
     b: dict = defaultdict(lambda: {"src": [], "test": []})
     for rel in tracked_files(repo):
+        if path_filter is not None and not path_filter(rel):
+            continue
         ext = os.path.splitext(rel)[1].lower()
         lang = EXT_LANG.get(ext)
         if not lang:
@@ -236,8 +244,12 @@ def loc_counts(files: list[str]) -> int:
     return tot
 
 
-def analyze(repo: str, venv: str | None = None, gobin: str | None = None) -> dict:
-    """Compute the complexity/scale battery. Missing tools degrade gracefully."""
+def analyze(repo: str, venv: str | None = None, gobin: str | None = None, path_filter=None) -> dict:
+    """Compute the complexity/scale battery. Missing tools degrade gracefully.
+
+    ``path_filter`` (optional repo-relative-path predicate) restricts the
+    analyzed population to in-scope files (#213 domain scope); ``None`` is the
+    unchanged whole-repo default."""
     lizard_bin = _tool("lizard", venv, gobin)
     radon_bin = _tool("radon", venv, gobin)
     gocognit_bin = _tool("gocognit", venv, gobin)
@@ -250,7 +262,7 @@ def analyze(repo: str, venv: str | None = None, gobin: str | None = None) -> dic
             "note": "cyclomatic complexity requires lizard (pip install lizard)",
         }
 
-    b = bucket(repo)
+    b = bucket(repo, path_filter=path_filter)
     langs: dict = {}
     src_loc_total = test_loc_total = 0
     for lang, sets in b.items():

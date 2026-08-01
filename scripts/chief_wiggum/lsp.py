@@ -269,6 +269,7 @@ class LspClient:
                     "definition": {},
                     "references": {},
                     "hover": {"contentFormat": ["plaintext", "markdown"]},
+                    "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                     "publishDiagnostics": {"relatedInformation": True},
                 },
             },
@@ -312,6 +313,16 @@ class LspClient:
             "textDocument/references", path, line, col,
             extra={"context": {"includeDeclaration": include_declaration}},
         )
+
+    def document_symbols(self, path) -> list[dict]:
+        """Raw ``textDocument/documentSymbol`` result — hierarchical
+        ``DocumentSymbol[]`` or flat ``SymbolInformation[]`` depending on the
+        server (callers normalize; see ``external_links._flatten_symbols``)."""
+        result = self._request(
+            "textDocument/documentSymbol",
+            {"textDocument": {"uri": path_to_uri(path)}},
+        )
+        return result if isinstance(result, list) else []
 
     def hover(self, path, line, col) -> dict:
         result = self._request("textDocument/hover", {

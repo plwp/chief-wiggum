@@ -69,6 +69,11 @@ Subcommands:
     recent      print the last N records' notes (amnesia context for the fixer)
     highwater   print the derived high-water mark
     protected   exit 1 if a branch diff touches the protected pathset
+    pathset     exit 1 if a branch diff ESCAPES a sanctioned pathset (#213):
+                the inverse of `protected`, parameterized by pathset source —
+                an explicit {"paths": [globs]} file (ticket-scoped, #216) or a
+                domain scope.json ({"include"/"exclude"}); --report-only prints
+                but exits 0
 
 Exit codes: 0 = ok, 1 = gate violation, 2 = usage/config error,
 3 = no scorecard (run `score` first), 4 = journal tamper detected.
@@ -86,6 +91,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 
 # Same stable-ID grammar as check_traceability.py and the TIM schema — shared
 # via chief_wiggum.trace_ids so a kind added in one place cannot be silently
@@ -112,6 +119,15 @@ JOURNAL_NAME = "ratchet-journal.jsonl"
 HIGHWATER_NAME = "ratchet-highwater.json"
 SCORECARD_NAME = "ratchet-scorecard.json"
 DEFAULT_STATE_DIR = "docs/quality"
+
+
+def default_state_dir(repo: Path) -> Path:
+    """The default ratchet state dir for a target: ``quality/`` under the
+    target's meta root (chief-wiggum#213 resolver). Byte-identical to
+    ``<repo>/docs/quality`` in embedded mode (no election); the sidecar
+    quality dir when the target elected sidecar — where workers in the target
+    worktree physically cannot write it."""
+    return artifacts.Resolver.resolve(repo).quality_dir()
 
 # A gate-authority lifecycle event (chief-wiggum#198): the operator wiring a gate
 # with --gate (blocking) or un-wiring it. Journaled here — in the SAME
@@ -144,6 +160,9 @@ DEFAULT_PROTECTED = [
     "docs/epics/*/state-machines.md",
     "docs/epics/*/models/**",
     "docs/quality/**",
+    # The domain scope is a goalpost too (#213): widening scope.json widens
+    # what a worker's diff may touch — a worker must not edit its own leash.
+    "docs/scope.json",
 ]
 
 
@@ -203,7 +222,7 @@ def repo_root(repo_arg: str | None) -> Path:
 
 
 def load_config(repo: Path) -> Config:
-    path = repo / DEFAULT_STATE_DIR / CONFIG_NAME
+    path = default_state_dir(repo) / CONFIG_NAME
     if not path.is_file():
         raise RatchetError(
             f"no ratchet config at {path} — run `ratchet.py init --repo {repo}` first"
@@ -231,6 +250,11 @@ def load_contract_hashes(cfg: Config) -> dict[str, str]:
     Delegates to ``chief_wiggum.hashing.hash_epic_definitions`` (#169) — the
     single implementation of contract-block hashing, also reused by
     ``check_traceability.py`` for per-link suspect propagation.
+
+    ``epic_docs`` may be ABSOLUTE (sidecar mode, where the epic artifacts live
+    outside the target — ``cmd_init`` writes the resolver's absolute epics dir
+    there): ``Path.__truediv__`` with an absolute right-hand side yields the
+    right-hand side, so the join below is correct in both modes.
     """
     return hash_epic_definitions(cfg.repo / cfg.epic_docs)
 
@@ -416,7 +440,22 @@ def score_quality(cfg: Config, venv: str | None = None, gobin: str | None = None
         return {"skipped": f"quality engines unavailable: {e}"}
 
     repo = str(cfg.repo)
-    comp = _complexity.analyze(repo, venv=venv, gobin=gobin)
+
+    # #213 domain scope: quality baselines are computed over the IN-SCOPE
+    # population only. No scope file (the whole-repo default) means no filter
+    # at all — byte-identical to the pre-scope behavior. A malformed scope file
+    # skips the snapshot (fail-safe): it must never silently widen to whole-repo.
+    try:
+        scope = artifacts.load_scope_file(
+            artifacts.Resolver.resolve(cfg.repo).scope_path()
+        )
+    except ValueError as e:
+        return {"skipped": f"malformed scope file: {e}"}
+    path_filter = None if scope is None else (
+        lambda rel: artifacts.path_in_scope(scope, rel)
+    )
+
+    comp = _complexity.analyze(repo, venv=venv, gobin=gobin, path_filter=path_filter)
     if "skipped" in comp:
         return {"skipped": comp["skipped"], "note": comp.get("note")}
 
@@ -440,7 +479,7 @@ def score_quality(cfg: Config, venv: str | None = None, gobin: str | None = None
 
     # Relative churn = churned LOC (adds+deletes) / total tracked LOC. Nagappan &
     # Ball (2005): absolute churn is a poor signal; always normalise by size.
-    ch = _churn.analyze(repo, no_merges=True)
+    ch = _churn.analyze(repo, no_merges=True, path_filter=path_filter)
     churned = 0
     if "error" not in ch:
         c = ch.get("churn", {}) or {}
@@ -759,13 +798,23 @@ def detect_suites(repo: Path) -> list[dict]:
 
 def cmd_init(args) -> int:
     repo = repo_root(args.repo)
-    path = repo / DEFAULT_STATE_DIR / CONFIG_NAME
+    resolver = artifacts.Resolver.resolve(repo)
+    path = resolver.quality_dir() / CONFIG_NAME
     if path.is_file() and not args.force:
         print(f"ratchet: config already exists at {path}")
         return 0
+    # F1 (#213): on a sidecar-elected target the epic artifacts live OUTSIDE
+    # the tree — the embedded default "docs/epics" is target-relative and
+    # would hash nothing there, making the contract ratchet silently vacuous.
+    # Write the ABSOLUTE sidecar epics dir instead; embedded keeps the
+    # portable relative default.
+    if resolver.mode == "sidecar":
+        epic_docs = str(resolver.epics_dir())
+    else:
+        epic_docs = "docs/epics"
     cfg = {
         "suites": detect_suites(repo),
-        "epic_docs": "docs/epics",
+        "epic_docs": epic_docs,
         "protected_paths": list(DEFAULT_PROTECTED),
         "quality_tolerance": dict(DEFAULT_QUALITY_TOLERANCE),
     }
@@ -804,6 +853,11 @@ def cmd_score(args) -> int:
         "test_files_unresolved": sorted(cid for cid in pass_set if cid not in test_files),
         "tests_run": not args.no_tests,
         "quality": quality,
+        # Version binding (#213 F12): the target HEAD this scorecard was
+        # computed against — mandatory for sidecar staleness detection
+        # (Resolver.check_stale), harmless in embedded mode (None outside a
+        # git repo). /status warns when it no longer matches HEAD.
+        "target_sha": artifacts.head_sha(cfg.repo),
     }
     if vscan.unscanned:
         sc["verifier_unscanned"] = vscan.unscanned
@@ -841,7 +895,11 @@ def suspect_links_for(cfg: Config, sc: dict) -> list[dict]:
     "the ratchet held" — report-only (see docs/gate-rollout.md); it does not
     change ``check``'s exit code.
     """
-    sidecar = load_sidecar(cfg.repo / SIDECAR_RELPATH)
+    # The trace-links sidecar lives beside the rest of the ratchet state — in
+    # cfg.state_dir, which the #213 resolver already routed (embedded:
+    # <repo>/docs/quality, i.e. exactly <repo>/SIDECAR_RELPATH; sidecar mode:
+    # the external quality dir).
+    sidecar = load_sidecar(cfg.state_dir / Path(SIDECAR_RELPATH).name)
     return find_suspect_links(sidecar, sc.get("contract_hashes", {}) or {})
 
 
@@ -1108,13 +1166,7 @@ def highwater_test_file_cue(cfg: Config, changed: list[str]) -> None:
 
 def cmd_protected(args) -> int:
     cfg = load_config(repo_root(args.repo))
-    proc = subprocess.run(
-        ["git", "diff", "--name-only", f"{args.base}...HEAD"],
-        cwd=cfg.repo, capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise RatchetError(f"git diff failed: {proc.stderr.strip()}")
-    changed = proc.stdout.splitlines()
+    changed = _changed_files(cfg.repo, args.base)
     hits = protected_hits(cfg, changed)
     highwater_test_file_cue(cfg, changed)
     if hits:
@@ -1124,6 +1176,101 @@ def cmd_protected(args) -> int:
         )
         return 1
     print("ratchet: no protected paths touched")
+    return 0
+
+
+# ---- sanctioned pathset (chief-wiggum#213) --------------------------------------
+#
+# The INVERSE of `protected`: protected parks a diff that touches a small set of
+# goalpost paths; `pathset` parks a diff that ESCAPES a sanctioned set — the
+# same park-for-human semantics, pointed at scope creep instead of goalpost
+# moves. One mechanism, parameterized by pathset SOURCE (two shapes):
+#
+#   {"paths": [globs], "source": "..."}      an explicit (e.g. ticket-scoped)
+#       sanctioned pathset — a changed file is sanctioned iff it matches one of
+#       the globs (same _glob_to_re grammar as protected_paths). #216 feeds a
+#       --from-debt ticket's DEBT- locations + declared collateral through this.
+#
+#   {"include": [globs], "exclude": [globs]} the domain scope.json
+#       (scripts/artifacts.py semantics: missing include = everything, exclude
+#       wins) — a changed file outside the domain scope is parked.
+
+
+def _changed_files(repo: Path, base: str) -> list[str]:
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RatchetError(f"git diff failed: {proc.stderr.strip()}")
+    return proc.stdout.splitlines()
+
+
+def load_pathset(path: str | Path) -> dict:
+    """Load and shape-check a sanctioned-pathset file. Raises RatchetError on a
+    missing/unparsable file or an unrecognized shape — a typo'd pathset must
+    never silently sanction everything (or nothing)."""
+    p = Path(path)
+    if not p.is_file():
+        raise RatchetError(f"pathset file not found: {p}")
+    try:
+        spec = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise RatchetError(f"cannot parse pathset file {p}: {e}") from e
+    if not isinstance(spec, dict):
+        raise RatchetError(f"pathset file {p} must be a JSON object")
+    has_paths = "paths" in spec
+    has_scope = "include" in spec or "exclude" in spec
+    if has_paths and has_scope:
+        raise RatchetError(
+            f"pathset file {p} mixes 'paths' with 'include'/'exclude' — use one shape"
+        )
+    if not has_paths and not has_scope:
+        raise RatchetError(
+            f"pathset file {p} has neither 'paths' nor 'include'/'exclude' "
+            f"(found key(s): {', '.join(sorted(spec)) or '(none)'}) — not a pathset; "
+            "a typo'd key must never silently sanction everything (or nothing)"
+        )
+    # Unknown keys are a hard error, not a shrug (#213 F6): {"includes": ...}
+    # beside a valid "exclude" must not silently drop the include list.
+    allowed = {"paths", "source", "$comment"} if has_paths else {
+        "include", "exclude", "source", "$comment"}
+    unknown = sorted(set(spec) - allowed)
+    if unknown:
+        raise RatchetError(
+            f"pathset file {p} has unknown key(s): {', '.join(unknown)} "
+            f"(allowed: {', '.join(sorted(allowed))})"
+        )
+    return spec
+
+
+def pathset_outside(spec: dict, changed: list[str]) -> list[str]:
+    """Changed files that fall OUTSIDE the sanctioned pathset — the park set.
+    Pure function of (spec, changed); shape decides the matching rule."""
+    if "paths" in spec:
+        patterns = [_glob_to_re(g) for g in (spec.get("paths") or [])]
+        return sorted(f for f in changed if f and not any(p.match(f) for p in patterns))
+    # scope.json shape — delegate to the single scope-matching implementation.
+    return sorted(f for f in changed if f and not artifacts.path_in_scope(spec, f))
+
+
+def cmd_pathset(args) -> int:
+    # Deliberately config-free (unlike `protected`): the sanctioned set comes
+    # from the pathset file, so this works on targets with no ratchet init —
+    # #216 consumes it report-only first (docs/gate-rollout.md).
+    repo = repo_root(args.repo)
+    spec = load_pathset(args.pathset_file)
+    changed = _changed_files(repo, args.base)
+    outside = pathset_outside(spec, changed)
+    source = spec.get("source") or str(args.pathset_file)
+    if outside:
+        tag = "report-only" if args.report_only else "park for human review, do not merge"
+        sys.stderr.write(
+            f"ratchet: FILES OUTSIDE THE SANCTIONED PATHSET ({source}) — {tag}:\n"
+            + "".join(f"  {f}\n" for f in outside)
+        )
+        return 0 if args.report_only else 1
+    print(f"ratchet: all changed files within the sanctioned pathset ({source})")
     return 0
 
 
@@ -1141,6 +1288,7 @@ def _scanner_version() -> str:
     q_dir = here.parent / "quality"
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         cw_dir / "hashing.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",
@@ -1229,11 +1377,29 @@ def main() -> int:
     common(sp)
     sp.add_argument("--base", default="origin/main")
 
+    sp = sub.add_parser(
+        "pathset",
+        help="flag branch diffs ESCAPING a sanctioned pathset (chief-wiggum#213) — "
+             "park-for-human semantics, inverse of `protected`",
+    )
+    common(sp)
+    sp.add_argument("--base", default="origin/main")
+    sp.add_argument(
+        "--pathset-file", required=True, metavar="JSON",
+        help="Sanctioned-pathset source: {'paths': [globs], 'source': ...} (explicit "
+             "ticket pathset) or a domain scope.json {'include': [...], 'exclude': [...]}",
+    )
+    sp.add_argument(
+        "--report-only", action="store_true",
+        help="Print out-of-pathset files but exit 0 (docs/gate-rollout.md — how #216 "
+             "consumes this first)",
+    )
+
     args = p.parse_args()
     dispatch = {
         "init": cmd_init, "score": cmd_score, "check": cmd_check,
         "regressed": cmd_regressed, "record": cmd_record, "recent": cmd_recent,
-        "highwater": cmd_highwater, "protected": cmd_protected,
+        "highwater": cmd_highwater, "protected": cmd_protected, "pathset": cmd_pathset,
     }
     try:
         return dispatch[args.cmd](args)

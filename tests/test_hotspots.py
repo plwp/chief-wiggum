@@ -434,3 +434,75 @@ def test_history_walk_is_head_based_never_all(synth_repo):
     assert before["git_sha"] == after["git_sha"]
     assert before["window_days"] == after["window_days"]
     assert json.dumps(before["hotspots"], sort_keys=True) == json.dumps(after["hotspots"], sort_keys=True)
+
+
+def test_default_out_routes_through_sidecar_election(tmp_path, monkeypatch):
+    """#213: hotspot_discovery's DEFAULT artifact location follows the
+    target's elected footprint mode; an explicit --out keeps precedence
+    (unchanged code path, covered by the CLI tests above)."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import artifacts
+    import hotspot_discovery
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    # embedded status quo without an election
+    assert hotspot_discovery._default_out(str(repo)) == str(
+        repo / "docs" / "quality" / "hotspots.json"
+    )
+    artifacts.elect(repo, "sidecar")
+    out = hotspot_discovery._default_out(str(repo))
+    assert out == str(artifacts.Resolver.resolve(repo).quality_dir() / "hotspots.json")
+    assert out.startswith(str(tmp_path / "cw-user"))
+
+
+# --- #213 domain scope: deciles within the filtered population ----------------
+
+
+@requires_lizard
+def test_path_filter_scopes_population_before_deciles(synth_repo):
+    full = hotspots.discover(str(synth_repo), venv=None, trend=False)
+    files = {h["file"] for h in full["hotspots"]}
+    assert "outlier.py" in files
+
+    scoped = hotspots.discover(
+        str(synth_repo), venv=None, trend=False,
+        path_filter=lambda rel: rel != "outlier.py",
+    )
+    scoped_files = {h["file"] for h in scoped["hotspots"]}
+    assert scoped_files == files - {"outlier.py"}
+    # Normalization + deciles are computed WITHIN the filtered population:
+    # the worst in-scope file is the new 1.0 / decile 10, not a monorepo-wide rank.
+    assert max(h["norm_churn"] for h in scoped["hotspots"]) == 1.0
+    assert max(h["norm_complexity"] for h in scoped["hotspots"]) == 1.0
+    assert scoped["hotspots"][0]["decile"] == 10
+
+    # Whole-repo scope (an all-pass filter) is identical to no filter at all.
+    allpass = hotspots.discover(
+        str(synth_repo), venv=None, trend=False, path_filter=lambda rel: True,
+    )
+    assert json.dumps(allpass["hotspots"], sort_keys=True) == json.dumps(
+        full["hotspots"], sort_keys=True
+    )
+
+
+def test_scope_filter_reads_scope_json_from_meta_root(tmp_path, monkeypatch):
+    """The CLI's scope predicate comes from the resolver's scope.json (#213):
+    missing file -> None (whole repo, unchanged output); exclude wins."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import artifacts
+    import hotspot_discovery
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    assert hotspot_discovery._scope_filter(str(repo)) is None  # whole repo
+
+    artifacts.elect(repo, "sidecar", backing="local")
+    scope_path = artifacts.Resolver.resolve(repo).scope_path()
+    scope_path.parent.mkdir(parents=True, exist_ok=True)
+    scope_path.write_text(json.dumps({"exclude": ["vendored/*"]}))
+    f = hotspot_discovery._scope_filter(str(repo))
+    assert f("src/app.py") is True
+    assert f("vendored/lib.py") is False

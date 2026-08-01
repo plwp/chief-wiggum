@@ -17,6 +17,7 @@
     "expired_justifications": 0,
     "invalid_justifications": 0
   },
+  "applicability": "applicable",
   "soundness_ok": false,
   "coverage_ok": false,
   "orphan_business_rules": [],

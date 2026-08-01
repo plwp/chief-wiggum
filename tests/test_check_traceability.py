@@ -784,3 +784,304 @@ def test_report_to_dict_includes_new_fields_and_is_json_serializable():
     ):
         assert key in d
     json.loads(json.dumps(d))
+
+
+def test_cli_default_links_path_routes_through_sidecar_election(tmp_path, monkeypatch):
+    """#213: with a sidecar election for --source, the DEFAULT trace-links
+    sidecar lands in the external quality dir — zero CW files in the target
+    tree. Embedded (no election) stays <source>/docs/quality (covered by
+    test_cli_default_links_path_is_under_source_docs_quality)."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+    artifacts.elect(src, "sidecar")
+    rc = ct.main([str(epic), "--source", str(src), "--write-links", "--format", "json"])
+    assert rc == 0
+    sidecar_links = artifacts.Resolver.resolve(src).quality_dir() / "trace-links.json"
+    assert sidecar_links.is_file()
+    assert load_sidecar(sidecar_links)["links"]
+    assert not (src / "docs").exists()
+
+
+# --- external trace-link store (#213 Phase C) ---------------------------------
+
+
+_XL_CODE = (
+    "def create_order(start_date, end_date):\n"
+    "    assert start_date <= end_date\n"
+    "    return True\n"
+)
+_XL_TEST = (
+    "def test_create_order():\n"
+    "    assert True\n"
+)
+
+
+def _sidecar_target_with_external_links(tmp_path, monkeypatch):
+    """A sidecar-elected target with ZERO in-source annotations: the contract's
+    only guards/verifies claims live in the external link store."""
+    import artifacts
+    from chief_wiggum import external_links
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    epic = _epic_with_ctr(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text(_XL_CODE)
+    (src / "test_order.py").write_text(_XL_TEST)
+    artifacts.elect(src, "sidecar")
+    store = artifacts.Resolver.resolve(src).quality_dir() / external_links.STORE_NAME
+    external_links.add_link(store, src, "order.py", "create_order", "guards",
+                            ["CTR-order-001"], use_lsp=False)
+    external_links.add_link(store, src, "test_order.py", "test_create_order", "verifies",
+                            ["CTR-order-001"], use_lsp=False)
+    return epic, src, store
+
+
+def test_external_store_alone_satisfies_coverage_in_sidecar_mode(tmp_path, monkeypatch, capsys):
+    """A contract whose ONLY guards/verifies come from the external store
+    passes coverage in sidecar mode — an external `verifies` counts exactly
+    like an in-source `@cw-trace verifies`. No in-tree CW files needed."""
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["coverage_ok"] is True
+    assert out["uncovered_contracts"] == [] and out["untested_contracts"] == []
+    assert not (src / "docs").exists()
+
+
+def test_suspect_external_link_stops_satisfying_coverage_and_is_reported(tmp_path, monkeypatch, capsys):
+    """Editing the anchored symbol flips the store entry to suspect: it no
+    longer satisfies coverage (hash drift => re-verify, not trust) and shows
+    up in suspect_links with its source marked."""
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    (src / "order.py").write_text(_XL_CODE.replace("start_date <= end_date", "True"))
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert out["coverage_ok"] is False
+    assert out["uncovered_contracts"] == ["CTR-order-001"]  # guards link went suspect
+    external_suspects = [s for s in out["suspect_links"]
+                         if s.get("source") == "external-link-store"]
+    assert external_suspects and external_suspects[0]["target"] == "CTR-order-001"
+    assert external_suspects[0]["symbol"] == "create_order"
+    assert out["suspect_contracts"] == ["CTR-order-001"]
+    # The untouched verifies anchor still counts.
+    assert out["untested_contracts"] == []
+
+
+def test_unresolved_external_link_is_surfaced_never_dropped(tmp_path, monkeypatch, capsys):
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    (src / "order.py").unlink()
+    rc = ct.main([str(epic), "--source", str(src), "--format", "json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["coverage_ok"] is False
+    assert any("order.py::create_order" in w and "unresolved" in w for w in out["warnings"])
+
+
+def test_explicit_external_links_flag_works_in_embedded_mode(tmp_path):
+    """--external-links <path> reads the store even without a sidecar election."""
+    from chief_wiggum import external_links
+
+    epic = _epic_with_ctr(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text(_XL_CODE)
+    (src / "test_order.py").write_text(_XL_TEST)
+    store = tmp_path / "external-links.json"
+    external_links.add_link(store, src, "order.py", "create_order", "guards",
+                            ["CTR-order-001"], use_lsp=False)
+    external_links.add_link(store, src, "test_order.py", "test_create_order", "verifies",
+                            ["CTR-order-001"], use_lsp=False)
+    r = ct.check(epic, src, external_links_path=store)
+    assert r.coverage_ok is True
+
+    # Without the store the same repo has zero annotations for the contract.
+    r2 = ct.check(epic, src)
+    assert r2.coverage_ok is False
+
+
+def test_external_link_to_undefined_id_is_dangling(tmp_path):
+    """Ok external entries face the same defined-ID join as in-source
+    annotations — a link to an undeclared ID reports dangling."""
+    from chief_wiggum import external_links
+
+    epic = _epic_with_ctr(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "order.py").write_text(_XL_CODE)
+    store = tmp_path / "external-links.json"
+    external_links.add_link(store, src, "order.py", "create_order", "guards",
+                            ["CTR-ghost-999"], use_lsp=False)
+    r = ct.check(epic, src, external_links_path=store)
+    assert any(d["target"] == "CTR-ghost-999" for d in r.dangling)
+
+
+# --- vacuous-pass fix (applicability, chief-wiggum#213 Phase E) ---------------
+
+
+def test_empty_epic_and_source_is_inapplicable(tmp_path):
+    """Zero defined IDs AND zero annotations = an empty graph: coverage_ok is
+    (vacuously) true, but the report says INAPPLICABLE, never a plain green."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# nothing declared here\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    report = ct.check(epic, src, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.coverage_ok is True  # exit semantics unchanged
+    assert report.soundness_ok is True
+
+
+def test_defined_ids_make_the_report_applicable(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("**CTR-order-001**: valid range\n")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "applicable"
+    # ...and its gaps are REAL findings, not vacuous ones.
+    assert report.uncovered_contracts == ["CTR-order-001"]
+
+
+def test_annotations_without_definitions_are_inapplicable_but_dangle(tmp_path):
+    """F9: with ZERO contracts defined there is nothing for coverage to be
+    true of — inapplicable REGARDLESS of annotations. The annotations
+    themselves remain a soundness matter: they are all dangling, and soundness
+    still fails on them (exit codes unchanged)."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# empty\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
+    report = ct.check(epic, src, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.dangling  # soundness findings survive the classification
+    assert report.soundness_ok is False
+    assert report.coverage_ok is True  # vacuously — which is the point
+
+
+def test_cli_gate_soundness_still_fails_on_dangling_when_inapplicable(tmp_path, capsys):
+    """F9 keeps exit codes unchanged: annotations-without-definitions are
+    dangling, so --gate soundness still exits 1 even though coverage is
+    classified inapplicable."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# empty\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "soundness", "--format", "json"])
+    assert rc == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["applicability"] == "inapplicable"
+    assert data["dangling"]
+
+
+def test_cli_gate_coverage_annotations_without_definitions_banner(tmp_path, capsys):
+    """F9: --gate coverage with annotations but zero definitions exits 0
+    (coverage has nothing to hold over) but prints the inapplicable banner —
+    never a silent identical green."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# empty\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["applicability"] == "inapplicable"
+    assert "inapplicable, not passing" in captured.err
+
+
+def test_cli_gate_coverage_inapplicable_exits_zero_with_banner(tmp_path, capsys):
+    """The pre-existing vacuous-pass bug this issue owns: --gate coverage on an
+    epic with ZERO contracts/annotations used to exit 0 with a silent green.
+    Exit code stays 0 (no existing pipeline breaks) but the banner prints and
+    the JSON carries applicability explicitly."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# nothing\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["applicability"] == "inapplicable"
+    assert "inapplicable, not passing" in captured.err
+
+
+def test_cli_inapplicable_text_output_says_so(tmp_path, capsys):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# nothing\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = ct.main([str(epic), "--source", str(src)])
+    assert rc == 0
+    assert "INAPPLICABLE" in capsys.readouterr().out
+
+
+def test_cli_applicable_gate_prints_no_banner(tmp_path, capsys):
+    """A populated epic must not print the inapplicable banner."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text(
+        "**CTR-order-001**: valid range\n"
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text(
+        "# @cw-trace guards CTR-order-001\n"
+        "def f():\n    pass\n"
+    )
+    (src / "test_svc.py").write_text(
+        "# @cw-trace verifies CTR-order-001\n"
+        "def test_f():\n    pass\n"
+    )
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["applicability"] == "applicable"
+    assert "INAPPLICABLE" not in captured.err
+
+
+def test_write_links_sidecar_stamps_target_sha(tmp_path):
+    """#213 version binding: the sidecar carries the source repo's HEAD as an
+    ADDITIVE target_sha key (None outside a git repo — unverifiable, never a
+    crash); suspect detection stays hash-re-anchoring and ignores the stamp."""
+    import subprocess
+
+    epic = _epic_with_ctr(tmp_path)
+    src = _src_guarding_ctr(tmp_path)
+
+    # Non-git source root -> stamped None (additive; consumers tolerate it).
+    body = ct.write_links_sidecar(epic, src, tmp_path / "links-nogit.json")
+    assert "target_sha" in body and body["target_sha"] is None
+
+    # Git source root -> the source repo's HEAD.
+    for args in (["init", "-q"], ["add", "-A"]):
+        subprocess.run(["git", "-C", str(src), *args], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(src), "-c", "user.name=T", "-c", "user.email=t@e.co",
+         "commit", "-q", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(src), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    links_path = tmp_path / "links-git.json"
+    body = ct.write_links_sidecar(epic, src, links_path)
+    assert body["target_sha"] == head
+    # The stamp is additive: loading + suspect detection behave as before.
+    reloaded = load_sidecar(links_path)
+    assert reloaded["target_sha"] == head
+    assert ct.check(epic, src, links_path=links_path).suspect_links == []

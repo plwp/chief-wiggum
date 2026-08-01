@@ -54,6 +54,16 @@ purely in-memory single-owner field, omit it and every assignment is considered.
 ``--exclude <glob>`` (repeatable) skips whole subtrees (e.g. a TS frontend that never
 persists the field) as belt-and-suspenders on a polyglot repo.
 
+``--scope <path>|auto`` (chief-wiggum#213) is the DOMAIN-AUTHORITY split, complementing
+``--exclude``: exclusion removes files from detection entirely; scope never narrows
+detection — the scan stays repo-wide — it classifies findings. Writers inside the scope
+are **in-domain** (blocking-eligible, exactly today's gate semantics); writers outside
+are **boundary** findings (``boundary: true`` in JSON, a clearly-labeled report section,
+NEVER the exit code — file them to the owning team). ``auto`` reads scope.json from the
+``--source`` target's resolved meta root (``scripts/artifacts.py``). An epic with no
+single-write-path invariants reports ``"applicability": "inapplicable"`` — exit codes
+unchanged, but the pass is visibly vacuous, never a silent identical green.
+
 Known limitations (regex, not a type checker): even with ``sink=db`` two residual false
 positives remain because they need collection/type awareness the scanner doesn't have —
 (1) a same-named field written to a DIFFERENT collection in a mutation context (e.g. an
@@ -93,6 +103,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Domain-scope authority split (chief-wiggum#213 Phase D): --scope classifies
+# repo-wide findings as in-domain (blocking-eligible) vs boundary (visible,
+# never blocking). The scope document + matching rule live in artifacts.py —
+# the same resolver/scope machinery every other meta surface routes through.
+import artifacts  # noqa: E402
 
 # The per-language emitter registry (#162): language-specific emitter -> generic
 # regex tier -> skip-with-warning. Used by scan_writers/unsupported_extension_counts
@@ -237,10 +253,23 @@ class Writer:
 @dataclass
 class SingleWriterReport:
     invariants: list[dict] = field(default_factory=list)
-    writers: list[dict] = field(default_factory=list)      # all production writers found
-    violations: list[dict] = field(default_factory=list)   # unsanctioned writers
+    writers: list[dict] = field(default_factory=list)      # in-domain production writers
+    violations: list[dict] = field(default_factory=list)   # unsanctioned IN-DOMAIN writers
+    # Boundary findings (chief-wiggum#213 Phase D): writers of a controlled field
+    # found OUTSIDE the domain scope. Detection scans repo-wide; authority stops
+    # at the boundary — these are reported (each entry carries `boundary: true`),
+    # optionally filed to the owning team, and NEVER affect the exit code. The
+    # motivating incident: an out-of-domain writer of our controlled field must
+    # stay VISIBLE without blocking our merges. Empty unless --scope was given.
+    boundary: list[dict] = field(default_factory=list)
     malformed: list[dict] = field(default_factory=list)     # bad metadata (soundness)
     warnings: list[str] = field(default_factory=list)
+    # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
+    # declares NO single-write-path invariants — there was nothing to check, so
+    # a green exit is vacuous, not evidence. Exit codes are unchanged (existing
+    # pipelines keep passing); the verdict is machine-distinguishable here and
+    # human-visible in the text output.
+    applicability: str = "applicable"
 
     @property
     def counts(self) -> dict:
@@ -248,6 +277,7 @@ class SingleWriterReport:
             "invariants": len(self.invariants),
             "writers": len(self.writers),
             "violations": len(self.violations),
+            "boundary": len(self.boundary),
             "malformed": len(self.malformed),
         }
 
@@ -265,11 +295,13 @@ class SingleWriterReport:
     def to_dict(self) -> dict:
         return {
             "counts": self.counts,
+            "applicability": self.applicability,
             "soundness_ok": self.soundness_ok,
             "coverage_ok": self.coverage_ok,
             "invariants": self.invariants,
             "writers": self.writers,
             "violations": self.violations,
+            "boundary": self.boundary,
             "malformed": self.malformed,
             "warnings": self.warnings,
         }
@@ -576,11 +608,14 @@ def _changed_since_predicate(rel: str) -> bool:
 def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
     ``chief_wiggum`` dependencies (annotations.py carries the @cw-writes
-    grammar — #170 moved it there). No hand-bumped constant to forget."""
+    grammar — #170 moved it there). artifacts.py (#213 Phase D) is
+    finding-affecting: its scope-matching rule decides the in-domain vs
+    boundary classification under --scope. No hand-bumped constant to forget."""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         cw_dir / "annotations.py",
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
@@ -630,16 +665,26 @@ def check(
     source_root: str | Path | None = None,
     exclude: list[str] | None = None,
     changed_since: str | None = None,
+    scope: dict | None = None,
 ) -> SingleWriterReport:
+    """``scope`` (chief-wiggum#213 Phase D, optional) is a parsed scope.json
+    document ({"include": [...], "exclude": [...]}). When given, detection
+    still scans REPO-WIDE, but findings are classified: writers whose file is
+    in scope are in-domain (blocking-eligible, exactly as without a scope);
+    writers outside scope are BOUNDARY findings — surfaced in
+    ``report.boundary`` with ``boundary: true``, never violations, never
+    affecting the exit code. ``None`` (no --scope) is byte-identical to the
+    pre-scope behavior."""
     report = SingleWriterReport()
     invariants, malformed = collect_invariants(epic_dir)
     report.invariants = [inv.to_dict() for inv in invariants]
     report.malformed = malformed
 
     if not invariants:
+        report.applicability = "inapplicable"
         report.warnings.append(
             "no single-write-path invariants found (no controls_field/sanctioned_writers "
-            "metadata); nothing to check"
+            "metadata); nothing to check — inapplicable, not passing"
         )
         return report
 
@@ -668,12 +713,26 @@ def check(
             # filters back down to SOURCE_EXTS itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
         writers = scan_writers(source_root, invariants, exclude=scan_exclude, only_files=only_files)
-        report.writers = [w.to_dict() for w in writers]
-        report.violations = [w.to_dict() for w in writers if not w.sanctioned]
+        if scope is not None:
+            # Authority split (#213 Phase D): repo-wide detection, boundary-
+            # stopped authority. In-domain writers keep today's exact gate
+            # semantics; out-of-scope writers become boundary findings —
+            # visible, `boundary: true`, never blocking, never auto-anything.
+            in_domain = [w for w in writers if artifacts.path_in_scope(scope, w.file)]
+            report.boundary = [
+                {**w.to_dict(), "boundary": True}
+                for w in writers if not artifacts.path_in_scope(scope, w.file)
+            ]
+        else:
+            in_domain = writers
+        report.writers = [w.to_dict() for w in in_domain]
+        report.violations = [w.to_dict() for w in in_domain if not w.sanctioned]
         # Surface any invariant whose controlled field has NO writer at all — the
         # sanctioned path may be missing/misnamed (a soft warning, not a violation).
         # Skipped under --changed-since: a ticket-scoped scan is EXPECTED to miss
         # unrelated invariants' writers, so this warning would just be noise.
+        # Boundary writers still count as "found" here: a writer exists, it is
+        # just out of domain.
         if not changed_since:
             written_ids = {w.invariant_id for w in writers}
             for inv in invariants:
@@ -713,6 +772,11 @@ def render_text(report: SingleWriterReport) -> str:
         f"- Soundness (metadata well-formed): {'OK' if report.soundness_ok else 'FINDINGS'}",
         f"- Coverage (no unsanctioned writer): {'OK' if report.coverage_ok else 'FINDINGS'}",
     ]
+    if report.applicability == "inapplicable":
+        lines.append(
+            "- Applicability: INAPPLICABLE — no single-write-path invariants defined; "
+            "nothing was checked (not a real pass)"
+        )
     if report.malformed:
         lines += ["", "## Malformed metadata", ""]
         lines += [f"- {m['id']} ({m['source']}): {m['reason']}" for m in report.malformed]
@@ -731,6 +795,25 @@ def render_text(report: SingleWriterReport) -> str:
             sym = f" in {w['symbol']}()" if w.get("symbol") else ""
             tag = " [test]" if w.get("is_test") else ""
             lines.append(f"- {w['invariant_id']} `{w['field']}` at {w['file']}:{w['line']}{sym}{tag}")
+    if report.boundary:
+        lines += [
+            "",
+            "## Boundary findings (outside the domain scope — visible, NEVER blocking)",
+            "",
+            "Detection scans repo-wide; authority stops at the scope boundary. These",
+            "writers of a controlled field live outside this domain's scope: report",
+            "them to the owning team — they do not affect this gate's exit code and",
+            "are never auto-filed or auto-fixed.",
+            "",
+        ]
+        for w in report.boundary:
+            sym = f" in {w['symbol']}()" if w.get("symbol") else ""
+            sanc = "" if w.get("sanctioned") else " [unsanctioned]"
+            lines.append(
+                f"- {w['invariant_id']} field `{w['field']}` written at "
+                f"{w['file']}:{w['line']}{sym}{sanc}"
+            )
+            lines.append(f"    {w['text']}")
     if report.warnings:
         lines += ["", "## Warnings", ""] + [f"- {w}" for w in report.warnings]
     return "\n".join(lines) + "\n"
@@ -745,6 +828,16 @@ def main(argv: list[str] | None = None) -> int:
         help="docs/epics/<slug> directory (or CW_TMP at architect time); not required with --scanner-version",
     )
     parser.add_argument("--source", help="Repo root to scan for writers of controlled fields")
+    parser.add_argument(
+        "--scope",
+        metavar="PATH|auto",
+        help="Domain-scope authority split (chief-wiggum#213): path to a scope.json "
+        "({'include': [globs], 'exclude': [globs]}), or the literal 'auto' to read it "
+        "from the --source target's resolved meta root (scripts/artifacts.py). Detection "
+        "still scans repo-wide; writers INSIDE scope stay blocking-eligible exactly as "
+        "today, writers OUTSIDE scope become boundary findings — reported, boundary: true "
+        "in JSON, never affecting the exit code. Omitted: behavior identical to today.",
+    )
     parser.add_argument(
         "--exclude",
         action="append",
@@ -786,8 +879,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
+    scope = None
+    if args.scope:
+        # load_scope_file raises ValueError on a malformed or unknown-key scope
+        # document (#213 F6: {"includes": ...} must never silently mean
+        # whole-repo scope) — surfaced as a usage error, exit 2.
+        try:
+            if args.scope == "auto":
+                # The --source target's elected meta root (embedded: <repo>/docs;
+                # sidecar: the external meta dir). No scope.json there = whole-repo
+                # scope — the documented default, not an error.
+                scope_path = artifacts.Resolver.resolve(Path(args.source or ".")).scope_path()
+                scope = artifacts.load_scope_file(scope_path)
+                if scope is None:
+                    scope = {}  # whole repo: everything in-domain, nothing boundary
+            else:
+                # An explicit path that doesn't exist is a usage error — a typo'd
+                # --scope silently meaning "everything in-domain" would be a silent
+                # authority widening.
+                scope = artifacts.load_scope_file(args.scope)
+                if scope is None:
+                    print(f"Error: cannot read scope file: {args.scope}", file=sys.stderr)
+                    return 2
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+
     try:
-        report = check(args.epic_dir, args.source, exclude=args.exclude, changed_since=args.changed_since)
+        report = check(args.epic_dir, args.source, exclude=args.exclude,
+                       changed_since=args.changed_since, scope=scope)
     except ManifestError as exc:
         # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
         # a usage error, reported concisely — never a traceback.
@@ -812,6 +932,18 @@ def main(argv: list[str] | None = None) -> int:
         emit_gate("check_single_writer", "fail" if caught else "pass", caught=caught, repo=repo)
     except Exception:
         pass
+
+    # Vacuous-pass fix (#213 Phase E): an inapplicable run under --gate still
+    # exits 0 (existing green pipelines must not break) but the verdict is
+    # NEVER a silent identical green — the banner is printed and the JSON
+    # carries applicability explicitly, so a wrapper can distinguish.
+    if args.gate and report.applicability == "inapplicable":
+        print(
+            "check_single_writer: INAPPLICABLE — no single-write-path invariants "
+            f"defined; --gate {args.gate} passes vacuously (nothing was checked, "
+            "not a real green)",
+            file=sys.stderr,
+        )
 
     if args.gate == "soundness" and not report.soundness_ok:
         return 1

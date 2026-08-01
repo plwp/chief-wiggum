@@ -289,3 +289,54 @@ def test_cli_missing_artifacts_exit_1(tmp_path, capsys):
     ])
     assert rc == 1
     assert "invariants.md" in capsys.readouterr().err
+
+
+# --- sidecar footprint (#213) -------------------------------------------------
+
+
+def test_sidecar_elected_target_installs_into_sidecar_and_skips_commit(tmp_path, monkeypatch):
+    """A sidecar-elected target installs into the resolver's epic dir — zero
+    writes in-target and NO target-repo commit attempt (the sidecar backing
+    repo's versioning is the operator's flow, not this script's)."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    target = tmp_path / "target"
+    target.mkdir()
+    artifacts.elect(target, "sidecar", backing="local")
+    src = _source(tmp_path)
+    epic = artifacts.Resolver.resolve(target).epic_dir("e")
+
+    calls = []
+
+    def git(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    result = ie.install_epic_artifacts(
+        src, epic, epic_name="E", epic_slug="e", target_repo=target,
+        commit=True, transition_map_fn=_noop_transition, git_runner=git,
+    )
+    assert (epic / "contracts.md").exists()
+    assert (epic / "models" / "contracts.json").exists()
+    assert result.committed is False
+    assert calls == []  # no git add/commit ever attempted against the target
+    assert any("commit skipped" in w for w in result.warnings)
+    assert not (target / "docs").exists()  # zero writes in-target
+
+
+def test_sidecar_election_does_not_admit_arbitrary_epic_dirs(tmp_path, monkeypatch):
+    """The load-bearing path guard survives the sidecar relaxation: a path that
+    is neither the in-target location nor the resolver's epic dir is refused."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    target = tmp_path / "target"
+    target.mkdir()
+    artifacts.elect(target, "sidecar", backing="local")
+    src = _source(tmp_path)
+    with pytest.raises(ie.InstallError, match="epic_dir must be"):
+        ie.install_epic_artifacts(
+            src, tmp_path / "elsewhere" / "e", epic_name="E", epic_slug="e",
+            target_repo=target, commit=False, transition_map_fn=_noop_transition,
+        )

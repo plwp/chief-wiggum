@@ -3,8 +3,10 @@
     "invariants": 4,
     "writers": 7,
     "violations": 2,
+    "boundary": 0,
     "malformed": 0
   },
+  "applicability": "applicable",
   "soundness_ok": true,
   "coverage_ok": false,
   "invariants": [
@@ -154,6 +156,7 @@
       "is_test": false
     }
   ],
+  "boundary": [],
   "malformed": [],
   "warnings": []
 }

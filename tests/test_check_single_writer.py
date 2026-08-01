@@ -857,3 +857,228 @@ def test_changed_since_bad_ref_is_usage_error(tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "Error" in err and "Traceback" not in err
+
+
+# --- domain-scope authority split (--scope, chief-wiggum#213 Phase D) --------
+
+
+def _write_two_writer_src(tmp_path):
+    """Sanctioned reconcile writer in internal/billing, unsanctioned legacy
+    ChangePlan writer in internal/admin — the motivating incident layout."""
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    (src / "internal" / "admin").mkdir(parents=True)
+    (src / "internal" / "admin" / "handlers.go").write_text(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    return src
+
+
+def test_scope_out_of_domain_writer_is_boundary_not_violation(tmp_path):
+    """The motivating incident: an out-of-domain writer of OUR controlled field
+    stays VISIBLE (boundary section, boundary: true) while never blocking our
+    merges (not a violation, coverage_ok unaffected)."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope = {"include": ["internal/billing/**"]}
+
+    report = sw.check(epic, src, scope=scope)
+
+    assert report.violations == []
+    assert report.coverage_ok is True
+    assert len(report.boundary) == 1
+    b = report.boundary[0]
+    assert b["boundary"] is True
+    assert b["symbol"] == "ChangePlan"
+    assert b["sanctioned"] is False
+    # The in-domain sanctioned writer is reported normally.
+    assert [w["symbol"] for w in report.writers] == ["ReconcileStripe"]
+
+
+def test_scope_in_domain_violation_still_blocks(tmp_path):
+    """A scope covering the violating writer keeps today's exact gate semantics."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope = {"include": ["internal/**"]}
+
+    report = sw.check(epic, src, scope=scope)
+
+    assert report.boundary == []
+    assert [v["symbol"] for v in report.violations] == ["ChangePlan"]
+    assert report.coverage_ok is False
+
+
+def test_scope_exclude_wins_over_include(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope = {"include": ["internal/**"], "exclude": ["internal/admin/**"]}
+
+    report = sw.check(epic, src, scope=scope)
+
+    assert [b["symbol"] for b in report.boundary] == ["ChangePlan"]
+    assert report.violations == []
+
+
+def test_no_scope_reports_no_boundary(tmp_path):
+    """Without --scope the split never engages: boundary stays empty and the
+    violation set is exactly the pre-scope behavior."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+
+    report = sw.check(epic, src)
+
+    assert report.boundary == []
+    assert [v["symbol"] for v in report.violations] == ["ChangePlan"]
+
+
+def test_scope_boundary_writer_still_counts_as_found(tmp_path):
+    """A writer that exists only OUT of scope must not trigger the 'no writer
+    found' warning — a writer exists, it is just out of domain."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "admin").mkdir(parents=True)
+    (src / "internal" / "admin" / "handlers.go").write_text(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    report = sw.check(epic, src, scope={"include": ["internal/billing/**"]})
+    assert not any("no writer found" in w for w in report.warnings)
+    assert len(report.boundary) == 1
+
+
+def test_cli_scope_file_boundary_never_blocks(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope_file = tmp_path / "scope.json"
+    scope_file.write_text(json.dumps({"include": ["internal/billing/**"]}))
+
+    rc = sw.main([str(epic), "--source", str(src), "--scope", str(scope_file),
+                  "--gate", "coverage", "--format", "json"])
+
+    assert rc == 0  # boundary findings NEVER affect the exit code
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["boundary"] == 1
+    assert data["boundary"][0]["boundary"] is True
+    assert data["violations"] == []
+
+
+def test_cli_scope_text_output_labels_boundary_section(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope_file = tmp_path / "scope.json"
+    scope_file.write_text(json.dumps({"include": ["internal/billing/**"]}))
+
+    rc = sw.main([str(epic), "--source", str(src), "--scope", str(scope_file)])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Boundary findings" in out and "NEVER blocking" in out
+    assert "ChangePlan" in out
+
+
+def test_cli_scope_bad_path_is_usage_error(tmp_path, capsys):
+    """A typo'd --scope path must never silently mean 'everything in-domain'."""
+    epic = _write_billing_epic(tmp_path)
+    rc = sw.main([str(epic), "--scope", str(tmp_path / "nope.json")])
+    assert rc == 2
+    assert "scope" in capsys.readouterr().err
+
+
+def test_cli_scope_typo_key_is_usage_error_naming_the_key(tmp_path, capsys):
+    """F6: {"includes": [...]} (typo'd key) must exit 2 NAMING the key —
+    never silently degrade to whole-repo scope (a silent authority widening)."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    scope_file = tmp_path / "scope.json"
+    scope_file.write_text(json.dumps({"includes": ["internal/billing/**"]}))
+    rc = sw.main([str(epic), "--source", str(src), "--scope", str(scope_file)])
+    assert rc == 2
+    assert "includes" in capsys.readouterr().err
+
+
+def test_cli_scope_auto_typo_key_is_usage_error(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-home"))
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    (src / "docs").mkdir(exist_ok=True)
+    (src / "docs" / "scope.json").write_text(json.dumps({"includes": ["internal/**"]}))
+    rc = sw.main([str(epic), "--source", str(src), "--scope", "auto"])
+    assert rc == 2
+    assert "includes" in capsys.readouterr().err
+
+
+def test_cli_scope_auto_reads_resolver_meta_root(tmp_path, capsys, monkeypatch):
+    """--scope auto reads scope.json from the --source target's resolved meta
+    root (embedded: <src>/docs/scope.json)."""
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-home"))
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    (src / "docs").mkdir()
+    (src / "docs" / "scope.json").write_text(json.dumps({"include": ["internal/billing/**"]}))
+
+    rc = sw.main([str(epic), "--source", str(src), "--scope", "auto",
+                  "--gate", "coverage", "--format", "json"])
+
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["boundary"] == 1
+
+
+def test_cli_scope_auto_without_scope_json_is_whole_repo(tmp_path, capsys, monkeypatch):
+    """auto with no scope.json = whole-repo scope: everything in-domain, exactly
+    today's behavior (the documented default, not an error)."""
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-home"))
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+
+    rc = sw.main([str(epic), "--source", str(src), "--scope", "auto",
+                  "--gate", "coverage", "--format", "json"])
+
+    assert rc == 1  # the unsanctioned writer is in-domain and still blocks
+    data = json.loads(capsys.readouterr().out)
+    assert data["counts"]["boundary"] == 0
+    assert data["violations"][0]["symbol"] == "ChangePlan"
+
+
+# --- vacuous-pass fix (applicability, chief-wiggum#213 Phase E) --------------
+
+
+def test_no_invariants_reports_inapplicable(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text("# Invariants\n\nnothing structured here\n")
+    report = sw.check(epic, tmp_path / "src")
+    assert report.applicability == "inapplicable"
+    assert report.coverage_ok is True  # exit semantics unchanged
+
+
+def test_with_invariants_reports_applicable(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    report = sw.check(epic)
+    assert report.applicability == "applicable"
+
+
+def test_cli_inapplicable_gate_exits_zero_with_banner(tmp_path, capsys):
+    """--gate coverage on an epic with zero single-write-path invariants still
+    exits 0 (no green pipeline breaks) but is NEVER a silent identical green:
+    the banner prints and the JSON carries applicability explicitly."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text("# Invariants\n")
+    rc = sw.main([str(epic), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["applicability"] == "inapplicable"
+    assert "INAPPLICABLE" in captured.err
+
+
+def test_cli_inapplicable_text_output_says_so(tmp_path, capsys):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text("# Invariants\n")
+    rc = sw.main([str(epic)])
+    assert rc == 0
+    assert "INAPPLICABLE" in capsys.readouterr().out

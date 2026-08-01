@@ -28,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 import render_models as rm  # noqa: E402
 from chief_wiggum import gitops  # noqa: E402
 
@@ -125,24 +126,43 @@ def install_epic_artifacts(
     target_repo = Path(target_repo).resolve()
     epic = Path(epic_dir).resolve()
 
-    # Enforce the contract: artifacts install at <target_repo>/docs/epics/<slug>.
-    # This prevents a bad/hostile --epic-dir writing outside the repo while
-    # `git add docs/epics/...` stages a different path.
+    # Enforce the contract: artifacts install at <target_repo>/docs/epics/<slug>,
+    # OR — when the target has elected the sidecar footprint (chief-wiggum#213)
+    # — at the resolver's epic dir for this slug. Anything else is refused:
+    # this prevents a bad/hostile --epic-dir writing outside the repo while
+    # `git add docs/epics/...` stages a different path. (In embedded mode the
+    # resolver's epic dir IS the in-target path, so the guard is unchanged.)
     if not _SLUG_RE.match(epic_slug):
         raise InstallError(f"invalid epic slug: {epic_slug!r}")
     expected = (target_repo / "docs" / "epics" / epic_slug).resolve()
-    if epic != expected:
-        raise InstallError(f"epic_dir must be {expected}, got {epic}")
+    resolved = artifacts.Resolver.resolve(target_repo).epic_dir(epic_slug).resolve()
+    in_target = epic == expected
+    if not in_target and epic != resolved:
+        raise InstallError(f"epic_dir must be {expected} (or {resolved}), got {epic}")
 
     missing = validate_source(src)
     if missing:
         raise InstallError(f"missing required artifacts: {', '.join(missing)}")
+
+    # Sidecar artifacts live OUTSIDE the target repo: the target-repo commit
+    # step below does not apply (the sidecar backing repo's versioning is the
+    # operator's flow, not this script's).
+    skip_commit_note = None
+    if commit and not in_target:
+        commit = False
+        skip_commit_note = (
+            f"target-repo commit skipped: epic dir {epic} is the sidecar location, "
+            "outside the target repo — version it via the sidecar backing repo's own flow"
+        )
+        print(f"install_epic_artifacts: {skip_commit_note}", file=sys.stderr)
 
     if commit and not dry_run and not allow_dirty:
         if not gitops.is_clean(target_repo, runner=git_runner):
             raise InstallError("target repo has uncommitted changes; pass allow_dirty to override")
 
     result = InstallResult(epic_dir=str(epic), dry_run=dry_run)
+    if skip_commit_note:
+        result.warnings.append(skip_commit_note)
     models_dir = epic / "models"
 
     # The optional UI spec is a pair: install/link it only when BOTH the prose
@@ -228,7 +248,11 @@ def install_epic_artifacts(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install epic architecture artifacts")
     parser.add_argument("--source", required=True, help="Dir holding the generated artifacts")
-    parser.add_argument("--epic-dir", required=True, help="Target docs/epics/<slug> path")
+    parser.add_argument(
+        "--epic-dir", required=True,
+        help="Target docs/epics/<slug> path (or, for a sidecar-elected target, "
+             "the resolver's epic dir — anything else is refused)",
+    )
     parser.add_argument("--epic-name", required=True)
     parser.add_argument("--epic-slug", required=True)
     parser.add_argument("--target-repo", required=True)

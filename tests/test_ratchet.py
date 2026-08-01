@@ -692,3 +692,313 @@ def test_cli_scanner_version_prints_hex_digest_with_no_subcommand():
 
 def test_scanner_version_is_deterministic_and_stable_across_calls():
     assert ratchet._scanner_version() == ratchet._scanner_version()
+
+
+def test_sidecar_election_routes_ratchet_state_dir(tmp_path, monkeypatch):
+    """#213: a sidecar election moves the DEFAULT state dir (config, journal,
+    scorecard) to the external quality dir — workers in the target tree
+    physically cannot write it; no election keeps <repo>/docs/quality."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    # embedded status quo without an election
+    assert ratchet.default_state_dir(repo) == repo / "docs" / "quality"
+    artifacts.elect(repo, "sidecar")
+    state = ratchet.default_state_dir(repo)
+    assert state == artifacts.Resolver.resolve(repo).quality_dir()
+    assert str(state).startswith(str(tmp_path / "cw-user"))
+    assert ratchet.cmd_init(argparse.Namespace(repo=str(repo), force=False)) == 0
+    assert (state / "ratchet.json").is_file()
+    assert not (repo / "docs").exists()  # zero CW files in the target tree
+    cfg = ratchet.load_config(repo)
+    assert cfg.state_dir == state
+    assert cfg.journal == state / "ratchet-journal.jsonl"
+
+
+def test_sidecar_init_then_score_sees_sidecar_contracts(tmp_path, monkeypatch):
+    """F1 regression: sidecar elect -> init -> score must hash the SIDECAR
+    epic contracts (non-zero contract count) with NO hand-patching of
+    epic_docs. Before the fix, cmd_init wrote the target-relative
+    'docs/epics', which is empty on a clean sidecar target — the contract
+    ratchet was silently vacuous."""
+    import artifacts
+
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "target"
+    repo.mkdir()
+    artifacts.elect(repo, "sidecar", backing="local")
+    resolver = artifacts.Resolver.resolve(repo)
+    epic = resolver.epic_dir("order-app")
+    epic.mkdir(parents=True)
+    (epic / "contracts.md").write_text(
+        "### CTR-app-001 — valid range\nREQUIRES: start <= end\n")
+
+    assert ratchet.cmd_init(argparse.Namespace(repo=str(repo), force=False)) == 0
+    cfg_doc = json.loads((resolver.quality_dir() / "ratchet.json").read_text())
+    # cmd_init resolved the ABSOLUTE sidecar epics dir itself.
+    assert cfg_doc["epic_docs"] == str(resolver.epics_dir())
+    assert Path(cfg_doc["epic_docs"]).is_absolute()
+
+    assert ratchet.cmd_score(argparse.Namespace(
+        repo=str(repo), no_tests=True, no_quality=True, venv=None, gobin=None)) == 0
+    sc = json.loads((resolver.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+    assert sc["contract_hashes"], "sidecar contracts were not hashed (vacuous ratchet)"
+    assert "CTR-app-001" in sc["contract_hashes"]
+    assert not (repo / "docs").exists()  # still zero CW files in the target
+
+
+def test_embedded_init_keeps_relative_epic_docs(tmp_path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    assert ratchet.cmd_init(argparse.Namespace(repo=str(repo), force=False)) == 0
+    cfg_doc = json.loads((repo / "docs" / "quality" / "ratchet.json").read_text())
+    assert cfg_doc["epic_docs"] == "docs/epics"
+
+
+def test_scope_json_is_default_protected(tmp_path):
+    """F13: docs/scope.json is a goalpost — a worker widening its own scope
+    must be parked by `protected`."""
+    assert "docs/scope.json" in ratchet.DEFAULT_PROTECTED
+    cfg = make_repo(tmp_path)
+    assert ratchet.protected_hits(cfg, ["docs/scope.json"]) == ["docs/scope.json"]
+
+
+def test_score_stamps_target_sha(tmp_path):
+    """F12: every scorecard names the target HEAD it was computed against
+    (None outside a git repo — recorded, not omitted)."""
+    make_repo(tmp_path)
+    assert ratchet.cmd_score(argparse.Namespace(
+        repo=str(tmp_path), no_tests=True, no_quality=True, venv=None, gobin=None)) == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert "target_sha" in sc
+    assert sc["target_sha"] is None  # tmp_path is not a git repo — recorded as None
+
+
+# ---- sanctioned pathset (chief-wiggum#213) -----------------------------------------
+
+
+def test_pathset_outside_with_explicit_paths_spec():
+    """Ticket-pathset shape: a changed file is sanctioned iff it matches one of
+    the globs (the same _glob_to_re grammar as protected_paths)."""
+    spec = {"paths": ["internal/billing/**", "docs/epics/billing/*.md"], "source": "ticket #42"}
+    changed = [
+        "internal/billing/reconcile.go",       # sanctioned
+        "internal/admin/handlers.go",          # OUTSIDE
+        "docs/epics/billing/contracts.md",     # sanctioned
+        "ui/app.tsx",                          # OUTSIDE
+    ]
+    assert ratchet.pathset_outside(spec, changed) == [
+        "internal/admin/handlers.go",
+        "ui/app.tsx",
+    ]
+
+
+def test_pathset_outside_with_scope_spec():
+    """Domain scope.json shape: artifacts.py semantics — missing include =
+    everything, exclude wins."""
+    spec = {"include": ["internal/**"], "exclude": ["internal/legacy/**"]}
+    changed = [
+        "internal/billing/reconcile.go",   # in scope
+        "internal/legacy/old.go",          # excluded -> OUTSIDE
+        "ui/app.tsx",                      # not included -> OUTSIDE
+    ]
+    assert ratchet.pathset_outside(spec, changed) == [
+        "internal/legacy/old.go",
+        "ui/app.tsx",
+    ]
+
+
+def test_pathset_outside_scope_exclude_only():
+    spec = {"exclude": ["vendor/**"]}
+    assert ratchet.pathset_outside(spec, ["a.go", "vendor/x.go"]) == ["vendor/x.go"]
+
+
+def test_load_pathset_rejects_bad_shapes(tmp_path):
+    missing = tmp_path / "nope.json"
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(missing)
+    both = tmp_path / "both.json"
+    both.write_text(json.dumps({"paths": ["a"], "include": ["b"]}))
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(both)
+    neither = tmp_path / "neither.json"
+    neither.write_text(json.dumps({"source": "x"}))
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(neither)
+    garbage = tmp_path / "garbage.json"
+    garbage.write_text("{not json")
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(garbage)
+
+
+def _pathset_repo(tmp_path):
+    """A git repo whose HEAD adds one in-pathset and one out-of-pathset file
+    relative to the base commit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (repo / "README.md").write_text("base\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "base")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    (repo / "internal" / "billing").mkdir(parents=True)
+    (repo / "internal" / "billing" / "reconcile.go").write_text("func R() {}\n")
+    (repo / "ui").mkdir()
+    (repo / "ui" / "app.tsx").write_text("export {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "change")
+    return repo, base
+
+
+def test_cmd_pathset_parks_out_of_pathset_diff(tmp_path, capsys):
+    """Park-for-human semantics, same shape as `protected`: exit 1 + a labeled
+    stderr listing when the branch diff escapes the sanctioned set."""
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "pathset.json"
+    spec_file.write_text(json.dumps({"paths": ["internal/**"], "source": "ticket #216-demo"}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "OUTSIDE THE SANCTIONED PATHSET" in err
+    assert "ui/app.tsx" in err
+    assert "internal/billing/reconcile.go" not in err
+    assert "ticket #216-demo" in err  # the spec's source label is surfaced
+
+
+def test_cmd_pathset_report_only_prints_but_exits_zero(tmp_path, capsys):
+    """--report-only is how #216 consumes this first (docs/gate-rollout.md)."""
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "pathset.json"
+    spec_file.write_text(json.dumps({"paths": ["internal/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=True)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "ui/app.tsx" in err and "report-only" in err
+
+
+def test_cmd_pathset_scope_source_clean_when_diff_in_scope(tmp_path, capsys):
+    """Scope-source pathset: a diff entirely inside the domain scope passes."""
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "scope.json"
+    spec_file.write_text(json.dumps({"include": ["internal/**", "ui/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 0
+    assert "within the sanctioned pathset" in capsys.readouterr().out
+
+
+def test_cmd_pathset_scope_source_parks_out_of_scope(tmp_path, capsys):
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "scope.json"
+    spec_file.write_text(json.dumps({"include": ["internal/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 1
+    assert "ui/app.tsx" in capsys.readouterr().err
+
+
+def test_load_pathset_typo_key_is_a_legible_error(tmp_path):
+    """F6: {"includes": [...]} (typo) must error NAMING the key — never
+    silently sanction everything (or nothing)."""
+    p = tmp_path / "pathset.json"
+    p.write_text(json.dumps({"includes": ["internal/**"]}))
+    with pytest.raises(ratchet.RatchetError, match="includes"):
+        ratchet.load_pathset(p)
+
+
+def test_load_pathset_unknown_key_beside_valid_shape_is_an_error(tmp_path):
+    p = tmp_path / "pathset.json"
+    p.write_text(json.dumps({"exclude": ["vendor/**"], "includes": ["internal/**"]}))
+    with pytest.raises(ratchet.RatchetError, match="includes"):
+        ratchet.load_pathset(p)
+
+
+def test_cmd_pathset_typo_scope_exits_2(tmp_path, capsys):
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "scope.json"
+    spec_file.write_text(json.dumps({"includes": ["internal/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    dispatch_rc = None
+    try:
+        dispatch_rc = ratchet.cmd_pathset(args)
+    except ratchet.RatchetError as e:
+        assert "includes" in str(e)
+    else:
+        raise AssertionError(f"expected RatchetError, got rc={dispatch_rc}")
+
+
+def test_cmd_pathset_needs_no_ratchet_config(tmp_path, capsys):
+    """Deliberately config-free: works on a target with no ratchet init (the
+    #216 consumption path) — unlike `protected`, which loads the config."""
+    repo, base = _pathset_repo(tmp_path)
+    assert not (repo / "docs" / "quality" / "ratchet.json").exists()
+    spec_file = tmp_path / "pathset.json"
+    spec_file.write_text(json.dumps({"paths": ["**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    assert ratchet.cmd_pathset(args) == 0
+
+
+@pytest.mark.skipif(shutil.which("lizard") is None,
+                    reason="lizard required for the quality snapshot")
+def test_score_quality_scope_filters_population(tmp_path, monkeypatch):
+    """#213 domain scope: quality baselines are computed over the IN-SCOPE
+    population only; removing the scope restores the whole-repo snapshot
+    exactly (no scope => identical to before)."""
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(tmp_path / "cw-user"))
+    repo = tmp_path / "scoped"
+    (repo / "app").mkdir(parents=True)
+    (repo / "vendored").mkdir()
+    (repo / "app" / "main.py").write_text(
+        "def f(x):\n    if x:\n        return 1\n    return 0\n"
+    )
+    (repo / "vendored" / "lib.py").write_text(
+        "def g(x):\n    if x:\n        return 1\n    return 0\n\n\n"
+        "def h(x):\n    if x:\n        return 2\n    return 0\n"
+    )
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@e.co",
+         "commit", "-q", "-m", "init"],
+        check=True, capture_output=True,
+    )
+
+    cfg = make_repo(tmp_path)
+    cfg.repo = repo
+    q_full = ratchet.score_quality(cfg)
+    assert "skipped" not in q_full, q_full
+
+    # scope.json at the meta root (embedded => <repo>/docs) excludes vendored/.
+    (repo / "docs").mkdir()
+    (repo / "docs" / "scope.json").write_text(json.dumps({"exclude": ["vendored/*"]}))
+    q_scoped = ratchet.score_quality(cfg)
+    assert "skipped" not in q_scoped, q_scoped
+    assert q_scoped["functions"] < q_full["functions"]
+    assert q_scoped["total_loc"] < q_full["total_loc"]
+    assert q_scoped["churned_loc"] < q_full["churned_loc"]
+
+    # No scope file => byte-identical to the pre-scope snapshot.
+    (repo / "docs" / "scope.json").unlink()
+    assert ratchet.score_quality(cfg) == q_full
+
+    # A malformed scope must never silently widen to whole-repo scope.
+    (repo / "docs" / "scope.json").write_text(json.dumps({"includes": ["app/*"]}))
+    q_bad = ratchet.score_quality(cfg)
+    assert "skipped" in q_bad and "includes" in q_bad["skipped"]

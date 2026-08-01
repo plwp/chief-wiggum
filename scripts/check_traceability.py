@@ -42,10 +42,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Meta-location resolver (chief-wiggum#213): routes the DEFAULT trace-links
+# sidecar location through the target's elected footprint mode (embedded:
+# <repo>/docs/quality — the status quo; sidecar: the external quality dir).
+# --links keeps precedence.
+import artifacts  # noqa: E402
+
 # The per-language emitter registry (#162): language-specific emitter -> generic
 # regex tier -> skip-with-warning. Used by scan_source/unsupported_extension_counts
 # below to surface files with NO emitter coverage instead of dropping them silently.
 import emitters  # noqa: E402
+
+# External trace-link store (#213 Phase C): in sidecar mode, in-source
+# @cw-trace annotations are replaced by symbol-anchored entries in
+# <meta_root>/quality/external-links.json. A verified-ok entry joins the
+# annotation set (an external `verifies` satisfies a contract exactly like an
+# in-source `@cw-trace verifies`); a suspect entry (anchored-symbol hash drift)
+# does NOT satisfy coverage and is surfaced with the existing suspect links;
+# an unresolved entry is surfaced as a warning, never dropped.
+from chief_wiggum import external_links  # noqa: E402
 
 # The declared language support matrix (#162) — SOURCE_EXTS below is derived
 # from it (tier-1 + generic-tier extensions) plus this checker's own
@@ -143,6 +158,13 @@ class TraceReport:
     expired_justifications: list[dict] = field(default_factory=list)
     invalid_justifications: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
+    # defines ZERO stable IDs AND no @cw-trace annotations exist anywhere —
+    # there was no graph to check, so coverage_ok == True is vacuous, not
+    # evidence. Exit codes are unchanged (existing green pipelines keep
+    # passing); the verdict is machine-distinguishable here and the --gate
+    # path prints an explicit banner.
+    applicability: str = "applicable"
 
     @property
     def counts(self) -> dict:
@@ -171,6 +193,7 @@ class TraceReport:
         return {
             "defined": self.defined,
             "counts": self.counts,
+            "applicability": self.applicability,
             "soundness_ok": self.soundness_ok,
             "coverage_ok": self.coverage_ok,
             "orphan_business_rules": self.orphan_business_rules,
@@ -407,15 +430,19 @@ def _scanner_version() -> str:
     (INV-fh-005). trace_links.py carries the suspect-link/sidecar/justification
     logic — finding-affecting, so it is a hash input (its omission was the exact
     CTR-fh-041 silent-staleness defect, caught by the #184 dep-completeness
-    test).
+    test). external_links.py (#213 Phase C) decides which external store
+    entries count as annotations vs suspect/unresolved — finding-affecting for
+    the same reason.
     @cw-trace guards CTR-fh-041"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
     return scanner_version(
         here,
+        here.parent / "artifacts.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_emission.py",
         cw_dir / "trace_links.py",
+        cw_dir / "external_links.py",
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "languages.py",
@@ -494,6 +521,12 @@ def build_report(
         report.warnings.append("no @cw-trace annotations found; reporting coverage as absent")
     if not defined:
         report.warnings.append("no contract/invariant/BR IDs defined in epic artifacts")
+        # Vacuous-pass fix (#213 Phase E, tightened by F9): with ZERO contracts
+        # defined there is nothing for coverage to be true OF — coverage is
+        # inapplicable even when annotations exist. Annotations without
+        # definitions remain a SOUNDNESS matter: they are all dangling, and
+        # soundness findings/exit codes are unchanged by this classification.
+        report.applicability = "inapplicable"
     return report
 
 
@@ -547,14 +580,19 @@ def check(
     schema: dict | None = None,
     changed_since: str | None = None,
     links_path: str | Path | None = None,
+    external_links_path: str | Path | None = None,
     today: date | None = None,
 ) -> TraceReport:
     """Build the trace report. ``links_path`` (#169, optional), when given, is
     the ``docs/quality/trace-links.json`` sidecar to compare current contract
     definition hashes against for suspect-link detection — omitted, no sidecar
     is read and ``suspect_links`` stays empty (nothing to compare against yet,
-    e.g. the very first validation). ``today`` (optional) overrides the clock
-    used for justification-expiry checks; defaults to the real today."""
+    e.g. the very first validation). ``external_links_path`` (#213 Phase C,
+    optional) is the symbol-anchored external link store: verified-ok entries
+    join the annotation set for coverage math; suspect entries are surfaced
+    (never satisfying coverage); unresolved entries become warnings. ``today``
+    (optional) overrides the clock used for justification-expiry checks;
+    defaults to the real today."""
     schema = schema or load_schema()
     defined = extract_defined_ids(epic_dir)
     coverage_requirements = extract_coverage_requirements(epic_dir)
@@ -572,6 +610,23 @@ def check(
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
         annotations += scan_source(source_root, only_files=only_files)
         unsupported = unsupported_extension_counts(source_root, only_files=only_files)
+    external = None
+    if external_links_path is not None:
+        # Re-anchor every stored link against the CURRENT source. Only ok
+        # entries join the annotation set — they then face the exact same
+        # dangling/schema validation and coverage joins as in-source
+        # annotations (an external link to an undefined ID is dangling, an
+        # external `verifies` from a code-kind file obeys coverage_requires).
+        external = external_links.verify_links(
+            external_links_path, Path(source_root) if source_root else Path(".")
+        )
+        for entry in external["ok"]:
+            source_kind = classify_source_kind(entry["file"], Path(entry["file"]).suffix)
+            for cid in entry["ids"]:
+                annotations.append(Annotation(
+                    entry["verb"], canonical_id(cid), entry["file"],
+                    entry.get("line", 0), source_kind,
+                ))
     report = build_report(defined, annotations, schema, coverage_requirements=coverage_requirements)
     if unsupported:
         # Coverage metadata (#162): a recognized-but-unsupported-language file is
@@ -589,6 +644,32 @@ def check(
         sidecar = load_sidecar(links_path)
         report.suspect_links = find_suspect_links(sidecar, current_hashes)
         report.suspect_contracts = sorted({link["target"] for link in report.suspect_links})
+
+    if external is not None:
+        # Suspect external links (anchored-symbol hash drift) are surfaced with
+        # the definition-drift suspects — AFTER the links_path block, which
+        # (re)assigns report.suspect_links. They never satisfy coverage: their
+        # entries were excluded from the annotation merge above.
+        for entry in external["suspect"]:
+            for cid in entry["ids"]:
+                report.suspect_links.append({
+                    "verb": entry["verb"],
+                    "target": canonical_id(cid),
+                    "file": entry["file"],
+                    "line": entry.get("line", 0),
+                    "symbol": entry.get("symbol"),
+                    "source": "external-link-store",
+                    "reason": "anchored symbol changed since this link was recorded",
+                })
+        report.suspect_contracts = sorted(
+            set(report.suspect_contracts)
+            | {canonical_id(c) for e in external["suspect"] for c in e["ids"]}
+        )
+        for entry in external["unresolved"]:
+            report.warnings.append(
+                f"external link {entry.get('file')}::{entry.get('symbol')} "
+                f"({entry.get('verb')}) unresolved: {entry.get('reason')}"
+            )
 
     justifications, invalid_justifications = load_justifications(epic_dir)
     apply_justifications(report, justifications, invalid_justifications, today=today)
@@ -618,6 +699,14 @@ def write_links_sidecar(
         annotations += scan_source(source_root)
     current_hashes = hash_epic_definitions(Path(epic_dir))
     body = build_sidecar(annotations, current_hashes, scanner_version=_scanner_version())
+    # Version binding (#213): stamp the target HEAD the sidecar was computed
+    # against. ADDITIVE key — load_sidecar/find_suspect_links tolerate its
+    # absence, so pre-existing sidecars keep loading. Suspect semantics remain
+    # hash re-anchoring (definition-hash compare), which is strictly stronger
+    # than a sha compare; the sha is provenance, not the verify mechanism.
+    body["target_sha"] = artifacts.head_sha(
+        Path(source_root) if source_root else Path(epic_dir)
+    )
     write_sidecar(path, body)
     return body
 
@@ -626,6 +715,12 @@ def render_markdown(report: TraceReport) -> str:
     lines = ["# Traceability Audit", "", f"Defined IDs: {report.counts['defined']}", ""]
     lines.append(f"- Soundness (orphans/dangling/invalid): {'OK' if report.soundness_ok else 'FINDINGS'}")
     lines.append(f"- Coverage (uncovered/untested): {'OK' if report.coverage_ok else 'FINDINGS'}")
+    if report.applicability == "inapplicable":
+        lines.append(
+            "- Applicability: INAPPLICABLE — no contracts defined, so there is "
+            "nothing for coverage to hold over (inapplicable, not passing); any "
+            "annotations found are dangling and remain soundness findings"
+        )
     for label, items in (
         ("Orphan business rules", report.orphan_business_rules),
         ("Uncovered contracts (no code guard)", report.uncovered_contracts),
@@ -643,7 +738,7 @@ def render_markdown(report: TraceReport) -> str:
         lines += ["", "## Suspect links (definition changed since verified)", ""]
         lines += [
             f"- {d['file']}:{d['line']} {d['verb']} {d['target']} "
-            f"(definition hash changed since this link was validated)"
+            f"({d.get('reason', 'definition hash changed since this link was validated')})"
             for d in report.suspect_links
         ]
     if report.justified_contracts:
@@ -696,6 +791,14 @@ def main(argv: list[str] | None = None) -> int:
         f"Defaults to <--source or cwd>/{SIDECAR_RELPATH}.",
     )
     parser.add_argument(
+        "--external-links",
+        metavar="PATH",
+        help="Path to the symbol-anchored external link store (#213 Phase C). Defaults to "
+        f"<meta quality dir>/{external_links.STORE_NAME} when the target's elected footprint "
+        "mode is sidecar; unused otherwise. Verified-ok entries count as annotations; "
+        "suspect entries are surfaced and never satisfy coverage.",
+    )
+    parser.add_argument(
         "--write-links",
         action="store_true",
         help="(Re)write the trace-links.json sidecar from a FULL scan's current link/definition "
@@ -735,12 +838,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
-    links_path = Path(args.links) if args.links else Path(args.source or ".") / SIDECAR_RELPATH
+    source_root = Path(args.source or ".")
+    resolver = artifacts.Resolver.resolve(source_root)
+    if args.links:
+        links_path = Path(args.links)
+    else:
+        # Default: the quality dir of the source repo's meta root (#213) —
+        # byte-identical to <--source or cwd>/SIDECAR_RELPATH in embedded mode.
+        links_path = resolver.quality_dir() / Path(SIDECAR_RELPATH).name
+
+    if args.external_links:
+        external_links_path = Path(args.external_links)
+    elif resolver.mode == "sidecar":
+        # Sidecar mode replaces in-source annotations with the external store
+        # (#213 Phase C) — read it by default, beside trace-links.json.
+        external_links_path = resolver.quality_dir() / external_links.STORE_NAME
+    else:
+        external_links_path = None
 
     try:
         report = check(
             args.epic_dir, args.source, schema=schema, changed_since=args.changed_since,
-            links_path=links_path,
+            links_path=links_path, external_links_path=external_links_path,
         )
     except ManifestError as exc:
         # Bad --changed-since ref, non-git --source, missing HEAD, no git binary:
@@ -781,6 +900,22 @@ def main(argv: list[str] | None = None) -> int:
                   caught=caught, repo=_repo_from_epic_dir(args.epic_dir))
     except Exception:
         pass
+
+    # Vacuous-pass fix (#213 Phase E, tightened by F9): a gate run with ZERO
+    # contracts defined still exits per the unchanged soundness/coverage
+    # semantics below — changing exit codes would break existing pipelines —
+    # but it must never be a silent identical green: the banner prints and the
+    # JSON carries "applicability": "inapplicable" so a wrapper skill can
+    # distinguish. Annotations without definitions are dangling (soundness),
+    # so --gate soundness still fails on them; coverage alone is the vacuous
+    # surface.
+    if args.gate and report.applicability == "inapplicable":
+        print(
+            "check_traceability: INAPPLICABLE — no contracts defined; "
+            f"--gate {args.gate} has nothing to hold over "
+            "(inapplicable, not passing)",
+            file=sys.stderr,
+        )
 
     if args.gate == "soundness" and not report.soundness_ok:
         return 1

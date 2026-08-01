@@ -106,6 +106,7 @@ See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 | `/ship` | PR creation with mermaid architecture diagrams |
 | `/stitch-audit` | Cross-layer data flow analysis |
 | `/code-metrics` | Literature-grounded code-quality metrics: churn, complexity, code survival, duplication, process signals |
+| `/status` | Live one-screen target state: footprint mode, domain scope, gate ledger, ratchet high-water, adopted patterns, debt counts |
 | `/tutorial-video` | Narrated click-through tutorial video: script → recording → TTS narration → .mp4 + .srt |
 | `/update` | Refresh AI model IDs and library versions |
 

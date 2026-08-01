@@ -67,7 +67,10 @@ def _git_log(repo: str, no_merges: bool, since: str | None = None) -> str:
     return subprocess.run(cmd, capture_output=True, text=True).stdout
 
 
-def analyze(repo: str, top_n: int = 25, no_merges: bool = True, since: str | None = None) -> dict:
+def analyze(
+    repo: str, top_n: int = 25, no_merges: bool = True, since: str | None = None,
+    path_filter=None,
+) -> dict:
     """Compute git-history churn metrics for ``repo``. Never raises on empty repos.
 
     ``since`` (optional, e.g. ``"2026-01-01"`` or ``"90 days ago"``, anything
@@ -75,6 +78,11 @@ def analyze(repo: str, top_n: int = 25, no_merges: bool = True, since: str | Non
     point — the SAME engine, just date-bounded, for callers that need a
     recent-activity slice (e.g. a trend comparison) without re-deriving churn
     from scratch.
+
+    ``path_filter`` (optional predicate over the git-reported path) restricts
+    the churned population to in-scope paths (#213 domain scope): a filtered
+    path contributes to no total, no per-file entry, no per-commit add/del.
+    ``None`` (the default) is the unchanged whole-repo behavior.
     """
     log = _git_log(repo, no_merges, since=since)
 
@@ -94,6 +102,8 @@ def analyze(repo: str, top_n: int = 25, no_merges: bool = True, since: str | Non
             if len(parts) != 3:
                 continue
             a, d, path = parts
+            if path_filter is not None and not path_filter(path):
+                continue
             add = 0 if a == "-" else int(a)
             dele = 0 if d == "-" else int(d)
             cur["add"] += add

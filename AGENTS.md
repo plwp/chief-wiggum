@@ -20,6 +20,7 @@ The Claude Code adapter invokes the portable workflows through Claude-only mecha
 ## Working Rules
 
 - Resolve paths through `scripts/env.py` and `scripts/repo.py`; do not hardcode local checkout paths.
+- Resolve a target's CW meta location (embedded vs sidecar, domain scope) through `scripts/artifacts.py` — never assume `docs/quality`; `/status` (`scripts/status.py`) shows the resolved state live. See `docs/sidecar.md`.
 - Run dependency checks with the narrowest profile that matches the workflow, for example `python3 scripts/check_deps.py --for core --provider codex`.
 - Treat provider output as advisory unless the workflow explicitly defines it as a generated artifact. Verify code, tests, screenshots, and repository facts locally.
 - Keep new instructions harness-neutral unless they are explicitly inside a harness adapter.

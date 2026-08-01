@@ -171,7 +171,10 @@ def test_to_dict_and_shell_exports(monkeypatch, tmp_path):
     assert "export DEFAULT_BRANCH='trunk'" in exports
     assert "export ISSUE_NUMBER=7" in exports
     assert "export EPIC_SLUG='epic-name'" in exports
-    assert 'export EPIC_DIR="$TARGET_REPO/docs/epics/epic-name"' in exports
+    # EPIC_DIR routes through the artifacts resolver (#213): with the repo
+    # path known it is the RESOLVED absolute path (embedded ⇒ <repo>/docs/epics/<slug>).
+    resolved = str(tmp_path / "repo" / "docs" / "epics" / "epic-name")
+    assert f"export EPIC_DIR='{resolved}'" in exports
 
 
 def test_shell_exports_quote_hostile_values(monkeypatch, tmp_path):

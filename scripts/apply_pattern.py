@@ -42,6 +42,7 @@ from pathlib import Path, PurePosixPath
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
+import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 from check_patterns import cluster_entries  # noqa: E402
 from ratchet import DEFAULT_PROTECTED  # noqa: E402
 
@@ -58,6 +59,18 @@ _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
 class ApplyError(Exception):
     """Usage / resolution problem. Maps to exit 2."""
+
+
+def _meta_path(target: Path, rel: str) -> Path:
+    """Map a ``docs/...``-relative KNOWLEDGE path (contract pack, adopted.json,
+    ratchet config) onto the target's meta root (chief-wiggum#213): identical
+    to ``target / rel`` in embedded mode (no election), the sidecar meta dir
+    otherwise. Scaffold CODE never routes through this — code stays in-repo
+    regardless of mode."""
+    parts = PurePosixPath(rel).parts
+    if not parts or parts[0] != "docs":
+        return Path(target) / rel
+    return artifacts.Resolver.resolve(Path(target)).meta_root.joinpath(*parts[1:])
 
 
 @dataclass
@@ -279,7 +292,7 @@ def build_plan(pattern_id: str, provided: dict[str, str],
 
 
 def _merge_adopted(target: Path, pattern_id: str, adoption: dict) -> str:
-    path = target / ADOPTED_REL
+    path = _meta_path(target, ADOPTED_REL)
     if path.is_file():
         doc = json.loads(path.read_text())
     else:
@@ -291,7 +304,7 @@ def _merge_adopted(target: Path, pattern_id: str, adoption: dict) -> str:
 
 def _merge_ratchet(target: Path, add: list[str]) -> tuple[str | None, list[str]]:
     """Return (new content or None if no change, list of globs actually added)."""
-    path = target / RATCHET_REL
+    path = _meta_path(target, RATCHET_REL)
     if path.is_file():
         cfg = json.loads(path.read_text())
         existing = list(cfg.get("protected_paths", list(DEFAULT_PROTECTED)))
@@ -309,9 +322,11 @@ def _merge_ratchet(target: Path, add: list[str]) -> tuple[str | None, list[str]]
 def apply_plan(plan: Plan, target: Path, write: bool = True, force: bool = False) -> list[str]:
     actions: list[str] = []
     for rel, content in plan.files.items():
+        # Contract-pack docs are KNOWLEDGE — routed through the meta resolver
+        # (#213). In embedded mode this is exactly `target / rel`.
         actions.append(f"write {rel}")
         if write:
-            path = target / rel
+            path = _meta_path(target, rel)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
 
@@ -344,7 +359,7 @@ def apply_plan(plan: Plan, target: Path, write: bool = True, force: bool = False
     adopted = _merge_adopted(target, plan.pattern_id, plan._adoption)
     actions.append(f"record adoption in {ADOPTED_REL}")
     if write:
-        p = target / ADOPTED_REL
+        p = _meta_path(target, ADOPTED_REL)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(adopted)
 
@@ -352,7 +367,7 @@ def apply_plan(plan: Plan, target: Path, write: bool = True, force: bool = False
     if added:
         actions.append(f"register protected paths in {RATCHET_REL}: {', '.join(added)}")
         if write:
-            p = target / RATCHET_REL
+            p = _meta_path(target, RATCHET_REL)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(ratchet_content)
     return actions
@@ -364,7 +379,7 @@ def list_adopted(target_dir: Path, registry_path: Path = REGISTRY, base: Path = 
     Statements are re-read from the registry manifest (source of truth), so
     `/architect` folds current invariant text — not whatever was stamped earlier.
     """
-    path = Path(target_dir) / ADOPTED_REL
+    path = _meta_path(Path(target_dir), ADOPTED_REL)
     if not path.is_file():
         return []
     doc = json.loads(path.read_text())
