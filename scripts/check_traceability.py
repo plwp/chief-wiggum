@@ -158,6 +158,13 @@ class TraceReport:
     expired_justifications: list[dict] = field(default_factory=list)
     invalid_justifications: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
+    # defines ZERO stable IDs AND no @cw-trace annotations exist anywhere —
+    # there was no graph to check, so coverage_ok == True is vacuous, not
+    # evidence. Exit codes are unchanged (existing green pipelines keep
+    # passing); the verdict is machine-distinguishable here and the --gate
+    # path prints an explicit banner.
+    applicability: str = "applicable"
 
     @property
     def counts(self) -> dict:
@@ -186,6 +193,7 @@ class TraceReport:
         return {
             "defined": self.defined,
             "counts": self.counts,
+            "applicability": self.applicability,
             "soundness_ok": self.soundness_ok,
             "coverage_ok": self.coverage_ok,
             "orphan_business_rules": self.orphan_business_rules,
@@ -513,6 +521,10 @@ def build_report(
         report.warnings.append("no @cw-trace annotations found; reporting coverage as absent")
     if not defined:
         report.warnings.append("no contract/invariant/BR IDs defined in epic artifacts")
+    if not defined and not annotations:
+        # Vacuous-pass fix (#213 Phase E): an empty graph passes every "no
+        # findings" check trivially — that is inapplicability, never a green.
+        report.applicability = "inapplicable"
     return report
 
 
@@ -693,6 +705,11 @@ def render_markdown(report: TraceReport) -> str:
     lines = ["# Traceability Audit", "", f"Defined IDs: {report.counts['defined']}", ""]
     lines.append(f"- Soundness (orphans/dangling/invalid): {'OK' if report.soundness_ok else 'FINDINGS'}")
     lines.append(f"- Coverage (uncovered/untested): {'OK' if report.coverage_ok else 'FINDINGS'}")
+    if report.applicability == "inapplicable":
+        lines.append(
+            "- Applicability: INAPPLICABLE — no contracts defined and no annotations "
+            "found; nothing was checked (inapplicable, not passing)"
+        )
     for label, items in (
         ("Orphan business rules", report.orphan_business_rules),
         ("Uncovered contracts (no code guard)", report.uncovered_contracts),
@@ -872,6 +889,19 @@ def main(argv: list[str] | None = None) -> int:
                   caught=caught, repo=_repo_from_epic_dir(args.epic_dir))
     except Exception:
         pass
+
+    # Vacuous-pass fix (#213 Phase E): a gate run over an EMPTY graph (no
+    # contracts defined, no annotations anywhere) still exits 0 — changing the
+    # exit code would break every existing green pipeline — but it must never
+    # be a silent identical green: the banner prints and the JSON carries
+    # "applicability": "inapplicable" so a wrapper skill can distinguish.
+    if args.gate and report.applicability == "inapplicable":
+        print(
+            "check_traceability: INAPPLICABLE — no contracts defined and no "
+            f"annotations found; --gate {args.gate} passes vacuously "
+            "(no contracts defined — inapplicable, not passing)",
+            file=sys.stderr,
+        )
 
     if args.gate == "soundness" and not report.soundness_ok:
         return 1

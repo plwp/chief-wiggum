@@ -715,3 +715,151 @@ def test_sidecar_election_routes_ratchet_state_dir(tmp_path, monkeypatch):
     cfg = ratchet.load_config(repo)
     assert cfg.state_dir == state
     assert cfg.journal == state / "ratchet-journal.jsonl"
+
+
+# ---- sanctioned pathset (chief-wiggum#213) -----------------------------------------
+
+
+def test_pathset_outside_with_explicit_paths_spec():
+    """Ticket-pathset shape: a changed file is sanctioned iff it matches one of
+    the globs (the same _glob_to_re grammar as protected_paths)."""
+    spec = {"paths": ["internal/billing/**", "docs/epics/billing/*.md"], "source": "ticket #42"}
+    changed = [
+        "internal/billing/reconcile.go",       # sanctioned
+        "internal/admin/handlers.go",          # OUTSIDE
+        "docs/epics/billing/contracts.md",     # sanctioned
+        "ui/app.tsx",                          # OUTSIDE
+    ]
+    assert ratchet.pathset_outside(spec, changed) == [
+        "internal/admin/handlers.go",
+        "ui/app.tsx",
+    ]
+
+
+def test_pathset_outside_with_scope_spec():
+    """Domain scope.json shape: artifacts.py semantics — missing include =
+    everything, exclude wins."""
+    spec = {"include": ["internal/**"], "exclude": ["internal/legacy/**"]}
+    changed = [
+        "internal/billing/reconcile.go",   # in scope
+        "internal/legacy/old.go",          # excluded -> OUTSIDE
+        "ui/app.tsx",                      # not included -> OUTSIDE
+    ]
+    assert ratchet.pathset_outside(spec, changed) == [
+        "internal/legacy/old.go",
+        "ui/app.tsx",
+    ]
+
+
+def test_pathset_outside_scope_exclude_only():
+    spec = {"exclude": ["vendor/**"]}
+    assert ratchet.pathset_outside(spec, ["a.go", "vendor/x.go"]) == ["vendor/x.go"]
+
+
+def test_load_pathset_rejects_bad_shapes(tmp_path):
+    missing = tmp_path / "nope.json"
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(missing)
+    both = tmp_path / "both.json"
+    both.write_text(json.dumps({"paths": ["a"], "include": ["b"]}))
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(both)
+    neither = tmp_path / "neither.json"
+    neither.write_text(json.dumps({"source": "x"}))
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(neither)
+    garbage = tmp_path / "garbage.json"
+    garbage.write_text("{not json")
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.load_pathset(garbage)
+
+
+def _pathset_repo(tmp_path):
+    """A git repo whose HEAD adds one in-pathset and one out-of-pathset file
+    relative to the base commit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@example.com")
+    _git("config", "user.name", "T")
+    (repo / "README.md").write_text("base\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "base")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    (repo / "internal" / "billing").mkdir(parents=True)
+    (repo / "internal" / "billing" / "reconcile.go").write_text("func R() {}\n")
+    (repo / "ui").mkdir()
+    (repo / "ui" / "app.tsx").write_text("export {}\n")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "change")
+    return repo, base
+
+
+def test_cmd_pathset_parks_out_of_pathset_diff(tmp_path, capsys):
+    """Park-for-human semantics, same shape as `protected`: exit 1 + a labeled
+    stderr listing when the branch diff escapes the sanctioned set."""
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "pathset.json"
+    spec_file.write_text(json.dumps({"paths": ["internal/**"], "source": "ticket #216-demo"}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "OUTSIDE THE SANCTIONED PATHSET" in err
+    assert "ui/app.tsx" in err
+    assert "internal/billing/reconcile.go" not in err
+    assert "ticket #216-demo" in err  # the spec's source label is surfaced
+
+
+def test_cmd_pathset_report_only_prints_but_exits_zero(tmp_path, capsys):
+    """--report-only is how #216 consumes this first (docs/gate-rollout.md)."""
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "pathset.json"
+    spec_file.write_text(json.dumps({"paths": ["internal/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=True)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "ui/app.tsx" in err and "report-only" in err
+
+
+def test_cmd_pathset_scope_source_clean_when_diff_in_scope(tmp_path, capsys):
+    """Scope-source pathset: a diff entirely inside the domain scope passes."""
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "scope.json"
+    spec_file.write_text(json.dumps({"include": ["internal/**", "ui/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 0
+    assert "within the sanctioned pathset" in capsys.readouterr().out
+
+
+def test_cmd_pathset_scope_source_parks_out_of_scope(tmp_path, capsys):
+    repo, base = _pathset_repo(tmp_path)
+    spec_file = tmp_path / "scope.json"
+    spec_file.write_text(json.dumps({"include": ["internal/**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    rc = ratchet.cmd_pathset(args)
+    assert rc == 1
+    assert "ui/app.tsx" in capsys.readouterr().err
+
+
+def test_cmd_pathset_needs_no_ratchet_config(tmp_path, capsys):
+    """Deliberately config-free: works on a target with no ratchet init (the
+    #216 consumption path) — unlike `protected`, which loads the config."""
+    repo, base = _pathset_repo(tmp_path)
+    assert not (repo / "docs" / "quality" / "ratchet.json").exists()
+    spec_file = tmp_path / "pathset.json"
+    spec_file.write_text(json.dumps({"paths": ["**"]}))
+    args = argparse.Namespace(repo=str(repo), base=base,
+                              pathset_file=str(spec_file), report_only=False)
+    assert ratchet.cmd_pathset(args) == 0

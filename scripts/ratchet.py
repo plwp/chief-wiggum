@@ -69,6 +69,11 @@ Subcommands:
     recent      print the last N records' notes (amnesia context for the fixer)
     highwater   print the derived high-water mark
     protected   exit 1 if a branch diff touches the protected pathset
+    pathset     exit 1 if a branch diff ESCAPES a sanctioned pathset (#213):
+                the inverse of `protected`, parameterized by pathset source —
+                an explicit {"paths": [globs]} file (ticket-scoped, #216) or a
+                domain scope.json ({"include"/"exclude"}); --report-only prints
+                but exits 0
 
 Exit codes: 0 = ok, 1 = gate violation, 2 = usage/config error,
 3 = no scorecard (run `score` first), 4 = journal tamper detected.
@@ -1123,13 +1128,7 @@ def highwater_test_file_cue(cfg: Config, changed: list[str]) -> None:
 
 def cmd_protected(args) -> int:
     cfg = load_config(repo_root(args.repo))
-    proc = subprocess.run(
-        ["git", "diff", "--name-only", f"{args.base}...HEAD"],
-        cwd=cfg.repo, capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise RatchetError(f"git diff failed: {proc.stderr.strip()}")
-    changed = proc.stdout.splitlines()
+    changed = _changed_files(cfg.repo, args.base)
     hits = protected_hits(cfg, changed)
     highwater_test_file_cue(cfg, changed)
     if hits:
@@ -1139,6 +1138,89 @@ def cmd_protected(args) -> int:
         )
         return 1
     print("ratchet: no protected paths touched")
+    return 0
+
+
+# ---- sanctioned pathset (chief-wiggum#213) --------------------------------------
+#
+# The INVERSE of `protected`: protected parks a diff that touches a small set of
+# goalpost paths; `pathset` parks a diff that ESCAPES a sanctioned set — the
+# same park-for-human semantics, pointed at scope creep instead of goalpost
+# moves. One mechanism, parameterized by pathset SOURCE (two shapes):
+#
+#   {"paths": [globs], "source": "..."}      an explicit (e.g. ticket-scoped)
+#       sanctioned pathset — a changed file is sanctioned iff it matches one of
+#       the globs (same _glob_to_re grammar as protected_paths). #216 feeds a
+#       --from-debt ticket's DEBT- locations + declared collateral through this.
+#
+#   {"include": [globs], "exclude": [globs]} the domain scope.json
+#       (scripts/artifacts.py semantics: missing include = everything, exclude
+#       wins) — a changed file outside the domain scope is parked.
+
+
+def _changed_files(repo: Path, base: str) -> list[str]:
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RatchetError(f"git diff failed: {proc.stderr.strip()}")
+    return proc.stdout.splitlines()
+
+
+def load_pathset(path: str | Path) -> dict:
+    """Load and shape-check a sanctioned-pathset file. Raises RatchetError on a
+    missing/unparsable file or an unrecognized shape — a typo'd pathset must
+    never silently sanction everything (or nothing)."""
+    p = Path(path)
+    if not p.is_file():
+        raise RatchetError(f"pathset file not found: {p}")
+    try:
+        spec = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise RatchetError(f"cannot parse pathset file {p}: {e}") from e
+    if not isinstance(spec, dict):
+        raise RatchetError(f"pathset file {p} must be a JSON object")
+    has_paths = "paths" in spec
+    has_scope = "include" in spec or "exclude" in spec
+    if has_paths and has_scope:
+        raise RatchetError(
+            f"pathset file {p} mixes 'paths' with 'include'/'exclude' — use one shape"
+        )
+    if not has_paths and not has_scope:
+        raise RatchetError(
+            f"pathset file {p} has neither 'paths' nor 'include'/'exclude' — not a pathset"
+        )
+    return spec
+
+
+def pathset_outside(spec: dict, changed: list[str]) -> list[str]:
+    """Changed files that fall OUTSIDE the sanctioned pathset — the park set.
+    Pure function of (spec, changed); shape decides the matching rule."""
+    if "paths" in spec:
+        patterns = [_glob_to_re(g) for g in (spec.get("paths") or [])]
+        return sorted(f for f in changed if f and not any(p.match(f) for p in patterns))
+    # scope.json shape — delegate to the single scope-matching implementation.
+    return sorted(f for f in changed if f and not artifacts.path_in_scope(spec, f))
+
+
+def cmd_pathset(args) -> int:
+    # Deliberately config-free (unlike `protected`): the sanctioned set comes
+    # from the pathset file, so this works on targets with no ratchet init —
+    # #216 consumes it report-only first (docs/gate-rollout.md).
+    repo = repo_root(args.repo)
+    spec = load_pathset(args.pathset_file)
+    changed = _changed_files(repo, args.base)
+    outside = pathset_outside(spec, changed)
+    source = spec.get("source") or str(args.pathset_file)
+    if outside:
+        tag = "report-only" if args.report_only else "park for human review, do not merge"
+        sys.stderr.write(
+            f"ratchet: FILES OUTSIDE THE SANCTIONED PATHSET ({source}) — {tag}:\n"
+            + "".join(f"  {f}\n" for f in outside)
+        )
+        return 0 if args.report_only else 1
+    print(f"ratchet: all changed files within the sanctioned pathset ({source})")
     return 0
 
 
@@ -1245,11 +1327,29 @@ def main() -> int:
     common(sp)
     sp.add_argument("--base", default="origin/main")
 
+    sp = sub.add_parser(
+        "pathset",
+        help="flag branch diffs ESCAPING a sanctioned pathset (chief-wiggum#213) — "
+             "park-for-human semantics, inverse of `protected`",
+    )
+    common(sp)
+    sp.add_argument("--base", default="origin/main")
+    sp.add_argument(
+        "--pathset-file", required=True, metavar="JSON",
+        help="Sanctioned-pathset source: {'paths': [globs], 'source': ...} (explicit "
+             "ticket pathset) or a domain scope.json {'include': [...], 'exclude': [...]}",
+    )
+    sp.add_argument(
+        "--report-only", action="store_true",
+        help="Print out-of-pathset files but exit 0 (docs/gate-rollout.md — how #216 "
+             "consumes this first)",
+    )
+
     args = p.parse_args()
     dispatch = {
         "init": cmd_init, "score": cmd_score, "check": cmd_check,
         "regressed": cmd_regressed, "record": cmd_record, "recent": cmd_recent,
-        "highwater": cmd_highwater, "protected": cmd_protected,
+        "highwater": cmd_highwater, "protected": cmd_protected, "pathset": cmd_pathset,
     }
     try:
         return dispatch[args.cmd](args)

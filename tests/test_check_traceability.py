@@ -919,3 +919,97 @@ def test_external_link_to_undefined_id_is_dangling(tmp_path):
                             ["CTR-ghost-999"], use_lsp=False)
     r = ct.check(epic, src, external_links_path=store)
     assert any(d["target"] == "CTR-ghost-999" for d in r.dangling)
+
+
+# --- vacuous-pass fix (applicability, chief-wiggum#213 Phase E) ---------------
+
+
+def test_empty_epic_and_source_is_inapplicable(tmp_path):
+    """Zero defined IDs AND zero annotations = an empty graph: coverage_ok is
+    (vacuously) true, but the report says INAPPLICABLE, never a plain green."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# nothing declared here\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    report = ct.check(epic, src, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.coverage_ok is True  # exit semantics unchanged
+    assert report.soundness_ok is True
+
+
+def test_defined_ids_make_the_report_applicable(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("**CTR-order-001**: valid range\n")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "applicable"
+    # ...and its gaps are REAL findings, not vacuous ones.
+    assert report.uncovered_contracts == ["CTR-order-001"]
+
+
+def test_annotations_without_definitions_are_applicable(tmp_path):
+    """Dangling annotations alone (no defined IDs) still mean there was
+    something to check — that is applicable, with dangling findings."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# empty\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
+    report = ct.check(epic, src, schema=SCHEMA)
+    assert report.applicability == "applicable"
+    assert report.dangling
+
+
+def test_cli_gate_coverage_inapplicable_exits_zero_with_banner(tmp_path, capsys):
+    """The pre-existing vacuous-pass bug this issue owns: --gate coverage on an
+    epic with ZERO contracts/annotations used to exit 0 with a silent green.
+    Exit code stays 0 (no existing pipeline breaks) but the banner prints and
+    the JSON carries applicability explicitly."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# nothing\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["applicability"] == "inapplicable"
+    assert "inapplicable, not passing" in captured.err
+
+
+def test_cli_inapplicable_text_output_says_so(tmp_path, capsys):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("# nothing\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = ct.main([str(epic), "--source", str(src)])
+    assert rc == 0
+    assert "INAPPLICABLE" in capsys.readouterr().out
+
+
+def test_cli_applicable_gate_prints_no_banner(tmp_path, capsys):
+    """A populated epic must not print the inapplicable banner."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text(
+        "**CTR-order-001**: valid range\n"
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "svc.py").write_text(
+        "# @cw-trace guards CTR-order-001\n"
+        "def f():\n    pass\n"
+    )
+    (src / "test_svc.py").write_text(
+        "# @cw-trace verifies CTR-order-001\n"
+        "def test_f():\n    pass\n"
+    )
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["applicability"] == "applicable"
+    assert "INAPPLICABLE" not in captured.err

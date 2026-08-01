@@ -61,6 +61,52 @@ SCOPE_NAME = "scope.json"
 META_SUBDIRS = ("epics", "quality", "patterns", "design")
 
 
+def load_scope_file(path: Path | str) -> dict | None:
+    """Read a ``scope.json`` document. Missing or unreadable ⇒ ``None``
+    (= whole-repo scope) — the same degradation ``Resolver._load_scope``
+    always had, exposed module-level so gates can consume an EXPLICIT
+    ``--scope <path>`` with identical semantics."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        doc = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def path_in_scope(scope: dict | None, relpath: str | Path) -> bool:
+    """fnmatch a repo-relative path against a scope document. ``None`` scope =
+    everything in scope; empty include = everything; exclude wins. The single
+    implementation behind ``Resolver.in_scope`` AND every gate's ``--scope``
+    classification (chief-wiggum#213 Phase D) — one matching rule, not a copy
+    per gate."""
+    if scope is None:
+        return True
+    rel = PurePosixPath(Path(relpath)).as_posix()
+    exclude = scope.get("exclude") or []
+    if any(fnmatch.fnmatch(rel, g) for g in exclude):
+        return False
+    include = scope.get("include") or []
+    if not include:
+        return True
+    return any(fnmatch.fnmatch(rel, g) for g in include)
+
+
+def describe_scope(scope: dict | None, missing_note: str = "whole repo") -> str:
+    """One-line human summary of a scope document (shared by
+    ``Resolver.scope_summary`` and /status)."""
+    if scope is None:
+        return missing_note
+    include = scope.get("include") or []
+    exclude = scope.get("exclude") or []
+    parts = ["include: " + (", ".join(include) if include else "(everything)")]
+    if exclude:
+        parts.append("exclude: " + ", ".join(exclude))
+    return "; ".join(parts)
+
+
 def user_dir(cw_home: Path | str | None = None) -> Path:
     """The chief-wiggum user-space dir (default ``~/.chief-wiggum``).
 
@@ -226,43 +272,25 @@ class Resolver:
 
     # -- domain scope ----------------------------------------------------------
 
+    def scope_path(self) -> Path:
+        """Where this target's scope.json lives (may not exist)."""
+        return self.meta_root / SCOPE_NAME
+
     def _load_scope(self) -> dict | None:
         """Read scope.json fresh each call (live-scan discipline — never
         memoized). Missing or unreadable ⇒ whole-repo scope."""
-        path = self.meta_root / SCOPE_NAME
-        if not path.is_file():
-            return None
-        try:
-            doc = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
-        return doc if isinstance(doc, dict) else None
+        return load_scope_file(self.scope_path())
 
     def in_scope(self, relpath: str | Path) -> bool:
         """fnmatch the repo-relative path against scope.json. Missing file =
         everything in scope; empty include = everything; exclude wins."""
-        scope = self._load_scope()
-        if scope is None:
-            return True
-        rel = PurePosixPath(Path(relpath)).as_posix()
-        exclude = scope.get("exclude") or []
-        if any(fnmatch.fnmatch(rel, g) for g in exclude):
-            return False
-        include = scope.get("include") or []
-        if not include:
-            return True
-        return any(fnmatch.fnmatch(rel, g) for g in include)
+        return path_in_scope(self._load_scope(), relpath)
 
     def scope_summary(self) -> str:
-        scope = self._load_scope()
-        if scope is None:
-            return f"whole repo (no {SCOPE_NAME} at {self.meta_root})"
-        include = scope.get("include") or []
-        exclude = scope.get("exclude") or []
-        parts = ["include: " + (", ".join(include) if include else "(everything)")]
-        if exclude:
-            parts.append("exclude: " + ", ".join(exclude))
-        return "; ".join(parts)
+        return describe_scope(
+            self._load_scope(),
+            missing_note=f"whole repo (no {SCOPE_NAME} at {self.meta_root})",
+        )
 
     # -- version binding -------------------------------------------------------
 
