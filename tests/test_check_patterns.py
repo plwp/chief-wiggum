@@ -414,3 +414,77 @@ def test_platform_cost_observability_gcp_binding_registered():
     assert (stack_dir / binding["recipe"]).exists()
     assert "aspirational" in binding["source"]
     assert any("platform spend" in gap for gap in stack["known_gaps"])
+
+
+# --- #236: validation-experiment patterns -------------------------------------
+
+VALIDATION_EXPERIMENTS = {
+    "landing-page-smoke-test": "INV-LPS",
+    "presale": "INV-PRE",
+}
+
+
+def test_validation_experiment_patterns_are_specified_with_honest_grounding():
+    """Both #236 experiment patterns: specified, category validation-experiment,
+    trust class end-user-signal-driven, non-empty success_metrics (the promotion
+    bar), and every invariant carries an honest grounding class — the
+    pre-registration/vanity-lint invariants cite the in-repo validation engine
+    (scripts/assumption.py); the page-level invariants are explicitly
+    design-derived per the #139 allowance, never unmarked."""
+    reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
+    for pid, prefix in VALIDATION_EXPERIMENTS.items():
+        entry = next((e for e in reg["patterns"] if e["id"] == pid), None)
+        assert entry is not None, f"{pid} must be a specified pattern"
+        assert entry["status"] == "specified"
+        assert entry["category"] == "validation-experiment"
+        assert entry["trust_class"] == "end-user-signal-driven"
+        assert entry["invariants"] == f"{prefix}-001..005"
+
+        manifest = json.loads(
+            (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
+        cluster = check_patterns.cluster_entries(manifest["invariants"])
+        assert [e["id"] for e in cluster] == [f"{prefix}-00{i}" for i in range(1, 6)]
+        assert manifest["success_metrics"]["metrics"], (
+            f"{pid}: specified patterns must declare non-empty success_metrics.metrics")
+        grounded = {e["id"] for e in cluster
+                    if isinstance(e.get("realized_as"), dict)
+                    and "chief-wiggum" in e["realized_as"]["app"]}
+        assert grounded == {f"{prefix}-001", f"{prefix}-002"}, grounded
+        for e in cluster:
+            if e["id"] in grounded:
+                assert "assumption.py" in e["realized_as"]["code"], e["id"]
+            else:
+                assert e.get("grounding") == "design-derived", (
+                    f"{e['id']} must be honestly flagged design-derived")
+
+
+def test_validation_experiment_metrics_are_per_cohort_rates():
+    """The patterns must practice what their own vanity-metric lint preaches:
+    every declared success metric reads as a rate/cost, never a cumulative
+    counter."""
+    import assumption
+    for pid in VALIDATION_EXPERIMENTS:
+        manifest = json.loads(
+            (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
+        for m in manifest["success_metrics"]["metrics"]:
+            assert not assumption.VANITY_RE.search(m["id"]), f"{pid}: {m['id']}"
+
+
+def test_validation_experiment_scaffolds_exist_and_are_honest():
+    """Each pattern ships a stampable scaffold whose page template carries the
+    honest-framing block (INV-LPS-003 / INV-PRE-003)."""
+    for pid in VALIDATION_EXPERIMENTS:
+        sdir = SCRIPTS.parent / "patterns" / pid / "scaffold"
+        scaffold = json.loads((sdir / "scaffold.json").read_text())
+        assert scaffold["pattern"] == pid
+        assert scaffold["files"], f"{pid}: scaffold.json needs files"
+        for f in scaffold["files"]:
+            assert (sdir / f["template"]).is_file(), f"{pid}: {f['template']} missing"
+            assert f["realizes"], f"{pid}: scaffold file must name realized invariants"
+    smoke = (SCRIPTS.parent / "patterns" / "landing-page-smoke-test" / "scaffold"
+             / "index.html.tmpl").read_text()
+    assert "Not built yet" in smoke
+    presale = (SCRIPTS.parent / "patterns" / "presale" / "scaffold"
+               / "index.html.tmpl").read_text()
+    assert "not built yet" in presale
+    assert "refund" in presale.lower()

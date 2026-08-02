@@ -20,6 +20,8 @@ State lives in a dedicated private portfolio repo (default
         ├── kill-criteria.json # templates/kill-criteria-schema.json (a goalpost)
         ├── ledger.jsonl       # append-only spend/time/rep entries
         ├── channels.json      # optional channel-experiment records (#241)
+        ├── assumptions.json   # optional assumption ledger (#236, assumption.py)
+        ├── test-cards.json    # optional pre-registered test cards (#236)
         └── retrospective.md   # required non-trivially before `killed`
 
 The journal REUSES ``ratchet.py``'s hash-chain format via ``ratchet.load_journal``
@@ -74,9 +76,17 @@ passing ``--gate`` until a ``validation/bet-gates.json`` record exists):
   probing|validating is a finding — untagged hours never are (a finding must
   come from data, not its absence).
 
+- **evidence-strength floor** (transition → building, #236): ≥1 validated
+  assumption at strength ≥4 (reputation/money — Blank: purchase orders, not
+  enthusiasm), computed by ``assumption.py``. No assumptions.json →
+  ``skipped``. A pivot's ``--changed-elements`` re-opens (validated →
+  untested) dependent assumptions in the successor (Bland's dependency rule).
+
 Channel-experiment records themselves (Bullseye states, completeness,
 exactly-one-focused, CAC join, headcount filter) are ``scripts/channel.py``'s
-job — it imports this module's helpers and journals into the same chain.
+job — it imports this module's helpers and journals into the same chain; the
+assumption ledger + pre-registered test cards (#236) are
+``scripts/assumption.py``'s job in the same importing-sibling shape.
 
 Missing OPTIONAL inputs never crash and are never silently omitted: no
 means.json → the selection lint reports ``skipped``; no channels.json and no
@@ -966,6 +976,8 @@ def cmd_transition(args) -> int:
         raise BetError("--successor (pivot) closes the bet: the target state must be `killed`")
     if args.successor and (not args.envelope or not args.criteria):
         raise BetError("a pivot successor needs fresh --envelope and --criteria files")
+    if args.changed_elements and not args.successor:
+        raise BetError("--changed-elements applies to a pivot — pass --successor")
 
     # A stateless journaled act: unlock a tranche and/or override a pending kill.
     if to is None:
@@ -1049,6 +1061,13 @@ def cmd_transition(args) -> int:
     if to in IN_FLIGHT and bet["state"] not in IN_FLIGHT:
         findings += cap_findings(root, args.max_in_flight, entering=args.bet_id)
 
+    if to == "building":
+        # Evidence-strength floor (#236): ≥1 validated assumption at strength ≥4
+        # (reputation/money). assumption.py owns the logic; the import is
+        # deferred to avoid a module cycle (assumption.py imports bet).
+        import assumption as asmlib
+        findings += asmlib.building_floor_findings(root, args.bet_id)
+
     rc = report(findings, args.gate)
     if rc:
         print(f"bet: transition {args.bet_id} → {to} REFUSED (--gate)")
@@ -1089,6 +1108,23 @@ def cmd_transition(args) -> int:
         if rc:
             return rc
         successor_note = f"; successor {args.successor} opened with fresh envelope+criteria"
+        if args.changed_elements:
+            # Bland's dependency rule (#236): the successor inherits the
+            # assumption ledger with every validated ASM tagged to a changed
+            # canvas element re-opened (validated → untested), journaled.
+            import assumption as asmlib
+            changed = [e for arg in args.changed_elements for e in arg.split(",")]
+            summary = asmlib.pivot_reopen(root, args.bet_id, args.successor, changed)
+            if summary is None:
+                print(f"bet: no assumptions.json on {args.bet_id} — nothing to re-open")
+            else:
+                names = ", ".join(summary["reopened"]) or "none"
+                print(
+                    f"bet: pivot re-opened {len(summary['reopened'])} assumption(s) "
+                    f"({names}) in {args.successor} — changed element(s) invalidate "
+                    f"dependent validation; {summary['carried']} carried "
+                    f"({summary['record_id']})"
+                )
     else:
         save_bet(root, bet)
         append_event(root, "transition", args.bet_id, details)
@@ -1359,6 +1395,12 @@ def main() -> int:
                     help="successor's fresh kill criteria (pivot only)")
     sp.add_argument("--successor-title", default=None)
     sp.add_argument("--successor-thesis", default="")
+    sp.add_argument("--changed-elements", action="append", default=None,
+                    metavar="ELEMENT[,ELEMENT...]",
+                    help="pivot only: canvas element(s) the pivot changes — every "
+                         "validated assumption tagged depends_on_element to one of "
+                         "them re-opens (validated → untested) in the successor "
+                         "(Bland's dependency rule, #236)")
     sp.add_argument("--max-in-flight", type=int, default=DEFAULT_MAX_IN_FLIGHT,
                     help=f"bets-in-flight cap over probing|validating|building "
                          f"(default {DEFAULT_MAX_IN_FLIGHT})")

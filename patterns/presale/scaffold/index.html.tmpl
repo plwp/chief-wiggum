@@ -1,0 +1,53 @@
+<!doctype html>
+<!--
+  Presale (honest pre-order) page for {{product_name}} — stamped by
+  chief-wiggum /apply-pattern (presale, #236). EXPERIMENT scaffold, not
+  product code.
+
+  INV-PRE-003 (honest framing): the not-built-yet block, the price, and the
+  delivery window stay VISIBLE and ABOVE the payment step. A checkout that
+  hides non-existence is fraud, not a test.
+  INV-PRE-005 (refund-on-kill): the refund policy shown here is a promise the
+  kill/pivot path must honor.
+
+  Before launch: pre-register the strength-5 test card —
+    python3 scripts/assumption.py card <bet-id> --asm ASM-NNN \
+        --method presale --metric visitor_to_preorder_rate_pct \
+        --comparator ">=" --value <X> --sample-min <N> --evidence-strength 5
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{product_name}} — pre-order</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
+    .honest { border: 1px solid currentColor; border-radius: 0.5rem; padding: 0.8rem 1rem; margin-bottom: 1.5rem; }
+    .price { font-size: 1.6rem; font-weight: 700; }
+    button { padding: 0.8rem 1.6rem; font-size: 1.1rem; cursor: pointer; }
+    .fine { font-size: 0.8rem; opacity: 0.7; }
+    #checkout-error { display: none; }
+  </style>
+</head>
+<body>
+  <div class="honest">
+    <strong>{{product_name}} is not built yet.</strong>
+    Pre-ordering funds and prioritizes it. Expected delivery:
+    <strong>{{delivery_window}}</strong>. If we cancel the product before
+    delivery, you are refunded in full. {{refund_policy}}
+  </div>
+
+  <h1>{{product_name}}</h1>
+  <p class="price">Pre-order: ${{price_usd}}</p>
+
+  <button id="preorder-button">Pre-order for ${{price_usd}}</button>
+  <p id="checkout-error">Checkout is not available right now — nothing was charged.</p>
+
+  <p class="fine">
+    Payment is processed by our payment provider; we never see your card
+    details. Refunds per the policy above.
+  </p>
+
+  <script src="checkout.js"></script>
+</body>
+</html>

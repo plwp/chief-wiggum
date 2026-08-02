@@ -1,0 +1,104 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/presale/pattern.md. Second validation-experiment pattern (chief-wiggum#236): checkout on an unbuilt product with HONEST pre-order framing — the strongest evidence class (5, money) a pre-build bet can produce. Pre-registration/vanity-lint invariants are grounded in the in-repo assumption.py mechanism; the page/checkout invariants are design-derived (no shipped app has run this stamped experiment yet — honest per issue #139's allowance).",
+  "id": "presale",
+  "version": 1,
+  "title": "Presale (Honest Pre-Order)",
+  "category": "validation-experiment",
+  "trust_class": "end-user-signal-driven",
+
+  "applies_when": [
+    "a demand assumption is validated at click/time strength and the bet needs commitment-class evidence to earn `building`",
+    "Blank's validation exit: purchase orders, not enthusiasm — the evidence-strength floor on bet.py transition building requires strength >=4",
+    "you can state price and a delivery window honestly and refund promptly if the bet dies",
+    "there is an audience to convert (e.g. landing-page-smoke-test signups)"
+  ],
+
+  "components": [
+    "honest-preorder-page: states plainly that the product is NOT built yet, the price, and the expected delivery window BEFORE any payment step",
+    "real-money-checkout-stub: a checkout stub the operator wires to a real payment provider — a charge (or authorized deposit) is the datum; a fake charge is fraud, not a test",
+    "pre-registered-binding: conversion threshold hashed into the portfolio journal before launch (assumption.py test card, strength 5)",
+    "refund-on-kill: killing or pivoting the bet before delivery refunds every pre-order promptly; the refund obligation is a wind-down cost in the harvest check",
+    "per-cohort-rate-metric: visitor-to-preorder conversion per cohort; cumulative revenue/preorder totals are rejected as success criteria"
+  ],
+
+  "invariants": {
+    "$comment": "001-002 realized by the in-repo validation engine (scripts/assumption.py); 003-005 are design-derived, honestly flagged until first grounded use.",
+    "cluster": [
+      {
+        "id": "INV-PRE-001",
+        "statement": "Pre-registered conversion bar: the presale binds to a test card (evidence strength 5, money) whose threshold block was content-hashed into the portfolio journal BEFORE the checkout went live; the verdict is recorded only against that original hash.",
+        "realized_as": {
+          "app": "chief-wiggum",
+          "code": "scripts/assumption.py (card-create threshold hash + verdict enforcement, chief-wiggum#236)"
+        }
+      },
+      {
+        "id": "INV-PRE-002",
+        "statement": "Per-cohort rate, never a revenue counter: the success criterion is visitor→preorder conversion per cohort; cumulative preorder or gross revenue totals are rejected as success criteria.",
+        "realized_as": {
+          "app": "chief-wiggum",
+          "code": "scripts/assumption.py (vanity-metric lint, chief-wiggum#236)"
+        }
+      },
+      {
+        "id": "INV-PRE-003",
+        "statement": "Honest pre-order framing: the page states that the product is not yet built, the price, and the expected delivery window BEFORE any payment step; a checkout that hides non-existence is fraud, not an experiment.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-PRE-004",
+        "statement": "Money means money: the experiment's datum is a real charge or authorized deposit through a real payment provider; a simulated charge, a 'fake door' at the pay button, or a free reservation counted as a preorder invalidates the strength-5 claim (it is click evidence at best).",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-PRE-005",
+        "statement": "Refund-on-kill: if the bet is killed or pivoted before delivery, every pre-order is refunded promptly per the stated policy; the outstanding refund obligation is counted as wind-down cost in the harvest check, never left off the books.",
+        "grounding": "design-derived"
+      }
+    ]
+  },
+
+  "parameters": {
+    "product_name": {
+      "type": "string",
+      "required": true,
+      "description": "The product being pre-sold."
+    },
+    "price_usd": {
+      "type": "string",
+      "required": true,
+      "description": "The pre-order price (or deposit amount), stated on the page before the payment step."
+    },
+    "delivery_window": {
+      "type": "string",
+      "required": true,
+      "description": "Honest expected delivery window (e.g. 'March 2027') — stated before payment."
+    },
+    "checkout_endpoint": {
+      "type": "string",
+      "required": false,
+      "default": "/api/presale/checkout",
+      "description": "Where the checkout stub creates the payment session (wire to a real provider before launch)."
+    },
+    "refund_policy": {
+      "type": "string",
+      "required": false,
+      "default": "Full refund, no questions asked, any time before delivery.",
+      "description": "The refund promise shown before payment; the kill/pivot path must honor it (INV-PRE-005)."
+    }
+  },
+
+  "success_metrics": {
+    "$comment": "Per-cohort rates only (INV-PRE-002). The bound test card's threshold is the pre-registered pass bar.",
+    "metrics": [
+      {"id": "visitor_to_preorder_rate_pct", "goal": "up", "desc": "completed pre-orders / unique visitors per cohort — the experiment's primary measure"},
+      {"id": "preorder_refund_rate_pct", "goal": "down", "desc": "voluntary refunds requested before delivery / pre-orders per cohort — buyer's remorse erodes the strength-5 claim"},
+      {"id": "cost_per_preorder_usd", "goal": "down", "desc": "traffic + processing spend / pre-orders per cohort (counts against the bet envelope)"}
+    ]
+  },
+
+  "protected_paths": ["the stamped presale page + checkout stub (the framing block and price are what was pre-registered)", "the refund-on-kill path"],
+
+  "depends_on": null,
+  "feeds": null
+}

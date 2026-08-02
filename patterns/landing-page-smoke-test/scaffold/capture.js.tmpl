@@ -1,0 +1,56 @@
+/*
+ * Signup-capture instrumentation stub for the {{product_name}} smoke test —
+ * stamped by chief-wiggum /apply-pattern (landing-page-smoke-test, #236).
+ *
+ * INV-LPS-004 (instrumented denominator): a conversion rate needs BOTH events —
+ * this stub records a `visit` on load and a `signup` on submit, tagged with a
+ * cohort, so visitor_to_signup_rate_pct has a real denominator.
+ * INV-LPS-005 (PII floor): the email is sent once to the endpoint below and is
+ * not kept client-side.
+ *
+ * TODO(wire before launch): {{signup_endpoint}} must land events in a real
+ * store (a serverless function appending to a table is enough). Until it does,
+ * events are parked in localStorage so a dry run is visible — parked events are
+ * NOT results and must never be counted as such.
+ */
+(function () {
+  "use strict";
+
+  var ENDPOINT = "{{signup_endpoint}}";
+  // Cohort = launch batch (traffic source + week). Rates are compared per
+  // cohort, never as a cumulative total (INV-LPS-002 / vanity-metric lint).
+  var COHORT = document.documentElement.getAttribute("data-cohort") || "cohort-unset";
+
+  function record(event, payload) {
+    var body = JSON.stringify(Object.assign({
+      experiment: "landing-page-smoke-test",
+      product: "{{product_name}}",
+      cohort: COHORT,
+      event: event,
+      ts: new Date().toISOString()
+    }, payload || {}));
+    if (navigator.sendBeacon && navigator.sendBeacon(ENDPOINT, body)) return;
+    fetch(ENDPOINT, { method: "POST", body: body, keepalive: true })
+      .catch(function () {
+        // Endpoint not wired yet: park locally so the dry run is inspectable.
+        var parked = JSON.parse(localStorage.getItem("smoke-test-parked") || "[]");
+        parked.push(JSON.parse(body));
+        localStorage.setItem("smoke-test-parked", JSON.stringify(parked));
+      });
+  }
+
+  record("visit");
+
+  var form = document.getElementById("signup-form");
+  if (form) {
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var email = form.email.value.trim();
+      if (!email) return;
+      record("signup", { email: email });
+      form.style.display = "none";
+      var done = document.getElementById("signup-done");
+      if (done) done.style.display = "block";
+    });
+  }
+})();

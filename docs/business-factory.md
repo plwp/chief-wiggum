@@ -449,6 +449,74 @@ whether the reps happened and were run to protocol — Mom Test question forms u
 commitment asks made — **never conversion outcomes**. Early reps convert badly; that is
 tuition, not signal about the product, and the scoring must not punish it.
 
+### Validation experiments (Track C, `scripts/assumption.py`, #236)
+
+The RCT-validated mechanism (Camuffo et al. 2020; SMJ 2024 replication, 759 firms):
+pre-registered falsifiable hypotheses with quantitative decision thresholds measurably
+improve killing bad ideas. Shipped as a third importing sibling of `bet.py` (the
+`channel.py` placement precedent): assumptions in `bets/<bet-id>/assumptions.json`
+(`templates/assumptions-schema.json` — stable `ASM-NNN` ids, status
+`untested|testing|validated|falsified`, source `premortem|financial_model|canvas`,
+`depends_on_element` tag), test cards in `test-cards.json`
+(`templates/test-cards-schema.json`); every mutation journaled into the portfolio hash
+chain (fail-closed, exit 4 on tamper).
+
+```bash
+python3 scripts/assumption.py add <bet-id> --statement "at least 5% of AU dog trainers … will …" \
+    --source premortem --element customer-segment      # XYZ falsifiability lint
+python3 scripts/assumption.py card <bet-id> --asm ASM-001 --method landing-page-smoke-test \
+    --metric visitor_to_signup_rate_pct --comparator ">=" --value 5 --sample-min 100 \
+    --evidence-strength 2                              # threshold block HASHED at creation
+python3 scripts/assumption.py verdict <bet-id> TC-001 --result 7.5 --sample-n 140 \
+    --verdict validated                                # only against the ORIGINAL hash
+python3 scripts/assumption.py rebaseline <bet-id> TC-001 --value 3 --reason "..."  # only threshold change
+python3 scripts/assumption.py check <bet-id>           # ASM↔card traceability + all lints
+```
+
+Gate checks — all report-only by default per `docs/gate-rollout.md`, blocking only with
+`--gate`, same dogfood bar as the bet-ledger gates (one real ASM through card → run →
+verdict before any workflow passes `--gate`):
+
+- **Falsifiability (XYZ) lint**: hypotheses must parse to Savoia's grammar — "at least
+  X% of Y will Z", numeric X, concrete Y (not "people"/"users"), measurable Z (opinion
+  verbs rejected). The linter is a parser, so un-falsifiable phrasing is syntactically
+  impossible.
+- **Vanity-metric lint**: cumulative/gross counters (`total_*`, `lifetime_*`) rejected
+  as success criteria — they falsify nothing (Ries); per-cohort rates required.
+- **Pre-registration**: the threshold block (`{asm_id, metric, comparator, value,
+  sample_min}`) is content-hashed into the journal at card creation; a verdict is
+  validated against the original hash (a hand-lowered bar is refused), a verdict
+  contradicting its own comparator is flagged, `rebaseline` is the only sanctioned
+  change (journaled old→new hash, `--reason` required), and a card that was never
+  journaled is itself a finding.
+- **ASM↔card traceability** (`check` — `check_traceability.py`'s exact shape, new node
+  types): uncovered assumptions, dangling cards, and a `validated` status with no card
+  verdict behind it (the omission evasion) all fail.
+- **Evidence-strength floor** (`bet.py transition <id> building`): the enum is FIXED —
+  1 opinion, 2 click, 3 time, 4 reputation, 5 money — and entering `building` requires
+  ≥1 validated ASM at effective strength ≥4 (Blank: purchase orders, not enthusiasm).
+  Interview-class methods cap effective strength at 1 regardless of declared value or
+  count (the Mom Test floor). No assumptions.json → `skipped`, never a silent block.
+
+**Pivot dependency rule** (Bland): `bet.py transition <id> killed --successor <id2>
+--changed-elements <element,…>` carries the assumption ledger to the successor and
+re-opens (`validated → untested`) every ASM whose `depends_on_element` matches a
+changed element — journaled as `asm-reopen`. Test cards do **not** carry: evidence was
+pre-registered against the old thesis, so coverage and strength must be re-established
+(carried validation can never unlock `building` by itself).
+
+**Stamped experiment patterns** (the distinctive CW move — the factory stamps the
+experiment, not just tracks it, same #135 discipline): registry category
+`validation-experiment`, trust class `end-user-signal-driven`, both with stampable
+scaffolds via `/apply-pattern` — `landing-page-smoke-test` (honest static page +
+signup-capture instrumentation stub; strength 2–3; the cheapest universal demand test)
+and `presale` (honest pre-order checkout on an unbuilt product — not-built-yet, price,
+and delivery window stated before the payment step; a REAL charge is the datum;
+refund-on-kill counted as wind-down cost; the only strength-5 producer). Their
+pre-registration/vanity-lint invariants are grounded in `assumption.py`; the page-level
+invariants are design-derived until first grounded use, flagged per the #139 allowance.
+Fake-door and concierge are named follow-ups, not shipped.
+
 ---
 
 ## 9. Portfolio theses and targeting doctrine (logged 2026-08-02)

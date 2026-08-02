@@ -1,0 +1,43 @@
+# Smoke test: {{product_name}}
+
+Stamped by chief-wiggum `/apply-pattern` (`landing-page-smoke-test`, #236).
+This directory is an **experiment**, not product code — it exists to produce
+one pre-registered, per-cohort conversion rate and then a verdict.
+
+## Binding to the validation engine (do this BEFORE launch)
+
+1. Register the assumption this page tests (XYZ form) and pre-register the
+   card — the threshold block is hashed into the portfolio journal at creation
+   (INV-LPS-001; no post-hoc success definitions):
+
+   ```bash
+   python3 scripts/assumption.py add <bet-id> \
+       --statement "at least X% of <concrete population> will <measurable behavior>" \
+       --source canvas --element value-proposition
+   python3 scripts/assumption.py card <bet-id> --asm ASM-NNN \
+       --method landing-page-smoke-test --metric visitor_to_signup_rate_pct \
+       --comparator ">=" --value <X> --sample-min <N> \
+       --cost-estimate-usd <traffic budget> --evidence-strength 2
+   ```
+
+2. Wire `capture.js`'s endpoint (`{{signup_endpoint}}`) to a real event store
+   and set a `data-cohort` attribute per launch batch (INV-LPS-004: visits AND
+   signups, per cohort — a rate needs its denominator).
+
+3. Launch, drive traffic (spend goes through `bet.py spend` — it counts against
+   the envelope), and record the verdict **only against the original hash**:
+
+   ```bash
+   python3 scripts/assumption.py verdict <bet-id> TC-NNN \
+       --result <measured rate> --sample-n <visitors> --verdict <validated|falsified>
+   ```
+
+## Honesty rules (the invariant cluster, patterns/landing-page-smoke-test/)
+
+- The page says the product is **not built yet** — keep that block (INV-LPS-003).
+- The metric is a **per-cohort rate**, never a cumulative signup counter
+  (INV-LPS-002 — the vanity-metric lint enforces this at card creation).
+- A signup is **strength 2 (click)** evidence: it can falsify demand, it cannot
+  validate willingness to pay (INV-LPS-005). Graduating to strength 5 is the
+  `presale` pattern's job.
+- Captured emails are PII: follow-up about {{product_name}} only, deletable.

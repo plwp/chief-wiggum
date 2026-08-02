@@ -369,3 +369,42 @@ def test_sidecar_election_routes_knowledge_but_scaffold_stays_in_repo(tmp_path, 
     # list_adopted reads the sidecar record back
     adopted = apply_pattern.list_adopted(target)
     assert [a["id"] for a in adopted] == [MTI]
+
+
+# --- #236: validation-experiment scaffolds stamp like any other ---------------
+
+def test_smoke_test_scaffold_stamps_with_params_bound(tmp_path):
+    plan = apply_pattern.build_plan(
+        "landing-page-smoke-test",
+        {"product_name": "Kennel Ledger", "value_prop": "Books for kennels."},
+        now=FIXED_NOW)
+    assert plan.unresolved == []
+    targets = set(plan.scaffold_files)
+    assert targets == {
+        "experiments/landing-page-smoke-test/index.html",
+        "experiments/landing-page-smoke-test/capture.js",
+        "experiments/landing-page-smoke-test/README.md",
+    }
+    page = plan.scaffold_files["experiments/landing-page-smoke-test/index.html"]
+    assert "Kennel Ledger" in page and "Not built yet" in page  # honest framing
+    js = plan.scaffold_files["experiments/landing-page-smoke-test/capture.js"]
+    assert "/api/smoke-test/events" in js  # default endpoint bound
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    for rel in targets:
+        assert (tmp_path / rel).is_file(), rel
+
+
+def test_presale_scaffold_stamps_honest_preorder(tmp_path):
+    plan = apply_pattern.build_plan(
+        "presale",
+        {"product_name": "Kennel Ledger", "price_usd": "49",
+         "delivery_window": "March 2027"},
+        now=FIXED_NOW)
+    assert plan.unresolved == []
+    page = plan.scaffold_files["experiments/presale/index.html"]
+    assert "not built yet" in page and "March 2027" in page and "$49" in page
+    assert "refund" in page.lower()  # INV-PRE-005 promise above the payment step
+    js = plan.scaffold_files["experiments/presale/checkout.js"]
+    assert "DO NOT simulate" in js  # INV-PRE-004: money means money
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    assert (tmp_path / "experiments/presale/README.md").is_file()

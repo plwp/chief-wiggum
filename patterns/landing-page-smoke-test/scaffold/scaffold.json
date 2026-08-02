@@ -1,0 +1,25 @@
+{
+  "$comment": "Scaffold manifest for landing-page-smoke-test (chief-wiggum#236). apply_pattern.py stamps each file into the target repo with parameters bound ({{param}} in target path and body). These are EXPERIMENT scaffolds, not product code: a static page + an instrumentation stub the operator wires and launches after pre-registering the test card (assumption.py). Existing targets are skipped unless --force.",
+  "scaffold_version": 1,
+  "pattern": "landing-page-smoke-test",
+  "files": [
+    {
+      "template": "index.html.tmpl",
+      "target": "experiments/landing-page-smoke-test/index.html",
+      "realizes": ["INV-LPS-003", "INV-LPS-004"],
+      "desc": "Honest static landing page: states the value proposition as a promise (never as a shipped product) and captures a signup with an instrumented denominator."
+    },
+    {
+      "template": "capture.js.tmpl",
+      "target": "experiments/landing-page-smoke-test/capture.js",
+      "realizes": ["INV-LPS-004", "INV-LPS-005"],
+      "desc": "Signup-capture instrumentation stub: records visit + signup events per cohort against {{signup_endpoint}}; wiring TODO stated in-file."
+    },
+    {
+      "template": "README.md.tmpl",
+      "target": "experiments/landing-page-smoke-test/README.md",
+      "realizes": ["INV-LPS-001", "INV-LPS-002"],
+      "desc": "Binding note: pre-register the assumption.py test card BEFORE launch; record the verdict only against the original journaled threshold hash."
+    }
+  ]
+}
