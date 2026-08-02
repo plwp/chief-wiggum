@@ -50,9 +50,12 @@ invariant cluster below exists to kill exactly those failure modes.
 - **Per-source read-only, least-privilege identity.** Each spend source is read
   with a dedicated credential scoped to viewing billing/usage data only — it can
   neither mutate infrastructure nor billing configuration, and its secret
-  material lives in the platform's secret seam, never env vars. *(The same
-  least-privilege identity split `deployment-release` establishes for deploys;
-  INV-PCO-002 ← INV-DRL-004.)*
+  material lives in the platform's secret seam, never env vars. *(INV-PCO-002 —
+  design-derived. It borrows the least-privilege, single-purpose identity-split
+  discipline `deployment-release` establishes with INV-DRL-004, but is a
+  distinct identity with a distinct scope — the deploy identity provably cannot
+  read secrets, while the spend reader must read vendor usage APIs — so the
+  cite is a discipline borrowed, not an invariant realized.)*
 - **Ingest-then-serve.** A bounded, scheduled ingest queries each source and
   persists normalized snapshots; the panel only ever reads snapshots. No
   request-path call to any billing source exists, so the monitor's own spend is
@@ -60,11 +63,14 @@ invariant cluster below exists to kill exactly those failure modes.
   *(INV-PCO-003 — design-derived.)*
 - **Staleness + settling-lag honesty.** Every figure carries its as-of timestamp
   and its source's settling window; days still inside the window are marked
-  partial, never final; estimated lines (see whole-bill coverage) are marked
-  estimated, never blended silently into actuals; a failed ingest surfaces as
-  visibly stale rather than silently serving old numbers as fresh.
-  *(INV-PCO-004 — design-derived; the fail-visible sibling of the registry's
-  fail-closed-on-unknown-age meta-discipline.)*
+  partial, never final — and each ingest **re-reads and idempotently replaces**
+  them (keyed on source+day), so late-arriving corrections repair
+  already-persisted days instead of being frozen out at first write; estimated
+  lines (see whole-bill coverage) are marked estimated, never blended silently
+  into actuals; a failed ingest surfaces as visibly stale rather than silently
+  serving old numbers as fresh. *(INV-PCO-004 — design-derived; the
+  fail-visible sibling of the registry's fail-closed-on-unknown-age
+  meta-discipline.)*
 - **App-scoped, sum-preserving attribution.** Attribution to *this app* is
   established at provision time — a dedicated cloud project per app+env,
   resource labels, per-app vendor keys/subaccounts — never reconstructed later
@@ -93,12 +99,14 @@ invariant cluster below exists to kill exactly those failure modes.
 No mined app has built this surface (the direction is telling: billing patterns
 in the registry all watch revenue in, none watch spend out, and the
 `gcp-serverless-saas` stack profile lists observability among its known gaps).
-The cluster is therefore **design-derived and honestly marked**, with two
-exceptions that are **not re-derived** but cite in-repo clusters realizing the
-same discipline: the operator-plane mount (INV-PCO-001 ←
-[`multi-tenant-isolation`](../multi-tenant-isolation) INV-MTI-004) and the
-least-privilege read-only identity (INV-PCO-002 ←
-[`deployment-release`](../deployment-release) INV-DRL-004). The mined apps also
+The cluster is therefore **design-derived and honestly marked**, with one
+exception that is **not re-derived** but cites the in-repo cluster realizing
+the same discipline: the operator-plane mount (INV-PCO-001 ←
+[`multi-tenant-isolation`](../multi-tenant-isolation) INV-MTI-004). The
+least-privilege read-only identity (INV-PCO-002) *borrows* the
+[`deployment-release`](../deployment-release) INV-DRL-004 identity-split
+discipline but is a distinct identity with a distinct scope, so it stays
+design-derived rather than claiming realization. The mined apps also
 already contain the structural neighbours the first build will assemble: an
 admin-gated read-only financial board, a nightly refresh job, scaling caps used
 as cost guards, and — on the LLM path — a fail-closed cost-protection breaker

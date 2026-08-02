@@ -315,17 +315,26 @@ def test_platform_cost_observability_is_specified_with_honest_grounding():
     cluster = check_patterns.cluster_entries(manifest["invariants"])
     ids = [e["id"] for e in cluster]
     assert ids == [f"INV-PCO-00{n}" for n in range(1, 8)]
-    # 001/002 cite in-repo clusters (operator plane; least-privilege identity)…
+    # 001 cites the in-repo operator-plane cluster…
     grounded = {e["id"]: e["realized_as"]["code"] for e in cluster
                 if isinstance(e.get("realized_as"), dict)
                 and "chief-wiggum" in e["realized_as"]["app"]}
-    assert set(grounded) == {"INV-PCO-001", "INV-PCO-002"}
+    assert set(grounded) == {"INV-PCO-001"}
     assert "multi-tenant-isolation" in grounded["INV-PCO-001"]
-    assert "deployment-release" in grounded["INV-PCO-002"]
     # …and every other invariant is explicitly design-derived, never unmarked.
     for e in cluster:
         if e["id"] not in grounded:
             assert e.get("grounding") == "design-derived", e["id"]
+    # 002 borrows the deployment-release discipline WITHOUT claiming realization
+    # (INV-DRL-004 proves a deploy identity that cannot read secrets — a
+    # different identity than the spend reader; codex review round 1).
+    identity = next(e for e in cluster if e["id"] == "INV-PCO-002")
+    assert "realized_as" not in identity
+    assert "not realized by it" in identity["statement"]
+    # the settling window is re-read + idempotently replaced, never frozen at
+    # first write (codex review round 1 blocker)
+    settling = next(e for e in cluster if e["id"] == "INV-PCO-004")
+    assert "idempotently replaces" in settling["statement"]
     # the whole-bill invariant names the off-cloud meters (LLM et al.)
     whole_bill = next(e for e in cluster if e["id"] == "INV-PCO-006")
     assert "LLM" in whole_bill["statement"]

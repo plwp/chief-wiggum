@@ -38,20 +38,33 @@ makes the vendor's own usage reporting app-attributable by construction.
 ### Cloud side: BigQuery detailed-usage billing export
 
 - Enable the **detailed usage cost export** at the billing account into a
-  dedicated BigQuery dataset. The export only accumulates **from enablement —
-  it never backfills** — so turn it on at project creation, tiers before you
-  need the panel.
+  dedicated BigQuery dataset. Backfill on first enablement is
+  **dataset-location-specific**: a US/EU multi-region dataset retroactively
+  receives current-month (and some previous-month) data; a supported regional
+  dataset gets nothing before enablement; and a moved or re-enabled export is
+  never backfilled. The safe rule is unchanged either way: **enable at project
+  creation**, tiers before you need the panel — the retroactive window is
+  limited and not guaranteed.
 - **Ingest** rides the stack's established job shape (there is no standing
   job/queue infra): a **PSK-gated pull endpoint poked by Cloud Scheduler**,
-  nightly. It queries **only the date partitions since the last snapshot**
-  (partition-pruned, so bytes scanned — and query cost — stay ≈ 0; INV-PCO-003),
-  aggregates by `service.description` + labels, and writes one normalized
-  snapshot row-set per day into the app DB (INV-PCO-003's snapshot_store).
+  nightly. It queries the date partitions covering **the trailing settling
+  window plus any days since the last snapshot** — never "only what's new":
+  export rows for already-snapshotted days keep arriving and adjusting, so the
+  ingest **idempotently replaces** each re-read day (upsert keyed on
+  source+day), letting late corrections repair earlier days instead of
+  freezing them at first write. A day is only marked final once it exits the
+  window; at month close, reconcile against `invoice.month` rather than usage
+  timestamps. The query stays partition-pruned to that bounded window, so
+  bytes scanned — and query cost — stay ≈ 0 (INV-PCO-003). Aggregate by
+  `service.description` + labels and write one normalized snapshot row-set per
+  day into the app DB (INV-PCO-003's snapshot_store).
 - **Identity (INV-PCO-002):** a dedicated ingest service account holding
-  `roles/bigquery.dataViewer` **on the export dataset only** plus
-  `roles/bigquery.jobUser` — never any `billing.*` admin role. On Cloud Run it
-  authenticates via ADC; no key file, same keyless discipline as the
-  `deployment-release` binding.
+  `roles/bigquery.dataViewer` **scoped to the export dataset** plus
+  `roles/bigquery.jobUser` **on the query project** (`jobUser` cannot be
+  dataset-scoped — it is a project-level grant, so keep the export in a
+  dedicated project if you want the blast radius minimal) — never any
+  `billing.*` admin role. On Cloud Run it authenticates via ADC; no key file,
+  same keyless discipline as the `deployment-release` binding.
 - **Settling window (INV-PCO-004):** export rows keep arriving and adjusting
   for roughly 1–2 days (with month-end credits/true-ups later still). Mark the
   trailing `settling_window` days **partial**; stamp every snapshot with its
