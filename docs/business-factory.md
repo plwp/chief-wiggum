@@ -291,9 +291,24 @@ Gaps found during the sweep (small, independently fixable):
 
 ## 8. Capability tracks (steered 2026-08-02, seeded as issues)
 
-Approved order: **G → A → C → D now; B, E, F parked with explicit triggers.** Track A is the
-spine; C is the highest-leverage novel gate; F closes the loop with real money data. The
-grounding discipline: dogfood one real bet through A+C before promoting anything to `--gate`.
+Approved order: **G → A → H → C → D now; B, E, F parked with explicit triggers.** Track A is
+the spine; H closes the distribution gap the steer identified as the binding constraint
+(default loop otherwise: build → no user movement → kill); C is the highest-leverage novel
+gate; F closes the loop with real money data. The grounding discipline: dogfood one real bet
+through A+H+C before promoting anything to `--gate`.
+
+- **H. Channel engine** (#241) — the distribution gap is a genuine operator skills gap, so CW
+  bridges it as a factory capability, in three legs: the Bullseye loop mechanized
+  (channel-experiment records over the fixed 19-channel enum, ≤3 testing, exactly one
+  `focused`, measured channel-CAC; referral/WOM joins via the stamped `referral-invite-loop`
+  pattern, honestly framed as a multiplier needing baseline flow); buy-not-build on
+  sales/marketing platforms (Meta/Google Ads behind the paid-spend unlock gate, OpenAI-class
+  asset generation, ESP/CRM/SEO tooling — spend as ordinary cost-inputs) with
+  revenue-triggered capability graduation M0 founder+platforms → M1 specialist → M2 agency;
+  and a rep-cadence invariant (Mom-Test conversations tracked like spend, process-scored
+  retros, *Traction* 50% rule). Companion amendments on #235/#237: a **distribution-fairness
+  precondition** — a demand criterion firing without attempted distribution downgrades `kill`
+  to `recycle`, so the operator's gap can't masquerade as market rejection.
 
 - **A. Bet ledger + envelope + kill criteria** (#235) — the portfolio spine. Bet records in a
   dedicated portfolio repo, typed envelopes with tranches, states-and-dates kill criteria
