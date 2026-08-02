@@ -300,8 +300,9 @@ def test_all_manifest_private_provenance_is_path_free():
 
 def test_platform_cost_observability_is_specified_with_honest_grounding():
     """The whole-bill spend surface: specified, mounted on the operator plane,
-    two invariants reusing in-repo clusters, the rest honestly design-derived
-    (no mined app surfaces its own platform spend yet)."""
+    one invariant reusing an in-repo cluster, a second borrowing a discipline
+    without claiming realization, the rest honestly design-derived (no mined
+    app surfaces its own platform spend yet)."""
     reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
     entry = next((e for e in reg["patterns"] if e["id"] == "platform-cost-observability"), None)
     assert entry is not None, "platform-cost-observability must be a specified pattern"
@@ -335,6 +336,21 @@ def test_platform_cost_observability_is_specified_with_honest_grounding():
     # first write (codex review round 1 blocker)
     settling = next(e for e in cluster if e["id"] == "INV-PCO-004")
     assert "idempotently replaces" in settling["statement"]
+    # completeness round: sources are disjoint (no cross-source double count),
+    # a stalled ingest alerts out-of-band (dead-man's switch), and alert rungs
+    # are send-once + re-armed — the three recurring failures the opus
+    # completeness lens found unforbidden.
+    attribution = next(e for e in cluster if e["id"] == "INV-PCO-005")
+    assert "exactly once" in attribution["statement"]
+    assert "superseded" in attribution["statement"]
+    alerts = next(e for e in cluster if e["id"] == "INV-PCO-007")
+    assert "absence of fresh data" in alerts["statement"].lower()
+    assert "re-arms" in alerts["statement"]
+    # the fidelity metric replaced the degenerate registration-share metric
+    metric_ids = [m["id"] for m in manifest["success_metrics"]["metrics"]]
+    assert "api_sourced_spend_share" in metric_ids
+    assert "ledger_vs_invoice_variance" in metric_ids
+    assert "spend_source_coverage" not in metric_ids
     # the whole-bill invariant names the off-cloud meters (LLM et al.)
     whole_bill = next(e for e in cluster if e["id"] == "INV-PCO-006")
     assert "LLM" in whole_bill["statement"]

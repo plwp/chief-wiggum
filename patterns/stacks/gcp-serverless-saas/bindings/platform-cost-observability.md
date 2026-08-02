@@ -23,7 +23,7 @@ The same principle covers the off-GCP meters: **one vendor key/subaccount per
 app+env** (LLM router key, email key, media account, DB project). A per-app key
 makes the vendor's own usage reporting app-attributable by construction.
 
-## T1 floor — budgets + alerts, no panel yet (realizes INV-PCO-007 only)
+## T1 floor — budgets + alerts, no panel yet (realizes INV-PCO-007's cloud half — vendor meters are *capped*, not alerted, until T2)
 
 - `google_billing_budget` scoped to the app's project(s), with a
   `threshold_rules` ladder (e.g. 50% / 80% / 100% / 120% of the tier's expected
@@ -78,8 +78,10 @@ makes the vendor's own usage reporting app-attributable by construction.
 
 ### Vendor side: the meters that never hit the GCP bill (INV-PCO-006)
 
-Each metered vendor in the stack registers as a spend source, read with a
-**read-only, per-app credential** from Secret Manager (never env vars):
+Each metered vendor in the stack registers as a spend source; the
+externally-read ones are read with a **read-only, per-app credential** from
+Secret Manager (never env vars), while the `in-app data` rows below carry no
+vendor credential at all — they read what the app already stores:
 
 | Meter | Source | Mechanism | Notes |
 |--|--|--|--|
@@ -90,8 +92,19 @@ Each metered vendor in the stack registers as a spend source, read with a
 | Processor fees | payment processor's fee lines (balance transactions the app already mirrors) | in-app data | money-out hiding inside money-in; surfaced as its own spend line, not netted against revenue. |
 
 A vendor with no fetchable cost API still registers with a manual/estimated
-entry so the ledger's `spend_source_coverage` metric is honest — an invisible
-vendor is a silent understatement, which INV-PCO-006 forbids.
+entry (operator-authored, author+time stamped, marked `estimated`) — an
+invisible vendor is a silent understatement, which INV-PCO-006 forbids.
+
+**Disjointness on this stack (INV-PCO-005):** every unit of spend is counted
+by exactly one source. A vendor billed *through GCP Marketplace* shows up on
+the GCP export — if any of the table's vendors is procured that way (managed
+DB is the classic case), it registers as a **declared sub-line of the GCP
+export**, not an independent addend. On the current stack the DB, LLM router,
+media, and email vendors are all direct-billed, so each stands alone — but
+declare the parent-source field either way so a later procurement change can't
+silently double count. The app-side LLM token meter is a **leading indicator
+superseded by the router-reported actual** at each ingest reconcile — never
+summed with it.
 
 ### Panel + alerts
 
@@ -105,6 +118,17 @@ vendor is a silent understatement, which INV-PCO-006 forbids.
   existing email seam at T2); vendor side via snapshot-derived threshold checks
   in the same nightly ingest, delivered through the email seam — the alert path
   shares nothing with the panel, so a breach never waits for a page view.
+  Rungs are **send-once per (source, budget period, rung)** — persist a claimed
+  send key next to the snapshots — and **re-arm at period rollover**, so the
+  channel is neither spammed into a mute nor latched silent after 50%.
+- **Dead-man's switch (INV-PCO-007):** the vendor-side checks above run *inside*
+  the ingest, so a stalled ingest would mute them exactly when spend runs
+  unwatched. Guard it from outside the ingest: the ingest emits a structured
+  success log line, a logs-based metric counts it, and a Cloud Monitoring
+  **absence condition** (no success within `staleness_alert_after`) alerts the
+  same notification channel. Expired vendor key, paused Scheduler, rotated PSK,
+  renamed dataset — all surface as an out-of-band alert, never as a stale badge
+  waiting for a page view.
 - **Currency:** the GCP export bills in the account currency; several vendor
   meters bill in USD. Lines keep their billed currency; the normalized total
   uses `reporting_currency` with the conversion rate recorded per ingest, so
