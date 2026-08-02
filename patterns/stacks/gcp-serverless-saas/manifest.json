@@ -57,7 +57,8 @@
     "multi-tenant-isolation": {"tier": "T1/T2", "recipe": "bindings/multi-tenant-isolation.md", "vendor": "server-derived scoping (2 variants)", "source": "the T1 + T2 exemplars (private)"},
     "provider-neutral-adapter": {"tier": "T2", "recipe": "bindings/provider-neutral-adapter.md", "vendor": "Go interface + Cloudflare Stream", "source": "the T2 exemplar (private)"},
     "transactional-email-and-dunning": {"tier": "T1+", "recipe": "bindings/transactional-email.md", "vendor": "Resend", "source": "the T1 + T2 exemplars (private)", "note": "dunning half aspirational (unbuilt in mined apps)"},
-    "deployment-release": {"tier": "T1+", "recipe": "bindings/deployment-release.md", "vendor": "keyless WIF + promote-identical", "source": "the T1 + T2 exemplars (private)"}
+    "deployment-release": {"tier": "T1+", "recipe": "bindings/deployment-release.md", "vendor": "keyless WIF + promote-identical", "source": "the T1 + T2 exemplars (private)"},
+    "platform-cost-observability": {"tier": "T1+", "recipe": "bindings/platform-cost-observability.md", "vendor": "Cloud Billing budgets + BigQuery billing export + per-vendor usage APIs", "source": "aspirational (no mined app surfaces its own platform spend yet)", "note": "T1 = budget alerts only; the T2 whole-bill panel (cloud export + LLM/media/email/DB meters) is design-derived — intended first adopter is the T2 exemplar"}
   },
 
   "skills": [
@@ -70,6 +71,7 @@
   "known_gaps": [
     "dunning unbuilt in every mined app (Stripe sends billing emails); dunning binding half is aspirational",
     "no standing job/queue infra; reconciliation is a PSK-gated pull endpoint poked by an external scheduler",
-    "observability is structured logs + audit collections only; no APM/error tracker wired"
+    "observability is structured logs + audit collections only; no APM/error tracker wired",
+    "no mined app surfaces its own platform spend (cloud or vendor meters: LLM/media/email/DB); the platform-cost-observability binding is aspirational end-to-end — the budget-alert floor is stack doctrine, the whole-bill admin panel is unbuilt"
   ]
 }

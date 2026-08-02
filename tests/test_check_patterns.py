@@ -294,3 +294,50 @@ def test_all_manifest_private_provenance_is_path_free():
             if PATH_LIKE.search(code) or "/" in ra.get("code", ""):
                 offenders.append(f"{mf.parent.name}:{e.get('id')}: {ra}")
     assert offenders == [], "\n".join(str(o) for o in offenders)
+
+
+# --- #229: platform-cost-observability ----------------------------------------
+
+def test_platform_cost_observability_is_specified_with_honest_grounding():
+    """The whole-bill spend surface: specified, mounted on the operator plane,
+    two invariants reusing in-repo clusters, the rest honestly design-derived
+    (no mined app surfaces its own platform spend yet)."""
+    reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
+    entry = next((e for e in reg["patterns"] if e["id"] == "platform-cost-observability"), None)
+    assert entry is not None, "platform-cost-observability must be a specified pattern"
+    assert entry["status"] == "specified"
+    assert entry.get("depends_on") == "multi-tenant-isolation"
+    assert entry.get("feeds") == "improvement-loop"
+    assert entry["invariants"] == "INV-PCO-001..007"
+
+    manifest = json.loads(
+        (SCRIPTS.parent / "patterns" / "platform-cost-observability" / "manifest.json").read_text())
+    cluster = check_patterns.cluster_entries(manifest["invariants"])
+    ids = [e["id"] for e in cluster]
+    assert ids == [f"INV-PCO-00{n}" for n in range(1, 8)]
+    # 001/002 cite in-repo clusters (operator plane; least-privilege identity)…
+    grounded = {e["id"]: e["realized_as"]["code"] for e in cluster
+                if isinstance(e.get("realized_as"), dict)
+                and "chief-wiggum" in e["realized_as"]["app"]}
+    assert set(grounded) == {"INV-PCO-001", "INV-PCO-002"}
+    assert "multi-tenant-isolation" in grounded["INV-PCO-001"]
+    assert "deployment-release" in grounded["INV-PCO-002"]
+    # …and every other invariant is explicitly design-derived, never unmarked.
+    for e in cluster:
+        if e["id"] not in grounded:
+            assert e.get("grounding") == "design-derived", e["id"]
+    # the whole-bill invariant names the off-cloud meters (LLM et al.)
+    whole_bill = next(e for e in cluster if e["id"] == "INV-PCO-006")
+    assert "LLM" in whole_bill["statement"]
+
+
+def test_platform_cost_observability_gcp_binding_registered():
+    """The stack binding exists, is honestly flagged aspirational, and the
+    known-gaps ledger admits the surface is unbuilt."""
+    stack_dir = SCRIPTS.parent / "patterns" / "stacks" / "gcp-serverless-saas"
+    stack = json.loads((stack_dir / "manifest.json").read_text())
+    binding = stack["bindings"].get("platform-cost-observability")
+    assert binding is not None, "stack must register the platform-cost-observability binding"
+    assert (stack_dir / binding["recipe"]).exists()
+    assert "aspirational" in binding["source"]
+    assert any("platform spend" in gap for gap in stack["known_gaps"])
