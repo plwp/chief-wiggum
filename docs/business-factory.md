@@ -289,36 +289,37 @@ Gaps found during the sweep (small, independently fixable):
 
 ---
 
-## 8. Candidate capability tracks (for steer, then /seed)
+## 8. Capability tracks (steered 2026-08-02, seeded as issues)
 
-Ordered roughly by dependency; each is issue-shaped but deliberately un-specified. Track A is
-the spine; C is the highest-leverage novel gate; F closes the loop with real money data.
+Approved order: **G → A → C → D now; B, E, F parked with explicit triggers.** Track A is the
+spine; C is the highest-leverage novel gate; F closes the loop with real money data. The
+grounding discipline: dogfood one real bet through A+C before promoting anything to `--gate`.
 
-- **A. Bet ledger + envelope + kill criteria** — the portfolio spine. Bet records, typed
-  envelopes with tranches, states-and-dates kill criteria hashed into the ratchet journal,
-  dated-criterion evaluation, bets-in-flight cap, harvest-gated terminal transitions.
-  (Primitives 2.1, 2.3, 2.5.)
-- **B. `/plan-bet` product stage** — `/design`-shaped: typed business-model artifact (BMO-enum
-  fields, validation statuses), assumption ledger generated from premortem + financial-model
-  cells, Fermi viability gate at authoring time, human checkpoint. Output is a binding
-  `.json` the later stages gate against.
-- **C. Validation-experiment patterns + pre-registration gate** — the experiment library as
-  registry patterns CW *stamps* (landing-page smoke test, fake-door, presale, concierge —
-  scaffold plus instrumentation), test cards with hashed thresholds, falsifiability linter,
-  evidence-strength floor on state transitions. This is the RCT-validated mechanism.
-- **D. Kill-review quorum** — a consult role whose evaluators receive only pre-registered
-  criteria + measured results (fresh context enforced as an invariant), producing a
-  `go/kill/hold/recycle` verdict ahead of the human decision.
-- **E. Instruments as scripts** — Van Westendorp (survey schema + deterministic intersection
-  math), Sean Ellis PMF (fixed schema, hashed segment definition), Mom Test evidence linter
-  over interview logs. Each certifiable under the existing gate-validation protocol.
-- **F. Money-runtime invariants** — extend `/business-consultant` toward actuals: MRR movement
-  state machine over Stripe events, micro-scale invariant set (§4), REA duality/leakage check,
-  pricing-artifact ↔ code conformance gate; joins #229's spend attribution for real
-  margin-vs-model.
-- **G. Hygiene fixes** (independent, small): register `docs/pricing.md` as protected; portable
-  `/business-consultant` skill copy; linter enforcement of `success_metrics`; compute at least
-  one declared pattern metric end-to-end.
+- **A. Bet ledger + envelope + kill criteria** (#235) — the portfolio spine. Bet records in a
+  dedicated portfolio repo, typed envelopes with tranches, states-and-dates kill criteria
+  hashed into a ratchet-format journal, dated-criterion evaluation, bets-in-flight cap,
+  harvest-gated terminal transitions. (Primitives 2.1, 2.3, 2.5.)
+- **B. `/plan-bet` product stage** (#238, parked — triggers when A+C have run against ≥1 real
+  bet) — `/design`-shaped: typed business-model artifact (BMO-enum fields, validation
+  statuses), assumption ledger generated from premortem + financial-model cells, Fermi
+  viability gate at authoring time, human checkpoint.
+- **C. Validation-experiment patterns + pre-registration gate** (#236) — assumption ledger,
+  test cards with hashed thresholds, falsifiability (XYZ) linter, evidence-strength floor on
+  state transitions; first stamped experiment patterns: `landing-page-smoke-test` and
+  `presale`. This is the RCT-validated mechanism.
+- **D. Kill-review quorum** (#237) — a consult role whose evaluators receive only a generated
+  brief of pre-registered criteria + measured results (fresh context enforced as an
+  invariant), producing a `go/kill/hold/recycle` verdict ahead of the human decision.
+- **E. Instruments as scripts** (#239, parked — per-instrument triggers: pricing need, ≥40
+  eligible users, first interview-driven ASM) — Van Westendorp, Sean Ellis PMF (hashed segment
+  definition), Mom Test evidence linter. Each certifiable under the gate-validation protocol.
+- **F. Money-runtime invariants** (#240, parked — triggers on first monetized bet + #229
+  landing) — MRR movement state machine over Stripe events, micro-scale invariant set (§4),
+  REA duality/leakage check, pricing-artifact ↔ code conformance gate; also computes the first
+  declared pattern `success_metrics` end-to-end.
+- **G. Hygiene fixes** (#234) — register `docs/pricing.md` as protected; portable
+  `/business-consultant` skill copy; linter enforcement of `success_metrics`. (Metric
+  computation moved to F, where the money data lives.)
 
 ---
 
