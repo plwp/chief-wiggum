@@ -1,0 +1,25 @@
+{
+  "$comment": "Scaffold manifest for presale (chief-wiggum#236). apply_pattern.py stamps each file into the target repo with parameters bound. These are EXPERIMENT scaffolds, not product code: an honest pre-order page + a checkout stub the operator wires to a REAL payment provider after pre-registering the strength-5 test card (assumption.py). Existing targets are skipped unless --force.",
+  "scaffold_version": 1,
+  "pattern": "presale",
+  "files": [
+    {
+      "template": "index.html.tmpl",
+      "target": "experiments/presale/index.html",
+      "realizes": ["INV-PRE-003", "INV-PRE-005"],
+      "desc": "Honest pre-order page: not-built-yet framing, price {{price_usd}}, delivery window, and the refund policy — all BEFORE the payment step."
+    },
+    {
+      "template": "checkout.js.tmpl",
+      "target": "experiments/presale/checkout.js",
+      "realizes": ["INV-PRE-004"],
+      "desc": "Checkout stub posting to {{checkout_endpoint}}; states in-file that it must be wired to a real payment provider — a simulated charge invalidates the strength-5 claim."
+    },
+    {
+      "template": "README.md.tmpl",
+      "target": "experiments/presale/README.md",
+      "realizes": ["INV-PRE-001", "INV-PRE-002"],
+      "desc": "Binding note: pre-register the strength-5 assumption.py test card BEFORE launch; verdict only against the original journaled threshold hash; refund-on-kill wiring."
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+/*
+ * Presale checkout stub for {{product_name}} — stamped by chief-wiggum
+ * /apply-pattern (presale, #236).
+ *
+ * INV-PRE-004 (money means money): the experiment's datum is a REAL charge or
+ * authorized deposit. {{checkout_endpoint}} must create a real payment session
+ * with a real provider (e.g. a hosted checkout) before this page takes
+ * traffic. DO NOT simulate a successful charge, log a "preorder" without
+ * payment, or put a fake door behind this button — any of those demote the
+ * evidence to click class (2) and the strength-5 claim on the test card
+ * becomes a lie the traceability gate should catch.
+ *
+ * On failure the page says so plainly and nothing is recorded as a preorder.
+ */
+(function () {
+  "use strict";
+
+  var ENDPOINT = "{{checkout_endpoint}}";
+  var COHORT = document.documentElement.getAttribute("data-cohort") || "cohort-unset";
+
+  var button = document.getElementById("preorder-button");
+  if (!button) return;
+
+  button.addEventListener("click", function () {
+    button.disabled = true;
+    fetch(ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        experiment: "presale",
+        product: "{{product_name}}",
+        cohort: COHORT,
+        price_usd: "{{price_usd}}",
+        ts: new Date().toISOString()
+      })
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("checkout session failed");
+        return res.json();
+      })
+      .then(function (session) {
+        // The provider-hosted checkout URL completes the REAL payment.
+        if (!session || !session.checkout_url) throw new Error("no checkout_url");
+        window.location.assign(session.checkout_url);
+      })
+      .catch(function () {
+        button.disabled = false;
+        var err = document.getElementById("checkout-error");
+        if (err) err.style.display = "block";
+      });
+  });
+})();

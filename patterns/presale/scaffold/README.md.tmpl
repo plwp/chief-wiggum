@@ -1,0 +1,46 @@
+# Presale: {{product_name}}
+
+Stamped by chief-wiggum `/apply-pattern` (`presale`, #236). This directory is an
+**experiment** — an honest pre-order checkout on a product that is not built
+yet. It produces the strongest evidence class a pre-build bet can have:
+**strength 5 (money)** — the class the evidence-strength floor on
+`bet.py transition <bet-id> building` requires.
+
+## Binding to the validation engine (do this BEFORE launch)
+
+1. Register the willingness-to-pay assumption and pre-register the strength-5
+   card — the threshold block is hashed into the portfolio journal at creation
+   (INV-PRE-001; the verdict may only be recorded against that hash):
+
+   ```bash
+   python3 scripts/assumption.py add <bet-id> \
+       --statement "at least X% of <concrete population> will pre-order at ${{price_usd}}" \
+       --source financial_model --element pricing
+   python3 scripts/assumption.py card <bet-id> --asm ASM-NNN \
+       --method presale --metric visitor_to_preorder_rate_pct \
+       --comparator ">=" --value <X> --sample-min <N> \
+       --cost-estimate-usd <traffic + processing budget> --evidence-strength 5
+   ```
+
+2. Wire `checkout.js`'s endpoint (`{{checkout_endpoint}}`) to a **real** payment
+   provider session (INV-PRE-004: money means money — a simulated charge is
+   click evidence and invalidates the strength-5 claim). Set `data-cohort` per
+   launch batch.
+
+3. Launch, then record the verdict only against the original hash:
+
+   ```bash
+   python3 scripts/assumption.py verdict <bet-id> TC-NNN \
+       --result <measured rate> --sample-n <visitors> --verdict <validated|falsified>
+   ```
+
+## Honesty rules (the invariant cluster, patterns/presale/)
+
+- Not-built-yet, the price, and the delivery window (**{{delivery_window}}**)
+  stay visible ABOVE the payment step (INV-PRE-003).
+- The metric is a **per-cohort conversion rate** — cumulative preorder/revenue
+  totals are rejected by the vanity-metric lint (INV-PRE-002).
+- **Refund-on-kill** (INV-PRE-005): if the bet is killed or pivoted before
+  delivery, refund every pre-order per the stated policy ("{{refund_policy}}"),
+  and count the outstanding obligation as wind-down cost in the harvest check
+  (`bet.json harvest_inputs.wind_down_cost_usd`).

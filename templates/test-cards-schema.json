@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/test-cards.json",
+  "title": "Pre-Registered Test Cards",
+  "description": "Per-bet test cards (`bets/<bet-id>/test-cards.json` in the portfolio repo, written by scripts/assumption.py — see docs/business-factory.md §2.2, chief-wiggum#236). The Camuffo-RCT-validated mechanism: the threshold block ({asm_id, metric, comparator, value, sample_min}) is content-hashed into the portfolio journal at card creation, and a verdict may only be recorded against the original hash — no post-hoc success definitions. `assumption.py rebaseline` is the only sanctioned threshold change (journaled old→new hash, --reason required). The metric must be a per-cohort rate; cumulative/gross counters are rejected as success criteria (vanity-metric lint).",
+  "type": "object",
+  "required": ["cards"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "cards": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/card" }
+    }
+  },
+  "$defs": {
+    "card": {
+      "type": "object",
+      "required": ["card_id", "asm_id", "method", "metric", "threshold", "sample_min", "evidence_strength"],
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string",
+          "pattern": "^TC-[0-9]{3,}$",
+          "description": "Stable card id (TC-001…)."
+        },
+        "asm_id": {
+          "type": "string",
+          "pattern": "^ASM-[0-9]{3,}$",
+          "description": "The assumption this card tests. Every card must resolve to a ledger ASM (dangling links are a gate finding), and every ASM needs ≥1 card (uncovered assumptions are a gate finding)."
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How the test runs (landing-page-smoke-test, presale, interview, concierge, …). Interview-class methods cap effective evidence strength at 1 (opinion) regardless of the declared value or the interview count — the Mom Test/Bland floor."
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The measured success criterion — a per-cohort rate (…_rate_pct, conversion, share). Cumulative/gross counters (total_*, cumulative_*, lifetime_*) are rejected by the vanity-metric lint: they falsify nothing (Ries)."
+        },
+        "threshold": {
+          "type": "object",
+          "required": ["comparator", "value"],
+          "additionalProperties": false,
+          "description": "The pre-registered pass bar. Together with asm_id/metric/sample_min this forms the threshold block content-hashed into the journal at creation.",
+          "properties": {
+            "comparator": { "type": "string", "enum": ["<", "<=", ">", ">=", "==", "!="] },
+            "value": { "type": "number" }
+          }
+        },
+        "sample_min": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum sample size for the verdict to be powered; a verdict recorded with --sample-n below this is an under-powered finding."
+        },
+        "cost_estimate_usd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Estimated cost of running the test — counts against the bet envelope when spent (via `bet.py spend`)."
+        },
+        "evidence_strength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Fixed enum (Fitzpatrick/Bland/Savoia ladder): 1 opinion, 2 click/engagement, 3 time (scheduled session, real trial), 4 reputation (intro, public commitment), 5 money (pre-order, deposit, paid conversion). The building-transition floor requires ≥1 validated ASM at ≥4."
+        },
+        "result": {
+          "type": ["number", "null"],
+          "description": "The measured value of `metric`, recorded with the verdict. Null until the test ran."
+        },
+        "sample_n": {
+          "type": ["integer", "null"],
+          "description": "Actual sample size behind the result, when recorded."
+        },
+        "verdict": {
+          "type": ["string", "null"],
+          "enum": ["validated", "falsified", "inconclusive", null],
+          "description": "Recorded only against the original journaled threshold hash; drives the assumption's status. A verdict contradicting the pre-registered comparator is a gate finding."
+        },
+        "created": { "type": "string", "description": "ISO timestamp." },
+        "verdict_ts": { "type": ["string", "null"], "description": "ISO timestamp the verdict was recorded." }
+      }
+    }
+  }
+}

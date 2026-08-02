@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/assumptions.json",
+  "title": "Assumption Ledger",
+  "description": "Per-bet assumption ledger (`bets/<bet-id>/assumptions.json` in the portfolio repo, written by scripts/assumption.py — see docs/business-factory.md §2.2, chief-wiggum#236). Discovery-driven planning's golden rule made mechanical: every assumption gets a stable id, a falsifiable XYZ-form statement, and ≥1 pre-registered test card (the ASM↔card traceability gate is check_traceability.py's shape with new node types). Status moves via `assumption.py card`/`verdict` and `bet.py transition --changed-elements` (pivot re-open, Bland's dependency rule) — never by hand; a hand-set `validated` with no supporting card verdict is a gate finding.",
+  "type": "object",
+  "required": ["assumptions"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "assumptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assumption" }
+    }
+  },
+  "$defs": {
+    "assumption": {
+      "type": "object",
+      "required": ["id", "statement", "status", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ASM-[0-9]{3,}$",
+          "description": "Stable assumption id (ASM-001…) — the node the traceability gate joins test cards against."
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The hypothesis, in Savoia's XYZ grammar: 'at least X% of Y will Z' — X numeric, Y a concrete population (not 'people'/'users'), Z a measurable behavior (not an opinion). The falsifiability linter is a parser over this field."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["untested", "testing", "validated", "falsified"],
+          "description": "untested → testing at first card creation; validated|falsified from a card verdict; a pivot re-opens validated → untested for assumptions tagged to a changed canvas element."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["premortem", "financial_model", "canvas"],
+          "description": "Where the assumption was mined: a premortem (Klein — seeded defects against the plan itself), a financial-model cell, or a canvas element."
+        },
+        "depends_on_element": {
+          "type": ["string", "null"],
+          "description": "The canvas element this assumption depends on (customer-segment, value-proposition, channel, pricing, …). Bland's dependency rule: a pivot that lists this element in --changed-elements re-opens the assumption (validated → untested) in the successor bet."
+        },
+        "created": { "type": "string", "description": "ISO timestamp." },
+        "reopened_by": {
+          "type": ["string", "null"],
+          "description": "Journal record id of the pivot asm-reopen event that reset this assumption, when applicable."
+        }
+      }
+    }
+  }
+}

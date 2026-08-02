@@ -1,0 +1,100 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/landing-page-smoke-test/pattern.md. First validation-experiment pattern (chief-wiggum#236): the factory stamps the EXPERIMENT (scaffold + instrumentation stub), not just tracks it. The pre-registration/vanity-lint invariants are grounded in the in-repo assumption.py mechanism; the page-level invariants are design-derived (no shipped app has run this exact stamped experiment yet — honest per issue #139's 'design-derived statements where not yet built').",
+  "id": "landing-page-smoke-test",
+  "version": 1,
+  "title": "Landing-Page Smoke Test",
+  "category": "validation-experiment",
+  "trust_class": "end-user-signal-driven",
+
+  "applies_when": [
+    "a bet is probing|validating and its demand assumption has no evidence beyond opinions",
+    "you want the cheapest universal demand test: a page stating the value proposition and a signup ask",
+    "the success bar must be pre-registered (assumption.py test card) BEFORE the page goes live",
+    "expected evidence strength is 2-3 (click/engagement, at best scheduled time) — never treat signups as purchase intent"
+  ],
+
+  "components": [
+    "static-landing-page: a framework-light page stating {{product_name}} + value proposition honestly — describes what WILL exist, never claims the product exists today",
+    "signup-capture-stub: an instrumentation stub recording visit and signup events per cohort, posting to the bound endpoint; a signup is a stored contact, nothing more",
+    "pre-registered-binding: the page binds to an assumption.py test card whose threshold block was hashed into the portfolio journal before launch",
+    "per-cohort-rate-metric: the success criterion is visitor→signup conversion per cohort; cumulative signup counters are rejected by the vanity-metric lint",
+    "evidence-honesty: results enter the assumption ledger at strength 2 (click) — a smoke test can falsify demand cheaply but can never validate willingness to pay"
+  ],
+
+  "invariants": {
+    "$comment": "001-002 are realized by the in-repo validation engine (scripts/assumption.py); 003-005 are design-derived page/instrumentation rules, honestly flagged until first grounded use.",
+    "cluster": [
+      {
+        "id": "INV-LPS-001",
+        "statement": "Pre-registered success bar: the experiment binds to a test card whose threshold block ({asm_id, metric, comparator, value, sample_min}) was content-hashed into the portfolio journal BEFORE the page went live; the verdict is recorded only against that original hash (no post-hoc success definitions).",
+        "realized_as": {
+          "app": "chief-wiggum",
+          "code": "scripts/assumption.py (card-create threshold hash + verdict enforcement, chief-wiggum#236)"
+        }
+      },
+      {
+        "id": "INV-LPS-002",
+        "statement": "Per-cohort rate, never a counter: the success criterion is visitor→signup conversion per cohort; cumulative/gross signup totals are rejected as success criteria (they falsify nothing).",
+        "realized_as": {
+          "app": "chief-wiggum",
+          "code": "scripts/assumption.py (vanity-metric lint, chief-wiggum#236)"
+        }
+      },
+      {
+        "id": "INV-LPS-003",
+        "statement": "Honest framing: the page describes what the product WILL do and never claims it exists today; no fake login, no fabricated testimonials, no invented usage numbers — a smoke test measures interest in a promise, and the promise must be labeled as one.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-LPS-004",
+        "statement": "Instrumented denominator: visits and signups are both recorded per cohort so the conversion rate has a real denominator; a signup count without its visitor count is not a result.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-LPS-005",
+        "statement": "Evidence-strength honesty + captured contacts are PII: a signup enters the assumption ledger at strength 2 (click) — never counted as commitment-class evidence; captured emails are stored minimally, used only to follow up on this product, and deletable on request.",
+        "grounding": "design-derived"
+      }
+    ]
+  },
+
+  "parameters": {
+    "product_name": {
+      "type": "string",
+      "required": true,
+      "description": "The product the page smoke-tests (headline + title)."
+    },
+    "value_prop": {
+      "type": "string",
+      "required": true,
+      "description": "One-sentence value proposition — the promise being tested, stated honestly."
+    },
+    "cta_label": {
+      "type": "string",
+      "required": false,
+      "default": "Join the waitlist",
+      "description": "Signup call-to-action label."
+    },
+    "signup_endpoint": {
+      "type": "string",
+      "required": false,
+      "default": "/api/smoke-test/events",
+      "description": "Where the capture stub posts visit/signup events (bind to a real store before launch)."
+    }
+  },
+
+  "success_metrics": {
+    "$comment": "Per-cohort rates only (INV-LPS-002). The bound test card's threshold is the pre-registered pass bar; these are the pattern's standing health metrics.",
+    "metrics": [
+      {"id": "visitor_to_signup_rate_pct", "goal": "up", "desc": "signups / unique visitors per cohort — the experiment's primary measure"},
+      {"id": "cost_per_signup_usd", "goal": "down", "desc": "traffic spend / signups per cohort (counts against the bet envelope)"},
+      {"id": "signup_to_reply_rate_pct", "goal": "up", "desc": "follow-up replies / signups per cohort — separates real interest from drive-by emails"}
+    ]
+  },
+
+  "protected_paths": ["the stamped experiment page + capture stub (results are only meaningful if the page matched what was pre-registered)"],
+
+  "feeds": {
+    "presale": "smoke-test signups are the audience a presale test converts; strength-2 evidence graduates to strength-5 only through money"
+  }
+}
