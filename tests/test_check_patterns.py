@@ -336,6 +336,11 @@ def test_platform_cost_observability_is_specified_with_honest_grounding():
     # first write (codex review round 1 blocker)
     settling = next(e for e in cluster if e["id"] == "INV-PCO-004")
     assert "idempotently replaces" in settling["statement"]
+    # …and finality is provisional: post-window corrections reopen the day
+    # (codex round 2 — late-metered usage / invoice-time adjustments)
+    assert "never immutability" in settling["statement"]
+    # dead-man's-switch knob is per-source (codex round 2 MEDIUM)
+    assert manifest["parameters"]["staleness_alert_after"]["type"] == "object"
     # completeness round: sources are disjoint (no cross-source double count),
     # a stalled ingest alerts out-of-band (dead-man's switch), and alert rungs
     # are send-once + re-armed — the three recurring failures the opus

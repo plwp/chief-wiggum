@@ -70,9 +70,12 @@ invariant cluster below exists to kill exactly those failure modes.
   already-persisted days instead of being frozen out at first write; estimated
   lines (see whole-bill coverage) are marked estimated, never blended silently
   into actuals; a failed ingest surfaces as visibly stale rather than silently
-  serving old numbers as fresh. *(INV-PCO-004 — design-derived; the
-  fail-visible sibling of the registry's fail-closed-on-unknown-age
-  meta-discipline.)*
+  serving old numbers as fresh. **"Final" is provisional, never immutable**: it
+  asserts only that a day exited its source's declared settling window — a
+  correction arriving later (late-metered usage, invoice-time adjustment)
+  reopens and repairs the day through the same upsert, with a visible
+  correction marker. *(INV-PCO-004 — design-derived; the fail-visible sibling
+  of the registry's fail-closed-on-unknown-age meta-discipline.)*
 - **App-scoped, disjoint, sum-preserving attribution.** Attribution to *this
   app* is established at provision time — a dedicated cloud project per
   app+env, resource labels, per-app vendor keys/subaccounts (that provisioning
@@ -141,7 +144,7 @@ adopter.
 | `spend_sources` | yes | The registered metered vendors and how each is read: fetch mechanism (billing export / usage API / app-side meter / manual), granularity, settling window, billed currency, and — for a vendor billed through another source — the parent source it is a sub-line of (disjointness). The cloud provider's billing export is the mandatory first entry. |
 | `app_boundary` | yes | How this app's spend is isolated **at provision time**: dedicated cloud project per app+env, resource labels, per-app vendor keys/subaccounts. A protected path. |
 | `ingest_schedule` | yes | Cadence of the snapshot ingests (bounds `cost_visibility_lag`). |
-| `staleness_alert_after` | yes | Per-source age beyond which a missing fresh snapshot fires the out-of-band dead-man's-switch alert (e.g. 2× `ingest_schedule`). |
+| `staleness_alert_after` | yes | Per-source map (source id → age, `default` key) beyond which a missing fresh snapshot fires the out-of-band dead-man's-switch alert (e.g. default 2× that source's cadence). |
 | `snapshot_store` | yes | Where normalized snapshots persist (the app's own DB — the panel never reads a source). |
 | `snapshot_retention` | no | How long raw per-day detail is kept and the rollup granularity beyond it (bounds the monitor's own storage). |
 | `budget_thresholds` | yes | The threshold ladder per source (cloud budget + vendor meters); send-once per (source, period, rung), re-armed at rollover. |

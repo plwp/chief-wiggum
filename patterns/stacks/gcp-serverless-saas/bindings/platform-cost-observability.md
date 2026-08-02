@@ -52,10 +52,16 @@ makes the vendor's own usage reporting app-attributable by construction.
   export rows for already-snapshotted days keep arriving and adjusting, so the
   ingest **idempotently replaces** each re-read day (upsert keyed on
   source+day), letting late corrections repair earlier days instead of
-  freezing them at first write. A day is only marked final once it exits the
-  window; at month close, reconcile against `invoice.month` rather than usage
-  timestamps. The query stays partition-pruned to that bounded window, so
-  bytes scanned — and query cost — stay ≈ 0 (INV-PCO-003). Aggregate by
+  freezing them at first write. **Finality is provisional**: GCP corrections
+  and late-metered usage can land *after* the settling window carrying old
+  usage dates, so each nightly run also re-aggregates the whole **open
+  `invoice.month`** (one partition-pruned aggregate over the month — bytes
+  stay bounded) and re-upserts any day whose totals drifted, marking it
+  corrected; month-close does the same for the closing month before the
+  `invoice.month` invoice reconcile. A day shown "final" therefore means
+  "exited the settling window", never "immutable". The queries stay
+  partition-pruned to bounded windows, so bytes scanned — and query cost —
+  stay ≈ 0 (INV-PCO-003). Aggregate by
   `service.description` + labels and write one normalized snapshot row-set per
   day into the app DB (INV-PCO-003's snapshot_store).
 - **Identity (INV-PCO-002):** a dedicated ingest service account holding
