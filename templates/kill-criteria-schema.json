@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/kill-criteria.json",
+  "title": "Kill Criteria",
+  "description": "States-and-dates kill criteria (`bets/<bet-id>/kill-criteria.json`, Duke 2022 — see docs/business-factory.md §2.3, chief-wiggum#235). Every criterion is a measurable state PLUS a date; one missing either is MALFORMED (soundness lint at creation). Criteria must be evidence-shaped (paid conversions, commitment-class signals), never MRR-target-shaped: a 3-month box can only validate demand existence. This file is a GOALPOST artifact — content-hashed into the portfolio journal at create; `bet.py rebaseline` (journaled, --reason required) is the only sanctioned mutation path.",
+  "type": "object",
+  "required": ["criteria"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/criterion" }
+    }
+  },
+  "$defs": {
+    "criterion": {
+      "type": "object",
+      "required": ["id", "metric", "comparator", "threshold", "by_date", "direction"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Stable criterion id, e.g. 'KC-1'." },
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The measurable state's metric, e.g. 'paid_conversions'. Prefer commitment currencies (scheduled time, staked reputation, paid money) over opinion/click metrics."
+        },
+        "comparator": { "type": "string", "enum": ["<", "<=", ">", ">=", "==", "!="] },
+        "threshold": { "type": "number" },
+        "by_date": { "type": "string", "format": "date", "description": "ISO date the state must (direction=has) or must not (direction=has_not) hold by. A criterion without a date has no timeout semantics and is malformed." },
+        "direction": {
+          "type": "string",
+          "enum": ["has", "has_not"],
+          "description": "'has': the state must have been reached by by_date — past the date without it, the criterion TRIGGERS (proposes kill_pending). 'has_not': the state must not occur — it triggers as soon as it does."
+        }
+      }
+    }
+  }
+}

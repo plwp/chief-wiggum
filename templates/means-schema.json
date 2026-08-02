@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/means.json",
+  "title": "Means Inventory",
+  "description": "Portfolio-level means inventory (`<portfolio>/means.json` — effectuation bird-in-hand, chief-wiggum#235 amendment). Honest skill levels are load-bearing inputs, not vanity fields: the bet-selection lint reads sales/marketing here — while both are novice and no channel has ever reached `focused`, a bet whose acquisition plan has no ecosystem channel and no owned audience is flagged (report-only). A bet proposal must reference the means it draws on (bet.json means_refs). Absent means.json → dependent checks report `skipped`, never crash.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "skills": {
+      "type": "object",
+      "description": "Skill → honest self-assessed level. Keys are free-form ('sales', 'marketing', 'engineering', ...); the bet-selection lint reads 'sales' and 'marketing'.",
+      "additionalProperties": { "type": "string", "enum": ["novice", "competent", "strong"] }
+    },
+    "assets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Things owned that a bet can draw on (codebases, infra, tooling, cash-adjacent assets)."
+    },
+    "network": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Who you know — reachable people/communities a bet's distribution can lean on."
+    },
+    "owned_audience": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Audiences already owned (lists, followings, communities) — the bet-selection lint accepts a plan that draws on one."
+    },
+    "hours_per_week": { "type": "number", "minimum": 0 },
+    "cash_available": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Current zero-based slack, USD — the ability side of affordable loss. Envelopes justified by projected future revenue are the business analogue of building on an UNRESOLVED: fact."
+    }
+  }
+}

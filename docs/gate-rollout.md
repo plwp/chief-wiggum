@@ -65,6 +65,7 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 | **AI-slop signals (code survival + duplication)** | `quality_slop_gate.py` | `--gate` | **report-only** (#113); `/close-epic`; **gate-validation record: passed** (#184, fixture band-file target per CTR-fh-044 — validates the banding/verdict logic, not the external engines) |
 | Architecture model consistency | `check_architecture.py` | `--gate` | report-only in `/architect` (#174); **gate-validation record: passed** (#184, one seed per frozen `CHECKS` entry per ADR-fh-06) |
 | **Traceability: suspect-link propagation** | `check_traceability.py` (`suspect_links`) | none yet | **NEW — report-only** (#169); does not affect `coverage_ok`/the `--gate coverage` exit code; `ratchet.py check`/`regressed` surface the same sidecar cross-reference visibly. Promote once a dry-run across a real epic's link churn shows an acceptable false-positive rate (see docs/traceability.md) |
+| **Bet-ledger gates (states-and-dates soundness, tranche cap, dated-criterion evaluation, bets-in-flight cap, bet-selection lint, goalpost integrity)** | `bet.py` | `--gate` | **NEW — report-only** (#235); no workflow passes `--gate` until a `validation/bet-gates.json` record exists (dogfood one real bet end-to-end first — docs/business-factory.md §8). Journal tamper (exit 4) and `killed`-without-retrospective are hard state-machine guards, not gated findings |
 
 ## From convention to protocol: `docs/gate-validation.md` (#168)
 

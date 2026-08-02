@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/bet.json",
+  "title": "Bet Record",
+  "description": "A bounded venture experiment (`bets/<bet-id>/bet.json` in the portfolio repo, written by scripts/bet.py — see docs/business-factory.md, chief-wiggum#235). A bet is under ~$1k to prove and ~3 months to a kill decision. The embedded `envelope` is a GOALPOST artifact: content-hashed into the portfolio journal at create; `bet.py rebaseline` is the only sanctioned mutation path (Adner & Levinthal 2004 — abandonment conditions must not be retroactively redefined). `state` is maintained by `bet.py transition` only; stage labels are derived from evidence, never self-declared unlocks.",
+  "type": "object",
+  "required": ["id", "title", "created", "state", "envelope"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "Stable bet id — the `bets/<id>/` directory name."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "thesis": {
+      "type": "string",
+      "description": "The falsifiable thesis this bet exists to test. A pivot closes this bet (criteria evaluated against THIS thesis) and opens a successor with a fresh one."
+    },
+    "created": { "type": "string", "description": "ISO timestamp the bet was created." },
+    "state": {
+      "type": "string",
+      "enum": ["proposed", "probing", "validating", "building", "scaling", "kill_pending", "killed", "parked", "lifestyle", "sold"],
+      "description": "proposed → probing → validating → building → scaling; kill_pending reachable from anywhere; terminals killed|parked|lifestyle|sold. `killed` is blocked until retrospective.md exists non-trivially and a harvest check ran."
+    },
+    "envelope": { "$ref": "#/$defs/envelope" },
+    "acquisition": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The acquisition plan the bet-selection lint reads (chief-wiggum#235 amendment): while means.json says sales/marketing novice and no channel has reached `focused`, a plan with neither an ecosystem channel nor an owned audience is flagged.",
+      "properties": {
+        "ecosystem_channel": {
+          "type": ["string", "null"],
+          "description": "A built-in-distribution ecosystem channel (marketplace, app store, plugin directory, ...) this bet ships into, or null."
+        },
+        "owned_audience": {
+          "type": ["string", "null"],
+          "description": "An owned audience (list, following, community) the plan draws on, or null."
+        }
+      }
+    },
+    "means_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "References into portfolio means.json entries (skills/assets/network/owned_audience ids or names) this bet draws on — effectuation bird-in-hand: a proposal must reference the means it uses."
+    },
+    "harvest_inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inputs to the harvest check run before a `killed` transition: est sale value = 3.9 × TTM seller-discretionary profit (Acquire.com micro-SaaS median) vs wind-down cost. Absent inputs → the check reports `skipped`, never blocks silently, never crashes.",
+      "properties": {
+        "ttm_sdp_usd": { "type": "number", "minimum": 0, "description": "Trailing-twelve-month seller-discretionary profit, USD." },
+        "wind_down_cost_usd": { "type": "number", "minimum": 0, "description": "Cost of winding the bet down (time, refunds, contract exits), USD." }
+      }
+    },
+    "unlocked_milestones": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Milestone ids whose tranches have been unlocked (journaled human acts via `bet.py transition --unlock-milestone`). Invariant: cumulative spend ≤ cumulative unlocked tranches."
+    },
+    "predecessor": {
+      "type": ["string", "null"],
+      "description": "Bet id this bet succeeded via a pivot, or null."
+    },
+    "successor": {
+      "type": ["string", "null"],
+      "description": "Bet id opened when this bet was closed by a pivot, or null. Pivot is a transition, not an edit."
+    }
+  },
+  "$defs": {
+    "envelope": {
+      "type": "object",
+      "required": ["cash_cap_usd"],
+      "additionalProperties": false,
+      "description": "Affordable-loss envelope (Dew et al. 2009 field list), human-set, script-enforced, raisable only via `bet.py rebaseline` (a journaled act with a required --reason).",
+      "properties": {
+        "cash_cap_usd": { "type": "number", "minimum": 0 },
+        "time_cap_hours": { "type": "number", "minimum": 0 },
+        "calendar_cap_days": { "type": "number", "minimum": 0 },
+        "attention_slots": { "type": "number", "minimum": 0 },
+        "tranches": {
+          "type": "array",
+          "description": "Gompers (1995) staging: the cash cap released stepwise. A tranche with unlock_milestone_id null is unlocked from creation; others unlock via a journaled `--unlock-milestone` act. Invariant: cumulative spend ≤ cumulative unlocked tranches.",
+          "items": {
+            "type": "object",
+            "required": ["amount_usd", "unlock_milestone_id"],
+            "additionalProperties": false,
+            "properties": {
+              "amount_usd": { "type": "number", "minimum": 0 },
+              "unlock_milestone_id": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
