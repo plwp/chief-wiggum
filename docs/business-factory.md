@@ -336,6 +336,48 @@ through A+H+C before promoting anything to `--gate`.
   `/business-consultant` skill copy; linter enforcement of `success_metrics`. (Metric
   computation moved to F, where the money data lives.)
 
+### Bet ledger usage (Track A, `scripts/bet.py`, #235)
+
+The portfolio spine, shipped. Bets live in a dedicated private portfolio repo — default
+`~/.chief-wiggum/portfolio`, overridable via `--portfolio-dir` or `CHIEF_WIGGUM_PORTFOLIO`,
+git-initialized on first use:
+
+```
+<portfolio>/
+├── journal.jsonl          # append-only hash chain (ratchet.py format — never hand-edit)
+├── means.json             # means inventory (templates/means-schema.json), optional
+└── bets/<bet-id>/
+    ├── bet.json           # templates/bet-schema.json (envelope embedded — a goalpost)
+    ├── kill-criteria.json # templates/kill-criteria-schema.json (a goalpost)
+    ├── ledger.jsonl       # append-only spend/time/rep entries
+    ├── channels.json      # optional channel-experiment records (#241)
+    └── retrospective.md   # required non-trivially before `killed`
+```
+
+```bash
+python3 scripts/bet.py create <bet-id> --title ... --envelope env.json --criteria kc.json
+python3 scripts/bet.py spend <bet-id> --amount-usd 120 --hours 6   # or --rep (distribution rep)
+python3 scripts/bet.py evaluate <bet-id> --results measured.json   # + distribution-attempted status
+python3 scripts/bet.py transition <bet-id> probing                 # kill_pending / terminals / pivot
+python3 scripts/bet.py transition <bet-id> killed --successor <id> --envelope ... --criteria ...  # pivot
+python3 scripts/bet.py rebaseline <bet-id> --envelope new.json --reason "..."  # ONLY goalpost mutation path
+python3 scripts/bet.py portfolio                                   # summary + invariants
+```
+
+The envelope and kill criteria are content-hashed into `journal.jsonl` at create; `rebaseline`
+journals old → new hashes with a required `--reason`; every read verifies the chain and fails
+closed (exit 4) on tamper. Gate checks — all report-only by default per `docs/gate-rollout.md`,
+blocking only with `--gate`, and no workflow passes `--gate` until a `validation/bet-gates.json`
+record exists: states-and-dates soundness lint; cumulative spend ≤ cumulative unlocked tranches;
+dated-criterion evaluation (triggered → journaled `kill-proposed`, spend blocked pending the
+journaled human accept/override); bets-in-flight cap (probing|validating|building, default 2);
+bet-selection lint at create (means.json sales/marketing novice + no `focused` channel + no
+ecosystem channel/owned audience in the acquisition plan); goalpost-integrity hash check.
+`killed` is hard-blocked until `retrospective.md` exists non-trivially and the harvest check ran
+(3.9 × TTM SDP vs wind-down cost; absent inputs → `skipped`, reported, never a silent block).
+Missing optional inputs (`means.json`, `channels.json`) report `skipped`/`unattempted` — never a
+crash, never silently omitted.
+
 ---
 
 ## 9. Sources (condensed)
