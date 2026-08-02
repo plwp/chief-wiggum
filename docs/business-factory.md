@@ -517,6 +517,57 @@ pre-registration/vanity-lint invariants are grounded in `assumption.py`; the pag
 invariants are design-derived until first grounded use, flagged per the #139 allowance.
 Fake-door and concierge are named follow-ups, not shipped.
 
+### Kill-review quorum (Track D, `bet.py kill-brief` / `kill-review`, #237)
+
+The disinterested killer of §2.4 mechanized (Boulding et al. 1997: clearer negative data
+does not stop escalation — a decision maker with **no sunk costs** does). At a kill
+checkpoint the continue case is argued to a fresh-context quorum that sees ONLY a
+generated brief — never the bet's accumulated working context; the missing context is
+the feature, preserved as a lintable invariant.
+
+```bash
+python3 scripts/bet.py evaluate <bet-id> --results r.json   # criterion fires → recommends kill-review
+python3 scripts/bet.py kill-brief <bet-id>                  # render the brief (journal-backed values only)
+python3 scripts/bet.py kill-review <bet-id>                 # brief → quorum → verdicts journaled
+```
+
+- **Consult role** `kill-review` (`config/providers.json`): required `codex` + `opus`
+  (the claude tool pinned to the opus model via the provider entry's `model` field —
+  per-provider default model, #237); optional `claude-interactive` at the standard
+  `optional_timeout_seconds: 300`. Bounded charters per the lenses-not-personas
+  convention (`config/lenses.json`): `evidence-sufficiency` (is the evidence enough to
+  continue), `steelman-the-kill` (argue the kill — checking the distribution-attempt
+  table FIRST, per the fairness amendment), `is-recycle-better` (does a pivot beat both).
+- **The brief is generated, not written** (`kill-brief`): hashed kill criteria verbatim
+  (cited to the create/rebaseline journal record), measured values sourced from the
+  journaled `kill-proposed` evaluation rows, envelope status (spend vs tranches from the
+  ledger), the open-assumption evidence table (`assumptions.json` when present), and the
+  **distribution-attempt table** — channel experiments run, exposure delivered,
+  rep-cadence adherence, with `unattempted` stated explicitly when no evidence exists.
+  Any value the generator cannot source is `UNRESOLVED:`, never prose. **Brief purity is
+  a generator self-check, not an operator gate**: every measured value must cite a
+  journal record id or a `bets/<id>/` artifact file, and thesis prose must not appear —
+  a violating brief is REFUSED (exit 1) unconditionally, like the retrospective guard;
+  it takes no `--gate` and gets no gate-ledger row of its own.
+- **Verdict schema**: `{verdict: go|kill|hold|recycle, confidence, reasons[],
+  cheapest_disconfirming_test?}` in a fenced JSON block; a `hold` must name the test
+  that would settle it. Malformed provider output is flagged and carried as a
+  `malformed` entry — tolerated, never a crash (report-only finding, gate-ledger row).
+- **Distribution-fairness rule** (#241 amendment): a demand-shaped criterion
+  (direction=`has`, or explicit `demand_shaped`) that fired while distribution is
+  unattempted cannot produce `kill` — a parsed kill verdict is mechanically downgraded
+  to `recycle` with a finding naming the cheapest untried exposure (founder reps at $0
+  before untried Bullseye channels). Zero exposure → zero signups is evidence of no
+  marketing, not no demand.
+- **Ordering invariant**: the human reads the quorum verdicts BEFORE the accept/override
+  instructions (the fresh verdict anchors the decision, per the de-escalation
+  literature); verdicts + brief hash are journaled as a `kill-review` event, and the
+  decision itself stays a journaled human act (`transition <id> kill_pending` or
+  `--override-kill --reason`).
+- **Trigger points**: a fired criterion at `evaluate` *recommends* `kill-review`; a
+  human may convene it ad hoc; nothing runs the quorum automatically — it is a
+  kill-decision instrument, not a recurring review board.
+
 ---
 
 ## 9. Portfolio theses and targeting doctrine (logged 2026-08-02)

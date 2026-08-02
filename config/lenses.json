@@ -25,6 +25,30 @@
         "Do NOT comment on code style or naming."
       ]
     },
+    "evidence-sufficiency": {
+      "goal": "Your goal is to decide whether the measured evidence in this kill brief is sufficient to justify CONTINUING the bet: does any measured value genuinely clear its pre-registered bar, and is the strongest supporting evidence commitment-class (scheduled time, staked reputation, paid money) rather than opinion or clicks? Treat every UNRESOLVED value as absent evidence — never as implied success or implied failure. If the evidence is insufficient to continue, say so plainly.",
+      "exclusions": [
+        "Do NOT argue the case for killing the bet — another evaluator carries that charter.",
+        "Do NOT propose pivots or reframes — another evaluator carries that charter.",
+        "Do NOT re-litigate whether the kill criteria were well-chosen; they are pre-registered goalposts and the question is only whether the evidence clears them."
+      ]
+    },
+    "steelman-the-kill": {
+      "goal": "Your goal is to argue the strongest honest case FOR killing this bet, from the measured values and envelope status alone. FIRST check the distribution-attempt table: if a demand-shaped criterion fired while distribution is unattempted, the kill case may NOT rest on absent demand — zero exposure producing zero signups is evidence of no marketing, not no demand. State that explicitly when it applies, and build the kill case only from evidence that survives the rule (envelope breach, a falsified assumption, a must-not-hold criterion that occurred). If no honest kill case survives, say so rather than manufacturing one.",
+      "exclusions": [
+        "Do NOT argue the case for continuing — another evaluator carries that charter.",
+        "Do NOT propose pivots or reframes — another evaluator carries that charter.",
+        "Do NOT rest a kill argument on a demand-shaped criterion whose distribution-attempt row is unattempted or UNRESOLVED."
+      ]
+    },
+    "is-recycle-better": {
+      "goal": "Your goal is to judge whether a recycle/pivot verdict beats BOTH go and kill: is there a cheaper reframe — a changed segment, channel, price, or offer — that the journaled evidence in this brief already motivates? If distribution is unattempted, the cheapest recycle is usually running the untried exposure before re-deciding. Whatever you recommend, name the cheapest disconfirming test the recycled bet would run first.",
+      "exclusions": [
+        "Do NOT argue continuation of the current thesis as-is — that is the go case, another evaluator's charter.",
+        "Do NOT re-argue the kill case on its own terms — another evaluator carries that charter.",
+        "Do NOT propose reframes that ignore the pre-registered evidence; a recycle must be motivated by a measured value or attempt-table row in the brief."
+      ]
+    },
     "security": {
       "goal": "Your goal is to find security and data-exposure problems: authentication/authorization gaps, injection or deserialization risks, secrets handling, tenant/data isolation failures, and any place untrusted input reaches a sensitive sink. Treat functional correctness outside the security surface as someone else's job.",
       "exclusions": [

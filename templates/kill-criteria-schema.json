@@ -33,6 +33,10 @@
           "type": "string",
           "enum": ["has", "has_not"],
           "description": "'has': the state must have been reached by by_date — past the date without it, the criterion TRIGGERS (proposes kill_pending). 'has_not': the state must not occur — it triggers as soon as it does."
+        },
+        "demand_shaped": {
+          "type": "boolean",
+          "description": "Explicit override of the demand-shape inference (chief-wiggum#237 fairness rule). Absent, a direction=has criterion is treated as demand-shaped (a reach-the-demand-state milestone) and a direction=has_not criterion is not. A demand-shaped criterion that fires while distribution is unattempted cannot ground a `kill` verdict — the quorum's verdict space for it is `recycle` or `hold` (zero exposure → zero signups is evidence of no marketing, not no demand)."
         }
       }
     }

@@ -25,6 +25,12 @@
       "type": "delegate",
       "delegate": "claude-interactive",
       "enabled": true
+    },
+    "opus": {
+      "type": "tool",
+      "tool": "claude",
+      "model": "claude-opus-4-6",
+      "enabled": true
     }
   },
   "roles": {
@@ -95,6 +101,21 @@
       "optional": [
         "claude-interactive"
       ],
+      "optional_timeout_seconds": 300
+    },
+    "kill-review": {
+      "required": [
+        "codex",
+        "opus"
+      ],
+      "optional": [
+        "claude-interactive"
+      ],
+      "lenses": {
+        "codex": "evidence-sufficiency",
+        "opus": "steelman-the-kill",
+        "claude-interactive": "is-recycle-better"
+      },
       "optional_timeout_seconds": 300
     }
   }

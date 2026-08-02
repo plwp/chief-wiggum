@@ -701,8 +701,12 @@ def consult_provider(
     if provider.type == "tool":
         if not provider.tool or provider.tool not in TOOLS:
             raise ValueError(f"unsupported tool provider: {provider.name}")
-        text, usage = TOOLS[provider.tool](prompt, model=model, cwd=cwd)
-        _emit_consult_telemetry(provider.tool, model, cwd, usage, ticket=ticket)
+        # Explicit --model wins; else the provider entry's own default model
+        # (chief-wiggum#237 — e.g. the `opus` provider pins the claude tool
+        # to the opus model); else the tool's configured default.
+        effective_model = model or provider.model
+        text, usage = TOOLS[provider.tool](prompt, model=effective_model, cwd=cwd)
+        _emit_consult_telemetry(provider.tool, effective_model, cwd, usage, ticket=ticket)
         return text
     if provider.type == "delegate":
         if provider.delegate != "claude-interactive":
