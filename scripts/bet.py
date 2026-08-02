@@ -99,10 +99,32 @@ block regardless of ``--gate``: an invalid state transition (exit 2), and
 ``killed`` without a non-trivial retrospective (exit 1 — harvest discipline,
 ``/close-epic``'s shape).
 
+Kill-review quorum (#237, docs/business-factory.md §2.4): at a kill checkpoint
+the continue case is argued to a FRESH-CONTEXT quorum (``consult_ai.py --role
+kill-review`` — codex + opus required, claude-interactive optional, bounded
+charters per the lenses-not-personas convention) that sees only a GENERATED
+brief: hashed kill criteria verbatim, measured values with journal sources,
+envelope status, open-assumption evidence, and the distribution-attempt table.
+The evaluator having no sunk context is the feature (Boulding et al. 1997) —
+``kill-brief`` renders only journal-backed artifacts and REFUSES (exit 1, a
+hard self-check, not a ``--gate``) if the brief would carry an unsourced value
+or thesis prose. Verdict schema: ``{verdict: go|kill|hold|recycle, confidence,
+reasons[], cheapest_disconfirming_test?}``. **Distribution-fairness rule**
+(#241 amendment): a demand-shaped criterion (direction=has, or an explicit
+``demand_shaped`` flag) that fired while distribution is unattempted cannot
+ground a ``kill`` — a parsed kill verdict is mechanically downgraded to
+``recycle`` with a finding naming the cheapest untried exposure. The human
+sees the quorum verdicts BEFORE the accept/override instructions (the fresh
+verdict anchors the decision), and the verdicts + brief hash are journaled as
+a ``kill-review`` event. Nothing convenes the quorum automatically: a fired
+criterion RECOMMENDS ``kill-review``; the human runs it.
+
 Subcommands:
     create      register a bet: envelope + kill criteria hashed into the journal
     spend       append a ledger entry (spend/time or a distribution rep)
     evaluate    evaluate dated criteria + report distribution-attempted status
+    kill-brief  render the fresh-context kill brief (journal-backed values only)
+    kill-review generate the brief, run the kill-review quorum, journal verdicts
     transition  move the state machine (incl. pivot, kill accept/override,
                 tranche unlock — every one a journaled act)
     rebaseline  the ONLY mutation path for envelope/kill criteria (--reason required)
@@ -119,6 +141,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -158,6 +181,23 @@ LEDGER_TAGS = ("product", "traction")
 # A channel record counts as ATTEMPTED distribution only once it reaches the
 # Bullseye inner rings — brainstormed/ranked is consideration, not an attempt.
 EXPERIMENT_STATES = {"testing", "focused", "rejected"}
+
+# Kill-review quorum (#237): the consult role + on-disk names for the generated
+# brief and the per-provider verdict files consult_ai.py --role writes.
+KILL_REVIEW_ROLE = "kill-review"
+BRIEF_NAME = "kill-brief.md"
+KILL_REVIEW_DIR = "kill-review"
+
+# Exposure-bearing numeric fields a channel-experiment record may carry — the
+# brief's "exposure delivered" column reads only these; absent → UNRESOLVED.
+EXPOSURE_KEYS = ("exposure", "traffic", "visitors", "impressions", "listings", "launches")
+
+# Brief-purity lint: every [source: ...] citation must be a journal record id
+# or an artifact file inside this bet's directory — nothing else exists to a
+# fresh-context evaluator.
+_SOURCE_RE = re.compile(r"\[source: ([^\]]+)\]")
+_REC_ID_RE = re.compile(r"^rec-\d{5,}$")
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 # Acquire.com micro-SaaS median multiple on TTM seller-discretionary earnings
 # (docs/business-factory.md §2.3) — the harvest check's est-sale-value factor.
@@ -551,6 +591,477 @@ def any_channel_focused(root: Path) -> bool:
     return False
 
 
+# ---- kill-review quorum (#237) ---------------------------------------------------
+
+
+def criterion_demand_shaped(c: dict) -> bool:
+    """A demand-shaped criterion is one whose firing the operator's own
+    distribution gap could explain: direction=has (a reach-the-demand-state
+    milestone). A has_not criterion fires on evidence that OCCURRED (refund
+    spike, churn), which no marketing gap explains. Explicit override via the
+    optional ``demand_shaped`` boolean (templates/kill-criteria-schema.json)."""
+    v = c.get("demand_shaped")
+    if isinstance(v, bool):
+        return v
+    return c.get("direction", "has") == "has"
+
+
+def latest_kill_proposed(records: list[dict], bet_id: str) -> dict | None:
+    return next(
+        (r for r in reversed(bet_events(records, bet_id)) if r.get("event") == "kill-proposed"),
+        None,
+    )
+
+
+def _criteria_baseline_record(records: list[dict], bet_id: str) -> str | None:
+    """Record id of the journal event that established the current criteria hash."""
+    rec_id = None
+    for r in bet_events(records, bet_id):
+        d = r.get("details", {}) or {}
+        if r.get("event") == "bet-create" and d.get("criteria_hash"):
+            rec_id = r.get("record_id", rec_id)
+        elif r.get("event") == "rebaseline" and d.get("new_criteria_hash"):
+            rec_id = r.get("record_id", rec_id)
+    return rec_id
+
+
+def cheapest_untried_exposure(root: Path, bet: dict) -> str:
+    """Name the cheapest exposure not yet attempted — the distribution finding a
+    fairness-downgraded kill verdict must carry. Deterministic, artifact-backed:
+    founder reps are always the cheapest ($0) when none exist; else the highest-
+    ranked untried Bullseye channel; else the first untried enum channel."""
+    reps = [e for e in load_ledger(root, bet["id"]) if e.get("type") == "rep"]
+    if not reps:
+        need = bet.get("rep_cadence_per_week")
+        if not isinstance(need, (int, float)) or need <= 0:
+            need = DEFAULT_REP_CADENCE
+        return (
+            f"founder reps — {need:g} Mom-Test conversations/week "
+            "(`bet.py spend --rep`), $0; the rep ledger shows none"
+        )
+    channels = _channel_records(root, bet["id"])
+    if not channels:
+        return "no channel records at all — `channel.py brainstorm` (the 19-channel enum), $0"
+    untried = [
+        c for c in channels
+        if (c.get("status") or c.get("state") or "brainstormed") not in EXPERIMENT_STATES
+    ]
+    ranked = sorted(
+        (c for c in untried if isinstance(c.get("rank"), (int, float))),
+        key=lambda c: c["rank"],
+    )
+    if ranked:
+        return (
+            f"channel `{ranked[0].get('channel')}` (rank {ranked[0]['rank']:g}, "
+            "never tested — `channel.py test`)"
+        )
+    if untried:
+        return (
+            f"channel `{untried[0].get('channel')}` (brainstormed, never tested — "
+            "`channel.py rank` then `test`)"
+        )
+    return "every recorded channel reached testing — the gap is exposure volume, not channel count"
+
+
+def brief_purity_findings(text: str, bet: dict, facts: list[dict]) -> list[str]:
+    """The lintable invariant behind the generated brief (#237 decision 2):
+    every measured value cites a journal record id or an artifact file in this
+    bet's directory, or is explicitly ``UNRESOLVED:`` — and the bet's narrative
+    (thesis prose) never reaches the fresh-context evaluator."""
+    out = []
+    for f in facts:
+        val = str(f.get("value", ""))
+        if not f.get("source") and not val.startswith("UNRESOLVED:"):
+            out.append(
+                f"unsourced value in brief: {f.get('label')} = {val} — every "
+                "measured value must cite a journal record id or artifact file"
+            )
+    thesis = (bet.get("thesis") or "").strip()
+    if thesis and thesis in text:
+        out.append(
+            "thesis prose leaked into the brief — the fresh-context evaluator "
+            "must not inherit the bet's narrative (the missing context is the feature)"
+        )
+    for m in _SOURCE_RE.finditer(text):
+        for src in m.group(1).split(";"):
+            src = src.strip()
+            if not (_REC_ID_RE.match(src) or src.startswith(f"bets/{bet.get('id')}/")):
+                out.append(
+                    f"non-journal, non-artifact source cited: {src!r} — the brief "
+                    "generator reads only journal-backed artifacts"
+                )
+    return out
+
+
+def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tuple[str, list[str], dict]:
+    """Render the fresh-context kill brief from journal-backed artifacts ONLY.
+
+    Returns ``(markdown, findings, meta)``. ``findings`` (goalpost drift +
+    purity-lint hits) non-empty ⇒ the caller must refuse to emit the brief —
+    exit 1, a hard self-check, never a ``--gate``. ``meta`` carries what the
+    fairness rule needs: fired criteria, demand-shaped fired criteria, the
+    live distribution status, and the cheapest untried exposure."""
+    bet = load_bet(root, bet_id)
+    records = load_journal(root)
+    as_of = as_of or date.today()
+    # A brief rendered from hand-moved goalposts is not journal-backed.
+    findings = list(goalpost_findings(root, bet, records))
+    criteria = load_criteria(root, bet_id)
+    facts: list[dict] = []
+
+    def fact(label: str, value, source: str | None) -> str:
+        facts.append({"label": label, "value": value, "source": source})
+        return f"- {label}: {value}" + (f" [source: {source}]" if source else "")
+
+    ledger_src = f"bets/{bet_id}/ledger.jsonl"
+    bet_src = f"bets/{bet_id}/bet.json"
+    chan_src = f"bets/{bet_id}/channels.json"
+    asm_src = f"bets/{bet_id}/assumptions.json"
+
+    lines = [
+        f"# Kill brief: {bet_id} — {bet.get('title', '')}",
+        "",
+        f"State: `{bet.get('state')}` as of {as_of.isoformat()}. This brief contains ONLY "
+        "journal-backed artifacts: pre-registered kill criteria, measured values with "
+        "sources, envelope status, open-assumption evidence, and distribution attempts. "
+        "It deliberately contains no history, no working context, and no thesis prose — "
+        "you are the fresh-context evaluator, and the missing context is the feature "
+        "(Boulding et al. 1997).",
+        "",
+    ]
+
+    # -- criteria, verbatim, hash-cited
+    crit_hash = content_hash(criteria)
+    baseline_rec = _criteria_baseline_record(records, bet_id)
+    cite = f" [source: {baseline_rec}]" if baseline_rec else ""
+    lines += [
+        f"## Kill criteria (pre-registered goalposts, verbatim; hash `{crit_hash[:12]}…`"
+        f" journaled at create/rebaseline{cite})",
+        "",
+        "```json",
+        json.dumps(criteria, indent=2, sort_keys=True),
+        "```",
+        "",
+    ]
+
+    # -- measured values: ONLY from the journaled kill-proposed evaluation rows
+    kp = latest_kill_proposed(records, bet_id)
+    rows_by_id: dict[str, dict] = {}
+    fired: list[str] = []
+    if kp:
+        d = kp.get("details", {}) or {}
+        fired = [c for c in d.get("criteria") or [] if isinstance(c, str)]
+        for row in d.get("rows") or []:
+            if isinstance(row, dict) and row.get("id"):
+                rows_by_id[row["id"]] = row
+    lines.append("## Measured values")
+    lines.append("")
+    for c in criteria:
+        cid = c.get("id") or "?"
+        metric = c.get("metric") or "?"
+        shape = "demand-shaped" if criterion_demand_shaped(c) else "not demand-shaped"
+        row = rows_by_id.get(cid)
+        if row is not None and isinstance(row.get("measured"), (int, float)):
+            lines.append(fact(
+                f"{cid} {metric} ({shape})",
+                f"{row['measured']:g} — status {row.get('status', '?')}",
+                kp["record_id"],
+            ))
+        elif row is not None:
+            lines.append(fact(
+                f"{cid} {metric} ({shape})",
+                f"unmeasured at the journaled evaluation — status {row.get('status', '?')} "
+                "(no evidence counts as not achieved)",
+                kp["record_id"],
+            ))
+        else:
+            lines.append(fact(
+                f"{cid} {metric} ({shape})",
+                "UNRESOLVED: no journaled evaluation covers this criterion "
+                "(run `bet.py evaluate --results ...`)",
+                None,
+            ))
+    lines.append("")
+
+    # -- envelope status
+    entries = load_ledger(root, bet_id)
+    cash, hours = spend_totals(entries)
+    cap = unlocked_cap(bet)
+    env = bet.get("envelope", {})
+    lines.append("## Envelope status (spend vs tranches)")
+    lines.append("")
+    lines.append(fact("cumulative cash spend", f"${cash:g}", ledger_src))
+    lines.append(fact(
+        "unlocked tranches",
+        f"${cap:g} of ${env.get('cash_cap_usd', 0):g} cash cap"
+        f" — spend {'EXCEEDS unlocked' if cash > cap else 'within envelope'}",
+        bet_src,
+    ))
+    lines.append(fact("cumulative hours", f"{hours:g}", ledger_src))
+    time_cap = env.get("time_cap_hours")
+    if isinstance(time_cap, (int, float)):
+        lines.append(fact("time cap", f"{time_cap:g}h", bet_src))
+    lines.append("")
+
+    # -- open-assumption evidence table (assumption.py owns the ledger; the
+    #    import is deferred to avoid the module cycle, same as transition)
+    lines.append("## Open assumptions (evidence table)")
+    lines.append("")
+    import assumption as asmlib
+    if not asmlib.assumptions_path(root, bet_id).is_file():
+        lines.append(
+            "- none recorded — no assumptions.json for this bet "
+            "(no assumption ledger was registered)"
+        )
+    else:
+        assumptions = asmlib.load_assumptions(root, bet_id)
+        cards = asmlib.load_cards(root, bet_id)
+        open_asms = [a for a in assumptions if a.get("status") in ("untested", "testing")]
+        settled = len(assumptions) - len(open_asms)
+        lines.append(fact(
+            "assumption ledger",
+            f"{len(assumptions)} assumption(s): {len(open_asms)} open, {settled} settled",
+            asm_src,
+        ))
+        for a in open_asms:
+            aid = a.get("id", "?")
+            eff, _notes = asmlib.asm_effective_strength(aid, cards)
+            strength = (
+                f"validated evidence strength {eff} ({asmlib.STRENGTH_LABELS.get(eff, '?')})"
+                if eff else "no validated evidence"
+            )
+            lines.append(fact(
+                f"{aid} [{a.get('status')}]",
+                f"{strength} — {a.get('statement', '')!r}",
+                asm_src,
+            ))
+    lines.append("")
+
+    # -- distribution-attempt table (#241 amendment)
+    dist = distribution_status(root, bet_id)
+    exposure = cheapest_untried_exposure(root, bet)
+    lines.append("## Distribution attempts")
+    lines.append("")
+    if dist["status"] == "unattempted":
+        lines.append(fact(
+            "distribution",
+            "unattempted — no channel experiment reached testing and no rep entries exist",
+            ledger_src,
+        ))
+    else:
+        lines.append(fact(
+            "distribution",
+            f"attempted — {dist['channel_experiments']} channel experiment(s), "
+            f"{dist['rep_entries']} rep entr{'y' if dist['rep_entries'] == 1 else 'ies'}",
+            ledger_src,
+        ))
+    channels = _channel_records(root, bet_id)
+    experiments = [
+        c for c in channels if (c.get("status") or c.get("state")) in EXPERIMENT_STATES
+    ]
+    if experiments:
+        ran = ", ".join(
+            f"{c.get('channel', '?')} ({c.get('status') or c.get('state')})"
+            for c in experiments
+        )
+        exp_cell = fact("channel experiments run", ran, chan_src)
+        acquired = [
+            f"{c.get('channel', '?')}: {c['customers_acquired']:g}"
+            for c in experiments if isinstance(c.get("customers_acquired"), (int, float))
+        ]
+        acq_cell = (
+            fact("customers acquired", "; ".join(acquired), chan_src)
+            if acquired else None
+        )
+        seen = [
+            f"{c.get('channel', '?')}: {c[k]:g} {k}"
+            for c in experiments for k in EXPOSURE_KEYS
+            if isinstance(c.get(k), (int, float))
+        ]
+        expo_cell = (
+            fact("exposure delivered", "; ".join(seen), chan_src)
+            if seen else fact(
+                "exposure delivered",
+                "UNRESOLVED: no exposure (traffic/listings/launches) recorded on any "
+                "channel experiment",
+                None,
+            )
+        )
+    else:
+        exp_cell = fact("channel experiments run", "none (unattempted)", ledger_src)
+        acq_cell = None
+        expo_cell = fact(
+            "exposure delivered",
+            "UNRESOLVED: no channel experiments — no exposure was delivered",
+            None,
+        )
+    reps = [e for e in entries if e.get("type") == "rep"]
+    cad = rep_cadence_status(bet, entries, as_of)
+    if cad is not None:
+        rep_cell = fact(
+            "rep-cadence adherence",
+            f"{cad['count']}/{cad['required']:g} Mom-Test reps in the trailing week "
+            f"({'MISSED' if cad['count'] < cad['required'] else 'met'}); "
+            f"{len(reps)} rep entr{'y' if len(reps) == 1 else 'ies'} total",
+            ledger_src,
+        )
+    else:
+        rep_cell = fact(
+            "rep-cadence adherence",
+            f"n/a while {bet.get('state')} (cadence applies probing|validating); "
+            f"{len(reps)} rep entr{'y' if len(reps) == 1 else 'ies'} total",
+            ledger_src,
+        )
+    fired_demand = []
+    by_id = {c.get("id"): c for c in criteria if isinstance(c, dict)}
+    for cid in fired:
+        c = by_id.get(cid)
+        if c is not None and criterion_demand_shaped(c):
+            fired_demand.append(cid)
+    demand_criteria = [c for c in criteria if isinstance(c, dict) and criterion_demand_shaped(c)]
+    lines.append("")
+    lines.append("Per demand-shaped criterion (the fairness rule's evidence):")
+    lines.append("")
+    if not demand_criteria:
+        lines.append("- no demand-shaped criteria on this bet")
+    for c in demand_criteria:
+        cid = c.get("id") or "?"
+        fired_note = " — FIRED" if cid in fired else ""
+        lines.append(f"- {cid} ({c.get('metric')}){fired_note}:")
+        for cell in (exp_cell, expo_cell, acq_cell, rep_cell):
+            if cell:
+                lines.append(f"  {cell}")
+    lines += [
+        "",
+        "## Verdict required",
+        "",
+        "Reply with your reasoning, then EXACTLY ONE fenced JSON block:",
+        "",
+        "```json",
+        '{"verdict": "go|kill|hold|recycle", "confidence": 0.0,',
+        ' "reasons": ["..."], "cheapest_disconfirming_test": "required for hold"}',
+        "```",
+        "",
+        "Constraints:",
+        "- Judge ONLY the evidence above against the pre-registered criteria.",
+        "- A `hold` must name the `cheapest_disconfirming_test` that would settle it.",
+        "- Distribution-fairness rule (#241 amendment): a demand-shaped criterion that "
+        "fired while the distribution-attempt table shows `unattempted` may NOT ground "
+        "a `kill` — the verdict space for that criterion is `recycle` (naming the "
+        "distribution gap) or `hold`. Zero exposure producing zero signups is evidence "
+        "of no marketing, not no demand. A `kill` returned anyway is mechanically "
+        "downgraded to `recycle`.",
+        "",
+    ]
+
+    text = "\n".join(lines)
+    findings += brief_purity_findings(text, bet, facts)
+    meta = {
+        "fired": fired,
+        "fired_demand": fired_demand,
+        "distribution": dist,
+        "exposure": exposure,
+        "as_of": as_of.isoformat(),
+    }
+    return text, findings, meta
+
+
+def parse_verdict(text: str) -> dict | None:
+    """Extract the provider's verdict from its response: the LAST fenced JSON
+    block carrying a valid verdict wins; a bare-JSON body is tolerated. Returns
+    None when nothing parseable exists — flagged by the caller, never a crash."""
+    candidates = [b for b in _FENCE_RE.findall(text or "")]
+    candidates.append((text or "").strip())
+    for raw in reversed(candidates):
+        try:
+            data = json.loads(raw.strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict) or data.get("verdict") not in VERDICTS:
+            continue
+        conf = data.get("confidence")
+        out = {
+            "verdict": data["verdict"],
+            "confidence": conf if isinstance(conf, (int, float)) and not isinstance(conf, bool) else None,
+            "reasons": [str(r) for r in (data.get("reasons") or []) if str(r).strip()],
+        }
+        test = data.get("cheapest_disconfirming_test")
+        if isinstance(test, str) and test.strip():
+            out["cheapest_disconfirming_test"] = test.strip()
+        return out
+    return None
+
+
+def collect_verdicts(out_dir: Path) -> tuple[list[dict], list[str]]:
+    """Read the quorum's per-provider files (manifest-driven when present) into
+    parsed verdict entries. Malformed output is flagged and carried as a
+    ``malformed`` entry — tolerated, never fatal (#237 decision 3)."""
+    verdicts: list[dict] = []
+    findings: list[str] = []
+    files: list[tuple[str, Path]] = []
+    manifest_path = out_dir / f"{KILL_REVIEW_ROLE}-manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except json.JSONDecodeError:
+            manifest = {}
+        for r in manifest.get("results") or []:
+            if r.get("status") == "ok" and r.get("path"):
+                files.append((r.get("name", "?"), Path(r["path"])))
+            else:
+                findings.append(
+                    f"provider {r.get('name', '?')}: no response "
+                    f"({r.get('error') or 'failed'}) — optional voice missing"
+                )
+    else:
+        for p in sorted(out_dir.glob(f"{KILL_REVIEW_ROLE}-*.md")):
+            if p.name.endswith(".error.md"):
+                continue
+            files.append((p.stem.removeprefix(f"{KILL_REVIEW_ROLE}-"), p))
+    for name, path in files:
+        if not path.is_file():
+            continue
+        parsed = parse_verdict(path.read_text())
+        if parsed is None:
+            findings.append(
+                f"provider {name}: malformed verdict output — no parseable fenced "
+                "JSON with a go|kill|hold|recycle verdict; flagged, not counted"
+            )
+            verdicts.append({"provider": name, "verdict": None, "malformed": True})
+            continue
+        if parsed["verdict"] == "hold" and not parsed.get("cheapest_disconfirming_test"):
+            findings.append(
+                f"provider {name}: hold verdict without cheapest_disconfirming_test "
+                "— a hold must name what evidence would settle it"
+            )
+        verdicts.append({"provider": name, **parsed})
+    return verdicts, findings
+
+
+def apply_fairness(
+    verdicts: list[dict], fired_demand: list[str], dist_status: str, exposure: str,
+) -> list[str]:
+    """The distribution-fairness verdict rule (#241 amendment): a demand-shaped
+    criterion fired with distribution unattempted may not produce `kill` —
+    downgrade to `recycle` with a distribution finding naming the cheapest
+    untried exposure. Returns the providers downgraded."""
+    if not fired_demand or dist_status != "unattempted":
+        return []
+    downgraded = []
+    for v in verdicts:
+        if v.get("verdict") != "kill":
+            continue
+        v["verdict"] = "recycle"
+        v["downgraded_from"] = "kill"
+        v["distribution_finding"] = (
+            f"demand-shaped criterion(s) {', '.join(fired_demand)} fired with "
+            "distribution unattempted — evidence of no marketing, not no demand; "
+            f"cheapest untried exposure: {exposure}"
+        )
+        downgraded.append(v.get("provider", "?"))
+    return downgraded
+
+
 # ---- bet-selection lint (#235 amendment) ---------------------------------------
 
 
@@ -926,15 +1437,126 @@ def cmd_evaluate(args) -> int:
                 "to recycle"
             )
         if pending_kill(records, args.bet_id) is None and bet["state"] not in TERMINALS:
+            # The full evaluation rows ride along so the #237 kill brief can
+            # cite measured values to this record id — journal-backed, never prose.
             rec = append_event(root, "kill-proposed", args.bet_id, {
                 "criteria": triggered,
                 "as_of": as_of.isoformat(),
                 "distribution": dist,
+                "rows": rows,
             })
             print(f"  journaled kill-proposed ({rec['record_id']})")
         else:
             print("  kill proposal already pending — not re-journaled")
+        # Trigger point (#237 decision 5): a proposed kill RECOMMENDS the
+        # fresh-context quorum; nothing runs it automatically.
+        print(
+            f"  next: convene the fresh-context kill review — "
+            f"`bet.py kill-review {args.bet_id}` (#237)"
+        )
     return report(findings, args.gate)
+
+
+def cmd_kill_brief(args) -> int:
+    root = portfolio_root(args.portfolio_dir)
+    as_of = date.fromisoformat(args.as_of) if args.as_of else None
+    text, findings, _meta = build_kill_brief(root, args.bet_id, as_of)
+    if findings:
+        for f in findings:
+            print(f"bet: [purity] {f}")
+        print(
+            f"bet: kill-brief {args.bet_id} REFUSED — the brief generator emits "
+            "only journal-backed values (hard self-check, not a --gate)"
+        )
+        return 1
+    out_path = Path(args.output) if args.output else bet_dir(root, args.bet_id) / BRIEF_NAME
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text)
+    print(text)
+    print(f"bet: kill brief written to {out_path}")
+    return 0
+
+
+def cmd_kill_review(args) -> int:
+    root = portfolio_root(args.portfolio_dir)
+    as_of = date.fromisoformat(args.as_of) if args.as_of else None
+    text, findings, meta = build_kill_brief(root, args.bet_id, as_of)
+    if findings:
+        for f in findings:
+            print(f"bet: [purity] {f}")
+        print(
+            f"bet: kill-review {args.bet_id} REFUSED — cannot convene a quorum on "
+            "a brief that fails the purity self-check"
+        )
+        return 1
+    brief_path = bet_dir(root, args.bet_id) / BRIEF_NAME
+    brief_path.write_text(text)
+
+    out_dir = Path(args.output_dir) if args.output_dir else bet_dir(root, args.bet_id) / KILL_REVIEW_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # CW_CONSULT_AI overrides the consult entrypoint — the test seam (fixture
+    # verdict files instead of real providers); the argv contract is identical.
+    consult = os.environ.get("CW_CONSULT_AI") or str(
+        Path(__file__).resolve().parent / "consult_ai.py"
+    )
+    proc = subprocess.run(
+        [sys.executable, consult, "--role", KILL_REVIEW_ROLE, str(brief_path),
+         "--output-dir", str(out_dir)],
+        capture_output=True, text=True,
+    )
+    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    if proc.returncode != 0:
+        print(
+            f"bet: kill-review {args.bet_id} — quorum FAILED (a required provider "
+            "did not answer); no verdicts journaled"
+        )
+        return 1
+
+    verdicts, parse_findings = collect_verdicts(out_dir)
+    if not verdicts:
+        print(f"bet: kill-review {args.bet_id} — quorum produced no verdict files; nothing journaled")
+        return 1
+    downgraded = apply_fairness(
+        verdicts, meta["fired_demand"], meta["distribution"]["status"], meta["exposure"]
+    )
+    rec = append_event(root, "kill-review", args.bet_id, {
+        "brief_hash": stable_hash(text),
+        "brief_path": f"bets/{args.bet_id}/{BRIEF_NAME}",
+        "as_of": meta["as_of"],
+        "fired_criteria": meta["fired"],
+        "distribution_status": meta["distribution"]["status"],
+        "verdicts": verdicts,
+        "fairness_downgraded": downgraded,
+    })
+
+    # Ordering invariant (#237 decision 4): the human reads the fresh verdicts
+    # BEFORE the accept/override instructions — the verdict anchors the decision.
+    print(f"bet: kill-review {args.bet_id} — fresh-context quorum verdicts (read these first):")
+    for v in verdicts:
+        if v.get("malformed"):
+            print(f"  {v['provider']}: MALFORMED verdict output (flagged, not counted)")
+            continue
+        conf = (
+            f" (confidence {v['confidence']:g})"
+            if isinstance(v.get("confidence"), (int, float)) else ""
+        )
+        note = (
+            f" — downgraded from `{v['downgraded_from']}` by the distribution-fairness rule"
+            if v.get("downgraded_from") else ""
+        )
+        print(f"  {v['provider']}: {v['verdict'].upper()}{conf}{note}")
+        for r in v.get("reasons", []):
+            print(f"    - {r}")
+        if v.get("cheapest_disconfirming_test"):
+            print(f"    cheapest disconfirming test: {v['cheapest_disconfirming_test']}")
+        if v.get("distribution_finding"):
+            print(f"    distribution finding: {v['distribution_finding']}")
+    print(f"  verdicts + brief hash journaled ({rec['record_id']})")
+    print("bet: your decision (a journaled act — decide AFTER reading the verdicts above):")
+    print(f"  accept the kill:   `bet.py transition {args.bet_id} kill_pending --verdict kill`")
+    print(f"  override the kill: `bet.py transition {args.bet_id} --override-kill --reason ...`")
+    return report(parse_findings, args.gate)
 
 
 def _guard_transition(bet: dict, to: str, override: bool) -> None:
@@ -1370,6 +1992,28 @@ def main() -> int:
                     help="evaluation date (default: today)")
 
     sp = sub.add_parser(
+        "kill-brief",
+        help="render the fresh-context kill brief (journal-backed values only — #237)",
+    )
+    common(sp)
+    sp.add_argument("bet_id")
+    sp.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
+                    help="brief date for the rep-cadence window (default: today)")
+    sp.add_argument("--output", default=None, metavar="FILE",
+                    help=f"write the brief here (default: bets/<id>/{BRIEF_NAME})")
+
+    sp = sub.add_parser(
+        "kill-review",
+        help="generate the brief, run the kill-review quorum via consult_ai.py "
+             "--role, journal verdicts + brief hash (#237)",
+    )
+    common(sp)
+    sp.add_argument("bet_id")
+    sp.add_argument("--as-of", default=None, metavar="YYYY-MM-DD")
+    sp.add_argument("--output-dir", default=None, metavar="DIR",
+                    help=f"provider verdict files land here (default: bets/<id>/{KILL_REVIEW_DIR}/)")
+
+    sp = sub.add_parser(
         "transition",
         help="move the state machine (pivot via --successor; kill accept/override; "
              "tranche unlock) — every one a journaled act",
@@ -1422,6 +2066,7 @@ def main() -> int:
     args = p.parse_args()
     dispatch = {
         "create": cmd_create, "spend": cmd_spend, "evaluate": cmd_evaluate,
+        "kill-brief": cmd_kill_brief, "kill-review": cmd_kill_review,
         "transition": cmd_transition, "rebaseline": cmd_rebaseline,
         "portfolio": cmd_portfolio,
     }

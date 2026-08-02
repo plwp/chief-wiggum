@@ -31,6 +31,10 @@ class Provider:
     enabled: bool
     tool: str | None = None
     delegate: str | None = None
+    # Per-provider default model id (chief-wiggum#237). Lets two provider
+    # entries share one tool with different models (e.g. `opus` = the claude
+    # CLI pinned to the opus model). A caller's explicit --model still wins.
+    model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,7 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
             enabled=bool(raw.get("enabled", True)),
             tool=raw.get("tool"),
             delegate=raw.get("delegate"),
+            model=raw.get("model"),
         )
     return providers
 
