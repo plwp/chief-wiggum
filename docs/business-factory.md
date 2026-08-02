@@ -380,7 +380,167 @@ crash, never silently omitted.
 
 ---
 
-## 9. Sources (condensed)
+## 9. Portfolio theses and targeting doctrine (logged 2026-08-02)
+
+Operator theses from the steer discussion, grounded by two dedicated research passes (ecosystem
+exit base rates; historical moat-collapse strategy mining). Doctrine here means **targeting
+heuristics for bet selection** — every claim below is an assumption at bet level, to be
+pre-registered and tested per §2, never treated as established fact. The unifying premise:
+AI collapsed the cost of building software, so the *product* moat is gone economy-wide; the
+question each thesis answers is where an agile solo player capitalizes on that collapse.
+
+### 9.1 Ecosystem-wedge thesis
+
+**Statement**: build a micro-SaaS filling a gap inside an existing SaaS ecosystem, reach the
+host's customers through its marketplace, exit six figures. Decomposed and researched:
+
+- **Distribution-structural — MIXED.** Marketplaces demonstrably deliver installs with zero
+  audience, but the median listed Shopify app earns <$1k MRR, 54% of Stripe-verified indie
+  products earn $0, and 500–800 new apps land monthly. A marketplace is a channel, not a moat.
+- **Gaps-discoverable — MIXED.** Gaps verifiably persist, but platform-entry research (Wen &
+  Zhu; Foerderer) shows hosts absorb *popular + simple* gaps — durable gaps are complex,
+  niche, low-glamour, which caps growth. Complaint-corpus mining (public feature boards,
+  reviews) makes gap discovery mechanizable.
+- **Revenue math — leaning supported, Shopify only.** A $100–150k financial exit at the
+  ~3.9× SDE marketplace median requires ~$2.5–4k MRR sustained (top-decile for listed apps);
+  **sub-$1k-MRR assets clear at ~1.7× ARR, not 3.9× SDE**. The good multiple assumes the bar
+  is cleared with growth intact.
+- **Acquired-not-copied — SUPPORTED for Shopify/WordPress, UNSUPPORTED for
+  Slack/monday/Chrome/HubSpot** (thin or absent buyer benches). Hosts buy tiny-team apps that
+  control roadmap-core surfaces (Shopify/Checkout Blocks — a solo dev; Atlassian's repeated
+  purchases of its own vendors); they copy popular-undifferentiated ones.
+
+**Shortlist for an AU solo founder**: Shopify (every leg evidenced; 0% rev share to $1M;
+seven funded consolidators), Atlassian Forge (home market, 100% of revenue to $1M lifetime
+from 2026, host-buys-vendors precedent — but thin exit auction and 15→25% Connect take-rate
+ratchet shows policy risk), WordPress as eyes-open fallback (deep buyer bench; PHP; worst
+governance risk post-ACF-seizure). Landlord risk is real everywhere: Chrome deleted its
+payment rails outright.
+
+### 9.2 Neglected-incumbent thesis
+
+**Statement**: businesses sitting on milked incumbent products (often PE-owned, R&D cut,
+prices raised) are displaceable with modest effort. Mechanics:
+
+- If the product is bad and customers stay, **the moat is switching cost, not product** — so
+  the grease targets switching cost: migration importers, parallel-run modes, concierge
+  onboarding from the incumbent's export format. Migration tooling is squarely AI's sweet
+  spot and stampable per-target.
+- **Timing = incumbent-inflicted switching events.** Price hikes, EOLs, license rug-pulls,
+  PE-acquisition integrations force customers to re-evaluate anyway; the moat is momentarily
+  down and the pre-positioned named alternative harvests the exodus (Broadcom/VMware→Proxmox,
+  Unity→Godot, HashiCorp→OpenTofu). PE roll-ups manufacture these events on a schedule.
+- **Grievance radar** (candidate capability, trigger-bound): monitor PE acquisitions of
+  vertical SaaS, EOL/pricing-page changes, license alterations, review-sentiment collapse,
+  "X alternative" search volume. Alert = bet-opportunity trigger with the window attached.
+- **Evidence discipline**: hatred is opinion-class. "Everyone complains, nobody leaves" can
+  mean the switching cost is stronger than the grievance, or the vertical won't pay. The
+  pre-registered test is migration commitments (money/time currency), never sentiment.
+
+### 9.3 The 100–1000-employee band
+
+Not SAP/Salesforce — the mid-size SaaS band is the soft target: coordination cost is
+superlinear (roadmap committees, change-review sludge) while the problems they sit on became
+trivial; roadmap capture by their largest accounts permanently outranks the long tail;
+**sales-led economics forbid the counter-move** (they cannot profitably chase a $20 self-serve
+product down-market without wrecking quota structures — the judo lock, satisfied by
+construction); many are PE-owned and in margin-extraction mode.
+
+- **Pillage the edges, not the core** (the core still owns brand, integrations, an SEO
+  fortress): the public feature-request backlog, the SMB tier their motion can't serve,
+  unbuilt integrations, AU-geography/data-residency.
+- **Their feature-request board is a ranked, voted, timestamped backlog of demand they
+  publicly ignore** — high-vote, years-old, unshipped requests are demand evidence with
+  provenance. Backlog mining composes with the grievance radar: radar finds the sludged
+  incumbent, backlog mining finds the wedge.
+- **Exit-leg bonus**: this band routinely makes $100k–$2M tuck-in acquisitions at VP-level
+  approval — the most liquid buyer class for exactly these assets. Displacement pressure and
+  acquisition appetite come from the same org chart.
+- **The check**: "unshipped for five years" must be explained by organizational friction
+  (opportunity), not absent willingness to pay (votes are free) — distinguished by test
+  cards in commitment currency before product code is written.
+
+### 9.4 Undercutting doctrine (historical moat-collapse mining)
+
+Nine episodes mined (generics post-patent-cliff, PC clones, May Day brokerages + zero-commission
+wave, budget airlines, open source & the strip-mining fight, Craigslist unbundling, Zoom vs
+neglected WebEx, Atlassian's no-sales-force pricing, hard discounters/private label) plus the
+theory layer (Christensen's conservation of attractive profits, judo strategy, modularity).
+Ranked transferable mechanisms:
+
+1. **Attack where the incumbent's margin/comp structure forbids response** (Dell vs dealer
+   channels, Schwab vs commissioned brokers, Southwest vs hubs — every incumbent hybrid clone
+   died: Continental Lite burned $1.2B). SaaS form: a $200/seat feature line can't be repriced
+   at $20 without repricing the renewal book — the installed base is a hostage. **Screen: only
+   attack standalone revenue lines**, never features the incumbent could give away to defend a
+   bigger bundle — bundling-at-marginal-cost-zero (Teams vs Slack/Zoom, IE vs Netscape) is the
+   one incumbent counter with a near-perfect win record.
+2. **Price below the procurement threshold** (Atlassian's $10 licenses): the buyer becomes a
+   team lead with a credit card and the incumbent's sales machine has no meeting to compete
+   in. A distribution asymmetry disguised as a price. Accept the mid-market ceiling — for a
+   solo player the ceiling is the point.
+3. **Neglect arbitrage** (Zoom vs Cisco-owned WebEx; every Craigslist category): incumbent
+   neglect is the only moat-gap that doesn't fight back on day one. Viability screen from the
+   Craigslist-unbundling record: a trust problem worth paying for, a transaction to embed in,
+   and sufficient frequency or ticket size — most unbundlers died of low frequency.
+4. **Position now at the layer profit re-pools into — never plan to keep product margin.**
+   The record is unanimous: profit never survives in the commoditized layer. It re-pooled in
+   (a) custody of the customer relationship and balances (Schwab's net interest; airline
+   loyalty programs worth more than the airlines), (b) the distribution/aggregation chokepoint
+   (PBMs take 64% of generic revenue — the makers who won the disruption lost the profit),
+   (c) operations/assurance on the free thing (Red Hat, MongoDB Atlas), (d) the adjacent
+   proprietary bottleneck (Intel/Microsoft), (e) first-party workflow data. **AI-era
+   analogues: integration position in the customer's stack (re-integration risk is the
+   customer's switching cost even when rebuild cost → 0), accumulated workflow data,
+   niche distribution/trust, compliance/assurance, operated service. The code itself appears
+   nowhere on the historical list — plan as if your code is already worth zero.**
+5. **First-filer timing** (generics' Paragraph IV; Valkey forking Redis in weeks): when a moat
+   has a date — license change, EOL, price hike, a model release that trivializes a feature —
+   the first credible alternative captures a brief 60–80%-of-incumbent-pricing window before
+   pile-in. Expect the "authorized generic" counter: the incumbent ships its own lite/free
+   version the week you launch and cuts the window's value ~half; price the window accordingly.
+6. **Cost-structure fundamentalism**: undercut only from a genuinely different activity system
+   (no sales force, no payroll, no legacy tax), never from thinner margins — and never
+   straddle (bolting enterprise SLAs onto a $20 product is Continental-Lite-ing yourself).
+   Note honestly: the AI cost advantage is shared by every other AI-era entrant — which is the
+   generics condition, and exactly why element 4 (adjacency) decides who keeps the profit.
+7. **Quality of first touch as the wedge when price can't be** (Zoom's one-click join):
+   incumbents already have free tiers, so the wedge is the first five minutes — "installed
+   and useful inside the existing stack within 10 minutes" is the integration-product
+   equivalent.
+8. **Capital structure as strategy**: a solo operator can hold price points a VC-backed
+   competitor structurally can't (they must raise prices into their valuation; you don't).
+
+**Multi-host neutrality** (from the steer): integrating with several competing hosts defeats
+both the landlord (can't be evicted from rivals) and the bundle (no host can bundle across
+competitors) — `provider-neutral-adapter` promoted to business strategy, and the most
+acquirable position (any host buys to lock the capability). Off-marketplace integration does
+NOT escape platform risk — APIs are also revocable (Twitter, Reddit); assess per host whether
+the API is a product (Stripe, Shopify, HubSpot) or a moat, before building.
+
+### 9.5 Standing screens for bet selection
+
+The doctrine compresses to checkable screens — candidate fields/lints for `bet.json`'s
+acquisition-plan and thesis blocks as Tracks H/C ground:
+
+1. **Judo-lock test**: is the attacked feature a standalone revenue line the incumbent cannot
+   reprice or bundle away without self-harm? (If bundleable at zero: do not attack.)
+2. **Procurement-threshold pricing**: is the price under the buyer's no-approval limit?
+3. **Adjacency plan**: which re-pooling layer does this bet own at exit (integration position /
+   workflow data / distribution / compliance / operations)? A bet with none planned is the
+   generics trap — flagged.
+4. **Timing field**: is there a dated moat-expiry event (EOL, price hike, license change)?
+   First-filer windows are events, not vibes.
+5. **Unbundling viability** (for neglect plays): trust problem worth paying for + embedded
+   transaction + frequency/ticket size.
+6. **Displacement ratio**: incumbent revenue at risk per customer won (strategic-pressure
+   proxy; underwrite on the financial floor regardless).
+7. **Landlord assessment** (for ecosystem plays): API-as-product vs API-as-moat; marketplace
+   ToS on competing with paid features; host's Sherlock history.
+
+---
+
+## 10. Sources (condensed)
 
 **Portfolio / small bets**: Sarasvathy 2001 (*AMR*) & 2008; Dew, Sarasvathy, Read & Wiltbank
 2009 (*SEJ*, affordable loss); Wiltbank et al. 2009 (*JBV*, angel outcomes); Arend et al. 2015
