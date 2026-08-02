@@ -1,0 +1,73 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/platform-cost-observability/pattern.md. Surfaces the platform's own spend — the WHOLE bill: cloud provider AND per-call vendors (LLM inference, media, email, managed DB) — app-scoped, read-only, in the SaaS admin panel. One invariant REUSES an in-repo cluster (operator plane <- multi-tenant-isolation INV-MTI-004); 002 borrows the deployment-release identity-split discipline without claiming realization; the rest are design-derived and honestly marked — no mined app surfaces platform spend yet (chief-wiggum#229, per the #139 'design-derived statements where not yet built' allowance).",
+  "id": "platform-cost-observability",
+  "version": 1,
+  "title": "Platform Cost Observability",
+  "category": "monitoring-feedback",
+  "trust_class": "operator-plane-read-only-surface",
+
+  "applies_when": [
+    "the product runs on metered infrastructure and an operator needs to see what THIS app costs — across every vendor — without leaving the admin plane",
+    "spend actuals should feed decisions (tier graduation, pricing, unit economics) rather than arriving as monthly invoice surprises",
+    "uncapped meters exist (LLM inference, media egress, logging, serverless scale-out) that need budget thresholds alerting out-of-band"
+  ],
+
+  "components": [
+    "operator-plane-only-surface: cost routes register only on the admin/operator plane, out-of-band from tenant routes; never reachable by a tenant-scoped principal (reuses the multi-tenant-isolation operator-plane discipline)",
+    "per-source-read-only-identity: each externally-read spend source is read with a dedicated credential scoped to viewing billing/usage data only; secret material lives in the secret seam, never env vars (borrows the deployment-release least-privilege identity-split discipline; a distinct identity with a distinct scope)",
+    "ingest-then-serve: bounded scheduled ingests persist normalized snapshots; the panel only ever reads snapshots — no request-path call to any billing source, so the monitor's own query spend is bounded by construction, and retained snapshot detail is bounded by a retention/rollup window so its storage cannot become a cost line either",
+    "staleness-and-settling-honesty: every figure carries as-of + its source's settling window; settling days marked partial and idempotently re-read/replaced each ingest (fetched sources), estimated lines marked estimated, failed ingest surfaces as visibly stale — never old numbers as fresh",
+    "app-scoped-disjoint-sum-preserving-attribution: attribution to this app is established at provision time (dedicated project per app+env, resource labels, per-app vendor keys), never reconstructed by heuristics; breakdowns partition each source's total with explicit unattributed/shared and credit lines; the source set is disjoint (a marketplace/reseller-billed vendor is a sub-line of its billing source, an estimate is superseded by its actual, never summed) and the monthly ledger is reconciled against each settled invoice; billed currency + conversion rate recorded per line",
+    "whole-bill-coverage: every metered vendor is a registered spend source (cloud + LLM + media + email + managed DB + processor fees); vendors without a cost API register via app-side metering or operator manual entry (author+time stamped, marked estimated, never clobbered or duplicated by an ingest) — the total is never silently understated",
+    "out-of-band-alerts-protected-thresholds: budget thresholds on the cloud bill and the fast-moving vendor meters alert independently of the panel with send-once-per-rung + period re-arm semantics; absence of fresh snapshot data is itself an out-of-band alert (dead-man's switch); threshold config and ingest jobs are protected paths"
+  ],
+
+  "invariants": {
+    "$comment": "001 reuses an in-repo cluster (cited in realized_as); 002 BORROWS the deployment-release least-privilege identity-split discipline but is NOT realized by it (INV-DRL-004 proves a deploy identity that cannot read secrets — the spend-reader must read vendor usage APIs, a different identity with its own scope), so it is honestly design-derived like 003-007. This surface is not yet built in any mined app; the cluster grounds when a product first builds it (intended first adopter named in the gcp-serverless-saas binding).",
+    "cluster": [
+      {"id": "INV-PCO-001", "statement": "Operator-plane-only surface: platform spend is cross-tenant operator data; cost routes register only on the admin/operator plane, out-of-band from tenant routes, and are never reachable by a tenant-scoped principal.", "realized_as": {"app": "chief-wiggum registry", "code": "patterns/multi-tenant-isolation/manifest.json (INV-MTI-004 operator plane out-of-band)"}},
+      {"id": "INV-PCO-002", "statement": "Per-source read-only, least-privilege identity: each externally-read spend source is read with a dedicated credential scoped to viewing billing/usage data only — it can neither mutate infrastructure nor billing configuration; its secret material lives in the platform's secret seam, never env vars. Borrows the least-privilege, single-purpose identity-split discipline the deployment-release pattern establishes (INV-DRL-004), but is a distinct identity with a distinct scope — not realized by it.", "grounding": "design-derived"},
+      {"id": "INV-PCO-003", "statement": "Ingest-then-serve: the admin panel reads locally persisted snapshots written by bounded, scheduled ingests; no request-path call to any billing source exists. The monitor's own spend is bounded by construction on both axes: query/API cost by the bounded ingest window, and storage by a declared retention/rollup window (raw per-day detail rolls up beyond it) — the cost monitor never becomes a cost line.", "grounding": "design-derived"},
+      {"id": "INV-PCO-004", "statement": "Staleness and settling-lag honesty: every surfaced figure carries its as-of timestamp and its source's settling window; days inside the window are marked partial, never final, and for fetched sources each ingest re-reads and idempotently replaces them (keyed on source+day) so late-arriving corrections repair already-persisted days rather than being frozen out at first write; estimated lines are marked estimated, never blended silently into actuals; a failed ingest surfaces as visibly stale, never silently serving old numbers as fresh; and 'final' asserts only that a day has exited its source's declared settling window — never immutability: a correction arriving later (late-metered usage, invoice-time adjustment) reopens and repairs the affected day through the same upsert, leaving a visible correction marker rather than silently freezing or silently rewriting history.", "grounding": "design-derived"},
+      {"id": "INV-PCO-005", "statement": "App-scoped, disjoint, sum-preserving attribution: attribution to this app is established at provision time (dedicated cloud project per app+env, resource labels, per-app vendor keys/subaccounts) — the app_boundary provisioning is a protected path — never reconstructed by heuristics over a shared bill; breakdowns partition each source's reported total — unattributable spend lands in an explicit unattributed/shared bucket, credits stay visible as their own line, and each line carries its billed currency plus any recorded conversion rate; the source set is disjoint, counting every unit of spend exactly once: a vendor billed through another source (marketplace/reseller lines on the cloud bill) registers as a declared sub-line of that source, never an independent addend, and an app-side estimate registered as a leading indicator for a source with a reported actual is superseded by the actual on reconcile, never summed with it; at month close the normalized ledger total is reconciled per source against the settled invoice (ledger_vs_invoice_variance).", "grounding": "design-derived"},
+      {"id": "INV-PCO-006", "statement": "Whole-bill source coverage: every metered vendor the product depends on is a registered spend source — the cloud provider AND the per-call meters (LLM inference, media delivery, email, managed DB, payment-processor fees); a vendor without a fetchable cost API still registers via app-side metering or operator manual entry — manual figures are operator-authored writes stamped with author and entry time, marked estimated, scoped to sources declaring a manual mechanism, and never overwritten or duplicated by an ingest (the source+day upsert of INV-PCO-004 applies only to fetched sources) — so total platform spend is never silently understated by an invisible vendor.", "grounding": "design-derived"},
+      {"id": "INV-PCO-007", "statement": "Out-of-band budget alerts + protected thresholds: budget thresholds on the cloud bill and the fast-moving vendor meters alert through a channel independent of the panel (a breach never waits for an admin to look); each threshold rung fires exactly once per (source, budget period, rung) via a claimed send-once key and re-arms at period rollover — neither spammed into being muted nor latched silent after its first rung; absence of fresh data is itself an alert condition: a snapshot older than its source's staleness_alert_after fires through the same out-of-band channel, so a stalled ingest can never silently mute the meter alerts it computes; threshold config and the ingest jobs are protected paths — an optimization loop may propose changes, never auto-apply them.", "grounding": "design-derived"}
+    ]
+  },
+
+  "parameters": {
+    "spend_sources": {"type": "array", "required": true, "description": "The registered metered vendors and how each is read: fetch mechanism (billing export / usage API / app-side meter / manual), granularity, settling window, billed currency, and — for a vendor billed through another source — the parent source it is a sub-line of (disjointness, INV-PCO-005). The cloud provider's billing export is the mandatory first entry."},
+    "app_boundary": {"type": "object", "required": true, "description": "How this app's spend is isolated at provision time: dedicated cloud project per app+env, resource labels, per-app vendor keys/subaccounts. Attribution is by construction, never by heuristic; this provisioning is a protected path."},
+    "ingest_schedule": {"type": "string", "required": true, "description": "Cadence of the snapshot ingests (bounds cost_visibility_lag; e.g. daily)."},
+    "staleness_alert_after": {"type": "object", "required": true, "description": "Per-source map (source id -> age, with a 'default' key) beyond which a missing fresh snapshot fires the out-of-band dead-man's-switch alert (e.g. default: 2x that source's ingest cadence). A map, not a scalar — sources have different cadences and settling windows."},
+    "snapshot_store": {"type": "string", "required": true, "description": "Where normalized snapshots persist (the app's own DB — the panel never reads a source directly)."},
+    "snapshot_retention": {"type": "string", "required": false, "description": "How long raw per-day snapshot detail is kept and the rollup granularity beyond it (bounds the monitor's own storage, INV-PCO-003)."},
+    "budget_thresholds": {"type": "object", "required": true, "description": "The threshold ladder per source (cloud budget + vendor meters) that fires out-of-band alerts, send-once per (source, period, rung), re-armed at period rollover."},
+    "alert_channel": {"type": "string", "required": true, "description": "Out-of-band alert delivery, independent of the panel (email/pager seam, not a dashboard)."},
+    "attribution_labels": {"type": "array", "required": false, "description": "Resource labels used for breakdown (env / service / tenant), applied at provision time."},
+    "reporting_currency": {"type": "string", "required": false, "description": "Currency the normalized total is presented in; lines keep their billed currency + recorded conversion rate so the total is reproducible."}
+  },
+
+  "success_metrics": {
+    "$comment": "Observability health + the feedback edge to the stack cost-tier model and /business-consultant unit economics. Thresholds/ingest are protected paths (INV-PCO-007), so the improvement loop may PROPOSE tuning but never auto-applies.",
+    "metrics": [
+      {"id": "api_sourced_spend_share", "goal": "up", "desc": "share of total spend read from an authoritative vendor-reported source vs estimated/manual lines — the ledger's fidelity, not mere registration (INV-PCO-006)"},
+      {"id": "cost_visibility_lag", "goal": "down", "desc": "time from spend incurred to spend visible in the panel (bounded by ingest_schedule + settling windows)"},
+      {"id": "unattributed_spend_share", "goal": "down", "desc": "share of total spend in the unattributed/shared bucket (attribution-boundary efficacy)"},
+      {"id": "ledger_vs_invoice_variance", "goal": "down", "desc": "normalized monthly ledger total vs the settled invoice per source at month close — the ledger's own truthfulness check (INV-PCO-005)"},
+      {"id": "time_to_budget_alert", "goal": "down", "desc": "threshold breach to out-of-band alert delivery"},
+      {"id": "monitor_self_cost_share", "goal": "down", "desc": "the observability machinery's own spend (queries + snapshot storage) as a share of monitored spend (INV-PCO-003)"},
+      {"id": "spend_vs_model_variance", "goal": "down", "desc": "observed spend vs the stack cost-tier model / unit-economics assumptions — the signal that triggers tier graduation on actuals"}
+    ]
+  },
+
+  "protected_paths": [
+    "the ingest jobs + snapshot write path, including operator manual-entry writes (INV-PCO-003/004/006)",
+    "each spend-source credential's scope (INV-PCO-002)",
+    "the app_boundary provisioning (dedicated project / labels / per-app vendor keys — INV-PCO-005)",
+    "budget threshold config + alert channel wiring, incl. the dead-man's-switch staleness alert (INV-PCO-007)"
+  ],
+
+  "depends_on": "multi-tenant-isolation",
+  "feeds": "improvement-loop"
+}

@@ -213,6 +213,19 @@
       "feeds": "feature-entitlements",
       "spec": "patterns/self-serve-billing-portal/pattern.md",
       "manifest": "patterns/self-serve-billing-portal/manifest.json"
+    },
+    {
+      "id": "platform-cost-observability",
+      "title": "Platform Cost Observability",
+      "category": "monitoring-feedback",
+      "status": "specified",
+      "trust_class": "operator-plane-read-only-surface",
+      "summary": "Surface the platform's own spend — the whole bill: cloud provider AND per-call vendors (LLM inference, media, email, managed DB, processor fees) — app-scoped and read-only in the SaaS admin panel. Per-source read-only credentials, ingest-then-serve snapshots (never request-path billing calls), staleness/settling-lag honesty, provision-time app attribution with sum-preserving breakdowns and an explicit unattributed bucket, and out-of-band budget alerts. Watches money going OUT the way the billing patterns watch money coming in; actuals feed the stack cost-tier model and /business-consultant unit economics. INV-PCO-001..007 (001 reuses an in-repo cluster; 002 borrows the deployment-release identity-split discipline without claiming realization; the rest design-derived — not yet built in any mined app, chief-wiggum#229).",
+      "invariants": "INV-PCO-001..007",
+      "depends_on": "multi-tenant-isolation",
+      "feeds": "improvement-loop",
+      "spec": "patterns/platform-cost-observability/pattern.md",
+      "manifest": "patterns/platform-cost-observability/manifest.json"
     }
   ],
   "stacks": {
