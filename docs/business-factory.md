@@ -378,6 +378,77 @@ ecosystem channel/owned audience in the acquisition plan); goalpost-integrity ha
 Missing optional inputs (`means.json`, `channels.json`) report `skipped`/`unattempted` — never a
 crash, never silently omitted.
 
+### Channel engine (Track H, `scripts/channel.py`, #241)
+
+Bullseye mechanized over the bet ledger. The honest boundary, stated up front: **tooling cannot
+close a doing-gap** — the irreducible core of marketing is the operator talking to people,
+posting, selling. The channel engine makes those attempts cheap, scheduled, and legible
+(generates everything up to the conversation), never substitutes for them; the rep-cadence
+check exists to catch the displacement failure mode of building marketing tools instead of
+doing marketing.
+
+Channel-experiment records live in `bets/<bet-id>/channels.json`
+(`templates/channel-experiment-schema.json`) over the **fixed 19-channel enum** (Weinberg &
+Mares, *Traction*); every mutation is journaled into the portfolio hash chain. Per-channel
+Bullseye states: `brainstormed → ranked → testing (≤3 concurrent) → focused | rejected`, with
+`focused → testing` re-entry on saturation (journaled, `--reason` required). `brainstorm`
+seeds all 19 (forces the unfashionable ones); ranking is human.
+
+```bash
+python3 scripts/channel.py brainstorm <bet-id>                  # seed all 19 channels
+python3 scripts/channel.py rank <bet-id> ch1 ch2 ch3            # human ranking, recorded
+python3 scripts/channel.py test <bet-id> <channel> --hypothesis "..." --budget-usd 50 --duration-days 14
+python3 scripts/channel.py record <bet-id> <channel> --customers-acquired 4 --measured-cac 12 --verdict "..."
+python3 scripts/channel.py focus <bet-id> <channel>             # exactly one focused
+python3 scripts/channel.py reject <bet-id> <channel> --verdict "..."
+python3 scripts/channel.py status <bet-id>                      # records + every gate check
+```
+
+Gate checks — all report-only by default per `docs/gate-rollout.md`, blocking only with
+`--gate`:
+
+- **experiment completeness**: a record claiming results without a measured CAC AND
+  customers-acquired is invalid; a **referral experiment with no recorded baseline input
+  flow is invalid the same way** — referral/WOM (`viral-marketing`) is a multiplier on an
+  existing acquisition stream, never a source (Balfour: sustained K > 1 is rare). A viral
+  record may carry the stamped `referral-invite-loop` pattern's declared metrics
+  (`k_factor`, `invite_accept_rate`, `reward_cost_per_attributed_signup` — accepted as the
+  experiment's measured CAC); this is a validation rule on the record, not an integration.
+- **exactly-one-focused-channel** (micro-scale invariant #7).
+- **channel-CAC ≤ target CAC** join against the bet's `target_cac_usd`
+  (`bet.py create --target-cac`); no target declared → `skipped`, never a finding.
+- **≤3 concurrent testing**; **zero-headcount filter** — sales-led channels
+  (`sales`, `business-development`) flagged while testing/focused at headcount 0.
+
+**Buy-not-build platforms**: CW integrates with and exports to existing sales/marketing
+platforms — Meta Ads, Google Ads, OpenAI-class asset generation (AI distribution surfaces
+like the GPT store count under `existing-platforms`), ESP/CRM/social/SEO/directory tooling —
+and never rebuilds them. Platform subscriptions and ad spend are ordinary cost-inputs line
+items (`flat_monthly`/meters in `templates/cost-inputs-schema.json`) counting against the bet
+envelope. **Paid channels carry the paid-spend unlock gate** (§4 invariant 4): no
+paid-acquisition spend before `pmf_score ≥ 40% (n ≥ 40)` or equivalent commitment-class
+evidence, and viability requires LTV above the channel's CAC floor — at micro price points
+paid ads are frequently underwater and the experiment verdict must say so. The stamped asset
+layer (launch checklists per `templates/launch-checklist-schema.json` — Levels'
+platform×timing×assets shape — copy scaffolds, Mom-Test scripts, prospect briefs, follow-up
+sequences) is per-bet artifacts, not a pattern category. Marketing capability graduates
+M0 founder+platforms → M1 focused-channel specialist → M2 agency/hire on the revenue-triggered
+formulas in `templates/marketing-tiers.md`; graduation is a journaled human decision.
+
+**Rep cadence + the *Traction* 50% rule** (ledger-side, surfaced in `bet.py evaluate`'s
+distribution block and `channel.py status`): while a bet is probing|validating, ≥N Mom-Test
+conversations per trailing week counted from the ledger's rep entries (default 3, per-bet
+`create --cadence`, journaled) — missed cadence is a report-only finding feeding the #237
+kill review as *distribution-not-attempted* evidence (a demand-kill with skipped reps
+downgrades to `recycle`). Hours may carry `spend --tag product|traction`; traction share
+below 0.5 while probing|validating is a finding — untagged hours never are (a finding must
+come from data, not its absence).
+
+**Process-scored retros for sales attempts** (Simonson & Staw): the retrospective grades
+whether the reps happened and were run to protocol — Mom Test question forms used,
+commitment asks made — **never conversion outcomes**. Early reps convert badly; that is
+tuition, not signal about the product, and the scoring must not punish it.
+
 ---
 
 ## 9. Portfolio theses and targeting doctrine (logged 2026-08-02)

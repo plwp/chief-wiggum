@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/launch-checklist.json",
+  "title": "Launch Checklist",
+  "description": "A launch is a matrix of platforms × timing × assets (Levels, *MAKE* 2018): the same product launches repeatedly, on many platforms, each with its own timing norms and asset requirements — launching is a process, not an event. Per-bet artifact (`bets/<bet-id>/launch-checklist.json` or the target repo's docs/), stamped by CW as part of the channel-engine asset layer (chief-wiggum#241 leg 2): CW generates everything up to the post — the operator posts. Listing/launch platforms here are distinct from acquisition channels (channels.json): a launch usually feeds the `existing-platforms` or `public-relations` channel experiment, and results should be recorded there.",
+  "type": "object",
+  "required": ["product", "launches"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "product": {
+      "type": "string",
+      "description": "Product/bet this checklist launches. One checklist per launch wave."
+    },
+    "bet_id": {
+      "type": ["string", "null"],
+      "description": "Portfolio bet this launch belongs to, if any — results feed that bet's channel experiments."
+    },
+    "launches": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/launch" }
+    }
+  },
+  "$defs": {
+    "launch": {
+      "type": "object",
+      "required": ["platform", "timing", "assets", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "type": "string",
+          "description": "Launch surface — e.g. product-hunt, hacker-news, reddit-<sub>, x-twitter, linkedin, indie-hackers, betalist, dev-to, lobsters, a niche directory, a newsletter, the GPT store. Free string: launch surfaces churn, unlike the fixed 19 acquisition channels."
+        },
+        "timing": {
+          "type": "object",
+          "required": ["planned_date"],
+          "additionalProperties": false,
+          "description": "Platform-specific timing norms (day-of-week and hour materially move results on PH/HN).",
+          "properties": {
+            "planned_date": { "type": "string", "description": "ISO date of the planned post." },
+            "time_utc": { "type": ["string", "null"], "description": "Planned post time, UTC (e.g. 07:01 for Product Hunt)." },
+            "rationale": { "type": ["string", "null"], "description": "Why this slot — the platform's timing norm being followed." }
+          }
+        },
+        "assets": {
+          "type": "array",
+          "description": "Everything that must exist before posting. CW stamps/generates these; the operator reviews and posts.",
+          "items": {
+            "type": "object",
+            "required": ["type", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Asset kind — e.g. tagline, title, first-comment, screenshot, gif, demo-video, maker-story, faq, landing-copy, og-image."
+              },
+              "path": { "type": ["string", "null"], "description": "Where the asset lives (repo path or URL)." },
+              "status": { "type": "string", "enum": ["todo", "drafted", "ready"] }
+            }
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": ["planned", "assets-ready", "posted", "done"],
+          "description": "`posted` is the operator's act — the tooling generates everything up to it, never substitutes for it."
+        },
+        "result_note": {
+          "type": ["string", "null"],
+          "description": "What happened (rank, upvotes, signups, conversations started). Quantified acquisition results belong on the channel experiment this launch fed."
+        }
+      }
+    }
+  }
+}

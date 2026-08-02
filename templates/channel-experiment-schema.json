@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/channel-experiments.json",
+  "title": "Channel Experiments",
+  "description": "Bullseye channel-experiment records (`bets/<bet-id>/channels.json` in the portfolio repo, written by scripts/channel.py — chief-wiggum#241). Records range over the FIXED 19-channel enum (Weinberg & Mares, *Traction* 2014); `brainstorm` seeds all 19 so unfashionable channels are considered, ranking is human. Per-channel state machine: brainstormed → ranked → testing (≤3 concurrent) → focused | rejected, with focused → testing re-entry on saturation (journaled, reasoned). Gates (report-only by default per docs/gate-rollout.md): experiment completeness — a record claiming results without a measured CAC AND customers_acquired is invalid, and a referral experiment without a recorded baseline_input_flow is invalid the same way (referral is a multiplier on an existing acquisition stream, not a source — Balfour); exactly-one-focused-channel; measured channel-CAC ≤ the bet's declared target_cac_usd (skipped when absent); sales-led channels flagged while headcount 0.",
+  "type": "object",
+  "required": ["channels"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "channels": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/experiment" }
+    }
+  },
+  "$defs": {
+    "experiment": {
+      "type": "object",
+      "required": ["channel", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "type": "string",
+          "enum": [
+            "viral-marketing",
+            "public-relations",
+            "unconventional-pr",
+            "search-engine-marketing",
+            "social-and-display-ads",
+            "offline-ads",
+            "search-engine-optimization",
+            "content-marketing",
+            "email-marketing",
+            "engineering-as-marketing",
+            "targeting-blogs",
+            "business-development",
+            "sales",
+            "affiliate-programs",
+            "existing-platforms",
+            "trade-shows",
+            "offline-events",
+            "speaking-engagements",
+            "community-building"
+          ],
+          "description": "The fixed 19 traction channels (Weinberg & Mares). Closed enum on purpose: brainstorming must cover all of them. `sales` and `business-development` are sales-led (flagged while headcount 0); `viral-marketing` is the referral/WOM channel (baseline_input_flow required with results); `search-engine-marketing`, `social-and-display-ads`, `offline-ads` are paid channels behind the paid-spend unlock gate (pmf_score ≥ 40%, n ≥ 40 — docs/business-factory.md §4); AI distribution surfaces (GPT store etc.) count under `existing-platforms`."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["brainstormed", "ranked", "testing", "focused", "rejected"],
+          "description": "Bullseye state. ≤3 concurrent `testing`; exactly one `focused` per bet. Maintained by scripts/channel.py only — every transition is journaled into the portfolio hash chain."
+        },
+        "rank": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Human-assigned Bullseye rank (1 = most promising). Ranking is a human act; the CLI records it."
+        },
+        "hypothesis": {
+          "type": ["string", "null"],
+          "description": "What this channel test is expected to show, falsifiably."
+        },
+        "budget_usd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Cheap-test budget. Actual spend goes through the bet ledger and counts against the envelope like any other spend."
+        },
+        "duration_days": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "customers_acquired": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Customers attributable to this channel test. Required (with a measured CAC) once the record claims results — a test without it is invalid."
+        },
+        "measured_cac": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Measured acquisition cost per customer for this channel. Required once the record claims results. For the referral channel, referral_metrics.reward_cost_per_attributed_signup is accepted in its place."
+        },
+        "icp_quality_note": {
+          "type": ["string", "null"],
+          "description": "Who actually showed up — ICP fit of the acquired customers, not just their count."
+        },
+        "verdict": {
+          "type": ["string", "null"],
+          "description": "Short human verdict. An underwater channel's verdict must say so (measured CAC above the bet's target/LTV floor), not let spend drift."
+        },
+        "baseline_input_flow": {
+          "type": ["string", "null"],
+          "description": "Referral/WOM only: the existing acquisition stream the loop amplified (Balfour: sustained K > 1 is rare — referral is a multiplier, not a source). A referral experiment with no recorded baseline flow is invalid, same as a test without measured CAC."
+        },
+        "referral_metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Declared metrics of the stamped `referral-invite-loop` pattern (#139), read as this experiment's measured values — a validation rule on the record, not a platform integration.",
+          "properties": {
+            "k_factor": { "type": ["number", "null"], "minimum": 0 },
+            "invite_accept_rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "reward_cost_per_attributed_signup": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "description": "The pattern's CAC figure — accepted as the referral experiment's measured CAC."
+            }
+          }
+        },
+        "history": {
+          "type": "array",
+          "description": "Per-record transition trail (the authoritative journal is the portfolio hash chain).",
+          "items": {
+            "type": "object",
+            "required": ["ts", "event"],
+            "additionalProperties": false,
+            "properties": {
+              "ts": { "type": "string" },
+              "event": { "type": "string" },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

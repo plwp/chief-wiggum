@@ -60,6 +60,21 @@
       "items": { "type": "string" },
       "description": "Milestone ids whose tranches have been unlocked (journaled human acts via `bet.py transition --unlock-milestone`). Invariant: cumulative spend ≤ cumulative unlocked tranches."
     },
+    "rep_cadence_per_week": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Per-bet rep-cadence override (chief-wiggum#241 leg 3): Mom-Test conversations required per trailing week while probing|validating, counted from the ledger's rep entries. Set at create (`bet.py create --cadence`, journaled); absent → default 3. Missed cadence is a report-only finding feeding the kill review as distribution-not-attempted evidence."
+    },
+    "target_cac_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Target CAC the channel engine (scripts/channel.py, #241) joins measured channel-CAC against for focused channels. Absent → the join reports skipped, never a finding."
+    },
+    "headcount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Paid heads on this bet (excluding the founder). The channel engine's zero-headcount filter flags sales-led channels (sales, business-development) while this is 0. Absent → falls back to means.json headcount, then 0."
+    },
     "predecessor": {
       "type": ["string", "null"],
       "description": "Bet id this bet succeeded via a pivot, or null."

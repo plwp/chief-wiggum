@@ -65,6 +65,18 @@ passing ``--gate`` until a ``validation/bet-gates.json`` record exists):
   and no owned audience is flagged. means.json absent → ``skipped``.
 - **goalpost integrity** (every read): envelope/criteria content hash vs the
   last journaled baseline — a hand edit outside ``rebaseline`` is flagged.
+- **rep cadence** (evaluate, #241): while probing|validating, ≥N Mom-Test
+  conversations in the trailing week counted from the ledger's rep entries
+  (default 3; per-bet ``create --cadence``, journaled). Missed cadence feeds
+  the kill review as distribution-not-attempted evidence.
+- ***Traction* 50% rule** (evaluate, #241): hours may carry a
+  ``--tag product|traction``; traction share below 0.5 while
+  probing|validating is a finding — untagged hours never are (a finding must
+  come from data, not its absence).
+
+Channel-experiment records themselves (Bullseye states, completeness,
+exactly-one-focused, CAC join, headcount filter) are ``scripts/channel.py``'s
+job — it imports this module's helpers and journals into the same chain.
 
 Missing OPTIONAL inputs never crash and are never silently omitted: no
 means.json → the selection lint reports ``skipped``; no channels.json and no
@@ -123,6 +135,19 @@ ALL_STATES = set(ACTIVE_ORDER) | {"kill_pending"} | TERMINALS
 VERDICTS = ("go", "kill", "hold", "recycle")
 COMPARATORS = {"<", "<=", ">", ">=", "==", "!="}
 DEFAULT_MAX_IN_FLIGHT = 2
+
+# Channel-engine ledger checks (#241 leg 3). While a bet is probing|validating,
+# ≥N Mom-Test conversations/week (default 3, per-bet `create --cadence`,
+# journaled) and — *Traction* 50% rule — traction-tagged hours ≥ half of all
+# tagged hours. Both report-only; the doing-gap must be legible, not blocked.
+DEFAULT_REP_CADENCE = 3
+CADENCE_STATES = {"probing", "validating"}
+TRACTION_SHARE_MIN = 0.5
+LEDGER_TAGS = ("product", "traction")
+
+# A channel record counts as ATTEMPTED distribution only once it reaches the
+# Bullseye inner rings — brainstormed/ranked is consideration, not an attempt.
+EXPERIMENT_STATES = {"testing", "focused", "rejected"}
 
 # Acquire.com micro-SaaS median multiple on TTM seller-discretionary earnings
 # (docs/business-factory.md §2.3) — the harvest check's est-sale-value factor.
@@ -422,18 +447,90 @@ def _channel_records(root: Path, bet_id: str) -> list[dict]:
 
 
 def distribution_status(root: Path, bet_id: str) -> dict:
-    """Attempted-distribution evidence: channel-experiment records (#241) plus
-    rep-cadence ledger entries. Absent both → `unattempted` — reported, never
-    silently omitted (the #237 rule: no-demand evidence without attempted
-    distribution is evidence of no marketing, not no demand)."""
+    """Attempted-distribution evidence: channel-experiment records that reached
+    the Bullseye inner rings (testing|focused|rejected — brainstormed/ranked is
+    consideration, not an attempt) plus rep ledger entries. Absent both →
+    `unattempted` — reported, never silently omitted (the #237 rule: no-demand
+    evidence without attempted distribution is evidence of no marketing, not
+    no demand)."""
     channels = _channel_records(root, bet_id)
+    by_status: dict[str, int] = {}
+    for c in channels:
+        st = c.get("status") or c.get("state") or "brainstormed"
+        by_status[st] = by_status.get(st, 0) + 1
+    experiments = [
+        c for c in channels if (c.get("status") or c.get("state")) in EXPERIMENT_STATES
+    ]
     reps = [e for e in load_ledger(root, bet_id) if e.get("type") == "rep"]
-    attempted = bool(channels or reps)
+    attempted = bool(experiments or reps)
     return {
         "status": "attempted" if attempted else "unattempted",
-        "channel_experiments": len(channels),
+        "channel_experiments": len(experiments),
         "rep_entries": len(reps),
+        "channels_by_status": by_status,
     }
+
+
+def rep_cadence_status(bet: dict, entries: list[dict], as_of: date | None = None) -> dict | None:
+    """Rep-cadence check (#241 leg 3): while probing|validating, ≥N Mom-Test
+    conversations in the trailing 7 days, counted from the ledger's rep entries
+    (default N=3; per-bet override `create --cadence`, journaled). Outside
+    those states → None: no check, never a finding. Missed cadence is
+    *distribution-not-attempted* evidence for the #237 kill review — a
+    demand-kill with skipped reps downgrades to `recycle`."""
+    if bet.get("state") not in CADENCE_STATES:
+        return None
+    as_of = as_of or date.today()
+    need = bet.get("rep_cadence_per_week")
+    if not isinstance(need, (int, float)) or need <= 0:
+        need = DEFAULT_REP_CADENCE
+    count = 0
+    for e in entries:
+        if e.get("type") != "rep":
+            continue
+        try:
+            d = datetime.fromisoformat(str(e.get("ts"))).date()
+        except ValueError:
+            continue
+        if 0 <= (as_of - d).days < 7:
+            count += 1
+    missed = count < need
+    line = (
+        f"{count}/{need:g} Mom-Test reps in the 7 days to {as_of.isoformat()} "
+        f"[{bet.get('state')}] — {'MISSED' if missed else 'ok'}"
+    )
+    findings = []
+    if missed:
+        findings.append(
+            f"rep cadence missed: {count}/{need:g} Mom-Test conversations in the "
+            f"7 days to {as_of.isoformat()} while {bet.get('state')} — the reps "
+            "are the irreducible core the tooling cannot do; this feeds the kill "
+            "review as distribution-not-attempted evidence"
+        )
+    return {"count": count, "required": need, "line": line, "findings": findings}
+
+
+def traction_findings(bet: dict, entries: list[dict]) -> list[str]:
+    """*Traction* 50% rule (#241 leg 3): while probing|validating, traction-
+    tagged hours must be ≥ half of all tagged hours. No tagged hours at all →
+    silent — a finding must come from data, never from its absence."""
+    if bet.get("state") not in CADENCE_STATES:
+        return []
+    tagged = [
+        e for e in entries
+        if e.get("tag") in LEDGER_TAGS and isinstance(e.get("hours"), (int, float))
+    ]
+    total = sum(e["hours"] for e in tagged)
+    if total <= 0:
+        return []
+    share = sum(e["hours"] for e in tagged if e["tag"] == "traction") / total
+    if share < TRACTION_SHARE_MIN:
+        return [
+            f"traction 50% rule: traction share {share:.0%} of {total:g} tagged "
+            f"hours while {bet.get('state')} — at least half the effort belongs "
+            "on distribution, not product (Weinberg & Mares)"
+        ]
+    return []
 
 
 def any_channel_focused(root: Path) -> bool:
@@ -652,6 +749,12 @@ def cmd_create(args) -> int:
         "predecessor": args.predecessor,
         "successor": None,
     }
+    if args.cadence is not None:
+        if args.cadence <= 0:
+            raise BetError("--cadence must be a positive reps-per-week count")
+        bet["rep_cadence_per_week"] = args.cadence
+    if args.target_cac is not None:
+        bet["target_cac_usd"] = args.target_cac
 
     findings = [f"soundness: {f}" for f in criteria_soundness(criteria)]
     findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
@@ -676,6 +779,10 @@ def cmd_create(args) -> int:
         "envelope_hash": content_hash(envelope),
         "criteria_hash": content_hash(criteria),
         "predecessor": args.predecessor,
+        # The effective cadence is journaled at create (#241 leg 3) — the
+        # per-bet override is a decision, not a mutable knob.
+        "rep_cadence_per_week": args.cadence if args.cadence is not None else DEFAULT_REP_CADENCE,
+        "target_cac_usd": args.target_cac,
     })
     print(
         f"bet: created {args.bet_id} [proposed] — envelope+criteria hashed into the "
@@ -734,6 +841,8 @@ def cmd_spend(args) -> int:
         "hours": args.hours,
         "note": args.note or "",
     }
+    if args.tag:
+        entry["tag"] = args.tag  # product|traction — feeds the 50% rule (#241)
     with ledger_path(root, args.bet_id).open("a") as f:
         f.write(json.dumps(entry, sort_keys=True) + "\n")
     print(
@@ -772,11 +881,27 @@ def cmd_evaluate(args) -> int:
         print(line)
 
     dist = distribution_status(root, args.bet_id)
+    by = dist.get("channels_by_status") or {}
+    chan_note = ""
+    if by:
+        order = ("brainstormed", "ranked", "testing", "focused", "rejected")
+        chan_note = "; channels: " + ", ".join(
+            f"{by[st]} {st}" for st in order if by.get(st)
+        )
     print(
         f"  distribution: {dist['status']} "
         f"({dist['channel_experiments']} channel experiment(s), "
-        f"{dist['rep_entries']} rep entr{'y' if dist['rep_entries'] == 1 else 'ies'})"
+        f"{dist['rep_entries']} rep entr{'y' if dist['rep_entries'] == 1 else 'ies'}"
+        f"{chan_note})"
     )
+    # #241 leg 3: the doing-gap checks surface inside the distribution block —
+    # rep cadence while probing|validating, and the *Traction* 50% rule.
+    entries = load_ledger(root, args.bet_id)
+    cad = rep_cadence_status(bet, entries, as_of)
+    if cad is not None:
+        print(f"  rep cadence: {cad['line']}")
+        findings += cad["findings"]
+    findings += traction_findings(bet, entries)
 
     triggered = [r["id"] for r in rows if r["status"] == "triggered"]
     if triggered:
@@ -958,6 +1083,7 @@ def cmd_transition(args) -> int:
             envelope=args.envelope, criteria=args.criteria,
             ecosystem_channel=None, owned_audience=None,
             means_ref=None, predecessor=args.bet_id, gate=args.gate,
+            cadence=None, target_cac=None,
         )
         rc = cmd_create(sub)
         if rc:
@@ -1178,6 +1304,12 @@ def main() -> int:
                     help="owned audience the acquisition plan draws on")
     sp.add_argument("--means-ref", action="append", metavar="REF",
                     help="means.json entry this bet draws on (repeatable — bird-in-hand)")
+    sp.add_argument("--cadence", type=float, default=None, metavar="N",
+                    help=f"Mom-Test conversations/week required while probing|validating "
+                         f"(default {DEFAULT_REP_CADENCE}; journaled at create — #241)")
+    sp.add_argument("--target-cac", type=float, default=None, metavar="USD",
+                    help="target CAC the channel engine joins measured channel-CAC "
+                         "against (absent → the join reports skipped — #241)")
     sp.add_argument("--predecessor", default=None, help=argparse.SUPPRESS)
 
     sp = sub.add_parser("spend", help="append a spend/time/rep ledger entry")
@@ -1188,6 +1320,9 @@ def main() -> int:
     sp.add_argument("--rep", action="store_true",
                     help="a distribution rep (outreach/channel work) — counts toward "
                          "distribution-attempted, not cash spend")
+    sp.add_argument("--tag", default=None, choices=LEDGER_TAGS,
+                    help="time-allocation tag on hours — feeds the *Traction* 50% "
+                         "rule (#241; untagged hours are never a finding)")
     sp.add_argument("--note", default="")
 
     sp = sub.add_parser("evaluate", help="evaluate dated kill criteria + distribution status")
