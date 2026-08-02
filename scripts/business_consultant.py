@@ -16,6 +16,11 @@ into the target repo (5 sections: cost shape / unit economics per tier /
 break-even+margin / market-comparable floor [an explicit UNRESOLVED marker —
 the step-3 live-lookup seam is NOT built here] / pricing-model fit).
 
+Writing the default in-repo artifact also registers ``docs/pricing.md`` into
+the target's ``docs/quality/ratchet.json`` ``protected_paths`` — the same
+`apply_pattern.py` code path, idempotent — so the protection the skill prose
+claims is real, not asserted (chief-wiggum#234).
+
 Target resolution mirrors the other skills:
   - ``owner/repo``  -> resolved & cloned via scripts/repo.py
   - ``--repo PATH`` -> a direct local path
@@ -38,9 +43,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from apply_pattern import RATCHET_REL, _merge_ratchet, _meta_path  # noqa: E402
 from consultant import derive, inputs, render  # noqa: E402
 
 PRICING_REL = "docs/pricing.md"
+
+
+def register_protected(target: Path) -> list[str]:
+    """Register docs/pricing.md in the target's ratchet protected_paths.
+
+    Reuses apply_pattern.py's merge (never a second implementation): idempotent
+    on re-runs, and a missing ratchet.json gets the same DEFAULT_PROTECTED stub
+    apply_pattern writes. Returns the globs actually added ([] when already
+    registered)."""
+    content, added = _merge_ratchet(target, [PRICING_REL])
+    if added:
+        path = _meta_path(target, RATCHET_REL)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    return added
 
 
 def _current_repo_root() -> str | None:
@@ -114,7 +135,7 @@ def _summarize_text(result: dict) -> str:
     return "\n".join(lines)
 
 
-def run(args: argparse.Namespace) -> tuple[dict, str]:
+def run(args: argparse.Namespace) -> tuple[dict, str, list[str]]:
     target = resolve_target(args.owner_repo, args.repo)
     result = derive.run(
         target_dir=target,
@@ -129,11 +150,16 @@ def run(args: argparse.Namespace) -> tuple[dict, str]:
     md = render.render_pricing_md(result)
 
     out_path = Path(args.out) if args.out else Path(target) / PRICING_REL
+    protected: list[str] = []
     if not args.dry_run:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(md)
+        # Protect the in-repo artifact (#234). An --out override writes
+        # elsewhere — the target then has no docs/pricing.md to protect.
+        if out_path == Path(target) / PRICING_REL:
+            protected = register_protected(Path(target))
 
-    return result, str(out_path)
+    return result, str(out_path), protected
 
 
 def main() -> int:
@@ -154,17 +180,20 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        result, out_path = run(args)
+        result, out_path, protected = run(args)
     except inputs.ConsultantInputError as exc:
         print(f"business-consultant: {exc}", file=sys.stderr)
         return 2
 
     if args.format == "json":
-        print(json.dumps({"result": result, "out": out_path, "dry_run": args.dry_run}, indent=2))
+        print(json.dumps({"result": result, "out": out_path, "dry_run": args.dry_run,
+                          "protected_registered": protected}, indent=2))
     else:
         print(_summarize_text(result))
         verb = "would write" if args.dry_run else "wrote"
         print(f"  {verb} {out_path}")
+        if protected:
+            print(f"  registered protected path in {RATCHET_REL}: {', '.join(protected)}")
 
     return 0
 

@@ -833,3 +833,100 @@ def test_cli_marketplace_flag_changes_pricing_fit(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = json.loads(proc.stdout)
     assert out["result"]["pricing_fit"]["cost_shape"] == pricing_fit.MARKETPLACE
+
+
+# --- #234: docs/pricing.md becomes a ratchet protected path -------------------
+
+
+def _ratchet_cfg(tmp_path):
+    return json.loads((tmp_path / "docs" / "quality" / "ratchet.json").read_text())
+
+
+def test_cli_write_registers_pricing_md_as_protected_path(tmp_path):
+    (tmp_path / ".git").mkdir()
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "business_consultant.py"), "--repo", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "registered protected path" in proc.stdout
+    cfg = _ratchet_cfg(tmp_path)
+    assert "docs/pricing.md" in cfg["protected_paths"]
+    # no-ratchet-file case: the same DEFAULT_PROTECTED stub apply_pattern writes
+    from ratchet import DEFAULT_PROTECTED
+    assert set(DEFAULT_PROTECTED) <= set(cfg["protected_paths"])
+
+
+def test_cli_registration_is_idempotent_on_rerun(tmp_path):
+    (tmp_path / ".git").mkdir()
+    for _ in range(2):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPTS / "business_consultant.py"), "--repo", str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _ratchet_cfg(tmp_path)["protected_paths"].count("docs/pricing.md") == 1
+
+
+def test_cli_registration_appends_to_an_existing_ratchet_config(tmp_path):
+    (tmp_path / ".git").mkdir()
+    q = tmp_path / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps(
+        {"suites": [{"id": "unit", "cmd": "pytest"}], "protected_paths": ["custom/**"]}))
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "business_consultant.py"), "--repo", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cfg = _ratchet_cfg(tmp_path)
+    assert cfg["protected_paths"] == ["custom/**", "docs/pricing.md"]
+    assert cfg["suites"] == [{"id": "unit", "cmd": "pytest"}]  # rest of the config untouched
+
+
+def test_ratchet_protected_flags_edits_to_pricing_md(tmp_path):
+    """Done-looks-like from #234: `ratchet.py protected` flags a diff touching
+    the registered docs/pricing.md."""
+    (tmp_path / ".git").mkdir()
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "business_consultant.py"), "--repo", str(tmp_path)],
+        capture_output=True, text=True, check=True,
+    )
+    import ratchet
+    cfg = ratchet.load_config(tmp_path)
+    assert ratchet.protected_hits(cfg, ["docs/pricing.md"]) == ["docs/pricing.md"]
+
+
+def test_cli_dry_run_does_not_register(tmp_path):
+    (tmp_path / ".git").mkdir()
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "business_consultant.py"), "--repo", str(tmp_path), "--dry-run"],
+        capture_output=True, text=True, check=True,
+    )
+    assert not (tmp_path / "docs" / "quality" / "ratchet.json").exists()
+
+
+def test_cli_out_override_does_not_register(tmp_path):
+    """--out writes the report elsewhere — the target then has no docs/pricing.md
+    to protect, so nothing is registered."""
+    (tmp_path / ".git").mkdir()
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "business_consultant.py"), "--repo", str(tmp_path),
+         "--out", str(tmp_path / "elsewhere.md")],
+        capture_output=True, text=True, check=True,
+    )
+    assert not (tmp_path / "docs" / "quality" / "ratchet.json").exists()
+
+
+# --- #234: portable workflow mirror -------------------------------------------
+
+
+def test_workflow_reference_mirrors_the_slash_command():
+    """skills/chief-wiggum/references/workflows/business-consultant.md follows the
+    mirroring convention of the other workflow references: a relative symlink to
+    the canonical command body (single source of truth, no drift)."""
+    command = ROOT / ".claude" / "commands" / "business-consultant.md"
+    mirror = ROOT / "skills" / "chief-wiggum" / "references" / "workflows" / "business-consultant.md"
+    assert mirror.is_symlink()
+    assert mirror.readlink() == Path("../../../../.claude/commands/business-consultant.md")
+    assert mirror.read_text() == command.read_text()

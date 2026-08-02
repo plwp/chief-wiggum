@@ -17,6 +17,9 @@ This linter makes the model's rules mechanical rather than trusted:
   5. Every specified index entry carries an `invariants` summary string, keeping
      the registry index uniform with the manifests (so you can list clusters
      without opening each manifest).
+  6. Every pattern declares `success_metrics.metrics` (docs/patterns-registry.md:
+     "every pattern must declare them") — missing/empty is an ERROR for a
+     specified pattern, a WARN for a candidate.
 
 Run report-only:   python3 scripts/check_patterns.py
 Errors exit 1 (wired into `make lint`); warnings are reported but do not fail.
@@ -159,6 +162,13 @@ def validate(registry_path: Path = REGISTRY) -> list[Finding]:
                 "registry index entry missing `invariants` summary string "
                 "(keep the index uniform with the manifest cluster)"))
 
+        sm = manifest.get("success_metrics")
+        if not (sm.get("metrics") if isinstance(sm, dict) else None):
+            findings.append(Finding(
+                ERROR, where,
+                "specified pattern must declare non-empty `success_metrics.metrics` "
+                "(every pattern declares its success metrics)"))
+
         entries = cluster_entries(manifest.get("invariants"))
         if not entries:
             findings.append(Finding(
@@ -182,6 +192,11 @@ def validate(registry_path: Path = REGISTRY) -> list[Finding]:
         inv = entry.get("invariants")
         if inv is not None:
             validate_cluster(cluster_entries(inv), f"candidates/{cid}.invariants", findings)
+        sm = entry.get("success_metrics")
+        if not (sm.get("metrics") if isinstance(sm, dict) else None):
+            findings.append(Finding(
+                WARN, f"candidates/{cid}",
+                "candidate has no `success_metrics.metrics` yet (required at promotion to specified)"))
 
     return findings
 
