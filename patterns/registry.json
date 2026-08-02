@@ -252,6 +252,19 @@
       "feeds": null,
       "spec": "patterns/presale/pattern.md",
       "manifest": "patterns/presale/manifest.json"
+    },
+    {
+      "id": "grounded-sales-chat",
+      "title": "Grounded Sales Chat (public pre-signup assistant)",
+      "category": "monetization",
+      "status": "specified",
+      "trust_class": "eval-gated-prompt-and-public-spend-surface-protected-path",
+      "summary": "Anonymous landing-page LLM assistant answering pre-signup questions from a server-owned, code-grounded prompt whose capability/pricing lists are declared COMPLETE (closure clause: absent means non-existent, denied plainly). Prompt changes are eval-gated (harness parses the shipped source, replays a six-category probe corpus, hash-stamps transcripts); output rendering is allowlist-only; spend is contained by a four-layer stack (env-off -> kill switch -> credits breaker -> two-tier limiter) plus server-enforced caps; transcripts are identity-free, write-only, and retention-bound. Mined from a shipped production SaaS's eval-tuned assistant (19/20); the retention clause is design-derived from the mined gap. INV-GSC-001..009.",
+      "invariants": "INV-GSC-001..009",
+      "depends_on": "provider-neutral-adapter",
+      "feeds": "frictionless-onboarding, platform-cost-observability, improvement-loop",
+      "spec": "patterns/grounded-sales-chat/pattern.md",
+      "manifest": "patterns/grounded-sales-chat/manifest.json"
     }
   ],
   "stacks": {
