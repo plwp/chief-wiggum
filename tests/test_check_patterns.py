@@ -41,7 +41,10 @@ def _specified(pid, **extra):
 
 
 def _manifest(pid, cluster=None, **extra):
-    m = {"id": pid, "title": pid}
+    # success_metrics is part of the bar for `specified` (#234) — default it so
+    # fixtures exercise their own concern, not the metrics lint.
+    m = {"id": pid, "title": pid,
+         "success_metrics": {"metrics": [{"id": "m1", "goal": "down", "desc": "d"}]}}
     if cluster is not None:
         m["invariants"] = {"cluster": cluster}
     m.update(extra)
@@ -168,6 +171,46 @@ def test_candidate_malformed_cluster_is_error(tmp_path):
     }
     path = _write(tmp_path, reg, {})
     assert any("malformed invariant id" in e.message for e in _errors(check_patterns.validate(path)))
+
+
+# --- #234: success_metrics enforcement ---------------------------------------
+
+def test_specified_missing_success_metrics_is_error(tmp_path):
+    reg = {"patterns": [_specified("foo")], "candidates": []}
+    manifest = _manifest("foo", cluster=[GOOD_INV])
+    del manifest["success_metrics"]
+    path = _write(tmp_path, reg, {"foo": manifest})
+    assert any("success_metrics.metrics" in e.message for e in _errors(check_patterns.validate(path)))
+
+
+def test_specified_empty_success_metrics_is_error(tmp_path):
+    reg = {"patterns": [_specified("foo")], "candidates": []}
+    path = _write(tmp_path, reg,
+                  {"foo": _manifest("foo", cluster=[GOOD_INV], success_metrics={"metrics": []})})
+    assert any("success_metrics.metrics" in e.message for e in _errors(check_patterns.validate(path)))
+
+
+def test_specified_with_success_metrics_passes(tmp_path):
+    reg = {"patterns": [_specified("foo")], "candidates": []}
+    path = _write(tmp_path, reg, {"foo": _manifest("foo", cluster=[GOOD_INV])})
+    assert _errors(check_patterns.validate(path)) == []
+
+
+def test_candidate_missing_success_metrics_is_warn_not_error(tmp_path):
+    reg = {"patterns": [], "candidates": [{"id": "cand", "status": "candidate"}]}
+    path = _write(tmp_path, reg, {})
+    findings = check_patterns.validate(path)
+    assert _errors(findings) == []
+    assert any(f.severity == check_patterns.WARN and "success_metrics" in f.message
+               for f in findings)
+
+
+def test_candidate_with_success_metrics_gets_no_warn(tmp_path):
+    reg = {"patterns": [], "candidates": [
+        {"id": "cand", "status": "candidate",
+         "success_metrics": {"metrics": [{"id": "m1", "goal": "down", "desc": "d"}]}}]}
+    path = _write(tmp_path, reg, {})
+    assert not any("success_metrics" in f.message for f in check_patterns.validate(path))
 
 
 # --- referral-invite-loop promotion (#139) ----------------------------------
