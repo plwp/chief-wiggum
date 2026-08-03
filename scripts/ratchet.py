@@ -1061,11 +1061,23 @@ def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[di
         expiry = (today + timedelta(days=expiry_days)).isoformat()
 
     # V7/V8 — deterministic, clock-free resolution.
-    hw_cases = set(prev_hw.get("pass_set") or [])
+    # An ALREADY-quarantined case stays retirable: renewal after (or before)
+    # expiry is a NEW record carrying a fresh expiry (D7), and a quarantined
+    # case no longer lives in `pass_set` — so the retirable universe is the
+    # pass-set PLUS the standing quarantine, or the documented renewal path
+    # would be unreachable through the real CLI.
+    hw_cases = set(prev_hw.get("pass_set") or []) | set((prev_hw.get("quarantined") or {}).keys())
     cur_pass = set(sc.get("pass_set", []) or [])
     resolved: set[str] = set()
     for pat in patterns:
-        hits = {c for c in hw_cases if fnmatch.fnmatchcase(c, pat)}
+        # Exact ID wins before glob interpretation: real case IDs routinely
+        # carry fnmatch metacharacters (pytest parameterization —
+        # `pytest::tests/test_x.py::test_y[param]`), and such an ID pasted
+        # verbatim does NOT fnmatch itself. Without this, the most obvious
+        # possible invocation fails with "matches no case".
+        hits = {pat} if pat in hw_cases else {
+            c for c in hw_cases if fnmatch.fnmatchcase(c, pat)
+        }
         if not hits:
             raise RatchetError(
                 f"--retire-case {pat}: matches no case in the current "
@@ -1467,7 +1479,12 @@ def cmd_record(args) -> int:
     # Precedence: violated > quarantined > advanced > held. This record
     # carrying retired_cases reads 'quarantined' even if it ALSO advances the
     # pass-set, because `recent` is an event log of what the record DID.
-    hw_required = effective_pass_set(prev_hw)
+    # THIS record's own retirements are excused from its own verdict: V8
+    # guarantees a retired case is absent from `new_pass`, while `prev_hw`
+    # still requires it — so without this subtraction a `--merged
+    # --retire-case` record could only ever read 'violated' and the
+    # 'quarantined' branch below would be unreachable.
+    hw_required = effective_pass_set(prev_hw) - {e["id"] for e in retired_cases}
     if args.merged and not hw_required <= new_pass:
         status = "violated"
     elif retired_cases:

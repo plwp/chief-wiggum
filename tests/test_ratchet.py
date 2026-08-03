@@ -1509,3 +1509,67 @@ def test_highwater_overlays_live_expiry(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["quarantined"]["s::future"]["expired"] is False
     assert data["quarantined"]["s::past"]["expired"] is True
+
+
+# ---- quarantine: paths only reachable through the real CLI (#278 review) ----
+# The three bugs below all shipped with every test green because the original
+# suite reached the fold by injecting journal records directly (append_record)
+# instead of driving cmd_record. Each of these drives the REAL CLI.
+
+
+def test_retire_case_renewal_through_the_cli(tmp_path):
+    """A quarantined case must stay retirable so the documented renewal path
+    (D7: 'renewal is a new record, not an edit') is reachable through the real
+    CLI. Regression: hw_cases was built from pass_set alone, but a quarantined
+    case has already LEFT pass_set, so V7 rejected every renewal with
+    'matches no case in the current high-water mark'."""
+    cfg = _prep_quarantine_repo(tmp_path)
+    base = [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+            "--event", "ticket", "--retire-case", "s::flaky", "--retire-case-reason", "flaky"]
+    first = subprocess.run(base + ["--retire-case-expiry", "2026-11-01"],
+                           capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+
+    renewal = subprocess.run(base + ["--retire-case-expiry", "2027-02-01"],
+                             capture_output=True, text=True)
+    assert renewal.returncode == 0, renewal.stderr
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    # last-wins: the renewal's expiry is the live one.
+    assert hw["quarantined"]["s::flaky"]["expiry"] == "2027-02-01"
+    assert "s::flaky" not in hw["pass_set"]
+
+
+def test_record_merged_with_retired_cases_reads_quarantined(tmp_path):
+    """A record that BOTH merges and retires reads 'quarantined', per D4.
+    Regression: this record's own retirements were still required by
+    prev_hw while V8 guarantees they are absent from the new scorecard, so
+    the verdict could only ever be 'violated' and the 'quarantined' branch
+    was unreachable in exactly the combination /implement produces."""
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--merged",
+         "--retire-case", "s::flaky", "--retire-case-reason", "order-dependent shared state"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "status=quarantined" in proc.stdout, proc.stdout
+
+
+def test_retire_case_exact_id_with_fnmatch_metacharacters(tmp_path):
+    """A pytest parameterized case ID carries fnmatch metacharacters and does
+    NOT fnmatch itself, so an exact ID pasted verbatim must match exactly
+    before glob interpretation — otherwise the most obvious possible
+    invocation fails with 'matches no case'."""
+    cid = "pytest::tests/test_x.py::test_y[param-1]"
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {cid, "s::t1"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", cid, "--retire-case-reason", "flaky param"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert cid in hw["quarantined"]
