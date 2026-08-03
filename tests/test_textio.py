@@ -81,11 +81,13 @@ def test_truncated_utf16_bom_falls_back_instead_of_crashing(tmp_path):
 
 
 def test_genuinely_unreadable_file_reports_skip_reason_with_no_crash(tmp_path):
-    """The ONE case that is truly 'undecodable' under an errors='replace'
-    fallback (which never raises for any byte sequence) is the file simply
-    being unreadable at the OS level — permissions, race, broken symlink. This
-    must be surfaced as a skip reason, never a silent ``continue`` and never a
-    crash."""
+    """A file that is unreadable at the OS level — permissions, race, broken
+    symlink — must be surfaced as a skip reason, never a silent ``continue``
+    and never a crash.
+
+    (This is not the only skip case: a file that decodes to mostly replacement
+    characters is also reported unscanned rather than scanned-as-garbage — see
+    ``test_binary_file_is_reported_unscanned_not_scanned_as_garbage``.)"""
     if sys.platform.startswith("win") or os.geteuid() == 0:
         pytest.skip("permission bits are not enforceable as root or on Windows")
     p = tmp_path / "noaccess.go"
@@ -105,3 +107,60 @@ def test_missing_file_reports_skip_reason(tmp_path):
     text, reason = read_text_safe(p)
     assert text is None
     assert reason is not None
+
+
+# --- BOM-less UTF-16: the silent-clean hole (chief-wiggum#282, #289) ----------
+#
+# These are the cases a naive `utf-8, errors="replace"` fallback gets WRONG in
+# the most dangerous possible way. ASCII text encoded UTF-16-LE is
+# `s\x00t\x00r\x00...`; NUL is valid UTF-8, so `raw.decode("utf-8")` SUCCEEDS
+# with ZERO replacement characters and returns text no source regex can match.
+# The scan then reports the file clean having never read a word of it — so a
+# replacement-ratio heuristic cannot catch it either (the ratio is 0%).
+
+_WRITE_SITE = 'func ChangePlan() { bson.M{"$set": bson.M{"stripe_plan": v}} }\n'
+
+
+def test_bom_less_utf16_le_is_decoded_not_silently_blanked(tmp_path):
+    p = tmp_path / "nobom_le.go"
+    p.write_bytes(_WRITE_SITE.encode("utf-16-le"))
+    text, reason = read_text_safe(p)
+    assert reason is None, reason
+    assert "stripe_plan" in text, (
+        "a BOM-less UTF-16-LE file decoded to text the write-site regex cannot "
+        "match — the scan would report it clean without reading it (#282/#289)"
+    )
+
+
+def test_bom_less_utf16_be_is_decoded_not_silently_blanked(tmp_path):
+    p = tmp_path / "nobom_be.go"
+    p.write_bytes(_WRITE_SITE.encode("utf-16-be"))
+    text, reason = read_text_safe(p)
+    assert reason is None, reason
+    assert "stripe_plan" in text
+
+
+def test_binary_file_is_reported_unscanned_not_scanned_as_garbage(tmp_path):
+    # Mostly-replacement-character output means the file was not meaningfully
+    # read. Returning it as if scanned is the same silent-clean lie.
+    p = tmp_path / "blob.go"
+    p.write_bytes(bytes(range(256)) * 4)
+    text, reason = read_text_safe(p)
+    assert text is None
+    assert reason is not None and "undecodable" in reason
+
+
+def test_plain_utf8_and_latin1_are_unaffected(tmp_path):
+    # No new noise on the overwhelmingly common cases: clean UTF-8 must decode
+    # exactly, and a mildly-dirty latin-1 file must still be SCANNED (lossily)
+    # rather than dropped — a replaced accent cannot fabricate a write site.
+    p8 = tmp_path / "clean.go"
+    p8.write_text(_WRITE_SITE, encoding="utf-8")
+    text, reason = read_text_safe(p8)
+    assert reason is None and text == _WRITE_SITE
+
+    p1 = tmp_path / "accents.go"
+    p1.write_bytes("func Ré() { stripe_plan }\n".encode("latin-1"))
+    text, reason = read_text_safe(p1)
+    assert reason is None, reason
+    assert "stripe_plan" in text
