@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import consult_ai
 import pytest
-import urllib.error
 
 # A realistic-length prompt (>= consult_ai.MIN_PROMPT_BYTES) so tests that
 # exercise the role-quorum machinery don't trip the short-prompt guard
