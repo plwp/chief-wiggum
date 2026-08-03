@@ -18,7 +18,14 @@ carry markers.
 CLI:
     python3 scripts/check_unresolved.py <epic-dir-or-file> [...] [--format text|json]
 
-Exit codes: 0 = no unresolved markers, 1 = markers found, 2 = usage error.
+Exit codes: 0 = no unresolved markers (or nothing to scan), 1 = markers found
+OR the scanner could not read an artifact that exists, 2 = usage error.
+
+This gate blocks by DEFAULT (there is no `--gate` flag): a workflow runs it to
+decide whether dependent work may proceed, so a marker is blocking wherever it
+is run. Outcome vocabulary is #289's standard four states —
+``pass | findings | inapplicable | error`` — where ``error`` means an artifact
+was present and the scanner could not see it, which is never a pass.
 """
 
 from __future__ import annotations
@@ -46,6 +53,43 @@ class Finding:
     tickets: list[str]  # tickets this finding blocks (from derived_from provenance)
 
 
+@dataclass
+class ScanReport:
+    """Findings PLUS what was actually measured (#289).
+
+    ``unparsed`` names artifacts that exist and could not be read or parsed.
+    Before #289 those were a stderr warning and an empty finding list — the
+    marker-bearing file the scanner never opened looked exactly like a clean
+    one, and factory telemetry recorded it as a pass.
+    """
+
+    findings: list[Finding]
+    unparsed: list[dict]
+    files_scanned: int
+
+    @property
+    def applicability(self) -> str:
+        if self.unparsed:
+            return "error"
+        if not self.files_scanned:
+            return "inapplicable"
+        return "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error. Derived, never stored."""
+        if self.unparsed:
+            return "error"
+        if not self.files_scanned:
+            return "inapplicable"
+        return "findings" if self.findings else "pass"
+
+    @property
+    def measured(self) -> dict:
+        return {"files_scanned": self.files_scanned, "files_unparsed": len(self.unparsed)}
+
+
 def _provenance_tickets(ancestors: list) -> list[str]:
     """Collect ticket refs from derived_from blocks on the value or its ancestors."""
     tickets: list[str] = []
@@ -60,11 +104,16 @@ def _provenance_tickets(ancestors: list) -> list[str]:
     return tickets
 
 
-def scan_json(path: Path) -> list[Finding]:
+def scan_json(path: Path, unparsed: list[dict] | None = None) -> list[Finding]:
     try:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError) as exc:
         print(f"WARNING: cannot parse {path}: {exc}", file=sys.stderr)
+        if unparsed is not None:
+            # #289: structural, not just a stderr line. An artifact the scanner
+            # could not read is a BROKEN INSTRUMENT — its markers, if any, are
+            # unknown, and "no markers found" would be a lie about it.
+            unparsed.append({"file": str(path), "reason": f"{type(exc).__name__}: {exc}"})
         return []
 
     findings: list[Finding] = []
@@ -91,12 +140,14 @@ def scan_json(path: Path) -> list[Finding]:
     return findings
 
 
-def scan_markdown(path: Path) -> list[Finding]:
+def scan_markdown(path: Path, unparsed: list[dict] | None = None) -> list[Finding]:
     findings: list[Finding] = []
     try:
         lines = path.read_text().splitlines()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"WARNING: cannot read {path}: {exc}", file=sys.stderr)
+        if unparsed is not None:
+            unparsed.append({"file": str(path), "reason": f"{type(exc).__name__}: {exc}"})
         return []
     for lineno, line in enumerate(lines, start=1):
         match = MARKER_RE.search(line)
@@ -123,13 +174,24 @@ def collect_files(targets: list[Path]) -> list[Path]:
 
 
 def scan(targets: list[Path]) -> list[Finding]:
+    """Backward-compatible entry point: just the findings. Callers that need
+    to know whether the scan actually MEASURED anything use ``scan_report``."""
+    return scan_report(targets).findings
+
+
+def scan_report(targets: list[Path]) -> ScanReport:
     findings: list[Finding] = []
+    unparsed: list[dict] = []
+    scanned = 0
     for path in collect_files(targets):
+        before = len(unparsed)
         if path.suffix == ".json":
-            findings.extend(scan_json(path))
+            findings.extend(scan_json(path, unparsed))
         else:
-            findings.extend(scan_markdown(path))
-    return findings
+            findings.extend(scan_markdown(path, unparsed))
+        if len(unparsed) == before:
+            scanned += 1
+    return ScanReport(findings=findings, unparsed=unparsed, files_scanned=scanned)
 
 
 def blocked_tickets(findings: list[Finding]) -> dict[str, int]:
@@ -155,7 +217,8 @@ def main() -> int:
             print(f"ERROR: {t} does not exist", file=sys.stderr)
         return 2
 
-    findings = scan(targets)
+    report = scan_report(targets)
+    findings = report.findings
     blocked = blocked_tickets(findings)
 
     if args.format == "json":
@@ -163,9 +226,27 @@ def main() -> int:
             "findings": [asdict(f) for f in findings],
             "blocked_tickets": blocked,
             "count": len(findings),
+            # #289: the outcome and its denominator travel with the findings,
+            # so a zero count is never ambiguous about WHY it is zero.
+            "applicability": report.applicability,
+            "outcome": report.outcome,
+            "measured": report.measured,
+            "unparsed": report.unparsed,
         }, indent=2))
     else:
-        if not findings:
+        print(f"Measured: {report.files_scanned} file(s) scanned"
+              + (f", {len(report.unparsed)} unreadable" if report.unparsed else ""))
+        if report.unparsed:
+            print("\nERROR: artifact(s) present that the scanner could NOT read — "
+                  "their markers are unknown, so this is not a clean result "
+                  "(chief-wiggum#289):\n")
+            for u in report.unparsed:
+                print(f"  {u['file']}: {u['reason']}")
+            print("")
+        if report.outcome == "inapplicable":
+            print("INAPPLICABLE: no .json/.md artifact to scan under the given target(s); "
+                  "nothing was checked (not a real pass)")
+        elif not findings:
             print("OK: no unresolved markers found")
         else:
             print(f"UNRESOLVED: {len(findings)} marker(s) found\n")
@@ -185,12 +266,18 @@ def main() -> int:
             sys.path.insert(0, _here)
         from factory_log import emit_gate
         repo = os.path.basename(os.path.abspath(str(targets[0]))) if targets else None
-        emit_gate("check_unresolved", "fail" if findings else "pass",
+        # #289: a run that could not read its inputs is NOT logged as a pass —
+        # that mislabelling is how a broken instrument entered the telemetry
+        # record as evidence of health.
+        emit_gate("check_unresolved",
+                  "fail" if (findings or report.unparsed) else "pass",
                   caught=len(findings), repo=repo)
     except Exception:
         pass
 
-    return 1 if findings else 0
+    # An artifact the scanner could not read exits non-zero for the same
+    # reason a marker does: dependent work must not proceed on it.
+    return 1 if (findings or report.unparsed) else 0
 
 
 if __name__ == "__main__":
