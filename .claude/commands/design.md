@@ -2,7 +2,7 @@
 
 Produce a real, rendered, human-chosen visual design for the product — before any epic is architected. The output is `docs/design/` in the target repo: binding tokens (`design.json`), the approved mockups as living reference implementations, and reference screenshots that become the design-fidelity gate's comparison baseline.
 
-This stage exists because the pipeline has a design *contract* (ui-spec `design` section) and a design *gate* (`/implement` Step 9), but a brainstorm conversation that picks a primary color is a token file, not a design. Dogeared-coach shipped with a sound token architecture and still looked like an unthemed admin tool — nobody ever designed anything. `/design` is where someone does.
+This stage exists because the pipeline has a design *contract* (ui-spec `design` section) and a design *gate* (`/implement` Step 9), but a brainstorm conversation that picks a primary color is a token file, not a design. A shipped multi-provider video SaaS shipped with a sound token architecture and still looked like an unthemed admin tool — nobody ever designed anything. `/design` is where someone does.
 
 ## Usage
 ```

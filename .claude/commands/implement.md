@@ -652,7 +652,7 @@ python3 "$CW_HOME/scripts/ux_gate.py" \
 
 **Goal**: Verify that the implemented UI aligns with the *spirit* of the requirements — information architecture, menu coherence, field exposure, contextual clarity — AND with the **visual design contract** (`ui-spec.json` → `design` section): tokens applied, brand assets present, reference screenshots matched. Functional tests can pass while screens feel wrong or ship off-brand; this is the only step in the loop that actually *looks* at the result. "Build + tests green" is NOT sufficient to call a frontend ticket done.
 
-(Real example: dogeared-coach shipped 131 passing tests and 40 green E2E specs with a client-facing playlist numbered "0., 1., ..." and a completely unthemed stock component library. One screenshot caught both.)
+(Real example: a shipped production SaaS had 131 passing tests and 40 green E2E specs while its client-facing playlist was numbered "0., 1., ..." and the component library was completely unthemed. One screenshot caught both.)
 
 #### Phase 1: Capture screenshots
 

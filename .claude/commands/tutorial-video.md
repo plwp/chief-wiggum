@@ -127,8 +127,9 @@ open with a login: only a tutorial that *teaches* signing in should show it.
 
 `pronunciations` (optional) rewrites words for the TTS engine only — captions
 keep the real spelling. Use it when the product name or jargon is mispronounced
-(e.g. `"Dogeared": "dog eared"`). Listen for this in QA: if a name sounds
-wrong in the narration, add a mapping and re-produce.
+(e.g. a compound-sounding brand name the TTS engine splits in two, `"Foxrun":
+"fox-run"`). Listen for this in QA: if a name sounds wrong in the narration,
+add a mapping and re-produce.
 
 Validate the schema:
 

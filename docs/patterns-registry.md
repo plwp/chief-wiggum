@@ -195,8 +195,9 @@ array. Each entry is:
 {
   "id": "INV-FOWR-004",
   "statement": "Unknown external id is fatal: no write, no floor fallback, alert.",
-  "realized_as": {"app": "dogeared-coach", "id": "INV-BIL-012",
-                  "code": "services/billing_reconcile.go:37-40,256-267"}
+  "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+                  "id": "INV-BIL-012",
+                  "code": "an unknown external subscription id aborts with no write and raises an alert; no floor fallback"}
 }
 ```
 
@@ -524,7 +525,7 @@ The house stack behind every CW-built app so far — **Firebase Hosting + Cloud 
 (Go) + Firestore/Atlas + Firebase Auth + Stripe + Resend + Secret Manager + keyless
 WIF deploys** — presented as a **T0 → T1 → T2 cost ladder** ($0 static/DIY →
 $0–5 thin-serverless → $60–140 full-production). It was mined from three shipped
-apps (`plwp.net`, `booking-forms`, `dogeared-coach`) and binds
+apps (`plwp.net`, a booking product, and a multi-provider video SaaS) and binds
 `tiered-subscription`, `engagement-instrumentation`, `multi-tenant-isolation`
 (two variants), `provider-neutral-adapter`, `transactional-email-and-dunning`
 (dunning half flagged aspirational — honestly unbuilt in the mined apps), and

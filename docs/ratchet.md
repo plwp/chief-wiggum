@@ -94,7 +94,7 @@ The pass-set ratchets **up** (its high-water mark is the *largest* set; it
 regresses when it *shrinks*). Complexity ratchets the **opposite** way: it is a
 cost, so the high-water mark is the **lowest (best)** value ever merged, and a
 metric that *rises* is the regression. The portfolio audit motivating this
-(issue #110) saw `duplicat-rex` mean CCN drift 3.1→5.2 and `chief-wiggum` reach
+(issue #110) saw an agentic SaaS-cloning tool's mean CCN drift 3.1→5.2 and `chief-wiggum` reach
 16.7 % of functions over CCN 10 before self-correcting — exactly the upward
 creep this dimension catches.
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://chief-wiggum.dev/schemas/ui-spec.json",
   "title": "UI Specification",
-  "description": "Structured specification of an application's UI: pages, component trees, interaction patterns, and navigation. Populated by observation (duplicat-rex) or design decisions (chief-wiggum /architect).",
+  "description": "Structured specification of an application's UI: pages, component trees, interaction patterns, and navigation. Populated by observation (an agentic SaaS-cloning tool) or design decisions (chief-wiggum /architect).",
   "type": "object",
   "required": ["pages", "navigation"],
   "additionalProperties": false,

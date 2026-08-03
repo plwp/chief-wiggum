@@ -111,7 +111,7 @@ addendum.
 | orient surfaces hotspot facts; provenance carries generating sha; measured tier sorts last | CTR-fh-033, CTR-fh-034, CTR-fh-052 | IT-fh-03 (incl. case (d) direct-sorts-first) | passing |
 | No stable IDs; never gates; `--check` staleness [^lizard-gap] | CTR-fh-031, CTR-fh-033, INV-fh-007 | IT-fh-08 (`--check` nonzero; generate never gates) | covered |
 | /architect + /implement consume the report | (workflow doc) | manual review | covered |
-| Run against chief-wiggum + one shipped repo, findings in PR | (report-only validation) | manual review — see PR #194 body (real runs against chief-wiggum HEAD `3edc067` and `dogeared-coach`, findings summarized inline) | covered |
+| Run against chief-wiggum + one shipped repo, findings in PR | (report-only validation) | manual review — see PR #194 body (real runs against chief-wiggum HEAD `3edc067` and a shipped multi-provider video SaaS, findings summarized inline) | covered |
 
 [^lizard-gap]: `lizard` is not installed on `PATH` in this environment (nor in CI —
 same as every other `lizard`-dependent numeric assertion in this repo, e.g.
@@ -120,4 +120,4 @@ same as every other `lizard`-dependent numeric assertion in this repo, e.g.
 re-run and pass; the `lizard`-dependent determinism/outlier/staleness-after-advance
 assertions were skipped, not failed, and were verified during ticket implementation
 per PR #194's description (byte-identical real-repo runs against chief-wiggum and
-dogeared-coach).
+a shipped multi-provider video SaaS).

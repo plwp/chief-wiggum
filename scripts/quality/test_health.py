@@ -95,7 +95,7 @@ GO_ASSERT_RE = re.compile(
 GO_FUNC_RE = re.compile(r"^func\s+(Test\w+)\s*\(", re.MULTILINE)
 # Helper delegation: a call passing `t` (or `s.t`/`&s.t`) as an argument —
 # `runScenario(t, tc)`, `h.check(s.t, got)`. Such a test DELEGATES its
-# assertions to a local helper (the dgrd pattern: helper calls require.* on
+# assertions to a local helper (a real mined FP class: helper calls require.* on
 # the caller's t); it is never flagged assertion-free, and never verified
 # either — counted under the `helper_delegated` bucket, stated as unverified.
 # `func(` is excluded so a t.Run closure signature alone doesn't count as

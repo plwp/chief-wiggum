@@ -343,17 +343,76 @@ PRIVATE_NAME = re.compile(r"dogeared|dgrd|booking-forms|windamere|duplicat-rex|s
 PATH_LIKE = re.compile(r":\d+|\.(go|ts|tsx|js|py|rb|java)\b")
 
 
-def test_patterns_tree_names_no_private_repos():
-    """The registry is public: no private repo/product name anywhere under
-    patterns/ (manifests, specs, stack profiles, bindings, registry indexes)."""
+SCANNED_SUFFIXES = (".json", ".md", ".py", ".sh", ".yaml", ".yml", ".toml")
+
+
+def _scan_for_private_names(root, exclude=(), suffixes=SCANNED_SUFFIXES):
+    """Walk `root` for text-ish files and flag any line matching PRIVATE_NAME.
+    `exclude` is a set of path prefixes (relative to the repo root) to skip —
+    e.g. docs/quality/, whose append-only ratchet journal must never be edited
+    even if a historical entry happens to name a private validation corpus."""
+    repo_root = SCRIPTS.parent
     offenders = []
-    for f in sorted((SCRIPTS.parent / "patterns").rglob("*")):
-        if f.suffix not in (".json", ".md"):
+    for f in sorted(root.rglob("*")):
+        if f.suffix not in suffixes or not f.is_file():
+            continue
+        rel = f.relative_to(repo_root)
+        if any(str(rel).startswith(ex) for ex in exclude):
             continue
         for i, line in enumerate(f.read_text().splitlines(), 1):
             if PRIVATE_NAME.search(line):
-                offenders.append(f"{f.relative_to(SCRIPTS.parent)}:{i}: {line.strip()[:80]}")
+                offenders.append(f"{rel}:{i}: {line.strip()[:80]}")
+    return offenders
+
+
+def test_patterns_tree_names_no_private_repos():
+    """The registry is public: no private repo/product name anywhere under
+    patterns/ (manifests, specs, stack profiles, bindings, registry indexes)."""
+    offenders = _scan_for_private_names(SCRIPTS.parent / "patterns")
     assert offenders == [], "\n".join(offenders)
+
+
+def test_docs_and_workflow_commands_name_no_private_repos():
+    """chief-wiggum#223: the prose war-stories under docs/, .claude/commands/,
+    and skills/ (which mirrors .claude/commands/ via symlinks) must not name
+    private products either — same policy as #221's patterns/ scrub, now
+    covering the whole public surface. `mcprelay` is deliberately excluded
+    from PRIVATE_NAME: it's plwp's open-core project and is itself public, so
+    naming it isn't an exposure. docs/quality/ is excluded because its
+    append-only ratchet journal is never edited, even to anonymize history."""
+    offenders = []
+    for tree in ("docs", ".claude/commands", "skills"):
+        offenders += _scan_for_private_names(SCRIPTS.parent / tree,
+                                               exclude=("docs/quality/",))
+    assert offenders == [], "\n".join(offenders)
+
+
+def test_whole_public_tree_names_no_private_repos():
+    """chief-wiggum#223 (widened): the docs scrub is not enough — SOURCE files
+    leak private names too, in docstrings and comments.
+
+    This caught three files added the very same day as the #223 scrub
+    (scripts/wave_lock.py, scripts/chief_wiggum/repo_lock.py,
+    tests/test_wave_lock.py), each citing a private product by name in a
+    "confirmed live" provenance note. The original guard walked only .json/.md,
+    so a .py docstring sailed straight past it — the guard's own coverage gap
+    was the reason the exposure could return.
+
+    Scanning source too closes that. Excludes: docs/quality/ (append-only
+    ratchet journal, never edited) and this file (it defines PRIVATE_NAME).
+    """
+    repo_root = SCRIPTS.parent
+    offenders = []
+    for tree in ("scripts", "tests", "templates", "patterns", "docs",
+                 ".claude", "skills"):
+        root = repo_root / tree
+        if not root.exists():
+            continue
+        offenders += _scan_for_private_names(root, exclude=("docs/quality/",))
+    offenders = [o for o in offenders
+                 if not o.startswith("tests/test_check_patterns.py")]
+    assert offenders == [], (
+        "private product names in the public tree:\n" + "\n".join(offenders))
 
 
 def test_all_manifest_private_provenance_is_path_free():

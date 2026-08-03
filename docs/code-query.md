@@ -136,7 +136,7 @@ An un-annotated handler still gets a real answer:
   presence in >40% of them — at least 3 of 5 — so a shared entity word needs
   real recurrence before it loses binding weight.
   This is the mechanical fix for the real over-match found validating against
-  dogeared-coach: `ui/src/providers/auth-provider.tsx` word-matched dozens of
+  a multi-provider video SaaS: `ui/src/providers/auth-provider.tsx` word-matched dozens of
   operations that reduce to the bare word `providers` once params are
   stripped, because "provider" is that epic's own primary tenant entity name
   and recurs across most of its operations. An entity+verb combination (e.g.
@@ -186,7 +186,7 @@ and its absence for a file is not evidence the file is safe.
   fixture repo (`tests/fixtures/code_query_repo`) — code_query never invents or
   drops a site the checkers themselves would report.
 - **Real-repo validation**: `orient` was run against 10 files in a
-  previously-shipped repo (dogeared-coach) — annotated middleware, several
+  previously-shipped repo (a multi-provider video SaaS) — annotated middleware, several
   genuinely un-annotated handlers, and frontend files with no `@cw-trace` at
   all — confirming annotation-bound, artifact-bound, and genuinely-empty
   answers all render correctly (see the module docstring / PR for the specific

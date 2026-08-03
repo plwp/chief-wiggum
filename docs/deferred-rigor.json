@@ -74,7 +74,7 @@
       "id": "security-tenancy-notation",
       "title": "Security/tenancy/residency notation (trust_zone, region, security block per edge, data_class + carries reachability)",
       "source_issue": 171,
-      "trigger": "first regulated/multi-tenant build post-Dogeared (SafeTrail-class) OR /saas-gate needs stable IDs for its probes",
+      "trigger": "first regulated/multi-tenant build after the early SaaS builds (AU compliance-product class) OR /saas-gate needs stable IDs for its probes",
       "checks": [],
       "settled_notes": "declared-graph label propagation only — NO taint analysis; rebind existing /saas-gate probes as verifies targets"
     },
