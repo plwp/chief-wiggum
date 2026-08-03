@@ -29,6 +29,8 @@ import signal
 import subprocess
 import sys
 
+from . import population
+
 # Production-only: exclude tests, generated, vendored, docs, node output.
 IGNORE = ",".join([
     "**/node_modules/**", "**/dist/**", "**/build/**", "**/out/**", "**/.next/**",
@@ -278,6 +280,21 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
     return data, None
 
 
+def _production_candidate_count(repo: str) -> int:
+    """Independent candidate count of PRODUCTION (non-test) source files in
+    the languages this engine scans — reuses ``quality.population``'s shared
+    tracked/excluded/generated file population (the SAME definition the debt
+    engines use), so this engine can't silently disagree with the rest of the
+    quality battery about what counts as production source. Used ONLY to
+    disambiguate a jscpd-reported ``sources: 0`` (#289): a genuinely
+    source-free corpus (inapplicable, honest absence) is otherwise
+    indistinguishable from a wrong ignore glob or language mismatch hiding
+    real content from the scanner (a broken instrument)."""
+    return sum(
+        1 for f in population.tracked_source(repo) if not population.is_test_file(f)
+    )
+
+
 def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
     """Run jscpd over production code and return the duplication statistics."""
     name = name or repo.rstrip("/").split("/")[-1]
@@ -287,7 +304,38 @@ def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
     try:
         stats = data["statistics"]["total"]
     except KeyError as exc:
-        return {"repo": name, "skipped": f"unreadable jscpd report: {exc}"}
+        return {
+            "repo": name, "status": "crashed",
+            "crashed": f"unreadable jscpd report: missing {exc}",
+            "skipped": f"unreadable jscpd report: missing {exc}",
+        }
+
+    if not stats.get("sources"):
+        # #289: the audit's exact defect — a zero-source corpus reporting
+        # "0.0% duplication (beats the pre-AI human baseline)", the healthiest
+        # band available. Disambiguate with an INDEPENDENT candidate count
+        # rather than trusting jscpd's own zero at face value.
+        candidates = _production_candidate_count(repo)
+        if candidates == 0:
+            return {
+                "repo": name, "status": "inapplicable", "sources": 0,
+                "inapplicable": (
+                    f"no production source files found in the languages this "
+                    f"engine scans ({FORMATS}) — nothing to measure"
+                ),
+            }
+        return {
+            "repo": name, "status": "crashed", "sources": 0,
+            "crashed": (
+                f"jscpd scanned 0 sources despite {candidates} production "
+                "source file(s) present — an ignore glob or language "
+                "mismatch hid real content from the scanner"
+            ),
+            "skipped": (
+                f"jscpd scanned 0 sources despite {candidates} production "
+                "source file(s) present"
+            ),
+        }
 
     return {
         "repo": name,
