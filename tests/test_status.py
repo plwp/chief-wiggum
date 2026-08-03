@@ -370,3 +370,50 @@ def test_status_with_no_quarantines_is_unchanged(user_dir, tmp_path):
     text = status.render_text(st)
     assert "PARTIAL COVERAGE" not in text
     assert "WARNING" not in text
+
+
+# --- permanent retirement surfacing (chief-wiggum#290) ----------------------
+
+
+def test_status_shows_permanently_retired_cases_separately_from_quarantined(user_dir, tmp_path):
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": ["s::t1"], "contract_hashes": {}, "verifier_test_hashes": {},
+    }))
+    _append_ratchet_record(q, pass_set={"s::t1", "s::flaky", "s::gone"}, merged=True)
+    _append_ratchet_record(q, pass_set={"s::t1"}, merged=False, retired_cases=[
+        {"id": "s::flaky", "reason": "order-dependent", "owner": "plwp",
+         "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z"},
+        {"id": "s::gone", "reason": "renamed away, id gone for good", "owner": "plwp",
+         "expiry": None, "created_at": "2026-08-03T00:00:00Z", "kind": "removed"},
+    ])
+    st = status.gather(target)
+    assert st["ratchet"]["quarantined"] == 1
+    assert st["ratchet"]["removed_cases"] == 1
+    text = status.render_text(st)
+    assert "quarantined: 1 case(s)" in text
+    assert "permanently retired: 1 case(s)" in text
+    assert "s::gone" in text
+    # never claims an expiry for a permanent retirement — that's quarantine's job
+    permanent_line = next(ln for ln in text.splitlines() if ln.startswith("permanently retired"))
+    assert "expiry" not in permanent_line.lower()
+
+
+def test_status_with_no_removed_cases_is_unchanged(user_dir, tmp_path):
+    """Regression pin: zero-noise gating for the new section, matching the
+    existing quarantine-side pin (test_status_with_no_quarantines_is_unchanged)."""
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": ["s::t1"], "contract_hashes": {}, "verifier_test_hashes": {},
+    }))
+    _append_ratchet_record(q, pass_set={"s::t1"}, merged=True)
+    st = status.gather(target)
+    assert "removed_cases" not in st["ratchet"]
+    text = status.render_text(st)
+    assert "permanently retired" not in text
