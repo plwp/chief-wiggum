@@ -4,6 +4,15 @@
   "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds ci_scaffold` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
   "seeds": [
     {
+      "seed_id": "ci-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ci_scaffold_clean",
+      "corpus_digest": "sha256:d162efdcda2651a3bb6864f594516a1dc8f19b92d64f1886d88895835fd3c42a",
+      "injected": ".github/workflows/ci.yml is present but is not a parseable non-empty YAML mapping. The repo's actual CI posture is unchanged; only detect_ci's ability to read the workflow is destroyed \u2014 the `touch ci.yml` defeat.",
+      "expected": "fire"
+    },
+    {
       "seed_id": "ci-direct-01",
       "seed_class": "direct",
       "seed_version": "1",

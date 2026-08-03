@@ -120,10 +120,21 @@ JOURNAL_NAME = "ratchet-journal.jsonl"
 # evasion trio is unconditional; concurrency is mandated unless the record
 # declares it inapplicable; instrumentation-deleted is conditional on
 # telemetry_dependent.
+#
+# instrument-broken is UNCONDITIONAL (chief-wiggum#289). Every shipped gate
+# parses an artifact or probes a target, so every one of them has an
+# instrument that can break while its subject stays perfectly intact — and
+# the #289 audit found that in 13 of 14 gates a broken instrument was
+# byte-identical to a clean pass. Making it conditional would recreate the
+# hole: the gate most likely to omit the declaration is the one that never
+# considered the failure mode. Unlike instrumentation-deleted (which is
+# genuinely telemetry-specific), there is no gate for which "what happens
+# when I cannot see my subject?" is an inapplicable question.
 DIRECT_CLASS = "direct"
 ALWAYS_MANDATORY_EVASIONS = ("evasion-omission", "evasion-config-indirection", "evasion-sampling-gap")
 CONCURRENCY_CLASS = "evasion-concurrency"
 INSTRUMENTATION_CLASS = "instrumentation-deleted"
+INSTRUMENT_BROKEN_CLASS = "instrument-broken"
 
 EXPECTED_TO_RESULT = {"fire": "fired", "no-fire": "not-fired"}
 
@@ -244,8 +255,11 @@ def trial_genuinely_passed(trial: dict) -> bool:
 
 def required_seed_classes(record: dict) -> list[str]:
     """The seed classes THIS record must carry genuinely-passing trials for,
-    given its own telemetry_dependent / concurrency_applicable declarations."""
-    required = [DIRECT_CLASS, *ALWAYS_MANDATORY_EVASIONS]
+    given its own telemetry_dependent / concurrency_applicable declarations.
+
+    instrument-broken has no opt-out by design — see the constant's comment.
+    """
+    required = [DIRECT_CLASS, *ALWAYS_MANDATORY_EVASIONS, INSTRUMENT_BROKEN_CLASS]
     if record.get("concurrency_applicable", True):
         required.append(CONCURRENCY_CLASS)
     if record.get("telemetry_dependent", False):

@@ -17,11 +17,22 @@
   },
   "seeded_defect_trials": [
     {
+      "seed_id": "slop-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
+      "injected": "crashed.json: both engines report status 'crashed'. The repo under test is untouched and healthy; only the measurement crashed. Before #289 this was byte-identical to the honest 'skipped' of a genuinely absent tool.",
+      "expected": "fire",
+      "result": "fired",
+      "passed": true
+    },
+    {
       "seed_id": "slop-direct-01",
       "seed_class": "direct",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "survival_past_ai.json re-cast to the engine-native INTEGER age keys ({14: ..., 30: ...} as scripts/quality/survival.py emits): survival_14d 90.0% < AI band 94.3% -> evaluate_survival band_14d 'past-ai' -> has_findings reports the elevated-2-week-churn finding",
       "expected": "fire",
       "result": "fired",
@@ -32,7 +43,7 @@
       "seed_class": "direct",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "duplication_past_ai.json: duplication_pct_lines 15.0% > AI band 12.3% -> evaluate_duplication band 'past-ai' -> has_findings reports the duplication finding (survival healthy so duplication is the sole finding)",
       "expected": "fire",
       "result": "fired",
@@ -43,7 +54,7 @@
       "seed_class": "evasion-config-indirection",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "survival_past_ai.json as-serialized with STRING age keys ('14'/'30' \u2014 the shape any recorded/JSON band file carries, an indirection from the engine's native integer keys). evaluate_survival's 'by_age.get(14) or by_age.get(\"14\")' fallback must still reach and classify it 'past-ai' -> fire. The serialized-key indirection does not dodge classification; verified equal to the int-key verdict.",
       "expected": "fire",
       "result": "fired",
@@ -54,7 +65,7 @@
       "seed_class": "evasion-omission",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "too_young.json: git-of-theseus ran but no commit has lived >= 14 days (lines_old_enough 0). evaluate_survival reports status 'too_young' (honest non-measurement); has_findings counts only 'measured' signals, so it produces NO finding rather than fabricating a clean 'measured' verdict from unmeasurable data. A certified honest-degrade boundary -> no-fire.",
       "expected": "no-fire",
       "result": "not-fired",
@@ -65,7 +76,7 @@
       "seed_class": "evasion-sampling-gap",
       "seed_version": "1",
       "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "both_skipped.json: git-of-theseus and jscpd both genuinely absent ({'skipped': ...} for each \u2014 the real state in chief-wiggum's CI). evaluate_survival/evaluate_duplication report status 'skipped'; has_findings produces NO finding for a skipped signal \u2014 a skip is neither a silent 'clean' masking a regression nor a false fire. A certified degrade path -> no-fire.",
       "expected": "no-fire",
       "result": "not-fired",
@@ -75,7 +86,7 @@
   "clean_corpus_runs": [
     {
       "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "sha": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "sha": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "findings": 0,
       "coverage": {
         "signals_evaluated": 2,
@@ -86,7 +97,7 @@
     }
   ],
   "status": "passed",
-  "validated_at": "2026-08-03T00:00:00Z",
+  "validated_at": "2026-08-04T00:00:00Z",
   "validated_by": "chief-wiggum#265 (re-validated at the #265 scanner version: quality/duplication.py gained an optional explicit corpus so clones.py can scope-narrow jscpd's input at the source, plus a timeout/heap ceiling, process-group kill on timeout, and a crashed-vs-skipped status split. An INPUT-PLUMBING and error-reporting change only: duplication.analyze still passes files=None and walks the whole repo, so the GitClear-calibrated percentage is computed over the same corpus as before, and banding, thresholds, report shape and exit codes are untouched. Every problem shape retains the legacy 'skipped' key this gate branches on, so a crashed jscpd degrades exactly as an absent one did. All seeded-defect trials and the clean-corpus run are re-executed against the live verdict functions by tests/test_quality_slop_gate.py on every suite run.); re-chained on merge into main: main had independently minted rec-00046 (the #278 ratchet re-authoring), so this record's journal entry was re-appended as rec-00047 onto the authoritative chain rather than kept as a duplicate id \u2014 the trials, corpus digests and scanner_version are unchanged; re-authored for chief-wiggum#279: the clone-detection corpus no longer falls back to scanning the REPO ROOT when the file list exceeds the argv budget \u2014 it now builds a scratch corpus tree (symlink, falling back to per-file copy) and runs jscpd ONCE against it, with results remapped from scratch-absolute back to repo-relative paths. The old fallback silently scanned a DIFFERENT (larger) population than the one requested, so a scoped run reported clone findings for files that were never in scope \u2014 a wrong-input-renders-as-result instance of #289. `corpus_fallback` is now reserved for the narrower case of the scratch build itself failing. scripts/quality/duplication.py and clones.py are finding-affecting hash inputs, so the scanner_version moved; no new finding class and no change to thresholds or exit semantics, so the seeded trials and clean-corpus run are unchanged and were re-verified live.; re-authored for chief-wiggum#295: chief_wiggum/hashing.py gained ID_BEARING_ARTIFACTS/find_id_bearing_artifacts/scan_malformed_ids (reusing trace_ids.near_miss_ids from #281 rather than a second detector). hashing.py is a finding-affecting scanner_version hash input for every shipped gate, so this gate's version moved even though its OWN behaviour is unchanged \u2014 trials and clean-corpus runs are unchanged and were re-verified live.; re-authored for chief-wiggum#223: a COMMENT in scripts/quality/test_health.py was anonymized (it named a private product in a mined false-positive class description). test_health.py is hashed wholesale as a finding-affecting input, so an editorial-only change still moves the scanner_version \u2014 the record must follow it or the gate silently demotes to report-only. No behaviour change of any kind; trials and clean-corpus run unchanged and re-verified live.; re-authored for chief-wiggum#289: a crashed engine rendered as a declared LIMITATION rather than a failure \u2014 evaluate_survival/evaluate_duplication only tested `\"skipped\" in result`, a key both payloads carry, so `status: \"crashed\"` was never reached. Worse, survival.py never checked the subprocess returncode and never cleared a stale survival.json, so a crashed rerun in a reused workdir parsed the PREVIOUS run's numbers as fresh. And a zero-source jscpd scan reported 0.0% duplication \u2014 the healthiest band \u2014 indistinguishable from a genuinely source-free repo. Crashes now render as `error`; survival.json is unlinked before each run; a zero-source report is disambiguated against an independent production-file count (quality.population) into `inapplicable` (no source) vs `crashed` (source present, jscpd missed it). --gate fails on applicability=error even with no band finding. Report-only still never blocks but prints the error loudly. No seeded-defect scenario's expected outcome changed, so the trials and clean-corpus run are unchanged and were re-verified live.",
-  "ratchet_record_id": "rec-00069"
+  "ratchet_record_id": "rec-00074"
 }

@@ -1,0 +1,13 @@
+{
+  "_note": "instrument-broken (chief-wiggum#289): the ENGINE crashed. The repo under test is untouched and perfectly healthy — only the gate's ability to measure it is destroyed. Before #289 this rendered identically to the honest 'skipped' of an absent tool (see both_skipped.json), so a crashed engine was indistinguishable from a declared limitation, and a crashed rerun over a stale artifact could even parse the PREVIOUS run's numbers as fresh. evaluate_* must report status 'error', and the gate must not call this clean.",
+  "survival_result": {
+    "repo": "fixture",
+    "status": "crashed",
+    "error": "git-of-theseus exited 1: fatal: not a git repository"
+  },
+  "duplication_result": {
+    "repo": "fixture",
+    "status": "crashed",
+    "error": "jscpd exited 1: heap out of memory"
+  }
+}

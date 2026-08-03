@@ -42,6 +42,11 @@ def _minimal_valid_record(**overrides) -> dict:
              "expected": "fire", "result": "fired", "passed": True},
             {"seed_id": "s1", "seed_class": "evasion-sampling-gap", "repo": "r",
              "expected": "no-fire", "result": "not-fired", "passed": True},
+            # instrument-broken is unconditionally mandatory (#289). Appended,
+            # not inserted: several tests below index this list positionally
+            # ([0] direct, [3] sampling-gap) and inserting would shift them.
+            {"seed_id": "ib1", "seed_class": "instrument-broken", "repo": "r",
+             "expected": "fire", "result": "fired", "passed": True},
         ],
         "clean_corpus_runs": [
             {"repo": "r", "sha": "abc123", "findings": 0,

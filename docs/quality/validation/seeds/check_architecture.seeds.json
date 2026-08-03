@@ -4,6 +4,15 @@
   "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds check_architecture` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
   "seeds": [
     {
+      "seed_id": "arch-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/check_architecture_clean",
+      "corpus_digest": "sha256:88ef3a39a409aed1f9eb2fdbbfbd9e30e93b77612dfffca660b3af1dda94aecf",
+      "injected": "architecture.json is left in place but its CONTENT is replaced with unparseable bytes. The model the caller pointed at exists and the system is unchanged; only the parser's ability to read it is destroyed. Distinct from the absent-model case, which is covered separately by model_present=False.",
+      "expected": "fire"
+    },
+    {
       "seed_id": "arch-dangling-endpoint-01",
       "seed_class": "direct",
       "seed_version": "1",

@@ -376,6 +376,7 @@ _GV_TRIALS = {
     "slop-config-indirection-01": ("survival_past_ai.json", False),
     "slop-omission-01": ("too_young.json", False),
     "slop-sampling-gap-01": ("both_skipped.json", False),
+    "slop-instrument-broken-01": ("crashed.json", False),
 }
 
 
@@ -389,11 +390,42 @@ def _gv_outcome(band_file: str, int_keys: bool = False) -> str:
         }
     sv = gate.evaluate_survival(sv_result)
     dup = gate.evaluate_duplication(data["duplication_result"])
+    # A crashed engine reports status 'error' but produces NO finding —
+    # has_findings only counts 'past-ai' band regressions. A harness summing
+    # findings alone therefore records "not-fired" while the gate is correctly
+    # erroring, reproducing the very bug the error state was added to catch
+    # inside the machinery that certifies the gate. Count it explicitly.
+    if sv.get("status") == "error" or dup.get("status") == "error":
+        return "fired"
     return "fired" if gate.has_findings(sv, dup) else "not-fired"
 
 
 def _gv_record() -> dict:
     return _json.loads(_GV_RECORD.read_text())
+
+
+def test_slop_instrument_broken_seed_reports_error_not_merely_fires():
+    """Certify the instrument-broken seed on STATE, not fired/not-fired (#289).
+
+    The repo under test is untouched and healthy in this fixture; only the
+    engines crashed. Before #289 a crash rendered identically to the honest
+    'skipped' of a genuinely absent tool, so a broken instrument was
+    indistinguishable from a declared limitation.
+
+    Assert the distinguishing fact directly — both engines report `error`, not
+    `skipped` — because `has_findings` yields nothing for either state, so an
+    assertion on findings alone could not tell them apart.
+    """
+    data = _json.loads((_GV_CORPUS / "crashed.json").read_text())
+    sv = gate.evaluate_survival(data["survival_result"])
+    dup = gate.evaluate_duplication(data["duplication_result"])
+    assert sv["status"] == "error", sv
+    assert dup["status"] == "error", dup
+    assert gate.has_findings(sv, dup) == [], (
+        "guard: has_findings is band-only, which is exactly why the trial "
+        "outcome function must count the error state separately"
+    )
+    assert _gv_outcome("crashed.json") == "fired"
 
 
 def test_slop_gate_record_trials_backed_by_live_functions():

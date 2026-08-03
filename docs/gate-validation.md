@@ -131,13 +131,20 @@ already-shipped repo, run the gate, and record whether it fired. A seed's
   the same green it prints when there is genuinely nothing wrong.
 
   This is the seed class for the "failed to run = pass" defect family
-  (chief-wiggum#289). It is currently **permitted but not mandatory** — a
-  record may carry it, and `check_traceability` does (`tr-instrument-broken-01`,
-  added by #281 after the skill's own two-segment ID examples made the
-  traceability gate pass vacuously). Promoting it to mandatory across every
-  gate is tracked in #289, and should happen only once each gate has a
-  genuinely-passing trial, so the promotion does not retro-fail shipped
-  records.
+  (chief-wiggum#289), and it is **mandatory for every gate, unconditionally**.
+
+  There is no opt-out, deliberately. Every shipped gate parses an artifact or
+  probes a target, so every one of them has an instrument that can break while
+  its subject stays perfectly intact — the #289 audit found that in **13 of 14
+  gates a broken instrument was byte-identical to a clean pass**. A conditional
+  mandate would recreate the hole, because the gate most likely to omit the
+  declaration is precisely the one that never considered the failure mode.
+  Unlike `instrumentation-deleted`, which is genuinely telemetry-specific,
+  there is no gate for which "what happens when I cannot see my subject?" is an
+  inapplicable question.
+
+  All seven shipped records carry a genuinely-passing trial, so the promotion
+  retro-failed nothing.
 
   When writing one, certify the **state**, not merely fired/not-fired: a
   broken-instrument seed often trips an *existing* finding class as a side
