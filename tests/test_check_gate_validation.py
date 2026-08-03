@@ -233,13 +233,99 @@ def test_record_omitting_scanner_version_fails_when_live_available(tmp_path):
     assert report.passing is False
 
 
-def test_gate_without_scanner_version_support_skips_the_check(tmp_path):
-    """No live version to compare against (script absent / flag unsupported) —
-    the check is skipped, not failed; the journal still anchors provenance."""
+def test_gate_script_genuinely_absent_skips_the_check(tmp_path):
+    """#289: renamed from `test_gate_without_scanner_version_support_skips_
+    the_check`. That name/docstring conflated TWO different situations —
+    "no `<gate>.py` exists under scripts_dir at all" (genuinely nothing to
+    probe: honest absence, matches every other gate's `inapplicable`-never-
+    blocks posture) and "the script exists but running --scanner-version on
+    it failed" (a BROKEN PROBE — see the two tests below, which now fail
+    the record instead of silently skipping). Only the FIRST situation is
+    exercised here, and it is legitimately still a silent, non-blocking skip
+    — there is nothing there to be stale against."""
     vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
     report = gv.check("example_gate", vdir, scripts_dir=tmp_path / "no-scripts-here")
     assert report.provenance_errors == []
     assert report.passing is True
+
+
+def test_probe_subprocess_raising_is_a_provenance_error(tmp_path, monkeypatch):
+    """#289: the gate script EXISTS, but invoking it raised (e.g. the
+    interpreter itself failed to launch) — a BROKEN PROBE, not "no support".
+    Before this fix `_live_scanner_version` swallowed the exception and
+    returned None indistinguishably from "nothing to probe", so the
+    staleness comparison silently never ran — byte-identical to a clean
+    pass. It must instead surface as a loud, failing provenance error."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    scripts_dir = tmp_path / "scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "whatever")
+
+    def _boom(*_a, **_k):
+        raise OSError("simulated exec failure")
+
+    monkeypatch.setattr(gv.subprocess, "run", _boom)
+    report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report.passing is False
+    assert any("probe" in e.lower() for e in report.provenance_errors)
+
+
+def test_probe_nonzero_exit_is_a_provenance_error(tmp_path):
+    """#289: a gate script that EXISTS but exits non-zero when asked for
+    --scanner-version (crashed, or the flag was removed/broken) must not be
+    silently treated the same as "doesn't implement --scanner-version" —
+    that conflation is exactly the staleness-probe fail-open this ticket
+    closes. It must fail the record instead of skipping the comparison."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "example_gate.py").write_text(
+        "import sys\nsys.stderr.write('boom: unhandled exception')\nraise SystemExit(1)\n"
+    )
+    report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert report.passing is False
+    assert any("probe" in e.lower() for e in report.provenance_errors)
+
+
+def test_probe_failure_classifies_as_invalid_not_stale(tmp_path):
+    """A broken probe means staleness could not be verified AT ALL — a
+    strictly worse situation than "verified and found one version behind"
+    (`failure_kind() == "stale"`). It must classify as `"invalid"` so a
+    gate that was wired --gate and whose probe then breaks is demoted via
+    the `record_missing_or_invalid` path, not treated as simple staleness."""
+    vdir = _write_record(tmp_path, "example_gate", _minimal_valid_record())
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "example_gate.py").write_text("raise SystemExit(1)\n")
+    report = gv.check("example_gate", vdir, scripts_dir=scripts_dir)
+    assert gv.failure_kind(report) == "invalid"
+
+
+def test_cli_scripts_dir_flag_checks_a_target_repos_own_gate(tmp_path):
+    """#289: without --scripts-dir the checker only ever probes ITS OWN
+    scripts/ dir (the default), so a TARGET repo's own gate scripts (living
+    somewhere else entirely) could never be staleness-checked — always a
+    silent skip. --scripts-dir lets a caller point it at the right place,
+    and a genuine drift there now fails --gate exactly like an in-repo one."""
+    record = _minimal_valid_record(scanner_version="v1")
+    vdir = _write_record(tmp_path, "example_gate", record)
+    scripts_dir = tmp_path / "target-repo-scripts"
+    _fake_gate_script(scripts_dir, "example_gate", "v1")
+
+    script = str(SCRIPTS / "check_gate_validation.py")
+    ok = subprocess.run(
+        [sys.executable, script, "example_gate",
+         "--validation-dir", str(vdir), "--scripts-dir", str(scripts_dir), "--gate"],
+        capture_output=True, text=True,
+    )
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    _fake_gate_script(scripts_dir, "example_gate", "v2-drifted")
+    drifted = subprocess.run(
+        [sys.executable, script, "example_gate",
+         "--validation-dir", str(vdir), "--scripts-dir", str(scripts_dir), "--gate"],
+        capture_output=True, text=True,
+    )
+    assert drifted.returncode == 1, drifted.stdout + drifted.stderr
 
 
 # --- trials: pass/fail is derived, never trusted ------------------------------
