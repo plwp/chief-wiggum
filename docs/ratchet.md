@@ -239,10 +239,11 @@ Two consequences worth knowing before you touch a test here:
 - **`score` runs the full suite** (~3 min), including inside `/implement`
   Step 8, which has already run it. That double run is tracked in #284.
 
-Note the semantic gap for a **permanent** removal: `--retire-case` is a
-quarantine with a mandatory expiry, designed so a flaky test stays visible
-pressure. A renamed or deleted case never comes back, so its quarantine expires
-and re-blocks, needing renewal forever. Tracked in #290.
+`--retire-case` is a quarantine with a mandatory expiry, designed so a flaky
+test stays visible pressure. A renamed or deleted case never comes back, so a
+quarantine on it would just expire and re-block, needing renewal forever —
+`--retire-case-permanent` is the distinct, honestly-named path for that case
+(#290; see "Permanently retiring a pass-set case" below).
 
 ## Retiring a pass-set case (flaky quarantine, #278)
 
@@ -326,6 +327,71 @@ python3 scripts/ratchet.py record --event ticket --ref "#42" \
   journal ignores the unknown `retired_cases` key and keeps every quarantined
   case in the high-water mark — it fails toward MORE strictness, never less.
 
+## Permanently retiring a pass-set case (#290)
+
+**Quarantine says "this should come back"; permanent retirement says "this is
+gone."** Only the first deserves an expiry. A test case that was renamed,
+re-parametrised, moved, or deleted will never pass again under its old case
+ID — quarantining it just defers the problem: the quarantine expires, the
+case re-enters `missing_tests`, and the only remedy is renewing the
+quarantine every 90 days, forever, for a test that isn't coming back.
+
+`--retire-case-permanent` is a DISTINCT terminal path, not a longer expiry:
+
+```bash
+python3 scripts/ratchet.py record --event ticket --ref "#42" \
+    --retire-case 'pytest::tests/test_old_name.py::test_x' \
+    --retire-case-reason "renamed to test_new_name.py::test_x; old id is gone for good" \
+    --retire-case-owner plwp --retire-case-permanent
+```
+
+- **Same resolution path as quarantine** (`--retire-case`/`--retire-case-file`,
+  exact-ID-before-glob, materialized at record time, refuses a still-passing
+  or not-in-high-water case) — only the terminal `kind` and the expiry policy
+  differ. A case can also **graduate** from a standing quarantine straight to
+  permanent (an operator gives up renewing it): it stays reachable through the
+  same CLI path quarantine renewal uses.
+- **Mandatory reason, and a MANDATORY EXPLICIT owner** — attribution is not
+  the thing being relaxed for a permanent decision. Unlike quarantine, the
+  lax `unassigned` default is refused; `--retire-case-owner` must be given.
+- **Rejects an expiry as a usage error.** `--retire-case-expiry` /
+  `--retire-case-expiry-days` alongside `--retire-case-permanent` is refused
+  outright — accepting one would make a permanent retirement indistinguishable
+  from a quarantine nobody intends to renew, defeating the entire point of a
+  distinct, honestly-named path.
+- **Entry shape**: `{"id", "reason", "owner", "expiry": null, "created_at",
+  "kind": "removed"}` — the same journal key (`retired_cases`) as quarantine,
+  distinguished by `"kind"`. An entry with no `kind` key (every pre-#290
+  journal record) defaults to quarantined — unchanged backward compatibility.
+- **A SEPARATE derived bucket, `removed_cases`** (`derive_highwater`), never
+  `quarantined` — so the flaky-quarantine list stays a list of flakes. No
+  expiry logic applies to it AT ALL: `effective_pass_set` never reads it, so a
+  permanently retired case never re-enters `missing_tests`, regardless of
+  elapsed time — there is nothing to check, by construction, not merely a
+  very long timer.
+- **Renders separately everywhere a human looks**: `check` (its own
+  `[report-only]` line, `N case(s) permanently retired`, plus its own clause
+  on the OK line), `check --format json` (`removed_cases` key, additive),
+  `recent` (`[removed]` status, distinct from `[quarantined]`), `highwater`
+  (its own `removed_cases` map, with no `expired` overlay since none applies),
+  and `/status` (its own `permanently retired: N case(s)` line, separate from
+  the quarantine section, no expiry/warning language at all).
+- **Self-healing, same doctrine as quarantine**: if the exact case ID somehow
+  reappears in a later *merged* record's `pass_set`, it is restored and its
+  stale `removed_cases` metadata is dropped — no second human act needed.
+- **No new blocking finding class, no new exit code** — same cost calculus as
+  quarantine: a permanently retired case simply never contributes to
+  `missing_tests`, ever. Only a `scanner_version` restamp was needed, not a
+  new gate-validation record.
+- **Backward compatibility**: a pre-#290 `ratchet.py` reading a post-#290
+  journal has no notion of `"kind": "removed"` and folds every retired-cases
+  entry into `quarantined` regardless of kind — since a permanent entry
+  carries `expiry: null`, and a missing/unparseable expiry counts as expired
+  (inherited fail-closed posture), such a reader treats a permanent
+  retirement as an ALREADY-EXPIRED quarantine and re-blocks on it. This fails
+  toward MORE strictness, never less — the same direction #278's own
+  backward-compat guarantee takes.
+
 ## State (committed to the target repo)
 
 ```
@@ -374,12 +440,16 @@ python3 scripts/ratchet.py record --event epic-close --ref order-lifecycle --mer
 python3 scripts/ratchet.py record --event ticket --ref "#42" \
     --retire-case 'pytest::tests/test_flaky.py::*' --retire-case-reason "order-dependent shared state" \
     --retire-case-owner plwp --retire-case-expiry 2026-11-01   # quarantine a flaky class (#278)
-python3 scripts/ratchet.py highwater                            # includes `quarantined` + live expiry
+python3 scripts/ratchet.py record --event ticket --ref "#42" \
+    --retire-case 'pytest::tests/test_old_name.py::test_x' \
+    --retire-case-reason "renamed, old id gone for good" \
+    --retire-case-owner plwp --retire-case-permanent          # permanent retirement, no expiry (#290)
+python3 scripts/ratchet.py highwater      # includes `quarantined` (live expiry) + `removed_cases`
 python3 scripts/ratchet.py recent --n 5                # amnesia context for the next session
 ```
 
-Exit codes are UNCHANGED by #278: `0` ok, `1` gate violation, `2` usage/config
-error, `3` no scorecard (run `score` first), `4` journal tamper.
+Exit codes are UNCHANGED by #278/#290: `0` ok, `1` gate violation, `2`
+usage/config error, `3` no scorecard (run `score` first), `4` journal tamper.
 
 ## Where it gates
 
@@ -399,9 +469,10 @@ error, `3` no scorecard (run `score` first), `4` journal tamper.
   *advanced* across the epic, then `record --event epic-close --merged`.
   Legitimate contract revisions are journaled here with `--amend`/`--retire`,
   deliberate verifier-test revisions with
-  `--amend-verifier`/`--retire-verifier`, and flaky/order-dependent pass-set
-  cases with `--retire-case` (#278) — a deliberate, visible human decision,
-  not a silent edit.
+  `--amend-verifier`/`--retire-verifier`, flaky/order-dependent pass-set
+  cases with `--retire-case` (#278), and renamed/re-parametrised/deleted
+  cases with `--retire-case --retire-case-permanent` (#290) — a deliberate,
+  visible human decision, not a silent edit.
 
 The **complexity/churn** dimension is not wired as a blocker anywhere yet: per
 [gate-rollout.md](gate-rollout.md) it ships report-only (`check` surfaces the
