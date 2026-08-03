@@ -1113,6 +1113,48 @@ field the ledger lacked before this ticket.
 14. **Signal-source tier** (chief-wiggum#254, §9.0): what tier is the thesis's grounding
     signal — private (A), semi-public (B), or public (C)? If Tier C, who else is reading
     that same public signal right now, and has the create-time competitor sweep run?
+15. **Regulated-calculation liability** (chief-wiggum#260 — harvested from a bet whose
+    product computed a number a regulator can audit, killed the same day it was created,
+    on premise falsification, at $0 cash; the grounding research surfaced a
+    portfolio-level constraint that would otherwise die with the bet's file). For any
+    bet whose product *computes a number a regulator can audit* (wages, tax, super,
+    benefits, clinical dosing, safety thresholds):
+    1. **Who bears the error?** If the customer can be penalised for the product's
+       output, the vendor is in accessory territory the moment it has system-level
+       knowledge of a defect. **Worked example**: *FWO v Blue Impression / Ezy
+       Accounting* ([2018] FCAFC 134, upheld on appeal) — a firm providing payroll
+       services was penalised **$53,880 as an accessory** under Fair Work Act s550 for
+       configuring a system it knew could not satisfy the Award; the underpayment it
+       facilitated was **$750**. The finding turned on **system-level knowledge**
+       (the director knew the configured flat rates were non-compliant), not
+       per-employee knowledge. `{verified: primary — FWO media release, judgment}`. A
+       pure software *licensor* retains operational distance; s550(2)(c) reaches
+       involvement "by act or omission, directly or indirectly", and exposure
+       sharpens where the vendor supplies interpretation as a hosted ruleset rather
+       than a configurable tool, is told of a defect and keeps supplying, or **does
+       paid configuration work** — the Ezy fact pattern exactly, and the year-one
+       shape of any compliance-calculating product for a solo founder hand-onboarding
+       early customers.
+    2. **Is the correctness axis winnable?** Check whether incumbents *disclaim*
+       accuracy; if market leaders and the regulator's own calculator all disclaim,
+       correctness is not a differentiator — it is an unpriceable liability every
+       participant has already refused.
+    3. **Is the differentiator insurable?** "Contractually assumed liability" is a
+       standard PI exclusion, so a compliance warranty is cover the insurer does not
+       follow you into; statutory penalty exposure typically sits inside a bounded
+       sub-limit inclusive of defence costs with an "intentional, wilful, reckless"
+       carve-out — precisely the fault standard s550(2)(c) engages. A warranty a
+       policy excludes is not a moat; it is uncovered exposure.
+    4. **Will the operator do paid configuration?** For a solo founder the answer is
+       yes in year one. Price that as risk, not as revenue.
+    5. **Interpretation surface**: is the rule set bounded and licensable, or unbounded
+       and hand-built (e.g. dozens of jurisdiction-specific rulesets with no
+       licensable library, free-text prose from an official API)?
+
+    A bet failing 1–4 is not automatically refused — regulated calculation is a real
+    market — but the screen must be answered in the bet record at create time; an
+    unanswered screen while the thesis names a regulated-calculation domain is a
+    report-only finding (`bet.py create --regulated-calculation-screen JSON`).
 
 **Conflict to resolve, not paper over**: one model's screen says a high-vote public feature
 request means the platform will build it natively — *reject*. §9.3 says exactly the opposite,

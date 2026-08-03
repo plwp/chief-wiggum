@@ -898,6 +898,56 @@ def competitor_sweep_findings(bet: dict, as_of: date) -> list[str]:
     return []
 
 
+# ---- standing screen 15: regulated-calculation liability (#260) ---------------
+
+# Keyword sweep over the thesis text — deliberately loose (a false positive just
+# means an operator answers a screen that turns out irrelevant; a false negative
+# means a real compliance-calculation bet ships unscreened, the worse failure).
+REGULATED_CALCULATION_KEYWORDS = (
+    "wage", "wages", "payroll", "tax", "taxes", "superannuation", "super",
+    "benefit", "benefits", "dosing", "dosage", "clinical", "prescri",
+    "safety threshold", "award rate", "penalty rate", "entitlement",
+    "compliance calculat", "regulatory calculat",
+)
+REGULATED_SCREEN_FIELDS = (
+    "who_bears_error", "correctness_winnable", "insurable",
+    "paid_configuration", "interpretation_surface",
+)
+
+
+def regulated_calculation_soundness(screen) -> list[str]:
+    """Every sub-question of standing screen 15 must be present and non-empty when
+    a screen is recorded at all — a half-answered screen is a malformed screen, the
+    same soundness discipline as `criteria_soundness`."""
+    if not isinstance(screen, dict):
+        return ["regulated_calculation_screen must be an object"]
+    return [
+        f"regulated_calculation_screen.{f} missing or empty"
+        for f in REGULATED_SCREEN_FIELDS
+        if not str(screen.get(f, "")).strip()
+    ]
+
+
+def regulated_calculation_findings(bet: dict) -> list[str]:
+    """Standing screen 15 (chief-wiggum#260, §9.5): a bet whose thesis names a
+    regulated-calculation domain (wages, tax, super, benefits, clinical dosing,
+    safety thresholds) but carries no recorded screen is a report-only finding —
+    never a block. Regulated calculation is a real market; the mandate is only that
+    the screen is ANSWERED, not that the answer be favorable."""
+    thesis = (bet.get("thesis") or "").lower()
+    if not any(k in thesis for k in REGULATED_CALCULATION_KEYWORDS):
+        return []
+    if bet.get("regulated_calculation_screen"):
+        return []
+    return [
+        "thesis mentions a regulated-calculation domain with no "
+        "regulated_calculation_screen recorded — answer standing screen 15 "
+        "(who bears the error, is correctness winnable, is it insurable, will "
+        "the operator do paid configuration, what is the interpretation surface — "
+        "chief-wiggum#260, `bet.py create --regulated-calculation-screen JSON`)"
+    ]
+
+
 def build_cost_findings(bet: dict, summary: dict) -> list[str]:
     """Envelope build-cost caps (#257) — declared, not silently enforced. Both caps
     are optional; absent → silent for that cap (never guessed). Report-only always
@@ -2030,6 +2080,16 @@ def cmd_create(args) -> int:
         except json.JSONDecodeError as e:
             raise BetError(f"cannot parse {csp}: {e}") from e
 
+    regulated_calculation_screen = None
+    if args.regulated_calculation_screen:
+        rcp = Path(args.regulated_calculation_screen)
+        if not rcp.is_file():
+            raise BetError(f"regulated-calculation screen file not found: {rcp}")
+        try:
+            regulated_calculation_screen = json.loads(rcp.read_text())
+        except json.JSONDecodeError as e:
+            raise BetError(f"cannot parse {rcp}: {e}") from e
+
     bet = {
         "id": args.bet_id,
         "title": args.title,
@@ -2070,12 +2130,18 @@ def cmd_create(args) -> int:
         bet["signal_tier"] = args.signal_tier
     if competitor_sweep is not None:
         bet["competitor_sweep"] = competitor_sweep
+    if regulated_calculation_screen is not None:
+        bet["regulated_calculation_screen"] = regulated_calculation_screen
 
     findings = [f"soundness: {f}" for f in criteria_soundness(criteria)]
     findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
     findings += [f"soundness: {f}" for f in liability_soundness(envelope)]
     if competitor_sweep is not None:
         findings += [f"soundness: {f}" for f in competitor_sweep_soundness(competitor_sweep)]
+    if regulated_calculation_screen is not None:
+        findings += [
+            f"soundness: {f}" for f in regulated_calculation_soundness(regulated_calculation_screen)
+        ]
     findings += [
         f if f.startswith("skipped:") else f"selection: {f}"
         for f in selection_lint(root, bet)
@@ -2087,6 +2153,7 @@ def cmd_create(args) -> int:
         f if f.startswith("skipped:") else f"signal: {f}"
         for f in competitor_sweep_findings(bet, date.today())
     ]
+    findings += [f"screen: {f}" for f in regulated_calculation_findings(bet)]
 
     rc = report(findings, args.gate)
     if rc:
@@ -2571,9 +2638,11 @@ def cmd_transition(args) -> int:
             ecosystem_channel=None, owned_audience=None,
             means_ref=None, predecessor=args.bet_id, gate=args.gate,
             cadence=None, target_cac=None, low_cap_screens=None,
-            # A pivot's successor re-derives its own signal grounding (#254) —
-            # neither carries over automatically from the closed bet.
+            # A pivot's successor re-derives its own signal grounding (#254) and
+            # regulated-calculation screen (#260) — neither carries over
+            # automatically from the closed bet.
             signal_tier=None, competitor_sweep=None,
+            regulated_calculation_screen=None,
         )
         rc = cmd_create(sub)
         if rc:
@@ -2889,6 +2958,11 @@ def main() -> int:
                     help="create-time competitor sweep file: {date, sources[], "
                          "competitors[{name,url}], unresolved[]} — required for a Tier-C "
                          "bet to avoid the not-run-until-name-pick-time failure (#254)")
+    sp.add_argument("--regulated-calculation-screen", default=None, metavar="JSON",
+                    help="standing screen 15 (chief-wiggum#260) file: {who_bears_error, "
+                         "correctness_winnable, insurable, paid_configuration, "
+                         "interpretation_surface} — flagged report-only when the thesis "
+                         "names a regulated-calculation domain and this is absent")
     sp.add_argument("--predecessor", default=None, help=argparse.SUPPRESS)
 
     sp = sub.add_parser("spend", help="append a spend/time/rep ledger entry")

@@ -120,6 +120,19 @@
         }
       }
     },
+    "regulated_calculation_screen": {
+      "type": "object",
+      "required": ["who_bears_error", "correctness_winnable", "insurable", "paid_configuration", "interpretation_surface"],
+      "additionalProperties": false,
+      "description": "Standing screen 15 answers (chief-wiggum#260, docs/business-factory.md §9.5) for a bet whose product computes a number a regulator can audit (wages, tax, super, benefits, clinical dosing, safety thresholds). A bet failing any sub-question is not automatically refused — the mandate is only that the screen is ANSWERED at create time; absent while the thesis names a regulated-calculation domain is a report-only finding (`bet.py create`).",
+      "properties": {
+        "who_bears_error": { "type": "string", "minLength": 1, "description": "Who bears the error, and does the vendor have (or risk having) system-level knowledge of a defect (FWO v Blue Impression/Ezy Accounting, [2018] FCAFC 134)." },
+        "correctness_winnable": { "type": "string", "minLength": 1, "description": "Do incumbents/the regulator's own calculator disclaim accuracy? If so, correctness is not a differentiator." },
+        "insurable": { "type": "string", "minLength": 1, "description": "Is the correctness differentiator actually insurable, or excluded as contractually-assumed liability?" },
+        "paid_configuration": { "type": "string", "minLength": 1, "description": "Will the operator do paid configuration work (the Ezy fact pattern) — priced as risk, not revenue." },
+        "interpretation_surface": { "type": "string", "minLength": 1, "description": "Is the rule set bounded and licensable, or unbounded and hand-built?" }
+      }
+    },
     "predecessor": {
       "type": ["string", "null"],
       "description": "Bet id this bet succeeded via a pivot, or null."
