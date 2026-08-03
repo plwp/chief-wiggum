@@ -22,7 +22,7 @@
         "id": {
           "type": "string",
           "pattern": "^ASM-[0-9]{3,}$",
-          "description": "Stable assumption id (ASM-001…) — the node the traceability gate joins test cards against."
+          "description": "Stable assumption id (ASM-001…) — the node the traceability gate joins test cards against. This two-segment shape is a DELIBERATELY separate namespace from chief_wiggum.trace_ids's three-segment ASM stable-ID kind (ASM-slug-NNN, e.g. architecture.json asm_refs) — both use the ASM- prefix but are structurally disjoint and scoped to different artifacts (chief-wiggum#294); this ledger never lives under docs/epics/, so no trace_ids-based scanner walks it."
         },
         "statement": {
           "type": "string",

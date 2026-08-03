@@ -18,6 +18,18 @@ import re
 # ARC (component/deployable), EDG (edge contract), SLO (objective),
 # BUD (budget tree), ASM (external/vendor assumption), PRC (process),
 # MIG (migration).
+#
+# ASM namespace split (chief-wiggum#294): this ASM is the SYSTEM-LAYER
+# three-segment kind (`ASM-slug-NNN`, e.g. architecture.json `asm_refs`,
+# docs/epics/**) built from ID_BODY below. It is a DELIBERATELY separate,
+# disjoint grammar from the business-factory assumption ledger's two-segment
+# `ASM-NNN` id (`bets/<bet-id>/assumptions.json`,
+# templates/assumptions-schema.json, scripts/assumption.py) — the two share
+# the `ASM-` prefix but are structurally unambiguous (a two-segment ledger id
+# never has the second hyphen ID_BODY requires) and scoped to different
+# artifacts (the ledger never lives under docs/epics/, so no scanner built
+# from ID_KINDS ever walks it). `tests/test_trace_ids.py` pins the
+# disjointness so the two cannot silently re-converge.
 ID_KINDS = ("BR", "CTR", "INV", "ARC", "EDG", "SLO", "BUD", "ASM", "PRC", "MIG")
 
 # Trace verbs: the original four plus the two SysML-derived structural verbs —
@@ -108,6 +120,21 @@ def near_miss_ids(text: str) -> list[str]:
             continue
         out.append(token)
     return out
+
+
+def kind_id_re(kind: str) -> re.Pattern[str]:
+    """A fullmatch-anchored regex for stable IDs of exactly one KIND.
+
+    Built from the same ``ID_BODY`` grammar every scanner shares, so a
+    consumer that only cares about a single kind (e.g. ``check_architecture
+    .py``'s ``ASM_ID_RE`` for ``asm_refs`` waivers) never hand-rolls a second
+    copy of the three-segment shape — that duplication is exactly what left
+    ``check_architecture.py`` with its own private ``ASM_ID_RE`` as a THIRD
+    opinion on the ASM grammar (chief-wiggum#294).
+    """
+    if kind not in ID_KINDS:
+        raise ValueError(f"not a stable-ID kind: {kind!r} (want one of {ID_KINDS})")
+    return re.compile(rf"^{kind}-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{{3}}$")
 
 
 def canonical_id(node_id: str) -> str:

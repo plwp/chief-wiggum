@@ -70,7 +70,7 @@
       "status": "specified",
       "trust_class": "projection-writer-is-protected-path",
       "summary": "Correct idempotency for a webhook whose external resource is NON-monotonic (subscriptions, refunds): event = trigger only, live fetch = truth, never copy mutable state off the payload. Order-immune, unknown-id-fatal (never silent-floor), retry-lease dedupe, terminal-deletion latch. Ships its sibling MONOTONIC-FSM branch (video-upload style) so the selection criterion travels with it. Expressed as an invariant cluster (INV-FOWR-*).",
-      "invariants": "INV-FOWR-001..008 (+ sibling INV-FOWR-M1)",
+      "invariants": "INV-FOWR-001..008 (+ sibling INV-FOWR-009)",
       "depends_on": "provider-neutral-adapter",
       "feeds": "tiered-subscription, reconciliation-sweep, entitlement-overlay",
       "spec": "patterns/fetch-on-webhook-reconcile/pattern.md",

@@ -11,7 +11,16 @@ enforcement idioms onto business assumptions:
   templates/assumptions-schema.json): stable ``ASM-NNN`` ids, status
   ``untested → testing → validated | falsified``, source
   ``premortem | financial_model | canvas``, and a ``depends_on_element`` tag
-  that makes Bland's pivot dependency rule mechanical.
+  that makes Bland's pivot dependency rule mechanical. This two-segment
+  ``ASM-NNN`` is a DELIBERATELY separate namespace from the system-layer
+  ``ASM`` stable-ID kind in ``chief_wiggum.trace_ids.ID_KINDS`` (three-segment
+  ``ASM-slug-NNN``, e.g. architecture.json ``asm_refs``) — the two share the
+  ``ASM-`` prefix but are structurally disjoint grammars (a two-segment
+  ledger id never has the second hyphen the stable-ID grammar requires) and
+  scoped to different artifacts: this ledger lives at
+  ``bets/<bet-id>/assumptions.json``, never under ``docs/epics/``, so no
+  trace_ids-based scanner ever walks it. See chief-wiggum#294;
+  ``tests/test_trace_ids.py`` pins the disjointness.
 - **Test cards** (``test-cards.json``, templates/test-cards-schema.json):
   ``{card_id, asm_id, method, metric, threshold, sample_min,
   cost_estimate_usd, evidence_strength, result, verdict}``. The **threshold
