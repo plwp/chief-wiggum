@@ -30,6 +30,7 @@ CW_META_NAMES = {
     "election.json", "scope.json", "ratchet.json", "ratchet-journal.jsonl",
     "ratchet-highwater.json", "ratchet-scorecard.json", "debt.json",
     "survey.json", "grandfathered.json", "adoption.json",
+    "review-authorities.json",
 }
 
 APP_PY = """\

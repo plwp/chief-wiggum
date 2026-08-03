@@ -35,6 +35,7 @@ detected, not absorbed.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import re
@@ -891,3 +892,91 @@ def test_scanner_version_dep_list_is_complete(gate):
         f"{gate}'s _scanner_version omits imported local module(s) "
         f"{missing} from its hash inputs — an edit there would never mark the "
         "validation record stale (CTR-fh-041)")
+
+
+# --- #264: the review-authorities module must stay off every gate's dep graph -
+
+def _local_module_index(scripts: Path) -> dict[str, Path]:
+    """Every importable local module name -> file, as gates would import it."""
+    index: dict[str, Path] = {}
+    for py in scripts.glob("*.py"):
+        index[py.stem] = py
+    for pkg in ("chief_wiggum", "quality"):
+        for py in (scripts / pkg).glob("*.py"):
+            name = pkg if py.stem == "__init__" else f"{pkg}.{py.stem}"
+            index.setdefault(name, py)
+    return index
+
+
+def _imports_of(path: Path, index: dict[str, Path]) -> set[str]:
+    """Local modules `path` imports, top-level OR lazily inside a function.
+
+    AST rather than regex: this must catch `import review_authorities` and
+    `from review_authorities import load` on a FLAT top-level module, which the
+    package-shaped _CW_IMPORT_RE / _QUALITY_IMPORT_RE do not match at all.
+    """
+    out: set[str] = set()
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # relative: `from . import x` inside a package
+                pkg = path.parent.name
+                base = f"{pkg}.{node.module}" if node.module else pkg
+                names = [base] + [f"{pkg}.{a.name}" for a in node.names]
+            else:
+                base = node.module or ""
+                names = [base] + [f"{base}.{a.name}" for a in node.names if base]
+        else:
+            continue
+        out.update(n for n in names if n in index)
+    return out
+
+
+@pytest.mark.parametrize("gate", SCANNER_VERSION_GATES)
+def test_no_gate_scanner_can_reach_review_authorities(gate):
+    """#264: `review_authorities` must never enter a gate's dependency graph.
+
+    `scanner_version` hashes a gate's source PLUS its deps, so an import here —
+    direct, or transitive via `artifacts.py`, which every one of these gates
+    already imports — would stale that gate's validation record on every edit to
+    an operator-authored convention file that has nothing to do with scanning.
+    Walked transitively on purpose: checking only direct imports would miss the
+    single most likely regression, someone adding the feature to artifacts.py.
+    """
+    scripts = SCRIPTS
+    index = _local_module_index(scripts)
+    assert "review_authorities" in index, "module missing from scripts/"
+
+    seen: set[str] = set()
+    stack = [gate]
+    path_to: dict[str, list[str]] = {gate: [gate]}
+    while stack:
+        mod = stack.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        for dep in sorted(_imports_of(index[mod], index)):
+            if dep not in path_to:
+                path_to[dep] = path_to[mod] + [dep]
+            if dep not in seen:
+                stack.append(dep)
+
+    assert "review_authorities" not in seen, (
+        f"{gate} reaches review_authorities via "
+        f"{' -> '.join(path_to.get('review_authorities', []))} — that puts an "
+        "operator-authored convention file into the gate's scanner_version hash "
+        "inputs, staling its validation record for changes unrelated to scanning "
+        "(chief-wiggum#264)")
+
+
+def test_the_import_graph_walk_actually_detects_a_transitive_import(tmp_path):
+    """The guard above is only worth having if it can fail. Prove the walk sees
+    a dependency two hops away, not just a direct import."""
+    (tmp_path / "gatey.py").write_text("import middle\n")
+    (tmp_path / "middle.py").write_text("from review_authorities import load\n")
+    (tmp_path / "review_authorities.py").write_text("def load(): ...\n")
+    index = _local_module_index(tmp_path)
+    assert _imports_of(tmp_path / "gatey.py", index) == {"middle"}
+    assert "review_authorities" in _imports_of(tmp_path / "middle.py", index)
