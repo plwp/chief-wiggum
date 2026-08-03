@@ -145,7 +145,7 @@ test DLL and never the source file, so its resolution goes through the class
 name and only lands when exactly one tracked `<ClassName>.cs` exists under the
 suite cwd — ambiguous or absent matches stay unresolved, never guessed.
 
-### The `trx` parser (.NET, #259)
+### The `trx` parser (.NET, #263)
 
 `dotnet test --logger trx` is the built-in VSTest logger: it needs no NuGet
 package added to the target, unlike a JUnit logger — which matters because
