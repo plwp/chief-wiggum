@@ -4,6 +4,15 @@
   "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds ratchet` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
   "seeds": [
     {
+      "seed_id": "rt-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/ratchet_clean",
+      "corpus_digest": "sha256:a7632aa6d61984c74be4f81359096cc7cdab3855e38529406ced3a0a960bef77",
+      "injected": "docs/epics/gv-ratchet/contracts.md and models/contracts.json re-authored with two-segment ids (CTR-rt-001->CTR-001, CTR-rt-002->CTR-002). Contract CONTENT is untouched \u2014 only the grammar's ability to parse the declarations is destroyed, so hash_epic_definitions returns {} and the high-water tracks nothing.",
+      "expected": "fire"
+    },
+    {
       "seed_id": "rt-direct-01",
       "seed_class": "direct",
       "seed_version": "1",

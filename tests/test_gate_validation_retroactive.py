@@ -555,6 +555,11 @@ def _rt_outcome(corpus: Path) -> str:
                 + len(rep["removed_contracts"])
                 + len(rep["weakened_verifier_tests"])
                 + len(rep["removed_verifier_tests"]))
+    # contract_measurement_error MUST be in this sum (#295). It is a hard,
+    # always-blocking finding class, and a trial harness that omits it reports
+    # "not-fired" while the gate is firing correctly — reproducing the very
+    # bug the class was added to catch, inside the machinery that certifies it.
+    findings += len(rep.get("contract_measurement_error") or [])
     return "fired" if findings else "not-fired"
 
 
@@ -636,7 +641,27 @@ def _rt_seed_verifier_sampling_gap(corpus: Path) -> None:
         "func TestWidgetAddition(t *testing.T) {}\n")
 
 
+def _rt_seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the contracts (chief-wiggum#295).
+
+    Both contract declarations are re-authored with the two-segment `CTR-001`
+    shape the /architect skill's own worked example used to model before #281.
+    hash_epic_definitions then parses ZERO ids, so the contract-hash high-water
+    mark tracks nothing and "contracts cannot be weakened" holds VACUOUSLY —
+    a contract could afterwards be rewritten freely with the journal's hash
+    chain staying perfectly intact.
+
+    Nothing about the contracts' CONTENT changed; only the gate's ability to
+    see them. Expected: fire.
+    """
+    md = corpus / "docs" / "epics" / "gv-ratchet" / "contracts.md"
+    md.write_text(md.read_text().replace("CTR-rt-001", "CTR-001"))
+    js = corpus / "docs" / "epics" / "gv-ratchet" / "models" / "contracts.json"
+    js.write_text(js.read_text().replace("CTR-rt-002", "CTR-002"))
+
+
 RT_EXECUTORS = {
+    "rt-instrument-broken-01": _rt_seed_instrument_broken,
     "rt-direct-01": _rt_seed_direct,
     "rt-omission-01": _rt_seed_omission,
     "rt-config-indirection-01": _rt_seed_config_indirection,
@@ -790,6 +815,46 @@ def test_ratchet_record_trials_are_backed_by_live_executions(tmp_path):
     # @cw-trace verifies CTR-fh-043
     _assert_record_backed_by_live_trials(
         "ratchet", "ratchet_clean", RT_EXECUTORS, _rt_outcome, "ratchet.py", tmp_path)
+
+
+def test_rt_instrument_broken_seed_reports_measurement_error_not_merely_fires(tmp_path):
+    """Certify the instrument-broken seed on STATE, not fired/not-fired (#295).
+
+    Renaming the ids also drops them out of the high-water, so this seed
+    produces `removed_contracts` too and would report "fired" even if
+    contract_measurement had never been implemented. A fired/not-fired
+    assertion alone therefore proves nothing about the new dimension.
+
+    Assert the distinguishing facts: the measurement is reported as an ERROR,
+    the malformed tokens are NAMED rather than counted, and the scorecard
+    carries the denominator that makes a zero visible.
+    """
+    corpus = _copy_clean("ratchet_clean", tmp_path, "rt-instrument-broken-assert")
+    _rt_seed_instrument_broken(corpus)
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "score",
+         "--repo", str(corpus), "--no-quality"],
+        capture_output=True, text=True, check=True)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "check",
+         "--repo", str(corpus), "--format", "json"],
+        capture_output=True, text=True)
+    rep = json.loads(proc.stdout)
+
+    errors = rep.get("contract_measurement_error") or []
+    assert {e["file"] for e in errors} == {
+        "gv-ratchet/contracts.md", "gv-ratchet/models/contracts.json"}, errors
+    assert proc.returncode != 0, "a broken contract measurement must block"
+
+    scorecard = json.loads(
+        (corpus / "docs" / "quality" / "ratchet-scorecard.json").read_text())
+    cm = scorecard["contract_measurement"]
+    assert cm["status"] == "error", cm
+    # the denominator: artifacts were present, nothing parsed out of them
+    assert cm["id_bearing_artifacts"] == 2 and cm["defined_ids"] == 0, cm
+    assert {m["token"] for m in cm["malformed_ids"]} == {"CTR-001", "CTR-002"}, cm
+    for m in cm["malformed_ids"]:
+        assert m["file"] and m["line"], m
 
 
 def test_ratchet_clean_corpus_run_is_backed_by_live_execution(tmp_path):
