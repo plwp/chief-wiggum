@@ -31,6 +31,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chief_wiggum.hashing import scanner_version  # noqa: E402
 
 PASS, FAIL, WARN, SKIPPED, NA = "pass", "fail", "warn", "skipped", "not_applicable"
+# #289: distinct from SKIPPED. SKIPPED means "nothing was asked for" (no
+# --base-url at all — honest absence, and can never fail the gate by design).
+# ERROR means an input the operator explicitly pointed the gate AT (a named
+# --base-url) could not be reached — a broken measurement, not silence, and
+# it MUST be able to fail --gate.
+ERROR = "error"
+
+# The named checks check_security_headers()/check_csrf() normally emit when
+# the header probe succeeds — used to report EACH of them as ERROR (rather
+# than one opaque aggregate) when the probe itself cannot run at all (#289),
+# so the measured denominator stays visible per-check instead of collapsing
+# N real checks into a single opaque skip.
+HEADER_CSRF_CHECK_NAMES = (
+    "x-content-type-options", "content-security-policy", "clickjacking",
+    "referrer-policy", "hsts", "csrf",
+)
 
 # http_get(url) -> (status_code, headers_lower_dict, body_text)
 HttpGet = Callable[[str], tuple[int, dict, str]]
@@ -58,7 +74,10 @@ class SaasGateReport:
 
     @property
     def ok(self) -> bool:
-        return not any(f.status == FAIL for f in self.findings)
+        # #289: ERROR (a named input the gate could not reach) must be able to
+        # fail the gate exactly like FAIL — SKIPPED (nothing was asked for)
+        # never does.
+        return not any(f.status in (FAIL, ERROR) for f in self.findings)
 
     def by_category(self) -> dict[str, list[Finding]]:
         out: dict[str, list[Finding]] = {}
@@ -67,16 +86,30 @@ class SaasGateReport:
         return out
 
     def to_dict(self) -> dict:
+        counts = {
+            s: sum(1 for f in self.findings if f.status == s)
+            for s in (PASS, FAIL, WARN, SKIPPED, NA, ERROR)
+        }
         return {
             "base_url": self.base_url,
             "stack": self.stack,
             "ok": self.ok,
-            "counts": {s: sum(1 for f in self.findings if f.status == s) for s in (PASS, FAIL, WARN, SKIPPED, NA)},
+            "counts": counts,
+            # #289: the measured denominator, printed on every run (green or
+            # not) so a collapsed/absent probe is visible without reading
+            # every finding by hand.
+            "measured": {
+                "total_checks": len(self.findings),
+                "measured_checks": counts[PASS] + counts[FAIL] + counts[WARN],
+                "skipped_checks": counts[SKIPPED],
+                "error_checks": counts[ERROR],
+                "not_applicable_checks": counts[NA],
+            },
             "findings": [f.to_dict() for f in self.findings],
         }
 
     def render_markdown(self) -> str:
-        marks = {PASS: "✓", FAIL: "✗", WARN: "⚠", SKIPPED: "–", NA: "·"}
+        marks = {PASS: "✓", FAIL: "✗", WARN: "⚠", SKIPPED: "–", NA: "·", ERROR: "‼"}
         lines = ["# SaaS NFR Gate", "", f"Status: {'PASS' if self.ok else 'FAIL'}", f"Stack: {', '.join(self.stack) or 'unknown'}", ""]
         for category, items in self.by_category().items():
             lines.append(f"## {category}")
@@ -346,7 +379,18 @@ def run_gate(
                 report.findings.append(f)
             report.findings.append(check_csrf(set_cookie, auth_mode=auth_mode, https=https))
         except Exception as exc:  # noqa: BLE001
-            report.add("security", "headers", SKIPPED, f"could not fetch {base_url}: {exc}")
+            # #289: --base-url was EXPLICITLY given — this is a target the
+            # operator pointed the gate at, not an absent input. Collapsing
+            # the whole header/CSRF battery into one SKIPPED finding hid that
+            # N real checks (not one) went unmeasured, and SKIPPED can never
+            # fail --gate — indistinguishable from "nothing was asked for".
+            # Report each named check as ERROR instead: visible per-check,
+            # and able to block.
+            for name in HEADER_CSRF_CHECK_NAMES:
+                report.add(
+                    "security", name, ERROR,
+                    f"could not fetch {base_url}: {exc}",
+                )
         report.findings.append(check_health(http_get, base_url, health_path))
         report.findings.append(check_rate_limit(http_get, base_url, rate_limit_path, required=rate_limit_required))
     else:
@@ -393,6 +437,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.scanner_version:
         print(_scanner_version())
         return 0
+
+    # #289: --repo was never validated — detect_stack() on a missing/wrong
+    # path just returns [] (a silent no-op), indistinguishable from "this
+    # repo genuinely has no go.mod/package.json/pyproject.toml". A named path
+    # that isn't a real directory is a usage error, not honest absence.
+    repo_path = Path(args.repo)
+    if not repo_path.is_dir():
+        print(f"Error: --repo {args.repo}: not a directory", file=sys.stderr)
+        return 2
 
     log_sample = None
     if args.log_sample and Path(args.log_sample).exists():

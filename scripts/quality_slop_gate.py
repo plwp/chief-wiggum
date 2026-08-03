@@ -116,9 +116,16 @@ def _band(value: float | None, pre_ai: float, ai: float, higher_is_better: bool)
 def evaluate_survival(result: dict) -> dict:
     """Reduce a survival engine result to a report-friendly verdict.
 
-    verdict.status: 'skipped' | 'too_young' | 'measured'
-    On 'measured', carries survival_14d/30d and the 14-day band classification.
+    verdict.status: 'error' | 'skipped' | 'too_young' | 'measured'
+    'error' (#289) MUST be checked before the legacy 'skipped' key: a crashed
+    survival.py payload carries 'skipped' too, for back-compat with consumers
+    that only ever checked "skipped" in result — checking that first would
+    silently swallow a crash as a declared limitation, the exact defect this
+    fixes. On 'measured', carries survival_14d/30d and the 14-day band
+    classification.
     """
+    if result.get("status") == "crashed":
+        return {"status": "error", "detail": result.get("crashed") or result.get("skipped")}
     if "skipped" in result:
         return {"status": "skipped", "detail": result["skipped"]}
     by_age = result.get("survival_by_age_days", {})
@@ -142,7 +149,18 @@ def evaluate_survival(result: dict) -> dict:
 
 
 def evaluate_duplication(result: dict) -> dict:
-    """Reduce a duplication engine result to a report-friendly verdict."""
+    """Reduce a duplication engine result to a report-friendly verdict.
+
+    Status precedence mirrors ``evaluate_survival`` (#289): 'error' (a crash;
+    checked FIRST, since the crashed payload also carries the legacy
+    'skipped' key), then 'inapplicable' (a genuinely source-free corpus — the
+    engine's own disambiguation of a zero-source jscpd report), then the
+    tool-absent 'skipped', then 'measured'.
+    """
+    if result.get("status") == "crashed":
+        return {"status": "error", "detail": result.get("crashed") or result.get("skipped")}
+    if result.get("status") == "inapplicable":
+        return {"status": "inapplicable", "detail": result.get("inapplicable")}
     if "skipped" in result:
         return {"status": "skipped", "detail": result["skipped"]}
     pct = result.get("duplication_pct_lines")
@@ -166,7 +184,12 @@ def format_report(sv: dict, dup: dict) -> str:
         f"Reference bands: pre-AI ~{SURVIVAL_PRE_AI_14D}% / AI-assisted ~{SURVIVAL_AI_14D}% "
         "of added lines survive 14 days."
     )
-    if sv["status"] == "skipped":
+    if sv["status"] == "error":
+        lines.append(
+            f"- ERROR: {sv['detail']} — the measurement is BROKEN, not clean; "
+            "this is a failure, not a pass (chief-wiggum#289)"
+        )
+    elif sv["status"] == "skipped":
         lines.append(f"- skipped: {sv['detail']}")
     elif sv["status"] == "too_young":
         lines.append(f"- skipped: {sv['detail']}")
@@ -185,7 +208,14 @@ def format_report(sv: dict, dup: dict) -> str:
         f"Reference bands: pre-AI {DUP_PRE_AI}% / AI-assisted {DUP_AI}% duplicated blocks "
         "(production code only, tests excluded)."
     )
-    if dup["status"] == "skipped":
+    if dup["status"] == "error":
+        lines.append(
+            f"- ERROR: {dup['detail']} — the measurement is BROKEN, not clean; "
+            "this is a failure, not a pass (chief-wiggum#289)"
+        )
+    elif dup["status"] == "inapplicable":
+        lines.append(f"- inapplicable: {dup['detail']}")
+    elif dup["status"] == "skipped":
         lines.append(f"- skipped: {dup['detail']}")
     else:
         pct = dup["duplication_pct"]
@@ -284,6 +314,34 @@ def _band_label(band: str) -> str:
     }.get(band, band)
 
 
+def _signal_state(v: dict) -> str:
+    """Map a per-signal verdict to the shared three-state applicability
+    vocabulary (#289, docs/fail-closed.md): 'error' (a broken instrument),
+    'applicable' (actually measured), else 'inapplicable' (skipped / too_young
+    / a genuinely source-free corpus — all honest absence, never a broken
+    scan)."""
+    status = v.get("status")
+    if status == "error":
+        return "error"
+    if status == "measured":
+        return "applicable"
+    return "inapplicable"
+
+
+def gate_applicability(sv: dict, dup: dict) -> str:
+    """Aggregate applicability across both signals (#289). An error on
+    EITHER signal makes the whole run a broken instrument — never silently
+    downgraded to 'inapplicable' just because the other signal also happened
+    to be absent. Otherwise 'applicable' if at least one signal was actually
+    measured, else 'inapplicable' (neither signal could be measured at all)."""
+    states = {_signal_state(sv), _signal_state(dup)}
+    if "error" in states:
+        return "error"
+    if "applicable" in states:
+        return "applicable"
+    return "inapplicable"
+
+
 def has_findings(sv: dict, dup: dict) -> list[str]:
     """Return the list of findings (only 'past-ai' regressions count)."""
     findings: list[str] = []
@@ -318,20 +376,48 @@ def run(args: argparse.Namespace) -> int:
     sv = evaluate_survival(sv_raw)
     dup = evaluate_duplication(dup_raw)
 
+    applicability = gate_applicability(sv, dup)
+    findings = has_findings(sv, dup)
+    measured = sum(1 for v in (sv, dup) if v.get("status") == "measured")
+    outcome = (
+        "error" if applicability == "error"
+        else "findings" if findings
+        else "inapplicable" if applicability == "inapplicable"
+        else "pass"
+    )
+
     print(format_report(sv, dup))
     # #214 debt inventory: a report-only signal block. Read-only, never a
     # finding, never an exit-code input — even under --gate.
     print(format_debt_block(load_debt(target)))
+    # #289: the measured denominator, printed on EVERY run (green or not) so a
+    # zero is visible without reading stderr — survival/duplication's own
+    # per-signal status is right there alongside the aggregate.
+    print(
+        f"- Measured: {measured}/2 signal(s) (survival={sv['status']}, "
+        f"duplication={dup['status']})"
+    )
+    print(f"- OUTCOME: {outcome.upper()}")
 
-    findings = has_findings(sv, dup)
     if findings:
         print("Findings (informational):", file=sys.stderr)
         for f in findings:
             print(f"  - {f}", file=sys.stderr)
 
-    # Report-only is the default (exit 0). --gate opts into blocking, and even
-    # then only a regression PAST the AI band blocks — the bands are directional.
-    if args.gate and findings:
+    if applicability == "error":
+        print(
+            "quality_slop_gate: ERROR — an engine crashed or produced an "
+            "unreliable zero-source measurement; a green result here would be "
+            "the absence of a measurement, not the absence of a problem "
+            "(chief-wiggum#289)",
+            file=sys.stderr,
+        )
+
+    # Report-only is the default (exit 0): findings AND a broken instrument are
+    # printed loudly but never block. --gate opts into blocking on EITHER a
+    # regression PAST the AI band, or applicability == "error" (#289) — a
+    # crash must never be silently indistinguishable from "measured, and clean".
+    if args.gate and (findings or applicability == "error"):
         return 1
     return 0
 

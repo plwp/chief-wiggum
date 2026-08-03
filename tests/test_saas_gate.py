@@ -193,6 +193,69 @@ def test_run_gate_without_base_url_skips_runtime(tmp_path):
     assert any(f.status == sg.SKIPPED for f in r.findings)
 
 
+# --- #289: --repo is unvalidated; a network failure on a NAMED --base-url
+# collapses the header/CSRF battery into ONE `SKIPPED`, and SKIPPED can never
+# fail the gate. -------------------------------------------------------------
+
+
+def test_main_nonexistent_repo_is_usage_error(capsys):
+    rc = sg.main(["--repo", "/definitely/does/not/exist/chief-wiggum-289"])
+    assert rc == 2
+    assert "does/not/exist" in capsys.readouterr().err
+
+
+def test_main_repo_that_is_a_file_is_usage_error(tmp_path, capsys):
+    f = tmp_path / "not-a-dir"
+    f.write_text("x")
+    rc = sg.main(["--repo", str(f)])
+    assert rc == 2
+    assert capsys.readouterr().err
+
+
+def test_network_failure_on_header_probe_is_error_not_skipped(tmp_path):
+    """A --base-url that was explicitly given but is unreachable is a broken
+    measurement (error), not the SKIPPED status reserved for "nothing was
+    asked for" — SKIPPED can never fail the gate, which is exactly the #289
+    fail-open this fixes."""
+    def http_get(url):
+        if url.rstrip("/") == "http://x.test":
+            raise ConnectionError("refused")
+        return 200, {}, ""
+
+    report = sg.run_gate(tmp_path, "http://x.test", http_get=http_get)
+    statuses = {f.name: f.status for f in report.findings if f.category == "security"}
+    for name in sg.HEADER_CSRF_CHECK_NAMES:
+        assert statuses[name] == sg.ERROR, name
+    assert report.ok is False  # must be able to fail --gate, unlike SKIPPED
+
+
+def test_run_gate_without_base_url_never_reports_error():
+    """Genuinely absent input (no --base-url at all) stays SKIPPED/honest
+    absence — never conflated with the broken-instrument ERROR state."""
+    r = sg.run_gate(".", None)
+    assert not any(f.status == sg.ERROR for f in r.findings)
+    assert r.ok is True
+
+
+def test_gate_blocks_on_network_error(tmp_path, monkeypatch):
+    def fake_run_gate(*a, **k):
+        r = sg.SaasGateReport(base_url="http://x", stack=[])
+        r.add("security", "connectivity-probe", sg.ERROR, "could not fetch http://x")
+        return r
+    monkeypatch.setattr(sg, "run_gate", fake_run_gate)
+    assert sg.main(["--repo", str(tmp_path), "--base-url", "http://x", "--gate"]) == 1
+    assert sg.main(["--repo", str(tmp_path), "--base-url", "http://x"]) == 0  # report-only never blocks
+
+
+def test_to_dict_counts_and_measured_include_error(tmp_path):
+    r = sg.SaasGateReport()
+    r.add("security", "x", sg.ERROR, "boom")
+    d = r.to_dict()
+    assert d["counts"]["error"] == 1
+    assert d["measured"]["error_checks"] == 1
+    assert d["measured"]["total_checks"] == 1
+
+
 def test_cli_markdown(tmp_path, capsys):
     rc = sg.main(["--repo", str(tmp_path), "--markdown"])
     assert rc == 0

@@ -35,6 +35,8 @@ import json
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum.hashing import scanner_version  # noqa: E402
@@ -54,11 +56,39 @@ STACK_TEMPLATES = {
 }
 
 
+def _is_real_workflow(path: Path) -> bool:
+    """Is ``path`` an actual GitHub Actions workflow, not just a file with the
+    right suffix (#289)? ``touch .github/workflows/ci.yml`` produces a 0-byte
+    file that a filename-only check reports as CI present — this parses the
+    content and requires the minimal shape every real workflow has: a
+    non-empty YAML MAPPING. That alone kills the two named defect classes
+    (a 0-byte file, and non-YAML/malformed content) without rejecting a
+    genuinely present but no-op workflow — content-completeness (a `jobs:`
+    that runs nothing) is a documented, separate, non-blocking boundary (see
+    ``docs/quality/validation/ci_scaffold.json``'s ``ci-sampling-gap-01``
+    trial), not this check's job.
+    """
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    if not text.strip():
+        return False
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return isinstance(doc, dict) and bool(doc)
+
+
 def detect_ci(repo: str | Path) -> tuple[bool, list[str]]:
     """Return (present, workflows) for GitHub Actions workflows in a repo.
 
-    A workflow is any `.github/workflows/*.yml` or `*.yaml` file. Paths are
-    returned repo-relative and sorted for stable output.
+    A candidate is any `.github/workflows/*.yml` or `*.yaml` file; it only
+    counts toward ``present``/``workflows`` if it actually PARSES as a
+    workflow (#289) — a 0-byte or non-YAML/non-mapping file does not, even
+    though its filename matches. Paths are returned repo-relative and sorted
+    for stable output.
     """
     root = Path(repo)
     wf_dir = root / ".github" / "workflows"
@@ -67,7 +97,7 @@ def detect_ci(repo: str | Path) -> tuple[bool, list[str]]:
     workflows = sorted(
         str(p.relative_to(root))
         for p in wf_dir.iterdir()
-        if p.is_file() and p.suffix in (".yml", ".yaml")
+        if p.is_file() and p.suffix in (".yml", ".yaml") and _is_real_workflow(p)
     )
     return bool(workflows), workflows
 

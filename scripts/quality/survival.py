@@ -37,22 +37,62 @@ import sys
 AGES = [7, 14, 30, 60, 90]
 
 
-def _run_git_of_theseus(repo: str, outdir: str) -> str | None:
-    """Run git-of-theseus-analyze into outdir. Returns survival.json path or None."""
+def _run_git_of_theseus(repo: str, outdir: str) -> tuple[str | None, dict | None]:
+    """Run git-of-theseus-analyze into outdir. Returns ``(survival_path, problem)``.
+
+    ``problem`` is ``None`` on success, else a ``{"status": ...}`` dict —
+    mirrors ``duplication.run_jscpd``'s skipped/crashed split (#289): a tool
+    that is not installed is a declared limitation (``"skipped"``); a tool
+    that IS present and was expected to run but died is a broken instrument
+    (``"crashed"``), never silently indistinguishable from the former.
+
+    ``outdir`` may be reused across runs (the caller's workdir convention), so
+    a ``survival.json`` left by an EARLIER successful run is unlinked before
+    this run starts — otherwise a run that crashes without writing anything
+    would let ``os.path.exists(survival)`` see the STALE file and report it as
+    this run's fresh output (the exact #289 defect: "a crashed rerun parses
+    the previous run's numbers as fresh"). The subprocess's returncode is also
+    checked explicitly — previously only "does survival.json now exist" was
+    checked, so a non-zero exit that happened to leave a fresh-looking file in
+    place (or the stale one, pre-fix) was never caught.
+    """
     # Prefer a tool co-located with the running interpreter (venv install),
     # then fall back to PATH — mirrors quality.complexity._tool discovery.
     sibling = os.path.join(os.path.dirname(sys.executable), "git-of-theseus-analyze")
     tool = sibling if os.path.exists(sibling) else shutil.which("git-of-theseus-analyze")
     if not tool:
-        return None
+        return None, {
+            "status": "skipped",
+            "skipped": "git-of-theseus not found",
+            "note": "code survival requires git-of-theseus (pip install git-of-theseus)",
+        }
     os.makedirs(outdir, exist_ok=True)
-    subprocess.run(
+    survival_path = os.path.join(outdir, "survival.json")
+    try:
+        os.unlink(survival_path)
+    except FileNotFoundError:
+        pass
+    proc = subprocess.run(
         # weekly interval → enough resolution for 14/30-day survival bins
         [tool, repo, "--outdir", outdir, "--branch", "HEAD", "--interval", "604800"],
         capture_output=True, text=True,
     )
-    survival = os.path.join(outdir, "survival.json")
-    return survival if os.path.exists(survival) else None
+    if proc.returncode != 0:
+        return None, {
+            "status": "crashed",
+            "crashed": f"git-of-theseus-analyze exited {proc.returncode}",
+            "skipped": f"git-of-theseus-analyze exited {proc.returncode}",
+            "note": (proc.stderr or proc.stdout or "").strip()[:400],
+            "exit_code": proc.returncode,
+        }
+    if not os.path.exists(survival_path):
+        return None, {
+            "status": "crashed",
+            "crashed": "git-of-theseus-analyze produced no survival.json",
+            "skipped": "git-of-theseus-analyze produced no survival.json",
+            "exit_code": proc.returncode,
+        }
+    return survival_path, None
 
 
 def analyze_survival_json(survival_path: str, repo: str, name: str | None = None) -> dict:
@@ -144,15 +184,14 @@ def analyze_survival_json(survival_path: str, repo: str, name: str | None = None
 
 
 def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
-    """Run git-of-theseus then analyze survival. Degrades gracefully if absent."""
+    """Run git-of-theseus then analyze survival. Degrades gracefully if absent
+    (``status: "skipped"``); a present-but-failing tool reports
+    ``status: "crashed"`` (#289) rather than being silently indistinguishable
+    from either "not installed" or a stale prior run's numbers."""
     name = name or repo.rstrip("/").split("/")[-1]
-    survival_path = _run_git_of_theseus(repo, workdir)
-    if not survival_path:
-        return {
-            "repo": name,
-            "skipped": "git-of-theseus not found",
-            "note": "code survival requires git-of-theseus (pip install git-of-theseus)",
-        }
+    survival_path, problem = _run_git_of_theseus(repo, workdir)
+    if problem is not None:
+        return {"repo": name, **problem}
     return analyze_survival_json(survival_path, repo, name=name)
 
 

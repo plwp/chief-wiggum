@@ -54,6 +54,70 @@ def test_detect_ci_ignores_non_yaml_files(tmp_path):
     assert workflows == []
 
 
+# --- #289: detect_ci is a filename test — `touch ci.yml` defeats it; a
+# 0-byte or non-YAML workflow reported ci_present=true. ---------------------
+
+
+def test_detect_ci_absent_when_workflow_is_an_empty_file(tmp_path):
+    """The textbook defeat: `touch .github/workflows/ci.yml`."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").touch()
+    present, workflows = ci_scaffold.detect_ci(tmp_path)
+    assert present is False
+    assert workflows == []
+
+
+def test_detect_ci_absent_when_workflow_is_whitespace_only(tmp_path):
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("   \n\n  \n")
+    present, workflows = ci_scaffold.detect_ci(tmp_path)
+    assert present is False
+    assert workflows == []
+
+
+def test_detect_ci_absent_when_workflow_is_not_valid_yaml(tmp_path):
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    # Unbalanced flow-mapping — a YAML parse error, not a workflow.
+    (wf / "ci.yml").write_text("jobs: [test: {runs-on: ubuntu-latest\n")
+    present, workflows = ci_scaffold.detect_ci(tmp_path)
+    assert present is False
+    assert workflows == []
+
+
+def test_detect_ci_absent_when_workflow_is_a_bare_scalar(tmp_path):
+    """Valid YAML, but not a mapping — not a real GH Actions workflow shape."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("this is not a workflow\n")
+    present, workflows = ci_scaffold.detect_ci(tmp_path)
+    assert present is False
+    assert workflows == []
+
+
+def test_detect_ci_present_when_one_of_several_workflows_is_a_decoy(tmp_path):
+    """A real workflow alongside an empty decoy: CI is genuinely present (from
+    the real file), and the decoy is excluded from the reported list."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("name: ci\njobs:\n  test:\n    runs-on: ubuntu-latest\n")
+    (wf / "empty.yml").touch()
+    present, workflows = ci_scaffold.detect_ci(tmp_path)
+    assert present is True
+    assert workflows == [".github/workflows/ci.yml"]
+
+
+def test_cli_gate_empty_workflow_file_exits_nonzero(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.com/app\n")
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").touch()
+    result = _run("--repo", str(tmp_path), "--gate")
+    assert result.returncode != 0
+
+
 # --- detect_stack ---------------------------------------------------------
 
 
