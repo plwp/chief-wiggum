@@ -573,6 +573,8 @@ the feature, preserved as a lintable invariant.
 
 ```bash
 python3 scripts/bet.py evaluate <bet-id> --results r.json   # criterion fires → recommends kill-review
+python3 scripts/bet.py finding <bet-id> --statement "..." --source-url <url> \
+    --bearing-on premise                                    # material external fact (#252)
 python3 scripts/bet.py kill-brief <bet-id>                  # render the brief (journal-backed values only)
 python3 scripts/bet.py kill-review <bet-id>                 # brief → quorum → verdicts journaled
 ```
@@ -587,14 +589,34 @@ python3 scripts/bet.py kill-review <bet-id>                 # brief → quorum �
 - **The brief is generated, not written** (`kill-brief`): hashed kill criteria verbatim
   (cited to the create/rebaseline journal record), measured values sourced from the
   journaled `kill-proposed` evaluation rows, envelope status (spend vs tranches from the
-  ledger), the open-assumption evidence table (`assumptions.json` when present), and the
-  **distribution-attempt table** — channel experiments run, exposure delivered,
-  rep-cadence adherence, with `unattempted` stated explicitly when no evidence exists.
-  Any value the generator cannot source is `UNRESOLVED:`, never prose. **Brief purity is
-  a generator self-check, not an operator gate**: every measured value must cite a
-  journal record id or a `bets/<id>/` artifact file, and thesis prose must not appear —
-  a violating brief is REFUSED (exit 1) unconditionally, like the retrospective guard;
-  it takes no `--gate` and gets no gate-ledger row of its own.
+  ledger), the open-assumption evidence table (`assumptions.json` when present), **material
+  findings** (below), and the **distribution-attempt table** — channel experiments run,
+  exposure delivered, rep-cadence adherence, with `unattempted` stated explicitly when no
+  evidence exists. Any value the generator cannot source is `UNRESOLVED:`, never prose.
+  **Brief purity is a generator self-check, not an operator gate**: every measured value
+  must cite a journal record id or a `bets/<id>/` artifact file, and thesis prose must not
+  appear — a violating brief is REFUSED (exit 1) unconditionally, like the retrospective
+  guard; it takes no `--gate` and gets no gate-ledger row of its own.
+- **Material findings** (`bet.py finding`, #252): a new journaled record type for an
+  external, citable fact bearing on the bet — distinct from an assumption (a claim under
+  test, #236) and from a measurement (a criterion's value, `evaluate`). Found while
+  dogfooding: a competitor twin discovered post-creation changed a bet's premise and
+  triggered an ad-hoc review, but the brief generator correctly refused to carry it — an
+  externally-researched fact had no journal channel, so the brief omitted the entire
+  reason for the review. `finding <bet-id> --statement "..." --source-url <url>
+  --bearing-on <ASM-id|premise|KC-id> [--evidence-grade verified|reported]` is refused
+  (exit 2) without a non-empty `--source-url` — a finding with no citable source is
+  unsourced prose, not a finding — and appears in the brief's "Material findings" section
+  cited to its own journal record, so brief purity is preserved rather than weakened.
+- **Two legitimate convening triggers** (#252): a dated criterion firing (`criterion`, the
+  original shape above) and a **material premise change** (`premise-change`) — a journaled
+  finding bearing on the bet's premise. `kill-brief`/`kill-review` accept an explicit
+  `--trigger` and otherwise auto-detect one from the journal; the brief states which
+  trigger convened it up front so evaluators judge the right question. The charters
+  (`config/lenses.json`) state that under a premise-change trigger, "insufficient evidence
+  gathered yet" is NOT by itself grounds for `hold` — the question is whether the premise
+  still supports continuing to spend. The distribution-fairness rule (below) is unchanged
+  under either trigger — a premise-change convening creates no back door around it.
 - **Verdict schema**: `{verdict: go|kill|hold|recycle, confidence, reasons[],
   cheapest_disconfirming_test?}` in a fenced JSON block; a `hold` must name the test
   that would settle it. Malformed provider output is flagged and carried as a

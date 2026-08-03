@@ -152,25 +152,42 @@ the continue case is argued to a FRESH-CONTEXT quorum (``consult_ai.py --role
 kill-review`` — codex + opus required, claude-interactive optional, bounded
 charters per the lenses-not-personas convention) that sees only a GENERATED
 brief: hashed kill criteria verbatim, measured values with journal sources,
-envelope status, open-assumption evidence, and the distribution-attempt table.
-The evaluator having no sunk context is the feature (Boulding et al. 1997) —
-``kill-brief`` renders only journal-backed artifacts and REFUSES (exit 1, a
-hard self-check, not a ``--gate``) if the brief would carry an unsourced value
-or thesis prose. Verdict schema: ``{verdict: go|kill|hold|recycle, confidence,
-reasons[], cheapest_disconfirming_test?}``. **Distribution-fairness rule**
-(#241 amendment): a demand-shaped criterion (direction=has, or an explicit
-``demand_shaped`` flag) that fired while distribution is unattempted cannot
-ground a ``kill`` — a parsed kill verdict is mechanically downgraded to
-``recycle`` with a finding naming the cheapest untried exposure. The human
-sees the quorum verdicts BEFORE the accept/override instructions (the fresh
-verdict anchors the decision), and the verdicts + brief hash are journaled as
-a ``kill-review`` event. Nothing convenes the quorum automatically: a fired
-criterion RECOMMENDS ``kill-review``; the human runs it.
+envelope status, open-assumption evidence, material findings (#252), and the
+distribution-attempt table. The evaluator having no sunk context is the feature
+(Boulding et al. 1997) — ``kill-brief`` renders only journal-backed artifacts
+and REFUSES (exit 1, a hard self-check, not a ``--gate``) if the brief would
+carry an unsourced value or thesis prose. Verdict schema: ``{verdict:
+go|kill|hold|recycle, confidence, reasons[], cheapest_disconfirming_test?}``.
+**Distribution-fairness rule** (#241 amendment): a demand-shaped criterion
+(direction=has, or an explicit ``demand_shaped`` flag) that fired while
+distribution is unattempted cannot ground a ``kill`` — a parsed kill verdict is
+mechanically downgraded to ``recycle`` with a finding naming the cheapest
+untried exposure; this holds under EITHER convening trigger below, no
+exceptions. The human sees the quorum verdicts BEFORE the accept/override
+instructions (the fresh verdict anchors the decision), and the verdicts +
+brief hash are journaled as a ``kill-review`` event. Nothing convenes the
+quorum automatically: a fired criterion RECOMMENDS ``kill-review``; the human
+runs it.
+
+**Two legitimate convening triggers** (#252): a dated criterion firing
+(``criterion``, the original shape above), or a **material premise change** — a
+journaled ``finding`` (``bet.py finding``) bearing on the bet's premise, e.g. a
+competitor twin discovered post-creation. ``kill-brief``/``kill-review`` accept
+an explicit ``--trigger`` and otherwise auto-detect one from the journal; the
+brief states which trigger convened it up front, so evaluators judge the right
+question — under a premise-change trigger, "insufficient evidence gathered
+yet" is NOT by itself grounds for ``hold``; the question is whether the
+premise still supports continuing to spend. A ``finding`` is refused (exit 2)
+without a non-empty ``--source-url`` — an external fact with no citable source
+cannot enter a brief that must stay journal-backed.
 
 Subcommands:
     create      register a bet: envelope + kill criteria hashed into the journal
     spend       append a ledger entry (spend/time or a distribution rep)
     evaluate    evaluate dated criteria + report distribution-attempted status
+    finding     record a material external finding bearing on premise/assumption/
+                criterion (#252) — journaled, cited in kill-brief, refused without
+                a --source-url
     kill-brief  render the fresh-context kill brief (journal-backed values only)
     kill-review generate the brief, run the kill-review quorum, journal verdicts
     transition  move the state machine (incl. pivot, kill accept/override,
@@ -314,6 +331,14 @@ KILL_REVIEW_DIR = "kill-review"
 # brief's "exposure delivered" column reads only these; absent → UNRESOLVED.
 EXPOSURE_KEYS = ("exposure", "traffic", "visitors", "impressions", "listings", "launches")
 
+# Material findings (#252): an external, citable fact bearing on the bet — distinct
+# from an assumption ledger entry (a claim under test) and a measurement (a
+# criterion's value). `bearing_on` names what it bears on: the bet's premise as a
+# whole, a specific assumption, or a specific kill criterion.
+FINDING_BEARING_ON_RE = re.compile(r"^(premise|ASM-[A-Za-z0-9_-]+|KC-[A-Za-z0-9_-]+)$")
+EVIDENCE_GRADES = ("verified", "reported")
+KILL_REVIEW_TRIGGERS = ("criterion", "premise-change")
+
 # Brief-purity lint: every [source: ...] citation must be a journal record id
 # or an artifact file inside this bet's directory — nothing else exists to a
 # fresh-context evaluator.
@@ -419,6 +444,14 @@ def append_event(root: Path, event: str, ref: str, details: dict) -> dict:
 
 def bet_events(records: list[dict], bet_id: str) -> list[dict]:
     return [r for r in records if r.get("ref") == bet_id]
+
+
+def load_findings(records: list[dict], bet_id: str) -> list[dict]:
+    """Every journaled `finding` event for this bet (chief-wiggum#252) — external,
+    citable facts distinct from an assumption (a claim under test) or a measurement
+    (a criterion's value). Every finding was refused at record time without a
+    non-empty --source-url, so this list is journal-backed by construction."""
+    return [r for r in bet_events(records, bet_id) if r.get("event") == "finding"]
 
 
 # ---- goalpost hashing ----------------------------------------------------------
@@ -1139,14 +1172,24 @@ def brief_purity_findings(text: str, bet: dict, facts: list[dict]) -> list[str]:
     return out
 
 
-def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tuple[str, list[str], dict]:
+def build_kill_brief(
+    root: Path, bet_id: str, as_of: date | None = None, trigger: str | None = None,
+) -> tuple[str, list[str], dict]:
     """Render the fresh-context kill brief from journal-backed artifacts ONLY.
 
     Returns ``(markdown, findings, meta)``. ``findings`` (goalpost drift +
     purity-lint hits) non-empty ⇒ the caller must refuse to emit the brief —
     exit 1, a hard self-check, never a ``--gate``. ``meta`` carries what the
     fairness rule needs: fired criteria, demand-shaped fired criteria, the
-    live distribution status, and the cheapest untried exposure."""
+    live distribution status, and the cheapest untried exposure.
+
+    ``trigger`` (chief-wiggum#252) states which of the two legitimate kill-review
+    triggers convened this brief — a dated criterion firing, or a material premise
+    change (an external `finding` bearing on the bet's premise). Explicit callers
+    (``--trigger``) win; otherwise it is auto-detected: a fired criterion always
+    means ``criterion`` (it already recommends review); absent that, any
+    premise-bearing finding means ``premise-change``; absent both, ``criterion``
+    is the ad-hoc default for a human-convened review with no specific finding."""
     bet = load_bet(root, bet_id)
     records = load_journal(root)
     as_of = as_of or date.today()
@@ -1164,17 +1207,51 @@ def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tupl
     chan_src = f"bets/{bet_id}/channels.json"
     asm_src = f"bets/{bet_id}/assumptions.json"
 
+    kp_for_trigger = latest_kill_proposed(records, bet_id)
+    fired_for_trigger = (kp_for_trigger.get("details", {}) or {}).get("criteria") or [] if kp_for_trigger else []
+    material_findings = load_findings(records, bet_id)
+    premise_findings = [f for f in material_findings if (f.get("details", {}) or {}).get("bearing_on") == "premise"]
+    if trigger is None:
+        trigger = "criterion" if fired_for_trigger else ("premise-change" if premise_findings else "criterion")
+
+    trigger_note = (
+        "a material external finding bears on the bet's premise — "
+        "\"insufficient evidence gathered yet\" is NOT by itself grounds for `hold` "
+        "here; the question is whether the premise still supports continuing to spend"
+        if trigger == "premise-change" else
+        "a pre-registered dated kill criterion fired"
+    )
+
     lines = [
         f"# Kill brief: {bet_id} — {bet.get('title', '')}",
         "",
-        f"State: `{bet.get('state')}` as of {as_of.isoformat()}. This brief contains ONLY "
+        f"State: `{bet.get('state')}` as of {as_of.isoformat()}. Convening trigger: "
+        f"**{trigger}** ({trigger_note}). This brief contains ONLY "
         "journal-backed artifacts: pre-registered kill criteria, measured values with "
-        "sources, envelope status, open-assumption evidence, and distribution attempts. "
-        "It deliberately contains no history, no working context, and no thesis prose — "
-        "you are the fresh-context evaluator, and the missing context is the feature "
-        "(Boulding et al. 1997).",
+        "sources, envelope status, open-assumption evidence, material findings, and "
+        "distribution attempts. It deliberately contains no history, no working context, "
+        "and no thesis prose — you are the fresh-context evaluator, and the missing "
+        "context is the feature (Boulding et al. 1997).",
         "",
     ]
+
+    # -- material findings (#252): external, citable facts bearing on the bet —
+    #    distinct from an assumption (a claim under test) and a measurement (a
+    #    criterion's value). Journal-backed by construction (every `finding` event
+    #    was refused at record time without a --source-url).
+    lines.append("## Material findings")
+    lines.append("")
+    if not material_findings:
+        lines.append("- none recorded")
+    for f in material_findings:
+        d = f.get("details", {}) or {}
+        lines.append(fact(
+            f"finding bearing on {d.get('bearing_on', '?')} "
+            f"[{d.get('evidence_grade', 'reported')}]",
+            f"{d.get('statement', '')!r} — {d.get('source_url', '?')}",
+            f["record_id"],
+        ))
+    lines.append("")
 
     # -- criteria, verbatim, hash-cited
     crit_hash = content_hash(criteria)
@@ -2129,10 +2206,46 @@ def cmd_evaluate(args) -> int:
     return report(findings, args.gate)
 
 
+def cmd_finding(args) -> int:
+    """Record a material external finding (chief-wiggum#252) — a citable fact
+    bearing on the bet, distinct from an assumption (a claim under test) or a
+    measurement (a criterion's value). Malformed (no statement, no --source-url,
+    or an unrecognized --bearing-on) is a hard usage error (exit 2), the same
+    discipline as a states-and-dates criterion missing its date: a finding without
+    a source is not a finding, it is unsourced prose, and the whole point of this
+    record type is that `kill-brief` can cite it without weakening brief purity."""
+    root = portfolio_root(args.portfolio_dir)
+    load_bet(root, args.bet_id)  # existence check; raises BetError if unknown
+    if not args.statement or not args.statement.strip():
+        raise BetError("finding needs a non-empty --statement")
+    if not args.source_url or not args.source_url.strip():
+        raise BetError(
+            "finding is malformed without a --source-url — an external finding "
+            "with no citable source cannot enter the record (brief-purity discipline)"
+        )
+    if not args.bearing_on or not FINDING_BEARING_ON_RE.match(args.bearing_on):
+        raise BetError(
+            f"--bearing-on must be 'premise', an ASM-<id>, or a KC-<id>, "
+            f"got {args.bearing_on!r}"
+        )
+    grade = args.evidence_grade or "reported"
+    rec = append_event(root, "finding", args.bet_id, {
+        "statement": args.statement,
+        "source_url": args.source_url,
+        "bearing_on": args.bearing_on,
+        "evidence_grade": grade,
+    })
+    print(
+        f"bet: finding recorded for {args.bet_id} ({rec['record_id']}) — "
+        f"bears on {args.bearing_on}, evidence_grade={grade}"
+    )
+    return 0
+
+
 def cmd_kill_brief(args) -> int:
     root = portfolio_root(args.portfolio_dir)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
-    text, findings, _meta = build_kill_brief(root, args.bet_id, as_of)
+    text, findings, _meta = build_kill_brief(root, args.bet_id, as_of, getattr(args, "trigger", None))
     if findings:
         for f in findings:
             print(f"bet: [purity] {f}")
@@ -2152,7 +2265,7 @@ def cmd_kill_brief(args) -> int:
 def cmd_kill_review(args) -> int:
     root = portfolio_root(args.portfolio_dir)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
-    text, findings, meta = build_kill_brief(root, args.bet_id, as_of)
+    text, findings, meta = build_kill_brief(root, args.bet_id, as_of, getattr(args, "trigger", None))
     if findings:
         for f in findings:
             print(f"bet: [purity] {f}")
@@ -2719,6 +2832,21 @@ def main() -> int:
                     help="evaluation date (default: today)")
 
     sp = sub.add_parser(
+        "finding",
+        help="record a material external finding bearing on the bet's premise, an "
+             "assumption, or a criterion (chief-wiggum#252) — journaled, cited in kill-brief",
+    )
+    common(sp)
+    sp.add_argument("bet_id")
+    sp.add_argument("--statement", required=True, help="the external, citable fact")
+    sp.add_argument("--source-url", required=True, metavar="URL",
+                    help="citable source — required; a finding without one is refused")
+    sp.add_argument("--bearing-on", required=True, metavar="ASM-id|premise|KC-id",
+                    help="what this finding bears on: 'premise', an ASM-<id>, or a KC-<id>")
+    sp.add_argument("--evidence-grade", default=None, choices=EVIDENCE_GRADES,
+                    help="how well-sourced the finding itself is (default: reported)")
+
+    sp = sub.add_parser(
         "kill-brief",
         help="render the fresh-context kill brief (journal-backed values only — #237)",
     )
@@ -2728,6 +2856,10 @@ def main() -> int:
                     help="brief date for the rep-cadence window (default: today)")
     sp.add_argument("--output", default=None, metavar="FILE",
                     help=f"write the brief here (default: bets/<id>/{BRIEF_NAME})")
+    sp.add_argument("--trigger", default=None, choices=KILL_REVIEW_TRIGGERS,
+                    help="which legitimate kill-review trigger convenes this brief "
+                         "(chief-wiggum#252); default: auto-detected from a fired "
+                         "criterion or a premise-bearing finding, 'criterion' otherwise")
 
     sp = sub.add_parser(
         "kill-review",
@@ -2739,6 +2871,9 @@ def main() -> int:
     sp.add_argument("--as-of", default=None, metavar="YYYY-MM-DD")
     sp.add_argument("--output-dir", default=None, metavar="DIR",
                     help=f"provider verdict files land here (default: bets/<id>/{KILL_REVIEW_DIR}/)")
+    sp.add_argument("--trigger", default=None, choices=KILL_REVIEW_TRIGGERS,
+                    help="which legitimate kill-review trigger convenes this brief "
+                         "(chief-wiggum#252); default: auto-detected")
 
     sp = sub.add_parser(
         "transition",
@@ -2793,6 +2928,7 @@ def main() -> int:
     args = p.parse_args()
     dispatch = {
         "create": cmd_create, "spend": cmd_spend, "evaluate": cmd_evaluate,
+        "finding": cmd_finding,
         "kill-brief": cmd_kill_brief, "kill-review": cmd_kill_review,
         "transition": cmd_transition, "rebaseline": cmd_rebaseline,
         "portfolio": cmd_portfolio,
