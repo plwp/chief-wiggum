@@ -816,6 +816,28 @@ def append_authority_event(journal_path: str | Path, gate: str, action: str,
     return body["record_id"]
 
 
+def case_pattern(pattern: str) -> re.Pattern:
+    """A retire-case pattern: ``*`` is the ONLY wildcard, everything else is
+    literal.
+
+    Deliberately not fnmatch/_glob_to_re. Case ids routinely contain ``[`` and
+    ``]`` (pytest parametrisation — ``test_p[a]``), which both treat as a
+    character class, so ``test_p[*]`` would silently mean "test_p followed by
+    one of ``*``" instead of the whole parametrised family. Escaping everything
+    but ``*`` keeps the one form an operator actually needs unambiguous."""
+    return re.compile("".join(
+        ".*" if ch == "*" else re.escape(ch) for ch in pattern) + r"\Z")
+
+
+def retire_case_matches(pass_set: set[str], patterns: list[str]) -> set[str]:
+    """Cases in ``pass_set`` matched by any retire-case pattern."""
+    out: set[str] = set()
+    for pat in patterns:
+        rx = case_pattern(pat)
+        out |= {cid for cid in pass_set if rx.match(cid)}
+    return out
+
+
 def derive_highwater(records: list[dict]) -> dict:
     """High-water = union of every case passing in a MERGED record, plus the
     definition hash each contract had when it first entered. Amendments and
@@ -849,6 +871,13 @@ def derive_highwater(records: list[dict]) -> dict:
             verifier_hashes[ref] = h
         for ref in rec.get("retired_verifiers", []) or []:
             verifier_hashes.pop(ref, None)
+        # Pass-set retirement (#262). Without this the pass-set is a ONE-WAY
+        # door: derive_highwater only ever unioned it, while `missing_tests` is
+        # an unconditional hard failure — so a renamed or re-parametrised test
+        # pinned its old id forever, fixable only by rewriting a tamper-evident
+        # hash chain. Applied in journal order, so a later merged record can
+        # legitimately re-introduce a case.
+        pass_set -= retire_case_matches(pass_set, rec.get("retired_cases", []) or [])
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
@@ -1241,6 +1270,21 @@ def cmd_record(args) -> int:
             raise RatchetError(
                 f"--retire-verifier {ref}: not in the current high-water mark "
                 "(nothing to retire — check the ref, form is <relpath>::<function>)")
+    # --retire-case drops a pass-set case from the high-water mark: the test was
+    # renamed, re-parametrised, or legitimately deleted. Validated against the
+    # high-water mark for the same reason as --retire-verifier — a pattern that
+    # matches nothing is a typo, and a silent no-op would leave the operator
+    # believing they had cleared a goalpost they had not.
+    # getattr, not args.retire_case: other entry points (adopt.py, the wave
+    # runner, tests) build their own record namespaces and predate this flag.
+    retired_cases = sorted(set(getattr(args, "retire_case", None) or []))
+    hw_pass = set(prev_hw.get("pass_set", []) or [])
+    for pat in retired_cases:
+        if not retire_case_matches(hw_pass, [pat]):
+            raise RatchetError(
+                f"--retire-case {pat}: matches no case in the current high-water "
+                "mark (nothing to retire — check the id; `*` is the only "
+                "wildcard, e.g. 'pytest::tests.test_x::test_p[*]')")
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
         "event": args.event,
@@ -1252,6 +1296,7 @@ def cmd_record(args) -> int:
         "retired": sorted(canonical_id(c) for c in (args.retire or [])),
         "amended_verifiers": amended_verifiers,
         "retired_verifiers": retired_verifiers,
+        "retired_cases": retired_cases,
         "ratchet_status": status,
         "notes": args.notes,
     }
@@ -1569,6 +1614,10 @@ def main() -> int:
                     help="accept ID's current definition hash as the new baseline (human-approved)")
     sp.add_argument("--retire", action="append", metavar="ID",
                     help="drop ID from the high-water mark (human-approved)")
+    sp.add_argument("--retire-case", action="append", metavar="CASE",
+                    help="drop a test CASE id from the pass-set high-water mark "
+                         "(a renamed/re-parametrised/deleted test; `*` is the "
+                         "only wildcard, e.g. 'pytest::tests.test_x::test_p[*]')")
 
     sp = sub.add_parser("protected", help="flag branch diffs touching the protected pathset")
     common(sp)

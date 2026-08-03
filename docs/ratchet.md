@@ -260,11 +260,60 @@ python3 scripts/ratchet.py record --event epic-close --ref order-lifecycle --mer
     --amend CTR-order-001 --retire INV-order-003 --notes "contract revised per review"
 python3 scripts/ratchet.py record --event epic-close --ref order-lifecycle --merged \
     --amend-verifier "tests/test_order.py::test_date_range" --notes "verifier refactor (#206)"
+python3 scripts/ratchet.py record --event ticket --ref "#42" \
+    --retire-case "pytest::tests.test_order::test_old_name" \
+    --retire-case "pytest::tests.test_order::test_table[*]" \
+    --notes "renamed test_old_name; re-parametrised test_table (#262)"
 python3 scripts/ratchet.py recent --n 5                # amnesia context for the next session
 ```
 
 Exit codes: `0` ok, `1` gate violation, `2` usage/config error, `3` no
 scorecard (run `score` first), `4` journal tamper.
+
+## Renaming a test: `--retire-case` (#262)
+
+A test id in the pass-set is a goalpost, so **renaming, re-parametrising, moving
+or deleting a test is a goalpost move** and needs a journalled human act — the
+same rule that already governs contracts (`--retire`) and verifier-test bodies
+(`--retire-verifier`).
+
+The pass-set had no such act until #262. `derive_highwater` only ever *unioned*
+it, while `missing_tests` is an **unconditional** hard failure with no `--gate`
+opt-in (unlike the verifier and quality dimensions beside it). A renamed test
+therefore pinned its old id permanently: `check` failed forever, and the only
+escapes were to keep a dead test alive, never mark records merged, or rewrite a
+tamper-evident hash chain. That one-way door is why this repo's own `suites`
+stayed empty and its high-water mark sat vacuously at zero.
+
+```bash
+# a rename
+python3 scripts/ratchet.py record --event ticket --ref "#42" \
+  --retire-case "pytest::tests.test_order::test_old_name" --notes "renamed"
+```
+
+`*` is the **only** wildcard, and everything else is literal. That matters
+because case ids routinely contain `[` and `]` — pytest parametrisation ids like
+`test_table[a]` — which fnmatch and the repo's path-glob helper would both read
+as a character class, so `test_table[*]` would silently mean "one of `*`" rather
+than the whole family. One glob therefore retires a whole parametrised table,
+which is what makes an edit to a `@pytest.mark.parametrize` id survivable:
+
+```bash
+--retire-case "pytest::tests.test_order::test_table[*]"
+```
+
+A pattern matching nothing in the current high-water mark is an **error**, not a
+silent no-op (same doctrine as `--retire-verifier`): a typo'd id must never leave
+the operator believing they cleared a goalpost they did not. Retirements are
+journalled in the hash chain and applied in journal order, so a later merged
+record can legitimately re-introduce a case.
+
+**Case-id form** is `<suite>::<classname>::<name>`, where pytest's classname is
+the dotted, extensionless module path — e.g.
+`pytest::tests.test_order::test_total`, or
+`pytest::tests.test_order.TestOrder::test_total` for a class-based test. Read
+them out of `docs/quality/ratchet-scorecard.json` (`pass_set`) rather than
+guessing.
 
 ## Where it gates
 

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,7 +91,8 @@ def scorecard_from(cfg, pass_set):
     }
 
 
-def append_record(cfg, sc, merged=True, amended=None, retired=None):
+def append_record(cfg, sc, merged=True, amended=None, retired=None,
+                  retired_cases=None):
     records = ratchet.load_journal(cfg)
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
@@ -104,12 +106,23 @@ def append_record(cfg, sc, merged=True, amended=None, retired=None):
         "ratchet_status": "held",
         "notes": "",
     }
+    if retired_cases is not None:
+        body["retired_cases"] = sorted(retired_cases)
     prev = records[-1]["record_hash"] if records else "genesis"
     body["record_hash"] = ratchet.stable_hash(prev, json.dumps(body, sort_keys=True))
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
     with cfg.journal.open("a") as f:
         f.write(json.dumps(body, sort_keys=True) + "\n")
     return body
+
+
+def _record_args(cfg, **over):
+    """argparse-shaped namespace for cmd_record, with #262's --retire-case."""
+    base = dict(repo=str(cfg.repo), event="ticket", ref="#1", gate="pass",
+                merged=False, notes="", amend=None, retire=None,
+                amend_verifier=None, retire_verifier=None, retire_case=None)
+    base.update(over)
+    return SimpleNamespace(**base)
 
 
 # ---- contract definition hashing ------------------------------------------------
@@ -1002,3 +1015,83 @@ def test_score_quality_scope_filters_population(tmp_path, monkeypatch):
     (repo / "docs" / "scope.json").write_text(json.dumps({"includes": ["app/*"]}))
     q_bad = ratchet.score_quality(cfg)
     assert "skipped" in q_bad and "includes" in q_bad["skipped"]
+
+
+# --- #262: pass-set cases must be retirable, or the gate is a one-way door ----
+
+
+def test_a_renamed_test_pins_missing_tests_forever_without_retirement(tmp_path):
+    """The trap #262 had to solve before configuring a suite here.
+
+    `derive_highwater` only ever UNIONs the pass-set, and `missing_tests` is an
+    unconditional hard failure with no --gate opt-in. So a renamed (or
+    re-parametrised) test leaves its old id in the high-water mark permanently:
+    without a retirement primitive, adopting a 2,300-case pass-set commits the
+    repo to never renaming a test again.
+    """
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::test_old"}))
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["pass_set"] == ["pytest::t::test_old"]
+    after = {"pass_set": ["pytest::t::test_new"], "contract_hashes": {}}
+    assert ratchet.violations(after, hw)["missing_tests"] == ["pytest::t::test_old"]
+
+
+def test_retire_case_drops_a_case_from_the_high_water_mark(tmp_path):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::test_old", "pytest::t::keep"}))
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::keep"}), merged=False,
+                  retired_cases=["pytest::t::test_old"])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["pass_set"] == ["pytest::t::keep"]
+    after = {"pass_set": ["pytest::t::keep", "pytest::t::test_new"], "contract_hashes": {}}
+    assert ratchet.violations(after, hw)["missing_tests"] == []
+
+
+def test_retire_case_accepts_a_glob_for_parametrised_families(tmp_path):
+    """One parametrize-id edit renames every case in the table, so retiring
+    them one id at a time would be unusable."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {
+        "pytest::t::test_p[a]", "pytest::t::test_p[b]", "pytest::t::other"}))
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::other"}), merged=False,
+                  retired_cases=["pytest::t::test_p[*]"])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["pass_set"] == ["pytest::t::other"]
+
+
+def test_retiring_a_case_that_is_not_tracked_is_surfaced_not_silent(tmp_path):
+    """Same doctrine as --retire-verifier: a typo'd id must not be a silent
+    no-op, or the operator believes they retired something they did not."""
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, {"pytest::t::keep"})
+    append_record(cfg, sc)
+    cfg.scorecard.write_text(json.dumps(sc))
+    with pytest.raises(ratchet.RatchetError, match="nope"):
+        ratchet.cmd_record(_record_args(cfg, retire_case=["pytest::t::nope"]))
+    # ...and a pattern that DOES match is accepted.
+    assert ratchet.cmd_record(_record_args(cfg, retire_case=["pytest::t::keep"])) == 0
+    assert ratchet.derive_highwater(ratchet.load_journal(cfg))["pass_set"] == []
+
+
+def test_retire_case_is_journalled_and_tamper_evident(tmp_path):
+    """A retirement moves the goalpost, so it must live in the hash chain."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::gone"}))
+    append_record(cfg, scorecard_from(cfg, set()), merged=False,
+                  retired_cases=["pytest::t::gone"])
+    records = ratchet.load_journal(cfg)
+    assert records[-1]["retired_cases"] == ["pytest::t::gone"]
+    doctored = cfg.journal.read_text().replace('"pytest::t::gone"', '"pytest::t::other"')
+    cfg.journal.write_text(doctored)
+    with pytest.raises(ratchet.TamperError):
+        ratchet.load_journal(cfg)
+
+
+def test_a_journal_without_retired_cases_still_loads(tmp_path):
+    """Pre-#262 journals carry no such field — they must keep working."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::a"}))
+    recs = ratchet.load_journal(cfg)
+    assert "retired_cases" not in recs[0]
+    assert ratchet.derive_highwater(recs)["pass_set"] == ["pytest::t::a"]
