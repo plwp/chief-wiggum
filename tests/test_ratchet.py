@@ -1814,6 +1814,33 @@ def test_retire_case_exact_id_with_fnmatch_metacharacters(tmp_path):
 # ``retire_case_permanent=False`` default) rather than a second definition.
 
 
+def test_a_case_vanishing_without_a_journal_entry_still_fires(tmp_path):
+    """#290 must not become a silent escape hatch.
+
+    Permanent retirement removes a case from the pass-set for good, so the
+    property that actually matters is the NEGATIVE one: a case that simply
+    DISAPPEARS from the suite, with no journaled retirement behind it, must
+    still fire missing_tests. Otherwise the ratchet could be dodged by
+    deleting a test instead of recording that you retired it, and the
+    tamper-evidence argument collapses.
+
+    The positive path is covered by the tests below; this pins the negative.
+    """
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+
+    # the case vanishes from the suite. No `record --retire-case-permanent`,
+    # no journal entry, no owner, no reason — just gone.
+    sc = scorecard_from(cfg, {"s::t1"})
+
+    assert ratchet.violations(sc, hw)["missing_tests"] == ["s::flaky"], (
+        "a case that vanished with no journaled retirement must still be a "
+        "missing_tests violation — the #290 retirement path is the ONLY way "
+        "a case may legitimately leave the pass-set"
+    )
+
+
 def test_retire_case_permanent_requires_explicit_owner(tmp_path):
     """Attribution is not the thing being relaxed for a permanent retirement —
     the quarantine path's lax 'unassigned' default does not carry over."""
