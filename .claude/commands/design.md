@@ -43,6 +43,7 @@ Read from the target repo:
 - `docs/domain-context.md` (from `/seed` Step 2.5): audience, domain vocabulary, real use cases — these feed mock content and voice
 - The seed brainstorm's **design source** decision (architecture decisions doc or seed issues): existing design system / reference product / brand kit / net-new
 - The page inventory if one exists (planning docs, issues) — otherwise infer the product's screens from the domain context
+- **`docs/design-taste.md`** (chief-wiggum#250, in the chief-wiggum checkout, not the target repo) — the current-craft external grounding source for the divergent directions in Step 2. Check its `as_of`: if it is more than 90 days stale, run `/update` Step 3.7 first rather than generating directions against a stale brief. If an operator taste profile exists (`~/.chief-wiggum/portfolio/taste/choices.jsonl`), read it to CENTRE the spread on demonstrated preference — never to collapse it; Step 2 still generates the full 3–4 directions regardless of how narrow past picks were.
 
 Pick the **2–3 most representative screens**: where users spend the most time and where the domain shows (e.g. the dashboard and the core object's detail view — not the login page).
 

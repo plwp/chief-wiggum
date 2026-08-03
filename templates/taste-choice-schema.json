@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/taste-choice.json",
+  "title": "Operator Taste Choice",
+  "description": "One line of `~/.chief-wiggum/portfolio/taste/choices.jsonl` (chief-wiggum#250) — an append-only, operator-private record of a chosen-not-converged pick from the #249 variant flow or `/design`. Lives in the private portfolio repo, NEVER the public chief-wiggum repo. Future variant generation reads the accumulated choices to CENTRE the spread on demonstrated preference; it must never COLLAPSE the spread — the divergence count (>=6 for outward assets per INV-LPS-006/INV-PRE-006, 3-4 for /design directions) stays fixed regardless of how narrow the operator's taste turns out to be.",
+  "type": "object",
+  "required": ["ts", "context", "chosen", "rejected"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "ts": { "type": "string", "description": "ISO timestamp of the pick." },
+    "context": {
+      "type": "string",
+      "description": "What was being picked, free text (e.g. 'landing-page-smoke-test visual design', '/design direction', 'product name shortlist')."
+    },
+    "bet_id": {
+      "type": ["string", "null"],
+      "description": "The bet this pick belongs to, or null for a product-level (/design) pick."
+    },
+    "design_taste_as_of": {
+      "type": ["string", "null"],
+      "description": "The docs/design-taste.md `as_of` date the variant generation was grounded against, so a stale-brief pick is visible in hindsight."
+    },
+    "chosen": {
+      "type": "object",
+      "required": ["label"],
+      "additionalProperties": true,
+      "description": "The picked direction/variant/candidate. `label` is the human-readable name; additional free-form tags describe its style (e.g. palette, typography move, register) for future centring.",
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "rejected": {
+      "type": "array",
+      "description": "Every rejected direction/variant/candidate, each with its own tags — the rejections are as informative as the pick for centring future spreads.",
+      "items": {
+        "type": "object",
+        "required": ["label"],
+        "additionalProperties": true,
+        "properties": {
+          "label": { "type": "string", "minLength": 1 },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "variant_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total variants presented (chosen + rejected) — recorded explicitly so a future centring pass can confirm the divergence count was never collapsed below the doctrine's floor for this context."
+    }
+  }
+}
