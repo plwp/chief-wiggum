@@ -464,10 +464,17 @@ class TestSidecarAwareness:
         (resolver.meta_root / "cw").mkdir(parents=True)
         (resolver.meta_root / "cw" / "tracker.json").write_text(json.dumps({"backend": "local"}))
 
+        real_run = subprocess.run
+
         def exploding_gh(args, **kwargs):
-            raise subprocess.CalledProcessError(
-                1, args, output="", stderr="the 'acme/app' repository has disabled issues"
-            )
+            # Only the (unused) `gh` path explodes — plain `git` calls (the
+            # resolver's own bookkeeping) must keep working for real, or this
+            # stub would fail the test for the wrong reason.
+            if args and args[0] == "gh":
+                raise subprocess.CalledProcessError(
+                    1, args, output="", stderr="the 'acme/app' repository has disabled issues"
+                )
+            return real_run(args, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", exploding_gh)
 
@@ -491,6 +498,47 @@ class TestSidecarAwareness:
         ref = backend.create(IssueDraft(title="Embedded issue"))
         assert (tmp_path / "docs" / "issues" / "0001.md").is_file()
         assert backend.get(ref).title == "Embedded issue"
+
+
+# --- epic membership via tracker.py, not gh issue (#267) -----------------------
+
+
+class TestEpicMembershipViaTracker:
+    """The mechanized half of #267: /architect and /close-epic now fetch epic
+    tickets via `tracker.py members`, not `gh issue list --milestone`. Proves
+    that primitive works end to end for a local-backend target — including
+    one whose upstream has issues disabled, so the github default can't mask
+    a regression that silently falls back to it."""
+
+    def test_members_works_against_local_backend_with_issues_disabled_upstream(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        cw_dir = tmp_path / "docs" / "cw"
+        cw_dir.mkdir(parents=True)
+        (cw_dir / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        real_run = subprocess.run
+
+        def exploding_gh(args, **kwargs):
+            if args and args[0] == "gh":
+                raise subprocess.CalledProcessError(
+                    1, args, output="", stderr="the 'acme/app' repository has disabled issues"
+                )
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", exploding_gh)
+
+        run = lambda *a: tracker.main(["--repo-root", str(tmp_path), *a])  # noqa: E731
+        refs = []
+        for title in ("In the epic", "Also in the epic", "Not in the epic"):
+            assert run("create", "acme/app", "--title", title) == 0
+            refs.append(capsys.readouterr().out.strip())
+        assert run("group", "Epic: Orders", refs[0], refs[1]) == 0
+        capsys.readouterr()
+
+        assert run("members", "acme/app", "Epic: Orders") == 0
+        members = json.loads(capsys.readouterr().out)
+        assert {m["title"] for m in members} == {"In the epic", "Also in the epic"}
 
 
 # --- local backend frontmatter format -----------------------------------------
@@ -790,3 +838,33 @@ class TestCommandMarkdownMigration:
                 # every milestone-mutating gh api call must live in a
                 # backend=github conditional block
                 assert 'if [ "$backend" = "github" ]' in line_block
+
+    def test_architect_uses_tracker_not_gh_issue_for_epic_tickets(self):
+        """(#267) /architect Step 1 fetches epic tickets and Step 8 posts
+        per-ticket comments — both used to shell out to `gh issue` directly,
+        making the skill unusable against a non-github tracker backend (or a
+        repo with issues disabled). Both must go through tracker.py."""
+        text = (CW_ROOT / ".claude" / "commands" / "architect.md").read_text()
+        assert "gh issue list" not in text
+        assert "gh issue comment" not in text
+        assert "gh issue" not in text
+        assert 'scripts/tracker.py" --repo-root "$TARGET_REPO" members' in text
+        assert 'scripts/tracker.py" --repo-root "$TARGET_REPO" comment' in text
+
+    def test_close_epic_uses_tracker_not_gh_issue_for_epic_tickets(self):
+        """(#267) /close-epic Step 1 fetches the epic's tickets to verify
+        they're all closed — same substitution as /architect."""
+        text = (CW_ROOT / ".claude" / "commands" / "close-epic.md").read_text()
+        assert "gh issue list" not in text
+        assert "gh issue" not in text
+        assert 'scripts/tracker.py" --repo-root "$TARGET_REPO" members' in text
+
+    def test_no_gh_issue_milestone_listing_in_architect_or_close_epic(self):
+        """Grep-based audit (#267 AC): neither skill fetches epic membership
+        via `gh issue list --milestone` anywhere in its documented flow —
+        tracker.py's `members` is the only sanctioned path now."""
+        for name in ("architect.md", "close-epic.md"):
+            text = (CW_ROOT / ".claude" / "commands" / name).read_text()
+            assert not re.search(r"gh issue list[^\n]*--milestone", text), (
+                f"{name} still lists epic tickets via gh issue directly"
+            )
