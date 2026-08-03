@@ -11,19 +11,38 @@ Consumed by `check_deps.py` (`--list-languages`, the `language-tier-1` dependenc
 | go | 1 | supported | `.go` | gopls | writer, trace | go test -json / gotestsum JUnit XML (scripts/ratchet.py) | go_mongo (scripts/extractors/go_mongo.py, stitch-audit) | yes |
 | python | 1 | supported | `.py` | pyright | writer, trace | pytest --junitxml (JUnit XML, scripts/ratchet.py) | — | yes |
 | typescript | 1 | supported | `.ts`, `.tsx`, `.js`, `.jsx` | — | writer, trace | jest/vitest JUnit reporter | typescript (scripts/extractors/typescript.py, stitch-audit) | yes |
+| csharp | 2 | partial: scanned + measured, no dedicated emitter/LSP | `.cs` | — | generic | dotnet test --logger trx (TRX results dir, scripts/ratchet.py `trx` parser) + .sln/.csproj autodetect | — | no |
 | rust | designed | designed, unbuilt | `.rs` | rust-analyzer | — | cargo nextest (JUnit XML) + Cargo.toml autodetect | — | no |
 
 ## Generic regex tier
 
 Extensions with no dedicated per-language emitter module, scanned by the generic (language-agnostic) regex tier (`scripts/emitters/generic.py`) — the pre-#162 behavior of `check_single_writer.py` / `check_traceability.py`:
 
-`.java`, `.rb`, `.rs`
+`.cs`, `.java`, `.rb`, `.rs`
 
 ## Recognized-but-unsupported extensions
 
 Encountering one of these during a full-repo scan is NEVER a silent skip — `check_single_writer.py` / `check_traceability.py` surface an explicit coverage warning (`unsupported_extension_counts`) in both `--gate` and plain (query) output:
 
-`.c`, `.cc`, `.clj`, `.cljs`, `.cpp`, `.cs`, `.dart`, `.erl`, `.ex`, `.exs`, `.groovy`, `.h`, `.hpp`, `.hs`, `.jl`, `.kt`, `.kts`, `.lua`, `.m`, `.mm`, `.php`, `.pl`, `.r`, `.scala`, `.swift`
+`.c`, `.cc`, `.clj`, `.cljs`, `.cpp`, `.dart`, `.erl`, `.ex`, `.exs`, `.groovy`, `.h`, `.hpp`, `.hs`, `.jl`, `.kt`, `.kts`, `.lua`, `.m`, `.mm`, `.php`, `.pl`, `.r`, `.scala`, `.swift`
+
+## Partially supported (tier 2)
+
+These languages ARE scanned and measured — the quality/debt population, clone detection and the ratchet pass-set all see them — but no dedicated emitter module or LSP exists, so write-site/trace facts come from the generic regex tier. Listed here with exactly what is still missing for tier 1.
+
+### Csharp
+
+Trigger: first .NET target repo adopted (#259)
+
+Missing for tier 1:
+
+- a C#/Roslyn LSP entry in scripts/chief_wiggum/lsp.py SERVERS (csharp-ls or Microsoft.CodeAnalysis.LanguageServer)
+- a method regex for enclosing-symbol resolution (scripts/chief_wiggum/write_emission.py _enclosing_symbol)
+- a C#-specific write-site emitter under scripts/emitters/ (property setters, object initializers, EF Core / Dapper write calls)
+- cognitive-complexity tooling for C# in scripts/quality/complexity.py (lizard already supplies cyclomatic)
+
+Tier 2 means MEASURED, not fully emitted: .cs enters the quality/debt population (scripts/quality/complexity.py EXT_LANG), jscpd clone detection, and the ratchet pass-set via the TRX parser — but write-site/trace facts come from the generic regex tier, with no C# method regex behind them. Added because a 12,551-file .NET monolith adopted with an EMPTY ratchet baseline and a 0-item debt inventory that both rendered as passes (#259).
+
 
 ## Designed, unbuilt slots
 

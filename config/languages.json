@@ -35,6 +35,25 @@
       "func_regex": true,
       "dep_profile": null
     },
+    "csharp": {
+      "tier": 2,
+      "status": "partial: scanned + measured, no dedicated emitter/LSP",
+      "extensions": [".cs"],
+      "lsp": null,
+      "emitters": ["generic"],
+      "test_parser": "dotnet test --logger trx (TRX results dir, scripts/ratchet.py `trx` parser) + .sln/.csproj autodetect",
+      "extractor": null,
+      "func_regex": false,
+      "dep_profile": "dotnet",
+      "trigger": "first .NET target repo adopted (#259)",
+      "requires": [
+        "a C#/Roslyn LSP entry in scripts/chief_wiggum/lsp.py SERVERS (csharp-ls or Microsoft.CodeAnalysis.LanguageServer)",
+        "a method regex for enclosing-symbol resolution (scripts/chief_wiggum/write_emission.py _enclosing_symbol)",
+        "a C#-specific write-site emitter under scripts/emitters/ (property setters, object initializers, EF Core / Dapper write calls)",
+        "cognitive-complexity tooling for C# in scripts/quality/complexity.py (lizard already supplies cyclomatic)"
+      ],
+      "note": "Tier 2 means MEASURED, not fully emitted: .cs enters the quality/debt population (scripts/quality/complexity.py EXT_LANG), jscpd clone detection, and the ratchet pass-set via the TRX parser — but write-site/trace facts come from the generic regex tier, with no C# method regex behind them. Added because a 12,551-file .NET monolith adopted with an EMPTY ratchet baseline and a 0-item debt inventory that both rendered as passes (#259)."
+    },
     "rust": {
       "tier": "designed",
       "status": "designed, unbuilt",
@@ -57,12 +76,12 @@
   },
   "generic_tier": {
     "description": "Extensions with NO dedicated per-language emitter module, scanned by the generic (language-agnostic) regex tier — scripts/emitters/generic.py — which is exactly the pre-#162 SOURCE_EXTS behavior of check_single_writer.py / check_traceability.py.",
-    "extensions": [".java", ".rb", ".rs"]
+    "extensions": [".java", ".rb", ".rs", ".cs"]
   },
   "unsupported_extensions": {
     "description": "Recognized programming-language extensions with NO emitter coverage at all (neither a tier-1 module nor the generic tier). A file with one of these extensions is NEVER silently skipped: check_single_writer.py / check_traceability.py surface an explicit coverage warning in both --gate and plain (query) output instead. This list is curated, not exhaustive — extend it as new unsupported languages show up in a target repo.",
     "extensions": [
-      ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".php", ".kt", ".kts",
+      ".c", ".h", ".cpp", ".cc", ".hpp", ".php", ".kt", ".kts",
       ".swift", ".scala", ".m", ".mm", ".clj", ".cljs", ".ex", ".exs",
       ".erl", ".hs", ".lua", ".dart", ".groovy", ".jl", ".pl", ".r"
     ]

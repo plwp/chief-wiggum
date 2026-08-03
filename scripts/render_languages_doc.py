@@ -82,7 +82,44 @@ def render(path: Path | str = cw_languages.DEFAULT_PATH) -> str:
         ", ".join(f"`{e}`" for e in unsupported) or "(none)",
     ]
 
-    designed = [lang for lang in langs.values() if not lang.built and lang.requires]
+    # Two kinds of not-yet-tier-1 slot, rendered separately so "designed,
+    # unbuilt" (nothing runs) is never confused with "tier 2" (it runs, it
+    # measures, it just has no dedicated emitter/LSP behind it).
+    partial = [
+        lang for lang in langs.values()
+        if lang.requires and not lang.built and "designed" not in lang.status
+    ]
+    designed = [
+        lang for lang in langs.values()
+        if lang.requires and not lang.built and "designed" in lang.status
+    ]
+
+    if partial:
+        lines += [
+            "",
+            "## Partially supported (tier 2)",
+            "",
+            "These languages ARE scanned and measured — the quality/debt population, "
+            "clone detection and the ratchet pass-set all see them — but no dedicated "
+            "emitter module or LSP exists, so write-site/trace facts come from the "
+            "generic regex tier. Listed here with exactly what is still missing for "
+            "tier 1.",
+            "",
+        ]
+        for lang in partial:
+            lines += [
+                f"### {lang.name.capitalize()}",
+                "",
+                f"Trigger: {lang.trigger}",
+                "",
+                "Missing for tier 1:",
+                "",
+            ]
+            lines += [f"- {r}" for r in lang.requires]
+            if lang.note:
+                lines += ["", lang.note]
+            lines.append("")
+
     if designed:
         lines += ["", "## Designed, unbuilt slots", ""]
         for lang in designed:

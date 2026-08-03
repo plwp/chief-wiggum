@@ -87,6 +87,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -187,9 +188,12 @@ class TamperError(Exception):
 class Suite:
     name: str
     cmd: str
-    parser: str  # go-test-json | junit-xml | pass-fail-lines
+    parser: str  # go-test-json | junit-xml | trx | pass-fail-lines
     cwd: str = "."
-    report: str | None = None  # junit-xml: file the cmd writes, repo-relative
+    # junit-xml: the file the cmd writes, repo-relative.
+    # trx: the results DIRECTORY the cmd writes (`dotnet test` emits one
+    # uniquely-named .trx per test project); a single file also works.
+    report: str | None = None
 
 
 @dataclass
@@ -301,6 +305,107 @@ def parse_junit_xml(xml_text: str) -> set[str]:
     return passed
 
 
+# TRX (Visual Studio Test Results) — what `dotnet test --logger trx` writes.
+# One namespace, and only "Passed" counts: NotExecuted is a skip, and
+# Failed/Error/Timeout/Aborted/Inconclusive are all not-passing (#259).
+TRX_NS = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
+
+
+def _trx_case_id(test_name: str, class_name: str | None) -> str:
+    """``ClassName::LocalName`` — the same ``class::name`` shape junit-xml
+    produces. TRX's ``testName`` is fully qualified and carries the theory's
+    data (``...ParameterisedPasses(n: 2)``), which is kept: each data case is
+    its own ratcheted case."""
+    if class_name and test_name.startswith(class_name + "."):
+        return f"{class_name}::{test_name[len(class_name) + 1:]}"
+    if class_name:
+        return f"{class_name}::{test_name}"
+    return test_name
+
+
+def _trx_class_by_test_id(root: ET.Element) -> dict[str, str]:
+    """``testId -> className`` from ``<TestDefinitions>``."""
+    out: dict[str, str] = {}
+    for unit in root.iter(f"{TRX_NS}UnitTest"):
+        tid = unit.get("id")
+        method = unit.find(f"{TRX_NS}TestMethod")
+        if tid and method is not None and method.get("className"):
+            out[tid] = method.get("className", "")
+    return out
+
+
+def parse_trx(xml_texts: Iterable[str]) -> set[str]:
+    """Passing case IDs across one or more TRX documents.
+
+    Takes an ITERABLE because `dotnet test` on a solution writes one TRX per
+    test project (uniquely named, e.g. ``_host_2026-08-03_10_23_17_net10.0``
+    and ``...[1]``) — parsing a single file would silently drop every other
+    project's cases, which is the shape of under-measurement #259 is about.
+    """
+    passed: set[str] = set()
+    other: set[str] = set()
+    for xml_text in xml_texts:
+        root = ET.fromstring(xml_text)
+        classes = _trx_class_by_test_id(root)
+        for result in root.iter(f"{TRX_NS}UnitTestResult"):
+            name = result.get("testName")
+            if not name:
+                continue
+            cid = _trx_case_id(name, classes.get(result.get("testId") or ""))
+            (passed if result.get("outcome") == "Passed" else other).add(cid)
+    return passed - other
+
+
+def trx_case_files(cfg: Config, suite: Suite, xml_texts: Iterable[str]) -> dict[str, str]:
+    """Map TRX case IDs to repo-relative source files (#207).
+
+    TRX records the test DLL, never the source file, so the only available
+    link is the class name. A class is resolved ONLY when exactly one tracked
+    ``<ClassName>.cs`` exists under the suite cwd — an ambiguous or missing
+    match stays unresolved (counted by ``score``), never guessed.
+    """
+    base = (cfg.repo / suite.cwd).resolve()
+    by_stem: dict[str, list[Path]] = {}
+    for path in base.rglob("*.cs"):
+        if any(part in {"bin", "obj", ".git", "node_modules"} for part in path.parts):
+            continue
+        by_stem.setdefault(path.stem, []).append(path)
+
+    out: dict[str, str] = {}
+    for xml_text in xml_texts:
+        root = ET.fromstring(xml_text)
+        classes = _trx_class_by_test_id(root)
+        for result in root.iter(f"{TRX_NS}UnitTestResult"):
+            name = result.get("testName")
+            if not name:
+                continue
+            cls = classes.get(result.get("testId") or "")
+            if not cls:
+                continue
+            candidates = by_stem.get(cls.rsplit(".", 1)[-1], [])
+            if len(candidates) != 1:
+                continue  # ambiguous or absent — unresolved, never guessed
+            try:
+                # Keyed WITH the suite prefix, like junit_case_files /
+                # go_case_dirs — run_suite filters this map against the
+                # already-namespaced case IDs.
+                out[f"{suite.name}::{_trx_case_id(name, cls)}"] = (
+                    candidates[0].resolve().relative_to(cfg.repo.resolve()).as_posix()
+                )
+            except ValueError:  # outside the repo — leave unresolved
+                pass
+    return out
+
+
+def _trx_documents(report: Path) -> list[str]:
+    """TRX document texts for a suite's ``report`` path — every ``*.trx`` when
+    it names a directory (the normal `dotnet test` case: one file per test
+    project), or the single file when it names one."""
+    if report.is_dir():
+        return [p.read_text() for p in sorted(report.rglob("*.trx"))]
+    return [report.read_text()] if report.is_file() else []
+
+
 def parse_pass_fail_lines(stdout: str) -> set[str]:
     passed, failed = set(), set()
     for line in stdout.splitlines():
@@ -391,6 +496,16 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
     report-only high-water-test-file cue; unresolvable cases are absent here
     and surfaced by ``score`` as ``test_files_unresolved``.
     """
+    if suite.parser == "trx" and suite.report:
+        # A TRX results DIRECTORY accumulates: `dotnet test` adds a new
+        # timestamped file per run per project, so a stale file from an
+        # earlier run would keep a since-deleted test in the pass-set. Clear
+        # first — the pass-set must describe THIS run.
+        stale = cfg.repo / suite.report
+        if stale.is_dir():
+            for old in stale.rglob("*.trx"):
+                old.unlink()
+
     proc = subprocess.run(
         suite.cmd, shell=True, cwd=cfg.repo / suite.cwd, capture_output=True, text=True
     )
@@ -409,6 +524,19 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
             )
         passed = parse_junit_xml(report.read_text())
         files = junit_case_files(cfg, suite, report.read_text())
+    elif suite.parser == "trx":
+        if not suite.report:
+            raise RatchetError(f"suite {suite.name!r}: trx parser needs `report`")
+        report = cfg.repo / suite.report
+        docs = _trx_documents(report)
+        if not docs:
+            raise RatchetError(
+                f"suite {suite.name!r}: no .trx written to {report} by cmd "
+                "(a test project without a trx logger reports NOTHING, which "
+                f"would look like a clean empty pass-set):\n{proc.stderr[-2000:]}"
+            )
+        passed = parse_trx(docs)
+        files = trx_case_files(cfg, suite, docs)
     elif suite.parser == "pass-fail-lines":
         passed = parse_pass_fail_lines(proc.stdout)
     else:
@@ -777,6 +905,16 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def _dotnet_present(repo: Path) -> bool:
+    """.sln/.csproj probe, shared with ``chief_wiggum.verification`` so the
+    survey's runner detection and the ratchet's suite autodetection can never
+    disagree (#259: they did — the survey saw nothing and so did the ratchet,
+    across 8,316 .cs files)."""
+    from chief_wiggum import verification  # noqa: PLC0415 — avoids an import cycle
+
+    return verification.detect_project(repo).has_dotnet
+
+
 def detect_suites(repo: Path) -> list[dict]:
     suites: list[dict] = []
     if (repo / "go.mod").is_file():
@@ -791,6 +929,22 @@ def detect_suites(repo: Path) -> list[dict]:
                 "cwd": ".",
                 "parser": "junit-xml",
                 "report": ".ratchet-junit.xml",
+            }
+        )
+    if _dotnet_present(repo):
+        # `--logger trx` is the built-in VSTest logger: no NuGet package to
+        # add, unlike a junit logger. `--results-directory` (not a fixed
+        # LogFileName) because a solution runs one logger PER TEST PROJECT —
+        # a fixed filename makes projects overwrite each other and silently
+        # undercount the pass-set (#259). Note `dotnet test` builds into
+        # bin/obj inside the tree, which a standard .NET .gitignore covers.
+        suites.append(
+            {
+                "name": "dotnet",
+                "cmd": 'dotnet test --logger trx --results-directory .ratchet-trx',
+                "cwd": ".",
+                "parser": "trx",
+                "report": ".ratchet-trx",
             }
         )
     if (repo / "package.json").is_file() and not suites:

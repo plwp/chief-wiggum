@@ -4,8 +4,8 @@ skip-with-warning.
 
 This is exactly the CURRENT (pre-#162) behavior of
 ``check_single_writer.py`` / ``check_traceability.py`` for any extension in
-``config/languages.json``'s ``generic_tier`` (Java, Ruby, and Rust's ``.rs``
-today — see the ``rust`` entry's note: Rust IS scanned by this tier already,
+``config/languages.json``'s ``generic_tier`` (Java, Ruby, C#'s ``.cs`` and
+Rust's ``.rs`` today — see the ``rust`` entry's note: Rust IS scanned by this tier already,
 just without a dedicated func-regex for enclosing-symbol resolution). The
 underlying emission functions are already suffix-driven (comment markers,
 symbol regexes), so this module's ``emit()`` is identical in shape to the

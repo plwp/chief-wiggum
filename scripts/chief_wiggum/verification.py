@@ -2,7 +2,7 @@
 
 `/implement`, `/implement-wave`, `/ship`, and `/close-epic` all repeat heuristics
 for detecting how to test/lint/build/smoke a target repo (Go, Node, Python,
-Docker, Playwright, Makefile). This turns that into a tested detector + command
+.NET, Docker, Playwright, Makefile). This turns that into a tested detector + command
 planner that emits structured evidence (command, cwd, exit code, duration, log
 tail) instead of terminal prose.
 
@@ -38,7 +38,48 @@ LANG_COMMANDS: dict[str, dict[str, list[str]]] = {
         "lint": ["python3", "-m", "ruff", "check", "."],
         "build": ["python3", "-m", "build"],
     },
+    # .NET (#259). `dotnet test` builds first, so a build step is not implied
+    # by the test step; `dotnet format --verify-no-changes` is the analyzer/
+    # style check that exits non-zero on findings without rewriting the tree.
+    "dotnet": {
+        "test": ["dotnet", "test"],
+        "lint": ["dotnet", "format", "--verify-no-changes"],
+        "build": ["dotnet", "build"],
+    },
 }
+
+# .NET solution/project manifests. `.sln`/`.slnx` and `Directory.Build.props`
+# live at the root; `.csproj` (and F#/VB siblings) sit one directory per
+# project down, so the probe walks a bounded depth rather than the whole tree.
+_DOTNET_ROOT_GLOBS = ("*.sln", "*.slnx", "Directory.Build.props", "Directory.Packages.props")
+_DOTNET_PROJECT_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
+_DOTNET_PROBE_DEPTH = 3
+_DOTNET_SKIP_DIRS = {
+    ".git", "node_modules", "bin", "obj", "packages", "dist", "build", "out",
+    ".vs", ".venv", "venv", "vendor", "artifacts", "TestResults",
+}
+
+
+def _find_dotnet(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> bool:
+    """True when ``root`` looks like a .NET tree. Bounded walk: a big monolith
+    must not cost a full-tree scan, and a stray ``.csproj`` inside
+    ``node_modules``/``bin`` must not count."""
+    if any(next(root.glob(pattern), None) is not None for pattern in _DOTNET_ROOT_GLOBS):
+        return True
+    frontier = [(root, 0)]
+    while frontier:
+        current, depth = frontier.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_file() and entry.suffix in _DOTNET_PROJECT_SUFFIXES:
+                return True
+            if entry.is_dir() and depth < max_depth and entry.name not in _DOTNET_SKIP_DIRS:
+                frontier.append((entry, depth + 1))
+    return False
+
 
 # Match a make rule line (target[s] before ':'), excluding ':=' assignments.
 # The captured group may hold several space-separated targets (grouped rule).
@@ -67,6 +108,7 @@ class Detection:
     make_targets: tuple[str, ...] = ()
     has_go: bool = False
     has_python: bool = False
+    has_dotnet: bool = False
     has_node: bool = False
     node_scripts: tuple[str, ...] = ()
     has_docker_compose: bool = False
@@ -164,6 +206,7 @@ def detect_project(repo: str | Path) -> Detection:
 
     det.has_go = (root / "go.mod").is_file()
     det.has_python = (root / "pyproject.toml").is_file() or (root / "setup.py").is_file()
+    det.has_dotnet = _find_dotnet(root)
 
     pkg = root / "package.json"
     if pkg.is_file():
@@ -217,6 +260,8 @@ def plan_steps(repo: str | Path, profiles: Iterable[str], detection: Detection) 
             steps.append(PlannedStep(profile, "python", LANG_COMMANDS["python"][profile], root))
         if detection.has_node and profile in detection.node_scripts:
             steps.append(PlannedStep(profile, "node", LANG_COMMANDS["node"][profile], root))
+        if detection.has_dotnet:
+            steps.append(PlannedStep(profile, "dotnet", LANG_COMMANDS["dotnet"][profile], root))
 
     return steps
 
