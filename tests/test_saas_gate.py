@@ -389,7 +389,17 @@ _GV_SCENARIOS = {
     "saas-omission-01": "csrf_samesite_none_spaced",
     "saas-config-indirection-01": "headers_lowercased",
     "saas-sampling-gap-01": "no_rate_limit",
+    "saas-instrument-broken-01": "unreachable",
 }
+
+# The instrument-broken class (docs/gate-validation.md, chief-wiggum#289's
+# promotion ticket) has no fixture-server scenario at all: no server is
+# started, so the CLI's explicitly-supplied --base-url is genuinely
+# unreachable (connection refused) rather than scripted-unhealthy. This is
+# the runtime analogue of instrumentation-deleted for a probe-based gate —
+# the SUBJECT (whatever app would have been at that URL) is untouched; only
+# the gate's ability to reach it is destroyed.
+_UNREACHABLE_BASE_URL = "http://127.0.0.1:1"
 
 
 def _gv_load_server():
@@ -410,6 +420,12 @@ def _gv_run_cli(base_url: str) -> dict:
 
 
 def _gv_outcome(scenario: str) -> tuple[str, dict]:
+    if scenario == "unreachable":
+        # instrument-broken: no fixture server is started at all — the probe
+        # genuinely cannot connect, rather than connecting to a scripted
+        # unhealthy response.
+        report = _gv_run_cli(_UNREACHABLE_BASE_URL)
+        return ("fired" if not report["ok"] else "not-fired"), report
     server = _gv_load_server()
     with server.fixture_server(scenario) as base_url:
         report = _gv_run_cli(base_url)
@@ -450,6 +466,38 @@ def test_saas_gate_clean_corpus_backed_by_live_cli():
         "checks_passed": report["counts"]["pass"],
     }
     assert run["coverage"] == coverage
+
+
+def test_saas_gate_instrument_broken_seed_reports_error_not_merely_fires():
+    """Certify the STATE, not merely fired/not-fired (mirrors
+    test_tr_instrument_broken_seed_reports_error_not_merely_fires and friends
+    in tests/test_gate_validation_retroactive.py).
+
+    An unreachable --base-url also flips the `health` runtime probe to a
+    plain FAIL, so a bare `report["ok"] is False` assertion alone would pass
+    even if the #289 per-check ERROR status had never shipped — `health`
+    failing on its own would be enough to fire. Assert the distinguishing
+    facts the ERROR status adds directly: every named header/CSRF check
+    reads `error` (not the honest-absence `skipped`), and the measured
+    denominator counts them.
+    """
+    result, report = _gv_outcome("unreachable")
+    assert result == "fired"
+    assert report["ok"] is False
+    statuses = {f["name"]: f["status"] for f in report["findings"] if f["category"] == "security"}
+    for name in sg.HEADER_CSRF_CHECK_NAMES:
+        assert statuses[name] == sg.ERROR, (name, statuses)
+    assert report["measured"]["error_checks"] == len(sg.HEADER_CSRF_CHECK_NAMES), report["measured"]
+    assert report["counts"]["skipped"] < report["measured"]["total_checks"], report["counts"]
+
+
+def test_saas_gate_gate_exits_nonzero_on_the_instrument_broken_seed():
+    proc = subprocess.run(
+        [_sys.executable, str(_GV_CLI), "--repo", str(_GV_REPO),
+         "--base-url", _UNREACHABLE_BASE_URL, "--gate"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0, "--gate exited 0 on a broken instrument"
 
 
 def test_saas_gate_record_passes_gate_of_gates():

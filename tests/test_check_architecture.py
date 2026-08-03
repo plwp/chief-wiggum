@@ -200,6 +200,40 @@ def test_applicability_is_error_when_the_named_model_is_absent():
     assert report.outcome == "error"
 
 
+def test_present_but_unparseable_architecture_file_is_an_error_not_a_finding(tmp_path):
+    """instrument-broken class (docs/gate-validation.md, chief-wiggum#289's
+    promotion ticket): the architecture_file EXISTS at the given path — unlike
+    `test_applicability_is_error_when_the_named_model_is_absent` above, this is
+    not a broken invocation — but its content cannot be parsed as JSON. The
+    SUBJECT is intact; only the gate's ability to see it is destroyed. Before
+    this fix that classified as ordinary `applicability: "applicable"` /
+    `outcome: "findings"` (one generic schema Finding), indistinguishable from
+    a small-but-real model that happens to have one complaint. It must instead
+    read as a broken instrument."""
+    p = tmp_path / "architecture.json"
+    p.write_text("not valid json {{{")
+
+    rc = ca.main([str(p), "--format", "json"])
+    assert rc == 0  # report-only never blocks
+
+    rc_gate = ca.main([str(p), "--gate"])
+    assert rc_gate == 1
+
+
+def test_present_but_unparseable_architecture_file_reports_error_state(tmp_path, capsys):
+    p = tmp_path / "architecture.json"
+    p.write_text("not valid json {{{")
+    ca.main([str(p), "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert out["applicability"] == "error", out
+    assert out["outcome"] == "error", out
+    assert out["measured"]["doc_parse_error"] is not None, out["measured"]
+    # the parser measured nothing — 0 nodes/edges is due to the parse failure,
+    # never conflated with a genuinely tiny valid model
+    assert out["measured"]["nodes"] == 0 and out["measured"]["edges"] == 0, out["measured"]
+
+
 def test_cli_unloadable_system_contracts_is_finding_and_gate_blocks(tmp_path):
     p = tmp_path / "architecture.json"
     p.write_text(json.dumps(_load(EXAMPLE_ARCH)))
