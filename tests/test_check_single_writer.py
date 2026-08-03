@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+
+import pytest
 
 import check_single_writer as sw
 
@@ -340,6 +344,111 @@ def test_unsupported_extension_counts_respects_exclude(tmp_path):
     d.mkdir()
     (d / "legacy.php").write_text("<?php\n")
     assert sw.unsupported_extension_counts(tmp_path, exclude=["vendor"]) == {}
+
+
+# --- non-UTF-8 source files (#282) ------------------------------------------
+
+
+def test_utf16_source_file_scans_to_completion_and_is_detected(tmp_path):
+    """A bare path.read_text() crashes the ENTIRE gate with UnicodeDecodeError
+    on a UTF-16 file — no verdict at all. BOM-sniffing must decode it properly
+    (not just avoid crashing) so its write site is still found."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "admin").mkdir(parents=True)
+    legacy = src / "internal" / "admin" / "handlers.go"
+    legacy.write_bytes(
+        (
+            "package admin\n\n"
+            "func ChangePlan(p *Provider, newPlan string) {\n"
+            "\tp.StripePlan = newPlan\n"
+            "}\n"
+        ).encode("utf-16")  # Python's utf-16 encoder writes a BOM
+    )
+
+    report = sw.check(epic, src)  # must not raise UnicodeDecodeError
+
+    assert len(report.violations) == 1
+    assert report.violations[0]["file"].endswith("handlers.go")
+    assert report.unscanned == []  # decoded successfully — not a skip
+
+
+def test_undecodable_file_is_reported_as_unscanned_with_path(tmp_path):
+    """A file the scanner genuinely cannot read (OS-level failure — the only
+    case that survives BOM-sniff + errors='replace', which never raises on
+    content alone) must be recorded as unscanned WITH its path, never dropped
+    via a silent `continue`."""
+    if sys.platform.startswith("win") or os.geteuid() == 0:
+        pytest.skip("permission bits are not enforceable as root or on Windows")
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    noaccess = src / "internal" / "billing" / "noaccess.go"
+    noaccess.write_text("func Whatever() {}\n")
+    os.chmod(noaccess, 0o000)
+    try:
+        report = sw.check(epic, src)  # must not raise
+    finally:
+        os.chmod(noaccess, 0o644)
+
+    assert report.unscanned, "unreadable file must be recorded, not silently skipped"
+    paths = [u["file"] for u in report.unscanned]
+    assert any("noaccess.go" in p for p in paths)
+    assert all(u.get("reason") for u in report.unscanned)
+    # Report-only: an unscanned file never flips coverage on its own.
+    assert report.coverage_ok is True
+
+
+def test_unscanned_never_blocks_gate_coverage_by_itself(tmp_path, capsys):
+    """Binding decision (#282): unscanned files are reported, never blocking —
+    a repo full of binary-ish files must not become unusable under --gate."""
+    if sys.platform.startswith("win") or os.geteuid() == 0:
+        pytest.skip("permission bits are not enforceable as root or on Windows")
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    noaccess = src / "internal" / "billing" / "noaccess.go"
+    noaccess.write_text("func Whatever() {}\n")
+    os.chmod(noaccess, 0o000)
+    try:
+        rc = sw.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    finally:
+        os.chmod(noaccess, 0o644)
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["unscanned"]
+
+
+def test_normal_utf8_repo_has_no_unscanned_noise(tmp_path):
+    """Regression: an ordinary UTF-8 repo must not gain new unscanned entries
+    or warnings from this change."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    report = sw.check(epic, src)
+    assert report.unscanned == []
+    assert report.coverage_ok is True
+
+
+def test_scan_writers_still_returns_a_plain_writer_list(tmp_path):
+    """Public API stability: scan_writers keeps returning list[Writer] (many
+    existing callers — code_query.py and dozens of tests — depend on this),
+    even though it now tracks unscanned files internally for check()."""
+    (tmp_path / "admin.go").write_bytes(
+        "func ChangePlan(p *Provider, v string) {\n\tp.StripePlan = v\n}\n".encode("utf-16")
+    )
+    writers = sw.scan_writers(tmp_path, [_inv()])
+    assert isinstance(writers, list)
+    assert writers and writers[0].symbol == "ChangePlan"
 
 
 def test_scan_writers_routes_through_emitter_registry(tmp_path, monkeypatch):
