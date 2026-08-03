@@ -160,6 +160,42 @@ def head_sha(target: Path | str) -> str | None:
     return _git(Path(target), "rev-parse", "HEAD")
 
 
+def _is_ancestor(target: Path, ancestor: str, descendant: str) -> bool | None:
+    """True/False when git can determine ancestry; None when it CANNOT (a
+    missing object — e.g. a shallow clone that never fetched ``ancestor`` — or
+    any other git failure). ``git merge-base --is-ancestor`` exits 0 (true),
+    1 (false), or >1 (error); only >1 is coerced to None (chief-wiggum#287) —
+    an indeterminate comparison must warn, never silently pass OR silently
+    fail closed as a false positive."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(target), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    return None
+
+
+def _changed_paths_between(target: Path, base: str, head: str) -> list[str] | None:
+    """Repo-relative paths changed between ``base`` and ``head`` (exclusive..
+    inclusive), or None if git could not compute the diff at all."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(target), "diff", "--name-only", f"{base}..{head}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.splitlines() if line]
+
+
 def _safe_id_part(part: str) -> bool:
     """A remote-derived id segment that is safe to use as a path component
     under the meta root. Rejects anything that could traverse or escape:
@@ -378,10 +414,42 @@ class Resolver:
         out["target_sha"] = head_sha(self.target)
         return out
 
-    def check_stale(self, payload: dict) -> str | None:
-        """None when the payload's target_sha matches the target's current
-        HEAD; a human-readable warning string otherwise (missing sha counts as
-        unverifiable, i.e. a warning — never a silent pass)."""
+    def _default_exclude_prefixes(self) -> list[str]:
+        """Repo-relative path prefix(es) that changing alone does NOT make an
+        artifact stale — this resolver's own state dir (``quality/``: ratchet's
+        config/journal/highwater/scorecard, debt.json, ...). Committing that
+        state (the normal `/implement` Step 13 flow) moves HEAD; that alone
+        must not make the artifact it just recorded read as stale
+        (chief-wiggum#287).
+
+        Sidecar mode: the meta root has no path inside the target at all, so
+        a target-tree diff can never contain it — nothing to exclude, and
+        nothing needed."""
+        if self.mode == "sidecar":
+            return []
+        try:
+            rel = self.quality_dir().resolve().relative_to(self.target.resolve())
+        except ValueError:
+            return []
+        return [rel.as_posix()]
+
+    def check_stale(self, payload: dict, exclude_paths: list[str] | None = None) -> str | None:
+        """None when the payload's ``target_sha`` is fresh w.r.t. the target's
+        current HEAD; a human-readable warning string otherwise.
+
+        "Fresh" is NOT exact-HEAD equality (chief-wiggum#287): the artifact's
+        OWN state gets committed after it is produced (e.g. `ratchet score`
+        stamps target_sha=HEAD, then `/implement` Step 13 commits the
+        scorecard it just wrote — moving HEAD), which made every
+        correctly-produced artifact read as stale the instant it landed.
+        Instead: recorded is fresh when it is an ANCESTOR of current HEAD
+        *and* every file that changed between them falls under
+        ``exclude_paths`` (default: this resolver's own state dir) — i.e. only
+        the artifact's own committed state moved, not the population it
+        scanned. A missing sha, an unresolvable ancestry check (shallow
+        clone/missing object), or an unreadable diff all count as
+        UNVERIFIABLE — a warning, never a silent pass.
+        """
         recorded = payload.get("target_sha")
         if not recorded:
             return (
@@ -394,10 +462,41 @@ class Resolver:
                 f"target {self.target} has no HEAD (not a git repo?) — cannot "
                 f"verify recorded target_sha {recorded}"
             )
-        if recorded != current:
+        if recorded == current:
+            return None
+        is_ancestor = _is_ancestor(self.target, recorded, current)
+        if is_ancestor is None:
+            return (
+                f"indeterminate: cannot determine whether recorded target_sha="
+                f"{recorded} is an ancestor of current HEAD={current} (shallow "
+                "clone or missing object?) — treating as UNVERIFIABLE, not "
+                "fresh; regenerate to be safe"
+            )
+        if not is_ancestor:
+            return (
+                f"stale: recorded target_sha={recorded} is not an ancestor of "
+                f"current HEAD={current} — the artifact was computed against a "
+                "divergent target; regenerate"
+            )
+        changed = _changed_paths_between(self.target, recorded, current)
+        if changed is None:
+            return (
+                f"indeterminate: cannot compute the diff between recorded "
+                f"target_sha={recorded} and current HEAD={current} — treating "
+                "as UNVERIFIABLE, not fresh; regenerate to be safe"
+            )
+        prefixes = self._default_exclude_prefixes() if exclude_paths is None else exclude_paths
+        outside = [
+            f for f in changed
+            if not any(f == p or f.startswith(p.rstrip("/") + "/") for p in prefixes)
+        ]
+        if outside:
+            shown = ", ".join(outside[:5])
+            more = f" … and {len(outside) - 5} more" if len(outside) > 5 else ""
             return (
                 f"stale: recorded target_sha={recorded} != current HEAD={current} "
-                "— the artifact was computed against an older target; regenerate"
+                f"and {len(outside)} file(s) outside this artifact's own state "
+                f"changed since it was recorded ({shown}{more}) — regenerate"
             )
         return None
 
