@@ -253,23 +253,44 @@ def required_seed_classes(record: dict) -> list[str]:
     return required
 
 
-def _live_scanner_version(gate: str, scripts_dir: Path) -> str | None:
-    """The gate's CURRENT ``--scanner-version`` output, or None when the gate
-    script is absent or doesn't support the flag (nothing to compare against)."""
+def _live_scanner_version(gate: str, scripts_dir: Path) -> tuple[str | None, str | None]:
+    """The gate's CURRENT ``--scanner-version`` output.
+
+    Returns ``(version, probe_error)``. ``probe_error`` is ``None`` and
+    ``version`` is the printed hash on a clean probe.
+
+    ``version`` is ``None`` with ``probe_error`` also ``None`` ONLY when
+    ``<gate>.py`` genuinely does not exist under ``scripts_dir`` — honest
+    absence, nothing to compare against (the same posture as any other
+    gate's ``inapplicable``: it never blocks).
+
+    ``version`` is ``None`` with a non-``None`` ``probe_error`` when the
+    script EXISTS but invoking it with ``--scanner-version`` raised or
+    exited non-zero (#289). Before this fix both cases collapsed to a bare
+    ``None`` indistinguishable from "nothing to probe" — the staleness
+    comparison silently never ran, byte-identical to a clean pass. A script
+    that is actually present and fails to answer its own version flag is a
+    BROKEN PROBE, not evidence of "no support"; the caller turns this into a
+    loud provenance error instead of a silent skip.
+    """
     script = scripts_dir / f"{gate}.py"
     if not script.is_file():
-        return None
+        return None, None
     try:
         proc = subprocess.run(
             [sys.executable, str(script), "--scanner-version"],
             capture_output=True, text=True, timeout=60,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired as exc:
+        return None, f"--scanner-version probe timed out: {exc}"
+    except OSError as exc:
+        return None, f"--scanner-version probe could not be run: {exc}"
     if proc.returncode != 0:
-        return None
+        stderr = proc.stderr.strip()
+        detail = f" ({stderr})" if stderr else ""
+        return None, f"--scanner-version probe exited {proc.returncode}{detail}"
     out = proc.stdout.strip()
-    return out or None
+    return (out, None) if out else (None, None)
 
 
 def _ratchet_provenance_errors(gate: str, record: dict, validation_dir: Path) -> list[str]:
@@ -342,8 +363,18 @@ def check(
             f"record's gate field is {record.get('gate')!r}, not {gate!r} — a record copied "
             "from another gate grants no authority"
         )
-    live = _live_scanner_version(gate, scripts_dir)
-    if live is not None and record.get("scanner_version") != live:
+    live, probe_error = _live_scanner_version(gate, scripts_dir)
+    if probe_error is not None:
+        # #289: the probe itself is broken (script present but raised/timed
+        # out/exited non-zero) — staleness could NOT be verified. This is
+        # deliberately NOT one of the "stale" markers below: a broken probe
+        # means we don't know whether the record is current, which is a
+        # worse, more fundamental problem than "verified one version behind".
+        report.provenance_errors.append(
+            f"scanner_version could not be verified for {gate!r}: {probe_error} — "
+            "the staleness probe itself is broken, which is never evidence of a clean record"
+        )
+    elif live is not None and record.get("scanner_version") != live:
         report.provenance_errors.append(
             f"scanner_version mismatch: record has {record.get('scanner_version')!r} but the live "
             f"gate reports {live!r} — the record is stale; re-run the trials against the current "
@@ -642,6 +673,14 @@ def main(argv: list[str] | None = None) -> int:
              f"../{JOURNAL_NAME})",
     )
     parser.add_argument("--schema", default=str(DEFAULT_SCHEMA))
+    parser.add_argument(
+        "--scripts-dir", default=None,
+        help="Directory containing <gate>.py to probe --scanner-version against "
+             "(default: this module's own scripts/ dir). Set this to a TARGET repo's "
+             "own scripts directory to staleness-check ITS gate scripts (#289) — "
+             "without it, a target repo's own gates are never found here and their "
+             "staleness silently goes unchecked.",
+    )
     parser.add_argument("--gate", dest="gate_mode", action="store_true",
                         help="Fail (exit 1) when the named gate lacks a passing validation record")
     parser.add_argument("--format", choices=["text", "json"], default="text")
@@ -668,7 +707,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     report, transition = check_and_transition(
-        args.gate, args.validation_dir, schema=schema, wire=args.wire, unwire=args.unwire,
+        args.gate, args.validation_dir, schema=schema, scripts_dir=args.scripts_dir,
+        wire=args.wire, unwire=args.unwire,
     )
 
     if args.format == "json":
