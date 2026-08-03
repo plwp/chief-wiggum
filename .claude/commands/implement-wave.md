@@ -293,6 +293,23 @@ This is the same principle as `/implement` Step 8 — the orchestrator is the qu
 
 **Do NOT merge directly to the default branch.** Use a staging branch so the integration check (4d) runs before anything is pushed.
 
+**Acquire the wave lock first.** `$TARGET_REPO` is the SHARED target-repo cache checkout (`~/.chief-wiggum/repos/<owner>/<repo>`) — a second concurrent `/implement-wave` orchestrator against the same repo would otherwise `cd` into this exact checkout and merge/promote at the same time (chief-wiggum#245: confirmed live, a second wave's staging merge collided mid-conflict with a first wave's in-flight one, caught only after the fact by `assert-main-pristine`). Acquire an advisory per-repo lock BEFORE creating the staging branch, and hold it through 4g:
+
+```bash
+SESSION_ID=$(basename "$CW_TMP")
+# Fails LOUDLY on contention (never silently shares the checkout) — prints who
+# holds it (session id, pid, acquired-at) so the operator can tell this is a
+# collision, not a bug. Poll with a visible message rather than hard-failing:
+# a second wave's staging/promote phase is normally short-lived.
+until python3 "$CW_HOME/scripts/wave_lock.py" acquire --repo "$TARGET_REPO" --session "$SESSION_ID" --wave "$wave_number"; do
+  echo "Waiting for the wave lock on $TARGET_REPO (held by another /implement-wave run)..." >&2
+  python3 "$CW_HOME/scripts/wave_lock.py" status --repo "$TARGET_REPO" >&2
+  sleep 30
+done
+```
+
+**Cross-epic promote-ordering hazard**: if this repo has another `/implement-wave` run in flight for a DIFFERENT epic, check whether either epic's wave deletes an interface the other's branches were written against. The wave built against the OLDER interface must promote first (or be rebased knowingly onto the newer one) — the lock only serializes the staging/promote phase, it does not resolve which epic's semantics should win. Surface this to the user rather than guessing.
+
 1. **Create a staging branch** from the current default branch:
    ```bash
    cd "$TARGET_REPO"
@@ -430,6 +447,12 @@ git branch -d "wave-$wave_number-staging"
 If the fast-forward fails (someone pushed to main in the meantime), rebase the staging branch and re-run the integration check.
 
 Only proceed to the next wave after the push succeeds.
+
+**Release the wave lock** acquired in 4d — every exit from the staging/promote phase (success, integration-check abort, or fast-forward failure requiring manual intervention) must release it, or the next wave (in this same run) blocks on itself:
+
+```bash
+python3 "$CW_HOME/scripts/wave_lock.py" release --repo "$TARGET_REPO" --session "$SESSION_ID"
+```
 
 #### 4h: Update traceability
 

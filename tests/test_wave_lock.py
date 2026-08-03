@@ -22,7 +22,6 @@ import pytest
 import wave_lock
 from chief_wiggum import repo_lock
 
-
 # --- domain module: chief_wiggum.repo_lock ----------------------------------
 
 
@@ -183,6 +182,7 @@ def test_cli_status_reports_locked_true_with_holder_info(tmp_path, capsys):
     repo = tmp_path / "app"
     repo.mkdir()
     wave_lock.main(["acquire", "--repo", str(repo), "--session", "s1"])
+    capsys.readouterr()  # discard the "acquire" command's own stdout
     rc = wave_lock.main(["status", "--repo", str(repo)])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
