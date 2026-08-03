@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import run_verification
 from chief_wiggum import verification as v
@@ -212,3 +213,85 @@ def test_cli_rejects_unknown_profile(tmp_path, capsys):
     rc = run_verification.main(["--repo", str(tmp_path), "--profile", "bogus"])
     assert rc == 2
     assert "unknown profile" in capsys.readouterr().err
+
+
+# --- #284: junit report emission so `ratchet score` can reuse this run ------
+#
+# /implement Step 8 runs the full test suite via run_verification.py, then
+# Step 8b's `ratchet.py score` re-runs the SAME suite from scratch to hash the
+# pass-set. For a pytest-based repo this pays for the suite twice. The fix:
+# a "test"-profile step that's plausibly pytest (tool == "python", or a
+# Makefile target on a repo that also has_python) gets a known junit-xml
+# report path attached, and `verify()` sets PYTEST_ADDOPTS so pytest writes
+# it — transparently, whether invoked directly or via `make test` — so
+# `ratchet score --reuse-report` (see test_ratchet.py) has something to read.
+
+
+def test_plan_test_step_records_report_for_python_tool(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    det = v.detect_project(tmp_path)
+    steps = v.plan_steps(tmp_path, ["test"], det)
+    assert len(steps) == 1 and steps[0].tool == "python"
+    assert steps[0].report == v.PYTEST_JUNIT_REPORT
+
+
+def test_plan_test_step_records_report_for_makefile_python(tmp_path):
+    """A Makefile 'test' target wins over the python step (existing
+    precedence), but on a repo that also has_python it is presumptively
+    pytest underneath (chief-wiggum's own `make test` is a bare pytest) — the
+    report path is still attached so PYTEST_ADDOPTS has somewhere to write."""
+    (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    det = v.detect_project(tmp_path)
+    steps = v.plan_steps(tmp_path, ["test"], det)
+    assert len(steps) == 1 and steps[0].tool == "make"
+    assert steps[0].report == v.PYTEST_JUNIT_REPORT
+
+
+def test_plan_test_step_no_report_for_go(tmp_path):
+    (tmp_path / "go.mod").write_text("module x\n")
+    det = v.detect_project(tmp_path)
+    steps = v.plan_steps(tmp_path, ["test"], det)
+    assert steps[0].report is None
+
+
+def test_plan_non_test_profile_never_gets_a_report(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    det = v.detect_project(tmp_path)
+    steps = v.plan_steps(tmp_path, ["lint", "build"], det)
+    assert all(s.report is None for s in steps)
+
+
+def test_verify_sets_pytest_addopts_env_and_clears_stale_report(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    report_path = tmp_path / v.PYTEST_JUNIT_REPORT
+    report_path.write_text("STALE — from an earlier, unrelated run\n")
+
+    seen = {}
+
+    def runner(cmd, cwd, env=None):
+        # The stale report must be gone BEFORE this runs (never survive as a
+        # false pass-set if this runner "fails" to rewrite it).
+        seen["report_existed_at_call"] = Path(cwd, v.PYTEST_JUNIT_REPORT).exists()
+        seen["env"] = env
+        return 0, "ok"
+
+    report = v.verify(tmp_path, ["test"], runner=runner)
+    assert seen["report_existed_at_call"] is False
+    assert seen["env"] is not None
+    addopts = seen["env"].get("PYTEST_ADDOPTS", "")
+    assert f"--junit-xml={tmp_path / v.PYTEST_JUNIT_REPORT}" in addopts
+    assert report.steps[0].report == v.PYTEST_JUNIT_REPORT
+
+
+def test_verify_falls_back_when_runner_lacks_env_kwarg(tmp_path):
+    """A pre-existing 2-arg runner (every test above, and every real caller
+    before #284) must keep working unchanged — env plumbing is additive."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+
+    def runner(cmd, cwd):
+        return 0, "ok"
+
+    report = v.verify(tmp_path, ["test"], runner=runner)
+    assert report.ok is True
+    assert report.steps[0].report == v.PYTEST_JUNIT_REPORT

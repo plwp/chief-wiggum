@@ -778,6 +778,125 @@ def test_score_stamps_target_sha(tmp_path):
     assert sc["target_sha"] is None  # tmp_path is not a git repo — recorded as None
 
 
+# ---- #284: score --reuse-report (skip a second full suite run) -----------------
+
+
+def _score_args(tmp_path, **overrides):
+    base = dict(
+        repo=str(tmp_path), no_tests=False, no_quality=True, venv=None, gobin=None,
+        reuse_report=None, reuse_report_max_age=1800,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _write_junit(path, cases):
+    """Minimal junit-xml with the given (classname, name) PASSING cases."""
+    body = "".join(f'<testcase classname="{c}" name="{n}"/>' for c, n in cases)
+    Path(path).write_text(f"<testsuite>{body}</testsuite>")
+
+
+def test_score_reuse_report_skips_running_cmd(tmp_path):
+    """AC1/proof: a suite whose `cmd` would DESTROY the report if it ran is
+    configured; --reuse-report must leave the pre-written report untouched
+    and parse IT, never invoking cmd at all."""
+    report = tmp_path / ".ratchet-junit.xml"
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "pytest", "cmd": f"rm -f {report}", "cwd": ".", "parser": "junit-xml",
+         "report": ".ratchet-junit.xml"},
+    ])
+    _write_junit(report, [("a.b", "t1"), ("a.b", "t2")])
+    rc = ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"pytest={report}"]))
+    assert rc == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert set(sc["pass_set"]) == {"pytest::a.b::t1", "pytest::a.b::t2"}
+    assert report.is_file()  # cmd (which would have deleted it) never ran
+
+
+def _idempotent_junit_suite(tmp_path, name="pytest", report_name=".ratchet-junit.xml"):
+    """A suite whose `cmd`, if actually run, SUCCEEDS and writes a valid
+    report — so a test asserting --reuse-report validation fails for the
+    RIGHT reason pre-implementation (rc==0, cmd silently ran) rather than
+    coincidentally via run_suite's own missing-report check."""
+    script = tmp_path / f"write_{name}.py"
+    script.write_text(
+        f"open('{report_name}', 'w').write("
+        "'<testsuite><testcase classname=\"a.b\" name=\"t1\"/></testsuite>')\n"
+    )
+    return {"name": name, "cmd": f"python3 {script}", "cwd": ".",
+            "parser": "junit-xml", "report": report_name}
+
+
+def test_score_reuse_report_missing_file_errors(tmp_path):
+    cfg = make_repo(tmp_path, suites=[_idempotent_junit_suite(tmp_path)])
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"pytest={tmp_path / 'nope.xml'}"]))
+
+
+def test_score_reuse_report_stale_mtime_errors(tmp_path):
+    """A report older than --reuse-report-max-age must fail loudly, never
+    silently score against leftover state from an earlier ticket (the exact
+    failure mode the trx pre-run clearing already guards against)."""
+    import os
+    import time
+
+    report = tmp_path / ".ratchet-junit.xml"
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "pytest", "cmd": "true", "cwd": ".", "parser": "junit-xml",
+         "report": ".ratchet-junit.xml"},
+    ])
+    _write_junit(report, [("a.b", "t1")])
+    old = time.time() - 10_000
+    os.utime(report, (old, old))
+    with pytest.raises(ratchet.RatchetError, match="stale|old"):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"pytest={report}"], reuse_report_max_age=60))
+
+
+def test_score_reuse_report_unknown_suite_name_errors(tmp_path):
+    cfg = make_repo(tmp_path, suites=[_idempotent_junit_suite(tmp_path)])
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"nosuchsuite={tmp_path / '.ratchet-junit.xml'}"]))
+
+
+def test_score_reuse_report_matches_a_fresh_run(tmp_path):
+    """AC3: reuse and a fresh run must produce the SAME pass-set."""
+    write_script = tmp_path / "write_report.py"
+    write_script.write_text(
+        "open('.ratchet-junit.xml', 'w').write("
+        "'<testsuite><testcase classname=\"a.b\" name=\"t1\"/>"
+        "<testcase classname=\"a.b\" name=\"t2\"/></testsuite>')\n"
+    )
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "pytest", "cmd": f"python3 {write_script}", "cwd": ".",
+         "parser": "junit-xml", "report": ".ratchet-junit.xml"},
+    ])
+    # Fresh run: cmd actually executes and writes the report.
+    assert ratchet.cmd_score(_score_args(tmp_path)) == 0
+    sc_fresh = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    # Reuse run: same report file, cmd is NOT re-executed (cmd here is
+    # idempotent, so this only proves parity of the parsed result, not
+    # non-execution — that's covered by test_score_reuse_report_skips_running_cmd).
+    report = tmp_path / ".ratchet-junit.xml"
+    assert ratchet.cmd_score(_score_args(
+        tmp_path, reuse_report=[f"pytest={report}"])) == 0
+    sc_reused = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    assert sc_fresh["pass_set"] == sc_reused["pass_set"]
+
+
+def test_score_reuse_report_absent_namespace_attrs_degrade_gracefully(tmp_path):
+    """A hand-built argparse.Namespace predating #284 (no reuse_report attrs)
+    must not crash — house precedent (see _resolve_retire_cases)."""
+    make_repo(tmp_path, suites=[])
+    ns = argparse.Namespace(repo=str(tmp_path), no_tests=True, no_quality=True,
+                             venv=None, gobin=None)
+    assert ratchet.cmd_score(ns) == 0
+
+
 # ---- sanctioned pathset (chief-wiggum#213) -----------------------------------------
 
 
