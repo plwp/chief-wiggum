@@ -38,6 +38,15 @@
       "corpus_digest": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
       "injected": "test_create_order.py lost its real verifies annotation; a decoy verifies annotation for both IDs was placed in notes.txt, an extension outside SOURCE_EXTS",
       "expected": "fire"
+    },
+    {
+      "seed_id": "tr-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/traceability_clean",
+      "corpus_digest": "sha256:4f25c992d9320117529dc1c4025ad48de4a19ba5e38dd3745ee7e565016e856e",
+      "injected": "epic/contracts.md + epic/invariants.md re-authored with the two-segment `INV-001` shape the /architect skill's own worked example modelled: CTR-order-001->CTR-001, BR-order-001->BR-001, INV-order-003->INV-003. The source tree is UNTOUCHED \u2014 only the scanner's ability to parse the artifacts is destroyed.",
+      "expected": "fire"
     }
   ]
 }

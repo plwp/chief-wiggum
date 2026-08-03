@@ -41,10 +41,10 @@ stateDiagram-v2
 - cancelled → confirmed (Cancellation is terminal — no transitions out)
 
 ### Invariants
-- **INV-001** [data_integrity]: Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.
-- **INV-002** [data_integrity]: Every order with status >= pending has a non-null customer_id that references a valid customer.
-- **INV-003** [data_integrity]: end_date > start_date on every order, enforced at write time.
-- **INV-004** [data_integrity]: An order in in_progress MUST have a resource_id assigned.
-- **INV-005** [consistency]: Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query. No screen-specific counting logic.
-- **INV-006** [consistency]: Capacity View and Summary View MUST use the same occupancy calculation. Define once, use everywhere.
-- **INV-007** [operational_safety]: If an operation depends on an external service (email, payment), the success toast MUST NOT display unless the service call succeeded.
+- **INV-order-001** [data_integrity]: Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.
+- **INV-order-002** [data_integrity]: Every order with status >= pending has a non-null customer_id that references a valid customer.
+- **INV-order-003** [data_integrity]: end_date > start_date on every order, enforced at write time.
+- **INV-order-004** [data_integrity]: An order in in_progress MUST have a resource_id assigned.
+- **INV-order-005** [consistency]: Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query. No screen-specific counting logic.
+- **INV-order-006** [consistency]: Capacity View and Summary View MUST use the same occupancy calculation. Define once, use everywhere.
+- **INV-order-007** [operational_safety]: If an operation depends on an external service (email, payment), the success toast MUST NOT display unless the service call succeeded.

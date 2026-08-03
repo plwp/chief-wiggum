@@ -113,7 +113,7 @@ from chief_wiggum.trace_emission import (  # noqa: E402, F401
 # moved to chief_wiggum.trace_emission, which imports it itself) but stays
 # re-exported as `check_traceability.TRACE_RE` for backward compatibility
 # (see tests/test_trace_ids.py's identity checks).
-from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE  # noqa: E402, F401
+from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE, near_miss_ids  # noqa: E402, F401
 
 # Suspect-link propagation (#169): a link is SUSPECT when the ID it was
 # verified against has a definition hash that no longer matches the hash
@@ -143,6 +143,18 @@ DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "formal-mod
 # the pre-#162 hardcoded set.
 VERIFICATION_EXTS = {".rego", ".yaml", ".yml"}
 SOURCE_EXTS = cw_languages.all_known_extensions() | VERIFICATION_EXTS
+
+# Artifacts /architect authors that MUST carry stable IDs. Their presence (with
+# content) is what separates "no epic yet" (inapplicable) from "epic present,
+# nothing parseable" (error — a broken instrument, #281/#289). adr.md,
+# integration-tests.md, traceability.md and retrospective.md are deliberately
+# NOT here: they legitimately carry no declarations.
+ID_BEARING_ARTIFACTS = frozenset({
+    "contracts.md", "contracts.json",
+    "invariants.md",
+    "state-machines.md", "state-machines.json",
+    "architecture.json",
+})
 
 
 @dataclass
@@ -175,13 +187,42 @@ class TraceReport:
     grandfathered_contracts: list[dict] = field(default_factory=list)
     expired_grandfathers: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
-    # defines ZERO stable IDs AND no @cw-trace annotations exist anywhere —
-    # there was no graph to check, so coverage_ok == True is vacuous, not
-    # evidence. Exit codes are unchanged (existing green pipelines keep
-    # passing); the verdict is machine-distinguishable here and the --gate
-    # path prints an explicit banner.
+    # #281: a declaration that ALMOST matches the grammar (two-segment
+    # `INV-001`). The scanner cannot see it, so it silently shrinks the
+    # measured graph — the partial-drift case (contracts.json fine,
+    # invariants.md two-segment) that is completely silent today.
+    malformed_ids: list[dict] = field(default_factory=list)
+    # #281: ID-bearing artifacts that exist, have content, and yielded ZERO
+    # parseable IDs.
+    unparsed_artifacts: list[dict] = field(default_factory=list)
+    # #289 item 5: the measured denominator (how many ID-bearing artifacts
+    # were actually scanned) — so a zero is visible even inside an otherwise
+    # green report, not just inferred from an empty finding list.
+    id_bearing_artifacts_scanned: int = 0
+    # Vacuous-pass fix (chief-wiggum#213 Phase E, widened to three states by
+    # #281): "inapplicable" when there is nothing to measure (no ID-bearing
+    # artifact with content anywhere); "error" when ID-bearing artifacts exist
+    # WITH CONTENT but the scanner parsed ZERO stable IDs out of them — a
+    # BROKEN INSTRUMENT, never a pass. Vocabulary is #289's standard outcome
+    # model (pass | findings | inapplicable | error).
+    #   "applicable"   — the graph was measured
+    #   "inapplicable" — nothing exists to measure
+    #   "error"        — artifacts exist and the scanner saw none of them
     applicability: str = "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error.
+
+        Derived, never stored — "failed to run" and "found nothing" must not
+        be able to drift apart into two fields that disagree.
+        """
+        if self.applicability == "error":
+            return "error"
+        if self.applicability == "inapplicable":
+            return "inapplicable"
+        return "pass" if (self.soundness_ok and self.coverage_ok) else "findings"
 
     @property
     def counts(self) -> dict:
@@ -198,11 +239,17 @@ class TraceReport:
             "invalid_justifications": len(self.invalid_justifications),
             "grandfathered": len(self.grandfathered_contracts),
             "expired_grandfathers": len(self.expired_grandfathers),
+            "malformed_ids": len(self.malformed_ids),
+            "unparsed_artifacts": len(self.unparsed_artifacts),
         }
 
     @property
     def soundness_ok(self) -> bool:
-        return not (self.orphan_business_rules or self.dangling or self.invalid_links)
+        # #281: a broken measurement is a soundness failure, not a pass. An
+        # epic whose declarations the scanner cannot see has an EMPTY graph
+        # by breakage, not by cleanliness.
+        return not (self.orphan_business_rules or self.dangling or self.invalid_links
+                    or self.malformed_ids or self.unparsed_artifacts)
 
     @property
     def coverage_ok(self) -> bool:
@@ -213,6 +260,11 @@ class TraceReport:
             "defined": self.defined,
             "counts": self.counts,
             "applicability": self.applicability,
+            "outcome": self.outcome,
+            "measured": {
+                "id_bearing_artifacts": self.id_bearing_artifacts_scanned,
+                "defined_ids": len(self.defined),
+            },
             "soundness_ok": self.soundness_ok,
             "coverage_ok": self.coverage_ok,
             "orphan_business_rules": self.orphan_business_rules,
@@ -220,6 +272,8 @@ class TraceReport:
             "untested_contracts": self.untested_contracts,
             "dangling": self.dangling,
             "invalid_links": self.invalid_links,
+            "malformed_ids": self.malformed_ids,
+            "unparsed_artifacts": self.unparsed_artifacts,
             "suspect_links": self.suspect_links,
             "suspect_contracts": self.suspect_contracts,
             "justified_contracts": self.justified_contracts,
@@ -259,6 +313,64 @@ def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
             node_id = canonical_id(m.group(1))
             defined[node_id] = kind_of(node_id)
     return defined
+
+
+def find_id_bearing_artifacts(epic_dir: str | Path) -> list[str]:
+    """Epic-relative paths of ID-bearing artifacts that exist AND have content.
+
+    Empty-but-present files do NOT count: an epic dir holding a zero-byte
+    contracts.md has nothing to parse yet and stays *inapplicable* — the
+    error state (#281) is reserved for "there is text, and the scanner saw
+    nothing in it".
+    """
+    root = Path(epic_dir)
+    if not root.exists():
+        return []
+    found: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.name not in ID_BEARING_ARTIFACTS:
+            continue
+        if is_justification_path(root, path):
+            continue
+        try:
+            if path.read_text().strip():
+                found.append(str(path.relative_to(root)))
+        except OSError:
+            continue
+    return found
+
+
+def scan_malformed_ids(epic_dir: str | Path) -> list[dict]:
+    """Declaration-position near-misses (#281) across the epic's .md/.json
+    artifacts.
+
+    Same walk as ``extract_defined_ids`` (including the ``justifications/``
+    exclusion) so the two can never disagree about what was read.
+    """
+    root = Path(epic_dir)
+    out: list[dict] = []
+    if not root.exists():
+        return out
+    for path in sorted(root.rglob("*")):
+        if path.suffix not in (".md", ".json") or not path.is_file():
+            continue
+        if is_justification_path(root, path):
+            continue
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for token in near_miss_ids(text):
+            line = next(
+                (i for i, ln in enumerate(text.splitlines(), 1) if token in ln), 0
+            )
+            out.append({
+                "file": str(path.relative_to(root)),
+                "line": line,
+                "token": token,
+                "expected": "KIND-SLUG-NNN (e.g. INV-order-001)",
+            })
+    return out
 
 
 def _collect_coverage_requirements(node, out: dict[str, list[str]]) -> None:
@@ -482,12 +594,18 @@ def build_report(
     schema: dict,
     *,
     coverage_requirements: dict[str, list[str]] | None = None,
+    id_bearing_artifacts: tuple[str, ...] | list[str] = (),
+    malformed_ids: tuple[dict, ...] | list[dict] = (),
 ) -> TraceReport:
     """Build the trace report. ``coverage_requirements`` (#169, optional) maps a
     contract ID to a list of ``source_kind`` alternatives (e.g.
     ``["test", "probe"]``) — when present, a contract is tested only by a
     ``verifies`` link whose kind is one of those alternatives ("A OR B");
-    absent, any verifying kind counts (unchanged prior behavior)."""
+    absent, any verifying kind counts (unchanged prior behavior).
+    ``id_bearing_artifacts``/``malformed_ids`` (#281, both optional) are the
+    outputs of ``find_id_bearing_artifacts``/``scan_malformed_ids`` — used to
+    tell "nothing to measure" (inapplicable) apart from "measured and saw
+    nothing despite artifacts existing" (error, a broken instrument)."""
     report = TraceReport(defined=dict(defined))
     link_types = schema.get("link_types", {})
     coverage_requirements = coverage_requirements or {}
@@ -546,7 +664,27 @@ def build_report(
 
     if not annotations:
         report.warnings.append("no @cw-trace annotations found; reporting coverage as absent")
-    if not defined:
+    report.malformed_ids = list(malformed_ids)
+    report.id_bearing_artifacts_scanned = len(id_bearing_artifacts)
+    if defined:
+        # (a) measurement ran and saw the graph.
+        report.applicability = "applicable"
+    elif id_bearing_artifacts:
+        # (b) #281: measurement ran and could see NOTHING despite ID-bearing
+        # artifacts existing with content. This is a broken instrument, and
+        # it must never render as a pass.
+        report.applicability = "error"
+        report.unparsed_artifacts = [
+            {"file": f,
+             "reason": "ID-bearing artifact present with content but ZERO parseable "
+                       "stable IDs (expected KIND-SLUG-NNN, e.g. INV-order-001)"}
+            for f in id_bearing_artifacts
+        ]
+        report.warnings.append(
+            f"{len(id_bearing_artifacts)} epic artifact(s) present but ZERO stable IDs "
+            "parsed — the traceability graph is EMPTY BY BREAKAGE, not by cleanliness")
+    else:
+        # (c) nothing exists to measure.
         report.warnings.append("no contract/invariant/BR IDs defined in epic artifacts")
         # Vacuous-pass fix (#213 Phase E, tightened by F9): with ZERO contracts
         # defined there is nothing for coverage to be true OF — coverage is
@@ -659,6 +797,8 @@ def check(
     the real today."""
     schema = schema or load_schema()
     defined = extract_defined_ids(epic_dir)
+    id_bearing = find_id_bearing_artifacts(epic_dir)
+    malformed = scan_malformed_ids(epic_dir)
     coverage_requirements = extract_coverage_requirements(epic_dir)
     # Contract->BR realizes links live in the epic docs; code/test links in source.
     annotations = scan_epic_annotations(epic_dir)
@@ -691,7 +831,10 @@ def check(
                     entry["verb"], canonical_id(cid), entry["file"],
                     entry.get("line", 0), source_kind,
                 ))
-    report = build_report(defined, annotations, schema, coverage_requirements=coverage_requirements)
+    report = build_report(
+        defined, annotations, schema, coverage_requirements=coverage_requirements,
+        id_bearing_artifacts=id_bearing, malformed_ids=malformed,
+    )
     if unsupported:
         # Coverage metadata (#162): a recognized-but-unsupported-language file is
         # NEVER silently dropped — surfaced as an explicit warning, same as any
@@ -786,11 +929,21 @@ def render_markdown(report: TraceReport) -> str:
     lines = ["# Traceability Audit", "", f"Defined IDs: {report.counts['defined']}", ""]
     lines.append(f"- Soundness (orphans/dangling/invalid): {'OK' if report.soundness_ok else 'FINDINGS'}")
     lines.append(f"- Coverage (uncovered/untested): {'OK' if report.coverage_ok else 'FINDINGS'}")
+    lines.append(
+        f"- Measured: {report.id_bearing_artifacts_scanned} ID-bearing artifact(s), "
+        f"{report.counts['defined']} stable ID(s) parsed"
+    )
     if report.applicability == "inapplicable":
         lines.append(
             "- Applicability: INAPPLICABLE — no contracts defined, so there is "
             "nothing for coverage to hold over (inapplicable, not passing); any "
             "annotations found are dangling and remain soundness findings"
+        )
+    elif report.applicability == "error":
+        lines.append(
+            f"- Applicability: ERROR — {report.id_bearing_artifacts_scanned} epic artifact(s) "
+            "present but ZERO stable IDs parsed. The measurement is BROKEN, not clean: "
+            "this is a FAILURE, not a pass (chief-wiggum#281)."
         )
     for label, items in (
         ("Orphan business rules", report.orphan_business_rules),
@@ -805,6 +958,13 @@ def render_markdown(report: TraceReport) -> str:
     if report.invalid_links:
         lines += ["", "## Invalid links", ""]
         lines += [f"- {d['file']}:{d['line']} {d['reason']}" for d in report.invalid_links]
+    if report.unparsed_artifacts:
+        lines += ["", "## Unparsed artifacts (present, zero stable IDs)", ""]
+        lines += [f"- {u['file']}: {u['reason']}" for u in report.unparsed_artifacts]
+    if report.malformed_ids:
+        lines += ["", "## Malformed stable IDs (near-miss declarations)", ""]
+        lines += [f"- {m['file']}:{m['line']} {m['token']} → expected {m['expected']}"
+                  for m in report.malformed_ids]
     if report.suspect_links:
         lines += ["", "## Suspect links (definition changed since verified)", ""]
         lines += [
@@ -977,9 +1137,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.write_links:
         gate_passed = (
-            args.gate is None
-            or (args.gate == "soundness" and report.soundness_ok)
-            or (args.gate == "coverage" and report.coverage_ok)
+            # #281: never record a sidecar of "validated" links from a scan
+            # that saw nothing — a broken instrument is never a validated
+            # state, --gate or not.
+            report.applicability != "error"
+            and (args.gate is None
+                 or (args.gate == "soundness" and report.soundness_ok)
+                 or (args.gate == "coverage" and report.coverage_ok))
         )
         if gate_passed:
             write_links_sidecar(args.epic_dir, args.source, links_path)
@@ -998,7 +1162,8 @@ def main(argv: list[str] | None = None) -> int:
         from factory_log import emit_gate
         caught = (len(report.orphan_business_rules) + len(report.uncovered_contracts)
                   + len(report.untested_contracts) + len(report.dangling)
-                  + len(report.invalid_links))
+                  + len(report.invalid_links) + len(report.malformed_ids)
+                  + len(report.unparsed_artifacts))
         emit_gate("check_traceability", "fail" if caught else "pass",
                   caught=caught, repo=_repo_from_epic_dir(args.epic_dir))
     except Exception:
@@ -1019,6 +1184,22 @@ def main(argv: list[str] | None = None) -> int:
             "(inapplicable, not passing)",
             file=sys.stderr,
         )
+
+    # #281: a BROKEN measurement fails EITHER gate. "The scanner parsed
+    # nothing" is not a clean soundness result and not a clean coverage
+    # result — it is the absence of a result. Exit stays in the uniform 0/1/2
+    # contract every gate shares (docs/gate-rollout.md); the state is carried
+    # by the banner and by "applicability": "error" / "outcome": "error" in
+    # the JSON.
+    if args.gate and report.applicability == "error":
+        print(
+            "check_traceability: ERROR — "
+            f"{report.id_bearing_artifacts_scanned} epic artifact(s) present but ZERO stable "
+            f"IDs parsed; --gate {args.gate} measured nothing (FAILURE, not a pass). "
+            "Stable IDs are KIND-SLUG-NNN, e.g. INV-order-001 (chief-wiggum#281)",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.gate == "soundness" and not report.soundness_ok:
         return 1

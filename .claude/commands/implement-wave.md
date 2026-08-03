@@ -393,7 +393,7 @@ for inv in sm.get('invariants', []):
     fi
   done
 
-  # Duplicated inline-auth detection (INV-009-style "use the shared auth
+  # Duplicated inline-auth detection (INV-auth-009-style "use the shared auth
   # helper" invariants). NOTE this is a DIFFERENT check from the writer
   # inventory above: inline auth checks are READS (a route re-deriving the
   # session/ownership answer itself), so check_single_writer/code_query's

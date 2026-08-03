@@ -83,6 +83,56 @@ trace *link exists* — not that a guard is semantically correct (that is the
 Design-by-Contract verification frontier, out of scope; LSP symbol resolution
 is the cheaper next step). Mirrors `check_unresolved.py`.
 
+## Three measurement states (chief-wiggum#281, #289 vocabulary)
+
+A measurement can fail in two structurally different ways, and the report's
+`applicability` field (`applicable | inapplicable | error`) distinguishes them:
+
+- **`inapplicable`** — there is nothing to measure: no ID-bearing artifact
+  (`contracts.md`/`.json`, `invariants.md`, `state-machines.md`/`.json`,
+  `architecture.json`) exists with content anywhere under the epic dir. A
+  genuinely empty epic, or one holding only non-ID-bearing docs
+  (`adr.md`, `retrospective.md`, …) or zero-byte/whitespace-only files, is
+  `inapplicable`, not a pass. `--gate` exits 0 with a banner (existing
+  pipelines keep working); the JSON always carries the explicit state.
+- **`applicable`** — the graph was measured: at least one stable ID was
+  parsed. `soundness_ok`/`coverage_ok` then report real findings (or a real
+  pass), not a vacuous one.
+- **`error`** — a BROKEN INSTRUMENT: an ID-bearing artifact exists *with
+  content* but the scanner parsed **ZERO** stable IDs out of it. This is what
+  happens when an epic is authored from a worked example whose IDs don't
+  match `DEFINE_RE` (the two-segment `INV-001` shape the `/architect` skill
+  used to model, chief-wiggum#281) — the graph looks "clean" only because
+  nothing was measured, not because nothing is wrong. `error` folds into
+  `soundness_ok` (so it always fails `--gate soundness`) and additionally
+  fails `--gate coverage` explicitly (`main()`'s dedicated rule) — a broken
+  measurement is not a clean result for EITHER gate. It is never waivable
+  (`chief_wiggum.grandfather` waives coverage gaps, not a broken instrument)
+  and a scan in this state never writes the `--write-links` sidecar.
+
+Two finding classes feed `error` (and are folded into `soundness_ok` even in
+the `applicable` case — see "partial drift" below):
+
+- **`unparsed_artifacts`** — an ID-bearing artifact present with content that
+  yielded zero parseable IDs.
+- **`malformed_ids`** — a declaration-position near-miss: a token that looks
+  like a stable ID (`chief_wiggum.trace_ids.near_miss_ids`) but fails
+  `ID_RE.fullmatch` — in practice, the two-segment `KIND-NNN` shape missing
+  its slug. This is the *complement* of `DEFINE_RE` in the same declaration
+  positions (markdown heading, bold, JSON `"id"`), not a heuristic — it
+  catches **partial drift** too: an epic where `contracts.json` is
+  model-generated and fine but `invariants.md` was hand-written from a
+  now-fixed bad example stays `applicable` (something WAS measured), with the
+  near-miss reported as a soundness finding instead of silently
+  under-measuring.
+
+A derived `outcome` property (never stored, so it can't drift from
+`applicability`) carries the standard four-state vocabulary
+(`pass | findings | inapplicable | error`) and the report's `measured`
+object (`id_bearing_artifacts`, `defined_ids`) is the denominator — visible
+even when the report is otherwise green, so a `defined_ids: 0` can never hide
+inside a passing scan.
+
 ## Emission/claim seam, `--changed-since`, `--scanner-version` (#160)
 
 Per-file **emission** is a pair of pure functions of file content, with no

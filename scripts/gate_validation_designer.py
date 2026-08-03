@@ -90,6 +90,7 @@ SEED_CLASSES = (
     "evasion-sampling-gap",
     "evasion-concurrency",
     "instrumentation-deleted",
+    "instrument-broken",
 )
 
 BANNER = (
@@ -447,7 +448,8 @@ _SHORT_CLASS = {"direct": "direct", "evasion-omission": "omission",
                 "evasion-config-indirection": "config-ind",
                 "evasion-sampling-gap": "sampling",
                 "evasion-concurrency": "concurr",
-                "instrumentation-deleted": "instr-del"}
+                "instrumentation-deleted": "instr-del",
+                "instrument-broken": "instr-brk"}
 
 
 def render_matrix(rows: list[dict]) -> str:
