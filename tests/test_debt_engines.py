@@ -786,16 +786,109 @@ def test_oversized_corpus_falls_back_to_repo_root_and_records_it(tmp_path, monke
     never be SILENT — a silent widening is how #265 stayed invisible."""
     repo = _make_repo(tmp_path, {"in/a.py": "x = 1\n", "in/b.py": "y = 2\n"})
     monkeypatch.setattr(duplication, "ARGV_BUDGET_BYTES", 8)
+    # #279: the scratch-corpus build itself is what's simulated as failing
+    # here — the "genuinely unavoidable widening" case the ticket carves out.
+    # The ordinary oversized-corpus path no longer falls back to the repo
+    # root at all (see test_oversized_corpus_scans_via_scratch_tree_not_repo_root).
+    monkeypatch.setattr(duplication, "_build_scratch_corpus",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
     calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
     result = clones.analyze(str(repo), str(tmp_path / "wd"),
                             path_filter=lambda rel: rel.startswith("in/"))
     assert str(repo) in calls[0]["cmd"]
     assert "argv" in result["corpus_fallback"]
+    assert "scratch" in result["corpus_fallback"].lower()
     # the scan was repo-wide, so the SCOPED count must not be presented as the
     # scanned count — an AC1-style assertion would otherwise read a scoped
     # number off a run that was never scoped.
     assert "files_in_corpus" not in result
     assert result["scope_candidate_files"] == 2
+
+
+# --- #279: scratch corpus tree replaces the repo-root fallback -----------------
+
+
+def test_oversized_corpus_scans_via_scratch_tree_not_repo_root(tmp_path, monkeypatch):
+    """AC1 (#279): an over-budget corpus is scanned via a scratch tree that
+    mirrors the in-scope files, never by widening to the repo root. AC3: only
+    ONE jscpd invocation occurs (chunking would miss cross-chunk clones)."""
+    repo = _make_repo(tmp_path, {
+        "in/a.py": "x = 1\n", "in/b.py": "y = 2\n", "out/c.py": "z = 3\n",
+    })
+    monkeypatch.setattr(duplication, "ARGV_BUDGET_BYTES", 8)
+    workdir = tmp_path / "wd"
+    scratch_root = str(workdir / "corpus")
+    # jscpd reports duplicate locations as ABSOLUTE paths under whatever root
+    # it was pointed at — here, the scratch tree, not the repo.
+    fake_report = {
+        "statistics": {"total": {}},
+        "duplicates": [{
+            "lines": 1, "tokens": 5, "fragment": "x = 1",
+            "firstFile": {"name": f"{scratch_root}/in/a.py", "start": 1, "end": 1},
+            "secondFile": {"name": f"{scratch_root}/in/b.py", "start": 1, "end": 1},
+        }],
+    }
+    calls = _capture_jscpd(monkeypatch, report=fake_report)
+
+    result = clones.analyze(str(repo), str(workdir),
+                            path_filter=lambda rel: rel.startswith("in/"))
+
+    assert len(calls) == 1, "a scope-narrowed scratch scan must still be a SINGLE invocation"
+    cmd = calls[0]["cmd"]
+    assert scratch_root in cmd
+    assert str(repo) not in cmd
+    assert "corpus_fallback" not in result  # AC4: no longer emitted for this case
+
+
+def test_oversized_corpus_scratch_tree_paths_are_remapped_repo_relative(tmp_path, monkeypatch):
+    """AC2 (#279): reported clone member paths must be repo-relative — a
+    scratch-relative or absolute-scratch path would point every finding at a
+    temp directory instead of the real source location."""
+    repo = _make_repo(tmp_path, {"in/a.py": "x = 1\n", "in/b.py": "y = 2\n"})
+    monkeypatch.setattr(duplication, "ARGV_BUDGET_BYTES", 8)
+    workdir = tmp_path / "wd"
+    scratch_root = str(workdir / "corpus")
+    fake_report = {
+        "statistics": {"total": {}},
+        "duplicates": [{
+            "lines": 1, "tokens": 5, "fragment": "x = 1",
+            "firstFile": {"name": f"{scratch_root}/in/a.py", "start": 1, "end": 1},
+            "secondFile": {"name": f"{scratch_root}/in/b.py", "start": 1, "end": 1},
+        }],
+    }
+    _capture_jscpd(monkeypatch, report=fake_report)
+
+    result = clones.analyze(str(repo), str(workdir),
+                            path_filter=lambda rel: rel.startswith("in/"))
+
+    members = result["clone_classes"][0]["members"]
+    assert sorted(m["file"] for m in members) == ["in/a.py", "in/b.py"]
+
+
+def test_build_scratch_corpus_mirrors_files_preserving_relative_paths(tmp_path):
+    repo = _make_repo(tmp_path, {"in/a.py": "x = 1\n", "in/sub/b.py": "y = 2\n"})
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    scratch_root = duplication._build_scratch_corpus(
+        str(repo), ["in/a.py", "in/sub/b.py"], str(workdir)
+    )
+    assert (Path(scratch_root) / "in" / "a.py").read_text() == "x = 1\n"
+    assert (Path(scratch_root) / "in" / "sub" / "b.py").read_text() == "y = 2\n"
+
+
+def test_build_scratch_corpus_falls_back_to_copy_when_symlink_unavailable(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+
+    def _no_symlink(*a, **kw):
+        raise OSError("symlink not permitted")
+
+    monkeypatch.setattr(duplication.os, "symlink", _no_symlink)
+    scratch_root = duplication._build_scratch_corpus(str(repo), ["a.py"], str(workdir))
+    dest = Path(scratch_root) / "a.py"
+    assert dest.read_text() == "x = 1\n"
+    assert not dest.is_symlink()
 
 
 # --- scope doctrine: detection repo-wide, authority in-scope (F2) -------------
