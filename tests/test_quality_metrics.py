@@ -9,6 +9,7 @@ here (they depend on lizard/git-of-theseus/jscpd being installed).
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 
@@ -188,6 +189,80 @@ def test_survival_skips_without_tool(tmp_path, monkeypatch):
     r = survival.analyze(str(tmp_path), workdir=str(tmp_path / "s"))
     assert "skipped" in r
     assert "git-of-theseus" in r["skipped"]
+
+
+# --- #289: a crashed git-of-theseus-analyze must never be indistinguishable
+# from "tool not installed", and a reused outdir must never let a crashed
+# run's result be a STALE survival.json left by an earlier successful run. ---
+
+
+def _fake_theseus_tool(tmp_path, *, returncode=0, survival_payload=None):
+    """A fake ``git-of-theseus-analyze`` executable. When ``survival_payload``
+    (a dict) is given, it is written to ``<outdir>/survival.json`` before the
+    script exits with ``returncode`` — otherwise nothing is written, modeling
+    a tool that dies before producing output."""
+    script = tmp_path / "git-of-theseus-analyze"
+    lines = [
+        "#!/usr/bin/env python3",
+        "import sys, os, json",
+        "args = sys.argv[1:]",
+        "outdir = args[args.index('--outdir') + 1]",
+        "os.makedirs(outdir, exist_ok=True)",
+    ]
+    if survival_payload is not None:
+        lines.append(
+            "json.dump(" + repr(survival_payload)
+            + ", open(os.path.join(outdir, 'survival.json'), 'w'))"
+        )
+    lines.append(f"sys.exit({returncode})")
+    script.write_text("\n".join(lines) + "\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def _patch_theseus_which(monkeypatch, tool_path):
+    monkeypatch.setattr(
+        survival.shutil, "which",
+        lambda name: tool_path if name == "git-of-theseus-analyze" else None,
+    )
+
+
+def test_survival_nonzero_exit_is_crashed_not_silently_measured(tmp_path, monkeypatch):
+    """survival.py never checked the subprocess returncode (#289) — a crashed
+    git-of-theseus-analyze that happened to leave no survival.json used to
+    fall through to the exact same shape as "tool not installed", masking a
+    real defect as a declared limitation."""
+    tool = _fake_theseus_tool(tmp_path, returncode=1)
+    _patch_theseus_which(monkeypatch, tool)
+    result = survival.analyze(str(tmp_path / "repo"), workdir=str(tmp_path / "wd"))
+    assert result.get("status") == "crashed"
+    assert "survival_by_age_days" not in result
+
+
+def test_survival_success_exit_but_no_output_is_crashed(tmp_path, monkeypatch):
+    """Exit 0 with no survival.json written is ALSO a crash, not a pass."""
+    tool = _fake_theseus_tool(tmp_path, returncode=0)  # writes nothing
+    _patch_theseus_which(monkeypatch, tool)
+    result = survival.analyze(str(tmp_path / "repo"), workdir=str(tmp_path / "wd2"))
+    assert result.get("status") == "crashed"
+
+
+def test_survival_stale_survival_json_is_never_reused_after_a_crash(tmp_path, monkeypatch):
+    """outdir may be reused across runs. A run that CRASHES must never let a
+    survival.json left by an EARLIER successful run get parsed as this run's
+    fresh output — the exact silent-success failure #289 exists to remove."""
+    outdir = tmp_path / "wd"
+    outdir.mkdir()
+    stale = {"deadbeefcafe": [[1700000000, 100], [1700950000, 40]]}  # a fabricated prior run
+    (outdir / "survival.json").write_text(json.dumps(stale))
+
+    tool = _fake_theseus_tool(tmp_path, returncode=1)  # crashes; writes nothing
+    _patch_theseus_which(monkeypatch, tool)
+
+    result = survival.analyze(str(tmp_path / "repo"), workdir=str(outdir))
+    assert result.get("status") == "crashed"
+    assert "survival_by_age_days" not in result
+    assert "deadbeefcafe" not in json.dumps(result)
 
 
 def test_duplication_skips_without_tool(tmp_path, monkeypatch):

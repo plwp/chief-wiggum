@@ -537,6 +537,38 @@ def test_duplication_skip_shape_unchanged(monkeypatch, tmp_path):
     assert "note" in result
 
 
+# --- #289: jscpd reporting 0 sources is ambiguous by itself — a genuinely
+# source-free corpus (inapplicable, honest absence) must not be conflated
+# with a wrong ignore-glob/language mismatch hiding real content (a broken
+# instrument). The exact defect: "a repo with zero source files reports 0.0%
+# duplication (beats the pre-AI human baseline) — the healthiest band
+# available".
+
+
+def test_duplication_zero_sources_with_no_production_files_is_inapplicable(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"README.md": "docs only, no code\n"})
+    fake_report = {"statistics": {"total": {"sources": 0, "percentage": 0.0, "lines": 0}}}
+    monkeypatch.setattr(duplication, "run_jscpd",
+                        lambda repo, workdir, **kw: (fake_report, None))
+    result = duplication.analyze(str(repo), workdir=str(tmp_path / "wd"))
+    assert result["status"] == "inapplicable"
+    assert "duplication_pct_lines" not in result  # never fabricates a "best band" number
+
+
+def test_duplication_zero_sources_with_production_files_present_is_crashed(tmp_path, monkeypatch):
+    """A real production .py file exists, yet jscpd claims 0 sources scanned —
+    jscpd saw NONE of what is actually there (an ignore-glob/language
+    mismatch), a broken instrument, never the healthiest band."""
+    repo = _make_repo(tmp_path, {"src/a.py": "x = 1\n"})
+    fake_report = {"statistics": {"total": {"sources": 0, "percentage": 0.0, "lines": 0}}}
+    monkeypatch.setattr(duplication, "run_jscpd",
+                        lambda repo, workdir, **kw: (fake_report, None))
+    result = duplication.analyze(str(repo), workdir=str(tmp_path / "wd"))
+    assert result["status"] == "crashed"
+    assert "duplication_pct_lines" not in result
+    assert "production source file" in result["crashed"]
+
+
 # --- #265: scope-narrow the clone corpus; crash != unsupported tier -----------
 
 

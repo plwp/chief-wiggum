@@ -111,6 +111,41 @@ def test_duplication_skipped_passthrough():
     assert "jscpd" in r["detail"] or "node" in r["detail"]
 
 
+# --- #289: a crashed engine must render as an ERROR, never fall through to
+# the legacy "skipped" branch (both duplication.py and survival.py carry the
+# "skipped" key on a crashed payload for back-compat with older consumers
+# that only ever checked "skipped" in result) --------------------------------
+
+
+def test_evaluate_duplication_crashed_is_error_not_skipped():
+    r = gate.evaluate_duplication({
+        "status": "crashed",
+        "crashed": "jscpd produced no report",
+        "skipped": "jscpd produced no report",
+    })
+    assert r["status"] == "error"
+    assert "jscpd produced no report" in r["detail"]
+
+
+def test_evaluate_survival_crashed_is_error_not_skipped():
+    r = gate.evaluate_survival({
+        "status": "crashed",
+        "crashed": "git-of-theseus-analyze exited 1",
+        "skipped": "git-of-theseus-analyze exited 1",
+    })
+    assert r["status"] == "error"
+    assert "exited 1" in r["detail"]
+
+
+def test_evaluate_duplication_inapplicable_passthrough():
+    r = gate.evaluate_duplication({
+        "status": "inapplicable",
+        "sources": 0,
+        "inapplicable": "no production source files found",
+    })
+    assert r["status"] == "inapplicable"
+
+
 # --- report formatting ------------------------------------------------------
 
 
@@ -237,6 +272,35 @@ def test_run_gate_does_not_block_on_skipped_tools(tmp_path, monkeypatch):
     )
     rc = gate.run(_args(workdir=str(tmp_path / "wd"), report=False, gate=True))
     assert rc == 0
+
+
+# --- #289: a crashed engine is a broken instrument, not silence — --gate must
+# fail on it even with NO past-ai band finding, and report-only must still
+# print it loudly (never blocking, per the shared report-only doctrine). ----
+
+
+def test_run_gate_blocks_on_crashed_engine_even_without_findings(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate, "resolve_target", lambda o, r: str(tmp_path))
+    _patch_engines(
+        monkeypatch,
+        {"status": "crashed", "crashed": "boom", "skipped": "boom"},
+        {"duplication_pct_lines": 4.0},
+    )
+    rc = gate.run(_args(workdir=str(tmp_path / "wd"), report=False, gate=True))
+    assert rc == 1
+
+
+def test_run_report_only_never_blocks_even_on_crashed_engine(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gate, "resolve_target", lambda o, r: str(tmp_path))
+    _patch_engines(
+        monkeypatch,
+        {"status": "crashed", "crashed": "boom", "skipped": "boom"},
+        {"duplication_pct_lines": 4.0},
+    )
+    rc = gate.run(_args(workdir=str(tmp_path / "wd")))
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "ERROR" in err
 
 
 # --- live tool-gated path (deterministic-ish, availability-gated) -----------
