@@ -410,6 +410,47 @@ ecosystem channel/owned audience in the acquisition plan); goalpost-integrity ha
 Missing optional inputs (`means.json`, `channels.json`) report `skipped`/`unattempted` — never a
 crash, never silently omitted.
 
+### Build-cost tracking (Track A extension, `scripts/build_cost.py`, #257)
+
+The ledger meters cash (`bet.py spend`) and operator hours, but the dominant input to
+most bets is **factory compute**, and it was invisible: a bet can consume a large share
+of a fixed monthly plan while its recorded cash spend reads `$8.48`. This extends the
+existing per-model pricing/attribution machinery (`scripts/factory_log.py` +
+`config/model_pricing.json`, INV-fh-002: prices come from the config, never memory; a
+cost is *omitted*, not zeroed, when a model has no listed price) from gates to bets, as
+a **sibling** importing `bet.py` the same way `channel.py`/`assumption.py` do — records
+journal into the same portfolio hash chain.
+
+**Two fields, never one**, per record: `nominal_usd` (tokens × `config/model_pricing.json`
+— the comparable, portable number across bets and against cash spend) and
+`plan_share_pct` (share of the billing period's plan CAPACITY consumed — the true
+economic cost under a fixed-price plan, where marginal API price overstates real
+outlay). The script never derives `plan_share_pct` itself (no harness API is assumed to
+expose true consumption): the caller supplies it, or it is recorded honestly
+`{unresolved}` — never guessed, never silently zero.
+
+```bash
+python3 scripts/build_cost.py record --attribute-to <bet-id|factory|unattributed> \
+    --model <model-id> --tokens-in N --tokens-out N [--plan-share-pct X] [--note "..."]
+python3 scripts/build_cost.py summary --attribute-to <bet-id|factory|unattributed>
+python3 scripts/build_cost.py portfolio                        # every bucket, sum-preserving
+```
+
+**Attribution** is explicit and recorded at the time of work — a bet id, the literal
+`factory` (CW's own development), or the literal `unattributed` — never reconstructed
+later and never spread pro-rata across bets (the same sum-preserving-attribution
+discipline as the in-flight `platform-cost-observability` pattern, #229): an
+`unattributed` bucket is always reported, never silently dropped.
+
+**Surfaced where decisions happen**: `bet.py portfolio` shows nominal + plan-share
+alongside cash and hours for every bet, plus the `factory`/`unattributed` buckets
+separately; the kill brief's "Build cost" section carries the same figures so an
+expensive bet under review is visible to the fresh-context evaluator. The envelope
+gains optional `nominal_build_cap_usd`/`plan_share_cap_pct` (`templates/bet-schema.json`)
+— **report-only at first** (`NEVER_GATES_PREFIXES "buildcost:"`, same shape as #274's
+capacity checks): plan-share accounting is inherently estimate-shaped, so promotion to
+blocking follows the normal validation ramp, never wired to `--gate` on its own.
+
 ### Channel engine (Track H, `scripts/channel.py`, #241)
 
 Bullseye mechanized over the bet ledger. The honest boundary, stated up front: **tooling cannot

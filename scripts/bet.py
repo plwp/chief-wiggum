@@ -248,7 +248,11 @@ DEFAULT_MAX_IN_FLIGHT = 2
 # "screen:" is the #275 low-cap distribution-divergence screens (§9.6.5
 # screens 8-13) — same posture: brand-new bet-selection lints, never gated
 # until validated against a real candidate set.
-NEVER_GATES_PREFIXES = ("skipped:", "capacity:", "screen:")
+# "buildcost:" (#257) is the same shape: plan-share accounting is inherently
+# estimate-shaped (the harness rarely exposes true plan consumption), so the
+# envelope's nominal_build_cap_usd/plan_share_cap_pct checks are report-only
+# until validated, never a blocker on their own.
+NEVER_GATES_PREFIXES = ("skipped:", "capacity:", "screen:", "buildcost:")
 
 # Low-cap distribution-divergence screens (#275, docs/business-factory.md
 # §9.6.5 screens 8-13) — six candidate additions to the §9.5 standing
@@ -894,6 +898,30 @@ def competitor_sweep_findings(bet: dict, as_of: date) -> list[str]:
     return []
 
 
+def build_cost_findings(bet: dict, summary: dict) -> list[str]:
+    """Envelope build-cost caps (#257) — declared, not silently enforced. Both caps
+    are optional; absent → silent for that cap (never guessed). Report-only always
+    (NEVER_GATES_PREFIXES "buildcost:"): plan-share accounting is estimate-shaped and
+    this reinterprets an existing cap the same way #274's capacity checks do."""
+    env = bet.get("envelope", {}) or {}
+    out = []
+    nom_cap = env.get("nominal_build_cap_usd")
+    if isinstance(nom_cap, (int, float)) and summary.get("nominal_usd") is not None \
+            and summary["nominal_usd"] > nom_cap:
+        out.append(
+            f"buildcost: nominal build cost ${summary['nominal_usd']:g} exceeds "
+            f"nominal_build_cap_usd ${nom_cap:g}"
+        )
+    share_cap = env.get("plan_share_cap_pct")
+    if isinstance(share_cap, (int, float)) and summary.get("plan_share_pct") is not None \
+            and summary["plan_share_pct"] > share_cap:
+        out.append(
+            f"buildcost: plan-share {summary['plan_share_pct']:g}% exceeds "
+            f"plan_share_cap_pct {share_cap:g}%"
+        )
+    return out
+
+
 # ---- ledger --------------------------------------------------------------------
 
 
@@ -1324,6 +1352,34 @@ def build_kill_brief(
     time_cap = env.get("time_cap_hours")
     if isinstance(time_cap, (int, float)):
         lines.append(fact("time cap", f"{time_cap:g}h", bet_src))
+    lines.append("")
+
+    # -- build cost (#257): the dominant input to most bets, invisible until now.
+    # An expensive bet under review deserves to have that visible to a
+    # fresh-context evaluator, same as cash spend.
+    import build_cost
+    bc_records = build_cost.load_build_costs(root, bet_id)
+    bc_src = "; ".join(r["record_id"] for r in bc_records) or None
+    bc = build_cost.summarize(bc_records)
+    lines.append("## Build cost (nominal + plan-share)")
+    lines.append("")
+    if bc["records"]:
+        nominal = f"${bc['nominal_usd']:g}" if bc["nominal_usd"] is not None else "UNRESOLVED (unpriced model)"
+        if bc["nominal_partial"]:
+            nominal += " (partial — some entries unpriced)"
+        share = f"{bc['plan_share_pct']:g}%" if bc["plan_share_pct"] is not None else "UNRESOLVED (not supplied)"
+        if bc["plan_share_partial"]:
+            share += " (partial — some entries unresolved)"
+        lines.append(fact("nominal build cost", nominal, bc_src))
+        lines.append(fact("plan-share consumed", share, bc_src))
+        nom_cap = env.get("nominal_build_cap_usd")
+        if isinstance(nom_cap, (int, float)):
+            lines.append(fact("nominal_build_cap_usd", f"${nom_cap:g}", bet_src))
+        share_cap = env.get("plan_share_cap_pct")
+        if isinstance(share_cap, (int, float)):
+            lines.append(fact("plan_share_cap_pct", f"{share_cap:g}%", bet_src))
+    else:
+        lines.append("- none recorded")
     lines.append("")
 
     # -- signal-source grounding + competitor sweep (#254): a Tier-C bet's
@@ -2627,6 +2683,9 @@ def cmd_portfolio(args) -> int:
     records = load_journal(root)
     bets = all_bets(root)
     today = date.today()
+    # Build-cost tracking (#257): deferred import, same module-cycle-avoidance
+    # shape as the assumption.py imports elsewhere in this file.
+    import build_cost
 
     findings: list[str] = []
     rows = []
@@ -2645,6 +2704,8 @@ def cmd_portfolio(args) -> int:
         except BetError:
             criteria = []
         pend = pending_kill(records, bid)
+        bc_summary = build_cost.summarize(build_cost.load_build_costs(root, bid))
+        findings += build_cost_findings(bet, bc_summary)
         rows.append({
             "id": bid,
             "state": bet["state"],
@@ -2655,6 +2716,7 @@ def cmd_portfolio(args) -> int:
             "next_criterion": _next_due(criteria, today),
             "distribution": distribution_status(root, bid)["status"],
             "kill_pending_proposal": bool(pend),
+            "build_cost": bc_summary,
             # #274: measured (never guessed) ongoing load — only meaningful
             # for a LIVE_STATES (lifestyle) bet, the zombie-fleet population.
             "ongoing_load_hours_per_week": (
@@ -2698,6 +2760,14 @@ def cmd_portfolio(args) -> int:
             "kill_on_trigger": latency,
         })
 
+    # Build-cost buckets outside any single bet — 'factory' (CW's own dev) and
+    # 'unattributed' — reported explicitly, never dropped or spread pro-rata (#257).
+    bc_portfolio = build_cost.portfolio_summary(root)
+    bc_other = {
+        k: v for k, v in bc_portfolio.items()
+        if k in (build_cost.FACTORY, build_cost.UNATTRIBUTED)
+    }
+
     if args.format == "json":
         print(json.dumps({
             "bets": rows,
@@ -2706,6 +2776,7 @@ def cmd_portfolio(args) -> int:
             "dead_bets": dead,
             "attention": attention,
             "liability_concurrency": liab,
+            "build_cost_other": bc_other,
             "findings": findings,
         }, indent=2))
         real = [f for f in findings if not f.startswith(NEVER_GATES_PREFIXES)]
@@ -2735,12 +2806,22 @@ def cmd_portfolio(args) -> int:
             f"; ongoing load: {r['ongoing_load_hours_per_week']:g}h/wk"
             if r["ongoing_load_hours_per_week"] is not None else ""
         )
+        bc = r["build_cost"]
+        nominal = f"${bc['nominal_usd']:g}" if bc["nominal_usd"] is not None else "{unresolved}"
+        share = f"{bc['plan_share_pct']:g}%" if bc["plan_share_pct"] is not None else "{unresolved}"
+        build_note = f"; build cost: nominal {nominal}, plan-share {share}" if bc["records"] else ""
         print(
             f"  {r['id']:24s} {r['state']:12s} spend ${r['spend_usd']:g}/"
             f"${r['unlocked_usd']:g} unlocked (cap ${r['cash_cap_usd']:g}), "
             f"{r['hours']:g}h; next criterion: {r['next_criterion']}; "
-            f"distribution: {r['distribution']}{load_note}{pend}"
+            f"distribution: {r['distribution']}{load_note}{build_note}{pend}"
         )
+    if bc_other:
+        for bucket, s in bc_other.items():
+            nominal = f"${s['nominal_usd']:g}" if s["nominal_usd"] is not None else "{unresolved}"
+            share = f"{s['plan_share_pct']:g}%" if s["plan_share_pct"] is not None else "{unresolved}"
+            print(f"  build cost [{bucket}]: {s['records']} record(s), nominal {nominal}, "
+                  f"plan-share {share} — never spread pro-rata across bets (#257)")
     if dead:
         losses = sorted(d["loss_usd"] for d in dead)
         median = losses[len(losses) // 2] if len(losses) % 2 else \

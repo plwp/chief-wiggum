@@ -248,6 +248,16 @@
               "unlock_milestone_id": { "type": ["string", "null"] }
             }
           }
+        },
+        "nominal_build_cap_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional build-cost cap (chief-wiggum#257): tokens x config/model_pricing.json, summed across every scripts/build_cost.py record attributed to this bet. Report-only (NEVER_GATES_PREFIXES 'buildcost:') until validated — checked by bet.py portfolio's build_cost_findings(). Absent -> silent, never guessed."
+        },
+        "plan_share_cap_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional plan-capacity cap (chief-wiggum#257): share of the billing period's plan capacity this bet may consume, summed across every scripts/build_cost.py record attributed to this bet. Plan-share is inherently estimate-shaped (the harness rarely exposes true consumption) — report-only (NEVER_GATES_PREFIXES 'buildcost:') until validated. Absent -> silent, never guessed."
         }
       }
     }
