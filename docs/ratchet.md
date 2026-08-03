@@ -10,7 +10,11 @@ Three rules, all mechanical:
 
 1. **The pass-set never shrinks.** Every test case that has ever passed on the
    default branch is the **high-water mark**. A merge that would make a
-   high-water case fail is blocked — no "we'll fix it next ticket".
+   high-water case fail is blocked — no "we'll fix it next ticket". The one
+   sanctioned way out is a journaled `record --retire-case` carrying a
+   reason, owner, and expiry — the same JUSTIFIED-waiver shape `/adopt` uses
+   for grandfathers (#278). It is a human act, it is tamper-evident, and it
+   **expires**.
 2. **Passing by weakening doesn't count.** Every stable-ID'd contract block
    (`CTR-`/`INV-`/`BR-`, see [traceability.md](traceability.md)) is hashed. A
    high-water contract whose definition changed was *weakened*; one that
@@ -215,6 +219,88 @@ Records also serve as **amnesia context**: `ratchet.py recent` replays the
 last N iterations' notes so a fresh session doesn't oscillate on decisions a
 previous one already made.
 
+## Retiring a pass-set case (flaky quarantine, #278)
+
+A test case excluded from the suite — moved, deleted, or disabled because it
+is flaky or order-dependent — does NOT leave the high-water mark on its own:
+`derive_highwater` only ever *unions* `pass_set`, so the case sits there
+forever and every subsequent `check` blocks with `missing_tests`, a
+permanent-red state no amount of unrelated fixing clears. The sanctioned way
+out is a journaled `record --retire-case`, not silence, not an edit to the
+scorecard, and not `--force`.
+
+```bash
+python3 scripts/ratchet.py record --event ticket --ref "#42" \
+    --retire-case 'pytest::tests/test_flaky.py::TestOrder::test_a' \
+    --retire-case-reason "order-dependent shared state; passes in isolation" \
+    --retire-case-owner plwp --retire-case-expiry 2026-11-01
+```
+
+- **Per-record reason/owner/expiry, not per-case.** The real scenario is one
+  flaky class → one justification → many case IDs, so distinct reasons get
+  distinct records (each its own chain link) rather than per-case metadata.
+- **Scaling to hundreds of cases**: `--retire-case` accepts an `fnmatch` GLOB
+  (not `_glob_to_re` — its `*` compiles to `[^/]*` and cannot match a go case
+  ID carrying `/` in its package path), and `--retire-case-file PATH` reads
+  newline-separated case IDs/globs (blank lines and `#`-comments ignored) —
+  feed it straight from `ratchet.py regressed | jq -r '.missing_tests[]'`.
+  **Globs are expanded and MATERIALIZED at record time**: the journal stores
+  only the explicit case IDs a glob matched *today*, never the pattern, so a
+  quarantine can never silently widen to catch a future, unrelated test.
+- **Entry shape** — byte-compatible with `/adopt`'s grandfather entries (minus
+  `source_engine`), so `grandfather.is_expired` reads it unchanged:
+  `{"id", "reason", "owner", "expiry", "created_at"}`.
+- **Naming split (deliberate)**: the journal key is `retired_cases` (what
+  *this record did* — an event-log verb); the derived high-water key is
+  `quarantined` (what *state the repo is in* — a condition noun). `check`,
+  `highwater`, `recent`, and `/status` all read the latter.
+- **The eight guards** (docs/ratchet.md's bar-lowering-hole checklist):
+  1. `docs/quality/**` is already in the protected pathset — a quarantining
+     branch is parked by `ratchet.py protected` before merge, same as any
+     other journal write.
+  2. The append-only hash chain makes the retirement attributable and
+     tamper-evident (interior tamper fails closed, exit 4).
+  3. **Mandatory non-empty reason** — a waiver without one is amnesty, not a
+     journaled decision.
+  4. **Mandatory expiry**, defaulted to 90 days, never accepted in the past;
+     a missing or unparseable expiry counts as **expired** (inherited from
+     `grandfather.is_expired`) — a hand-edited entry that drops its expiry
+     fails closed rather than becoming permanent amnesty.
+  5. **Refuses to retire a currently-PASSING case** — an agent cannot
+     pre-emptively quarantine the cases it is about to break.
+  6. **Refuses a case not in the high-water mark** — the same doctrine as
+     `--retire-verifier`: a typo'd case ID is SURFACED as an error, never a
+     silent no-op.
+  7. **Globs are materialized, never stored** (above).
+  8. **Volume is surfaced everywhere**: `check` (a report-only `[report-only]`
+     line plus a modified OK line naming the count), `recent` (`[quarantined]`
+     status), `highwater` (the `quarantined` map with a live `expired` flag
+     per entry), `/status` (PARTIAL COVERAGE + count + nearest expiry +
+     WARNING on expiry), and `reflect ratchet_health` (`retired_cases` count).
+- **Self-healing, no second human act**: a case that returns to a LATER
+  *merged* record's `pass_set` is restored to `pass_set` by the fold, and its
+  stale quarantine metadata is dropped in the same pass (`quarantined.pop`) —
+  a fixed flaky test does not show as "quarantined" forever. There is no
+  `--unretire-case` flag; the fold already reaches that state.
+- **Renewal, not amnesty**: expiry is the clock that forces re-litigation. Once
+  a quarantine expires, the case re-enters `missing_tests` and blocks again
+  (via the EXISTING finding class — no new blocking dimension was introduced;
+  see the gate-validation cost calculus below). Renewing it is a NEW record
+  (`record --retire-case` again with a fresh expiry), never an edit to the old
+  one — the journal's last-wins semantics make the new entry the live one, so
+  the chain shows exactly how many times a quarantine was rolled over.
+- **No new blocking finding class, no new exit code.** `check --format json`
+  gains `quarantined`/`expired_quarantines` keys additively; the five
+  original `violations()` keys are unchanged in name and meaning. An expired
+  quarantine's case reappears in the pre-existing `missing_tests` class — the
+  detection, its exit semantics, and its eight seeded-defect trials are all
+  unchanged, so no new gate-validation record was required (only a
+  `scanner_version` restamp — see docs/gate-validation.md's cost calculus for
+  why a new blocking dimension was deliberately avoided here).
+- **Backward compatibility**: a pre-#278 `ratchet.py` reading a post-#278
+  journal ignores the unknown `retired_cases` key and keeps every quarantined
+  case in the high-water mark — it fails toward MORE strictness, never less.
+
 ## State (committed to the target repo)
 
 ```
@@ -260,11 +346,15 @@ python3 scripts/ratchet.py record --event epic-close --ref order-lifecycle --mer
     --amend CTR-order-001 --retire INV-order-003 --notes "contract revised per review"
 python3 scripts/ratchet.py record --event epic-close --ref order-lifecycle --merged \
     --amend-verifier "tests/test_order.py::test_date_range" --notes "verifier refactor (#206)"
+python3 scripts/ratchet.py record --event ticket --ref "#42" \
+    --retire-case 'pytest::tests/test_flaky.py::*' --retire-case-reason "order-dependent shared state" \
+    --retire-case-owner plwp --retire-case-expiry 2026-11-01   # quarantine a flaky class (#278)
+python3 scripts/ratchet.py highwater                            # includes `quarantined` + live expiry
 python3 scripts/ratchet.py recent --n 5                # amnesia context for the next session
 ```
 
-Exit codes: `0` ok, `1` gate violation, `2` usage/config error, `3` no
-scorecard (run `score` first), `4` journal tamper.
+Exit codes are UNCHANGED by #278: `0` ok, `1` gate violation, `2` usage/config
+error, `3` no scorecard (run `score` first), `4` journal tamper.
 
 ## Where it gates
 
@@ -283,9 +373,10 @@ scorecard (run `score` first), `4` journal tamper.
   record-gated flag as `/implement`, Step 2c2/2f) must report *held* or
   *advanced* across the epic, then `record --event epic-close --merged`.
   Legitimate contract revisions are journaled here with `--amend`/`--retire`,
-  and deliberate verifier-test revisions with
-  `--amend-verifier`/`--retire-verifier` — a deliberate, visible human
-  decision, not a silent edit.
+  deliberate verifier-test revisions with
+  `--amend-verifier`/`--retire-verifier`, and flaky/order-dependent pass-set
+  cases with `--retire-case` (#278) — a deliberate, visible human decision,
+  not a silent edit.
 
 The **complexity/churn** dimension is not wired as a blocker anywhere yet: per
 [gate-rollout.md](gate-rollout.md) it ships report-only (`check` surfaces the

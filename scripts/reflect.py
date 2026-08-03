@@ -124,7 +124,7 @@ def scan_markers(root: Path) -> dict:
 # ---- ratchet journal ---------------------------------------------------------
 
 def ratchet_health(records: list[dict]) -> dict:
-    forced = failed = weakened = removed = merged = 0
+    forced = failed = weakened = removed = merged = retired_cases = 0
     for r in records:
         if r.get("gate_result") == "forced" or r.get("forced"):
             forced += 1
@@ -135,8 +135,13 @@ def ratchet_health(records: list[dict]) -> dict:
         if isinstance(r.get("amended"), dict):
             weakened += len(r["amended"])
         removed += len(r.get("retired") or [])
+        # Pass-set case quarantine (#278): a factory self-assessment must see
+        # quarantine pressure too, or it is blind to a class of "quality held"
+        # that is actually "quality held because it was excused".
+        retired_cases += len(r.get("retired_cases") or [])
     return {"records": len(records), "merged": merged, "gate_failed": failed,
-            "forced_merges": forced, "amended_contracts": weakened, "retired_contracts": removed}
+            "forced_merges": forced, "amended_contracts": weakened, "retired_contracts": removed,
+            "retired_cases": retired_cases}
 
 
 def load_journal(root: Path) -> list[dict]:

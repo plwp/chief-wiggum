@@ -50,12 +50,15 @@ def test_ratchet_health():
     records = [
         {"gate_result": "pass", "merged": True, "amended": {"CTR-a-001": ["h"]}},
         {"gate_result": "forced", "merged": True, "retired": ["INV-b-002"]},
-        {"gate_result": "fail", "merged": False},
+        {"gate_result": "fail", "merged": False, "retired_cases": [
+            {"id": "s::flaky", "reason": "flaky", "owner": "plwp", "expiry": "2099-01-01"},
+        ]},
     ]
     h = reflect.ratchet_health(records)
     assert h["records"] == 3 and h["merged"] == 2
     assert h["forced_merges"] == 1 and h["gate_failed"] == 1
     assert h["amended_contracts"] == 1 and h["retired_contracts"] == 1
+    assert h["retired_cases"] == 1  # #278: quarantine pressure must be visible here too
 
 
 def test_pattern_coverage_flags_unfolded_invariants():
