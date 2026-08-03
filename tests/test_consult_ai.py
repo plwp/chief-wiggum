@@ -7,6 +7,7 @@ from pathlib import Path
 
 import consult_ai
 import pytest
+import urllib.error
 
 # A realistic-length prompt (>= consult_ai.MIN_PROMPT_BYTES) so tests that
 # exercise the role-quorum machinery don't trip the short-prompt guard
@@ -1469,3 +1470,32 @@ def test_shipped_provider_config_is_valid_including_openrouter_entries():
         assert not (set(role.required) | set(role.optional)) & openrouter_names, (
             f"role {role_name} pulls in opt-in entropy providers"
         )
+
+
+def test_openrouter_enforces_a_wall_clock_deadline(monkeypatch):
+    """urllib's timeout bounds each socket op, not total elapsed — a slow-but-steady
+    stream never trips it. Observed live at ~30 min against a 300s budget."""
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-test")
+    monkeypatch.setitem(consult_ai.TOOL_TIMEOUTS, "openrouter", 1)
+
+    def never_returns(request, timeout=None):
+        _time.sleep(30)
+        raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", never_returns)
+    started = _time.monotonic()
+    with pytest.raises(TimeoutError, match="budget"):
+        consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")
+    assert _time.monotonic() - started < 10, "deadline did not actually fire"
+
+
+def test_openrouter_deadline_reraises_the_original_error(monkeypatch):
+    """A fast failure must surface as itself, not as a timeout."""
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-test")
+
+    def boom(request, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError, match="unreachable"):
+        consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")

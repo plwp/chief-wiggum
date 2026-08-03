@@ -587,6 +587,38 @@ def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
+def _http_json_with_deadline(request: urllib.request.Request, timeout: int) -> dict:
+    """POST and decode JSON under a HARD wall-clock deadline.
+
+    ``urllib``'s own ``timeout`` bounds each individual socket operation, NOT total
+    elapsed time — a model that emits slowly but steadily never trips it. Observed
+    live: a 300s budget still running at ~30 minutes on a long reasoning response.
+    A budget that cannot expire is worse than no budget, because a role quorum then
+    blocks forever on one slow provider.
+
+    The blocking call runs on a daemon thread so the deadline is real; an abandoned
+    thread cannot outlive the process. The socket timeout is kept as well, so the
+    common case (a genuinely stalled connection) still fails fast at the socket layer.
+    """
+    result: dict = {}
+
+    def _call() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result["payload"] = json.loads(response.read().decode())
+        except BaseException as exc:  # re-raised on the calling thread below
+            result["error"] = exc
+
+    worker = threading.Thread(target=_call, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"openrouter exceeded its {timeout}s budget")
+    if "error" in result:
+        raise result["error"]
+    return result["payload"]
+
+
 def _parse_openrouter_payload(payload: dict, model_override: str | None) -> tuple[str, Usage]:
     """Extract text + usage from an OpenRouter chat-completion response.
 
@@ -656,8 +688,7 @@ def consult_openrouter(prompt: str, model: str | None = None, cwd: str | None = 
     )
     timeout = TOOL_TIMEOUTS.get("openrouter", TIMEOUT)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode())
+        payload = _http_json_with_deadline(request, timeout)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:500]
         raise RuntimeError(f"openrouter HTTP {exc.code} for {model}: {detail}") from exc
