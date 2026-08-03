@@ -8,6 +8,11 @@ state detection, path enumeration with cycles, and the four code generators.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
 import formal_models as fm
 
 # --- detect_schema_type -----------------------------------------------------
@@ -299,3 +304,193 @@ def test_generate_guards_go_emits_capitalized_func_and_http_error():
     assert "package handlers" in code
     assert "func CreateOrder(w http.ResponseWriter, r *http.Request) {" in code
     assert 'http.Error(w, "customer exists", 404)' in code
+
+
+# --- #232: non_codegen awareness, pseudo-operator transpile, slugified names --
+
+
+def test_is_non_codegen_detects_prefix():
+    assert fm.is_non_codegen("non_codegen(archguard): no controller imports repository directly")
+    assert fm.is_non_codegen("  non_codegen(index): composite index exists")
+    assert not fm.is_non_codegen("order.status == 'pending'")
+    assert not fm.is_non_codegen(None)
+    assert not fm.is_non_codegen("")
+
+
+def test_transpile_expression_implies_word_form():
+    assert fm.transpile_expression("A implies B") == "(not (A)) or (B)"
+
+
+def test_transpile_expression_implies_unicode_arrow():
+    assert fm.transpile_expression("A ⇒ B") == "(not (A)) or (B)"
+
+
+def test_transpile_expression_times_unicode_operator():
+    assert fm.transpile_expression("A × B") == "A * B"
+
+
+def test_transpile_expression_delta_unicode_operator():
+    # Δ ("change from A to B") transpiles to a plain subtraction so the
+    # generated guard is valid Python/Go arithmetic.
+    result = fm.transpile_expression("A Δ B")
+    compile(result, "<generated>", "eval")
+    assert "Δ" not in result
+
+
+def test_transpile_expression_passthrough_when_no_pseudo_operators():
+    assert fm.transpile_expression("order.status == 'pending'") == "order.status == 'pending'"
+
+
+def test_slugify_identifier_strips_apostrophes_and_punctuation():
+    slug = fm.slugify_identifier("What's Biting — Aggregation (v2)")
+    assert slug.isidentifier()
+    assert "'" not in slug
+    assert "-" not in slug
+    assert "(" not in slug and ")" not in slug
+
+
+def test_slugify_identifier_guards_leading_digit():
+    slug = fm.slugify_identifier("2FA Challenge")
+    assert slug.isidentifier()
+    assert not slug[0].isdigit()
+
+
+def test_slugify_identifier_pascal_case_for_go():
+    slug = fm.slugify_identifier("admin what's-biting aggregation", pascal_case=True)
+    assert slug.isidentifier()
+    assert slug[0].isupper()
+    assert "'" not in slug and "-" not in slug
+
+
+def _contracts_with(preconditions=None, postconditions=None, op_name="Create Order", extra_op=None):
+    op = {
+        "name": op_name,
+        "method": "POST",
+        "path": "/orders",
+        "description": "Create an order",
+        "preconditions": preconditions or [],
+        "postconditions": postconditions or [],
+        "error_cases": [{"status": 404, "condition": "customer not found"}],
+    }
+    if extra_op:
+        op.update(extra_op)
+    return {"entities": [{"name": "Order", "operations": [op]}]}
+
+
+def test_generate_deal_decorators_skips_non_codegen_precondition():
+    contracts = _contracts_with(
+        preconditions=[
+            {
+                "description": "composite index exists on (tenant_id, status)",
+                "expression": "non_codegen(index): composite index exists on (tenant_id, status)",
+            }
+        ]
+    )
+    code = fm.generate_deal_decorators(contracts)
+    assert "@deal.pre(lambda: non_codegen" not in code
+    assert "non_codegen" in code  # surfaced as a comment, not dropped silently
+    compile(code, "<generated>", "exec")
+
+
+def test_generate_guards_python_skips_non_codegen_precondition():
+    contracts = _contracts_with(
+        preconditions=[
+            {
+                "description": "archguard: no controller imports repository directly",
+                "expression": "non_codegen(archguard): no controller imports repository directly",
+            }
+        ]
+    )
+    code = fm.generate_guards_python(contracts)
+    assert "if not (non_codegen" not in code
+    assert "non_codegen" in code
+    compile(code, "<generated>", "exec")
+
+
+def test_generate_guards_go_skips_non_codegen_precondition():
+    contracts = _contracts_with(
+        preconditions=[
+            {
+                "description": "provisioning: bucket must pre-exist",
+                "expression": "non_codegen(provisioning): bucket must pre-exist",
+            }
+        ]
+    )
+    code = fm.generate_guards_go(contracts)
+    assert "if !(non_codegen" not in code
+    assert "non_codegen" in code
+
+
+def test_generate_deal_decorators_transpiles_pseudo_operators():
+    contracts = _contracts_with(
+        preconditions=[{"description": "conditional grant", "expression": "has_role implies has_scope"}],
+        postconditions=[{"description": "totals reconcile", "expression": "before Δ after"}],
+    )
+    code = fm.generate_deal_decorators(contracts)
+    assert "(not (has_role)) or (has_scope)" in code
+    assert "Δ" not in code
+    compile(code, "<generated>", "exec")
+
+
+def test_generate_guards_python_transpiles_unicode_operators():
+    contracts = _contracts_with(
+        preconditions=[{"description": "scope check", "expression": "has_role ⇒ has_scope"}]
+    )
+    code = fm.generate_guards_python(contracts)
+    assert "⇒" not in code
+    assert "(not (has_role)) or (has_scope)" in code
+    compile(code, "<generated>", "exec")
+
+
+def test_generate_guards_go_transpiles_unicode_operators():
+    contracts = _contracts_with(
+        preconditions=[{"description": "rate check", "expression": "cost × quantity"}]
+    )
+    code = fm.generate_guards_go(contracts)
+    assert "×" not in code
+    assert "cost * quantity" in code
+
+
+def test_generate_deal_decorators_slugifies_operation_name_with_apostrophe_and_parens():
+    contracts = _contracts_with(op_name="What's Biting — Aggregation (v2)")
+    code = fm.generate_deal_decorators(contracts)
+    compile(code, "<generated>", "exec")
+    assert "def what's" not in code.lower()
+
+
+def test_generate_guards_python_slugifies_operation_name():
+    contracts = _contracts_with(op_name="Admin What's-Biting Aggregation")
+    code = fm.generate_guards_python(contracts)
+    compile(code, "<generated>", "exec")
+
+
+def test_generate_guards_go_slugifies_operation_name_with_apostrophe_and_em_dash():
+    contracts = _contracts_with(op_name="Admin What's-Biting — Aggregation")
+    code = fm.generate_guards_go(contracts)
+    # Must be a single legal Go identifier: no apostrophes, hyphens, em-dashes, or spaces.
+    func_line = next(line for line in code.splitlines() if line.startswith("func "))
+    func_name = func_line.split("func ")[1].split("(")[0]
+    assert func_name.isidentifier()
+
+
+def test_generated_guards_go_compiles_with_gofmt():
+    if not shutil.which("gofmt"):
+        return
+    contracts = _contracts_with(
+        preconditions=[
+            {"description": "scope check", "expression": "has_role ⇒ has_scope"},
+            {
+                "description": "provisioning check",
+                "expression": "non_codegen(provisioning): bucket must pre-exist",
+            },
+        ],
+        op_name="Admin What's-Biting — Aggregation (v2)",
+    )
+    code = fm.generate_guards_go(contracts)
+    with tempfile.TemporaryDirectory() as tmp:
+        go_file = Path(tmp) / "guards.go"
+        go_file.write_text(code)
+        result = subprocess.run(
+            ["gofmt", "-e", str(go_file)], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0, result.stderr
