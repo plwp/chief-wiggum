@@ -28,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Epic artifact inventory")
     parser.add_argument("repo_path", help="Local path to the target repo")
     parser.add_argument("--epic-slug", help="Epic slug (docs/epics/<slug>)")
+    parser.add_argument(
+        "--epic-dir",
+        help="Pre-resolved epic directory (e.g. from 'artifacts.py show'); "
+        "overrides deriving it from --epic-slug, so a caller that already "
+        "resolved the meta location doesn't pay for it twice",
+    )
     parser.add_argument("--issue", type=int, help="Ticket number for context")
     out = parser.add_mutually_exclusive_group()
     out.add_argument("--json", action="store_true", help="Emit JSON (default)")
@@ -36,7 +42,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         inv = artifacts.build_inventory(
-            args.repo_path, epic_slug=args.epic_slug, issue=args.issue
+            args.repo_path,
+            epic_slug=args.epic_slug,
+            epic_dir=args.epic_dir,
+            issue=args.issue,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}", file=sys.stderr)

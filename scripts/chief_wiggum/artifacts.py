@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import artifacts as _meta  # scripts/artifacts.py — the meta-location resolver (#213)
 import check_unresolved
 
 # Prose artifacts written into docs/epics/<slug>/ by /architect and /close-epic.
@@ -58,6 +59,14 @@ class ArtifactInventory:
     epic_slug: str | None = None
     epic_dir: str | None = None
     epic_dir_exists: bool = False
+    # Three-state outcome (chief-wiggum#286, mirroring check_traceability's
+    # applicability idiom): "none" (no epic requested — a supported, silent
+    # standalone configuration) vs "missing" (an epic WAS requested but
+    # couldn't be found — always a defect, never indistinguishable from
+    # "none") vs "present". Callers like /implement must branch on this, not
+    # on HAS_EPIC alone, or a named-but-unlocatable epic renders identically
+    # to a ticket that was never in an epic.
+    epic_status: str = "none"
     issue: int | None = None
     markdown_artifacts: dict[str, bool] = field(default_factory=dict)
     model_artifacts: dict[str, bool] = field(default_factory=dict)
@@ -114,26 +123,46 @@ def build_inventory(
     repo_path: str | Path,
     *,
     epic_slug: str | None = None,
+    epic_dir: str | Path | None = None,
     issue: int | None = None,
     scanner: Scanner = check_unresolved.scan,
     blocked_fn: BlockedFn = check_unresolved.blocked_tickets,
 ) -> ArtifactInventory:
-    """Discover epic / model / design artifacts and unresolved gates."""
+    """Discover epic / model / design artifacts and unresolved gates.
+
+    Meta location is resolved, never assumed (chief-wiggum#286): both the
+    epic dir and the design dir are asked of ``artifacts.Resolver`` rather
+    than string-concatenated against ``repo_path``, so a sidecar-elected
+    target's artifacts are found where the resolver actually put them
+    instead of silently reading as absent. ``Resolver.resolve`` raises
+    ``ValueError`` on a malformed election/scope — that is NOT caught here,
+    so a resolver error always aborts discovery loudly rather than falling
+    through to the embedded default and misclassifying the repo (fail
+    closed, matching ``.claude/commands/architect.md`` Step 1).
+
+    ``epic_dir`` lets a caller that has ALREADY resolved the location (e.g.
+    ``/implement`` Step 1, which computes it via ``artifacts.py show``)
+    pass it directly instead of having it re-derived here.
+    """
     repo = Path(repo_path)
     inv = ArtifactInventory(target_repo=str(repo), epic_slug=epic_slug, issue=issue)
+    resolver = _meta.Resolver.resolve(repo)
 
-    epic_dir: Path | None = None
-    if epic_slug:
-        epic_dir = repo / "docs" / "epics" / epic_slug
-        inv.epic_dir = str(epic_dir)
-        inv.epic_dir_exists = epic_dir.exists()
+    epic_path: Path | None = None
+    if epic_slug or epic_dir is not None:
+        epic_path = Path(epic_dir) if epic_dir is not None else resolver.epic_dir(epic_slug)
+        inv.epic_dir = str(epic_path)
+        inv.epic_dir_exists = epic_path.exists()
+        inv.epic_status = "present" if inv.epic_dir_exists else "missing"
+    else:
+        inv.epic_status = "none"
 
     # Models that are present AND parse — only these drive the HAS_* flags, so a
     # malformed model can't make a downstream step read/generate from broken JSON.
     valid_models: set[str] = set()
-    if epic_dir and epic_dir.exists():
-        inv.markdown_artifacts = _presence(epic_dir, EPIC_MARKDOWN)
-        models_dir = epic_dir / "models"
+    if epic_path and epic_path.exists():
+        inv.markdown_artifacts = _presence(epic_path, EPIC_MARKDOWN)
+        models_dir = epic_path / "models"
         inv.model_artifacts = _presence(models_dir, EPIC_MODELS)
         for name, present in inv.model_artifacts.items():
             if not present:
@@ -149,16 +178,16 @@ def build_inventory(
         if epic_slug:
             inv.warnings.append(f"epic directory does not exist: {inv.epic_dir}")
 
-    design_dir = repo / "docs" / "design"
+    design_dir = resolver.design_dir()
     if design_dir.exists():
         inv.design_artifacts = _presence(design_dir, DESIGN_ARTIFACTS, DESIGN_DIRS)
     else:
         inv.design_artifacts = dict.fromkeys(DESIGN_ARTIFACTS, False)
 
     # Unresolved-marker scan over the epic dir (models + prose).
-    if epic_dir and epic_dir.exists():
+    if epic_path and epic_path.exists():
         try:
-            findings = scanner([epic_dir])
+            findings = scanner([epic_path])
         except Exception as exc:  # noqa: BLE001 - never let a scan error abort discovery
             inv.warnings.append(f"unresolved scan failed: {exc}")
             findings = []
@@ -179,7 +208,7 @@ def build_inventory(
         inv.blocked_tickets = sorted(set(parsed))
 
     inv.flags = {
-        "HAS_EPIC": bool(epic_dir and epic_dir.exists()),
+        "HAS_EPIC": bool(epic_path and epic_path.exists()),
         "HAS_FORMAL_MODELS": "state-machines.json" in valid_models
         or "contracts.json" in valid_models,
         "HAS_UI_SPEC": "ui-spec.json" in valid_models,
