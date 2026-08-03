@@ -37,7 +37,13 @@ Bet state machine (docs/business-factory.md §2.3)::
 
     proposed → probing → validating → building → scaling
     kill_pending reachable from any non-terminal state
-    terminals: killed | parked | lifestyle | sold
+    terminals: killed | parked | lifestyle | sold | wound_down
+
+``lifestyle`` is the LIVE terminal — a revenue-producing, support-consuming
+product that earns zero in-flight slots forever (#274, §9.6.3/9.6.5's
+zombie-fleet gap). ``wound_down`` (#274) is a distinct terminal for a
+PLANNED graceful hold-then-shutdown, never conflated with ``killed``'s
+harvest-check discipline.
 
 Verdicts at gates use Cooper's vocabulary — ``go | kill | hold | recycle`` —
 never binary pass/fail. **Pivot is a transition, not an edit**: it closes the
@@ -61,6 +67,20 @@ passing ``--gate`` until a ``validation/bet-gates.json`` record exists):
   (``transition <id> --override-kill --reason ...``) — both journaled acts.
 - **bets-in-flight cap** (transition/portfolio): bets in probing|validating|
   building, default 2 (``--max-in-flight``) — attention is the binding resource.
+- **capacity-based cap, addition rule, attention kill criterion** (#274,
+  §9.6.3 — transition/portfolio): the count-based cap above cannot see a
+  ``lifestyle`` bet, which consumes zero in-flight slots while consuming
+  operator hours forever (the zombie-fleet gap). Remaining capacity =
+  ``means.hours_per_week − Σ(measured ongoing_load of every lifestyle bet) −
+  reserve_hours_per_week`` — a SECOND, independent bound alongside
+  ``--max-in-flight``; whichever binds is visible. ``ongoing_load`` is always
+  MEASURED from the ledger's trailing hours (never a typed-in guess). The
+  addition rule flags starting a new bet before the most recently added live
+  product has run below its target load for two consecutive weekly periods.
+  The attention kill criterion flags a live bet costing more than 2h/wk while
+  earning (operator-entered) MRR under $2k. All three are brand-new
+  reinterpretations of the existing cap and so NEVER gate, even under
+  ``--gate``, until validated against a real portfolio (docs/gate-rollout.md).
 - **bet-selection lint** (create, #235 amendment): while means.json says
   sales AND marketing are novice and no channel across the portfolio has
   reached ``focused``, a bet whose acquisition plan has no ecosystem channel
@@ -81,6 +101,19 @@ passing ``--gate`` until a ``validation/bet-gates.json`` record exists):
   enthusiasm), computed by ``assumption.py``. No assumptions.json →
   ``skipped``. A pivot's ``--changed-elements`` re-opens (validated →
   untested) dependent assumptions in the successor (Bland's dependency rule).
+- **liability-exposure soundness lint** (create/rebaseline, #277):
+  ``envelope.liability_exposure`` (docs/business-factory.md §2.1 addendum) is
+  enumerated — ``capped_at``/``insured``/``uncapped_entity``/
+  ``uncapped_personal``. Its total ABSENCE is a finding; a STATED value —
+  including an uncapped one — is NEVER itself a finding anywhere in this
+  script: the operator's risk appetite is a deliberate, sized, counted choice,
+  not a defect. ``insured.responds`` defaults to ``unverified`` (insurability
+  is a separate fact from insurance — a policy may not respond to a
+  contractually-assumed liability) and only a human answer moves it.
+- **portfolio-level uncapped-liability concurrency count** (portfolio, #277):
+  always visible, never a finding/never gates — one uncapped exposure is a
+  considered bet, several concurrently is a portfolio that cannot survive one
+  bad event.
 
 Channel-experiment records themselves (Bullseye states, completeness,
 exactly-one-focused, CAC join, headcount filter) are ``scripts/channel.py``'s
@@ -144,7 +177,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -163,11 +196,64 @@ MEANS_NAME = "means.json"
 
 ACTIVE_ORDER = ["proposed", "probing", "validating", "building", "scaling"]
 IN_FLIGHT = {"probing", "validating", "building"}
-TERMINALS = {"killed", "parked", "lifestyle", "sold"}
+# `wound_down` (#274, §9.6.5): a planned, graceful hold-then-shutdown (or
+# handing the product to a loyal customer) is the normal ending for a small
+# vertical vendor — distinct from `killed`'s harvest-check discipline, which
+# assumes the ending is a loss to grade, not a deliberate wind-down.
+TERMINALS = {"killed", "parked", "lifestyle", "sold", "wound_down"}
 ALL_STATES = set(ACTIVE_ORDER) | {"kill_pending"} | TERMINALS
 VERDICTS = ("go", "kill", "hold", "recycle")
 COMPARATORS = {"<", "<=", ">", ">=", "==", "!="}
 DEFAULT_MAX_IN_FLIGHT = 2
+
+# Findings prefixed with any of these never gate — printed always, tagged
+# report-only even under --gate. "skipped:" is a missing OPTIONAL input
+# (pre-existing convention). "capacity:" is the #274 zombie-fleet arithmetic
+# (capacity-based cap, addition rule, attention kill criterion): brand-new
+# checks that reinterpret what the existing --max-in-flight cap reports, so
+# per docs/gate-rollout.md they ship report-only until validated against a
+# real portfolio — they must never harden into a blocker on their own.
+NEVER_GATES_PREFIXES = ("skipped:", "capacity:")
+
+# Live states whose products consume operator attention indefinitely despite
+# being a TERMINAL — the zombie-fleet gap (#274, docs/business-factory.md
+# §9.6.3/§9.6.5): `lifestyle` is a live, revenue-producing, support-consuming
+# product that earns zero in-flight slots forever. This is the set the
+# capacity accounting, addition rule and attention kill criterion all read.
+LIVE_STATES = {"lifestyle"}
+
+# Ongoing load is MEASURED from the ledger's trailing hours entries, never a
+# typed-in guess (#274 item 1) — averaged over this many trailing weeks.
+LOAD_WINDOW_WEEKS = 4
+
+# §9.6.3 proposed thresholds: the attention kill criterion (#274 item 4) flags
+# a live product whose measured steady-state load is above
+# ATTENTION_LOAD_THRESHOLD_HOURS while its (operator-entered) MRR is below
+# ATTENTION_REVENUE_THRESHOLD_USD — attention spent without being paid for.
+# The same load threshold doubles as the addition rule's (#274 item 3)
+# default "target load" a live product must run under for two consecutive
+# weekly periods before another bet may start, absent a per-bet override.
+ATTENTION_LOAD_THRESHOLD_HOURS = 2.0
+ATTENTION_REVENUE_THRESHOLD_USD = 2000.0
+
+# Liability-exposure enumeration (#277) — Dew et al.'s 2009 affordable-loss
+# field list omits it, so an uncapped indemnity records identically to no
+# exposure at all. Enumerated, never free text (docs/business-factory.md §2.1
+# addendum). A STATED value — including uncapped_entity/uncapped_personal —
+# is NEVER itself a finding: the operator's risk appetite is a deliberate,
+# sized, counted choice, not a defect. Only its total ABSENCE is a finding.
+LIABILITY_TYPES = {"capped_at", "insured", "uncapped_entity", "uncapped_personal"}
+# Insurability is a separate fact from insurance (#277 decision 2): a policy
+# does not establish that it responds to a contractually-assumed liability (a
+# common PI exclusion) — `responds` defaults to `unverified` and only a human
+# answer moves it.
+RESPONDS_VALUES = {"yes", "unverified", "no"}
+UNCAPPED_LIABILITY_TYPES = {"uncapped_entity", "uncapped_personal"}
+# A bet's contractual liability position is considered EXITED (no longer
+# counted in the portfolio-level concurrency count) only once it is killed,
+# sold (liability moves with the buyer/new entity) or wound down. Every other
+# state — including `parked` — may still carry an unresolved, live exposure.
+LIABILITY_EXITED_STATES = {"killed", "sold", "wound_down"}
 
 # Channel-engine ledger checks (#241 leg 3). While a bet is probing|validating,
 # ≥N Mom-Test conversations/week (default 3, per-bet `create --cadence`,
@@ -413,6 +499,60 @@ def envelope_soundness(envelope: dict) -> list[str]:
             "the tranche ladder exceeds the envelope"
         )
     return out
+
+
+def liability_soundness(envelope: dict) -> list[str]:
+    """Liability-exposure soundness lint (#277): every envelope must record an
+    explicit `liability_exposure` — its total ABSENCE is a finding (an
+    uncapped indemnity taken by oversight is indistinguishable from one taken
+    on purpose unless *something* is always recorded). A STATED value,
+    whatever it is — including uncapped_entity/uncapped_personal — is NEVER
+    itself a finding here or anywhere else: recording the operator's
+    deliberate risk appetite is the point, not a defect to flag. `insured`'s
+    `responds` defaults to `unverified` when absent (only a human answer
+    moves it) — that default is complete, not malformed."""
+    exposure = envelope.get("liability_exposure")
+    if exposure is None:
+        return [
+            "liability_exposure unset — the affordable-loss envelope's liability "
+            "dimension must be recorded explicitly (capped_at/insured/"
+            "uncapped_entity/uncapped_personal); a STATED value is never itself "
+            "a finding, only an unset one is (#277)"
+        ]
+    if not isinstance(exposure, dict) or exposure.get("type") not in LIABILITY_TYPES:
+        return [
+            f"liability_exposure malformed — type must be one of "
+            f"{sorted(LIABILITY_TYPES)}, got {exposure!r}"
+        ]
+    t = exposure["type"]
+    if t == "capped_at" and not isinstance(exposure.get("amount_usd"), (int, float)):
+        return ["liability_exposure malformed — capped_at requires a numeric amount_usd"]
+    if t == "insured":
+        if not exposure.get("policy"):
+            return ["liability_exposure malformed — insured requires a policy name/id"]
+        responds = exposure.get("responds", "unverified")
+        if responds not in RESPONDS_VALUES:
+            return [
+                f"liability_exposure malformed — insured.responds must be one of "
+                f"{sorted(RESPONDS_VALUES)}, got {responds!r}"
+            ]
+    return []
+
+
+def liability_concurrency(root: Path) -> dict:
+    """Portfolio-level concurrency count (#277 item 3) — the check that
+    actually matters: one unbounded exposure is a considered bet; several
+    concurrently is a portfolio that cannot survive one bad event. Counts
+    every bet whose contractual position has not definitively exited
+    (LIABILITY_EXITED_STATES); reported the way the in-flight cap reports
+    attention — always visible, never a gate."""
+    carriers = [
+        b["id"] for b in all_bets(root)
+        if b.get("state") not in LIABILITY_EXITED_STATES
+        and ((b.get("envelope") or {}).get("liability_exposure") or {}).get("type")
+        in UNCAPPED_LIABILITY_TYPES
+    ]
+    return {"count": len(carriers), "bets": sorted(carriers)}
 
 
 # ---- ledger --------------------------------------------------------------------
@@ -1218,15 +1358,171 @@ def cap_findings(root: Path, max_in_flight: int, entering: str | None = None) ->
     return []
 
 
+# ---- zombie-fleet capacity accounting (#274) ------------------------------------
+
+
+def ongoing_load_hours_per_week(
+    root: Path, bet_id: str, as_of: date | None = None, window_weeks: int = LOAD_WINDOW_WEEKS,
+) -> float:
+    """MEASURED, not guessed (#274 item 1): average weekly hours logged on this
+    bet's ledger over the trailing `window_weeks` — an optimistic operator
+    cannot simply type in a smaller number, because the field is never
+    settable at all. Untagged and tagged hours entries both count; rep entries
+    (which carry no `hours`) do not."""
+    as_of = as_of or date.today()
+    cutoff_days = window_weeks * 7
+    total = 0.0
+    for e in load_ledger(root, bet_id):
+        if not isinstance(e.get("hours"), (int, float)):
+            continue
+        try:
+            d = datetime.fromisoformat(str(e.get("ts"))).date()
+        except ValueError:
+            continue
+        if 0 <= (as_of - d).days < cutoff_days:
+            total += e["hours"]
+    return round(total / window_weeks, 2)
+
+
+def attention_capacity(root: Path, as_of: date | None = None) -> dict | None:
+    """The zombie-fleet arithmetic (#274 item 2, §9.6.3): remaining capacity =
+    means.hours_per_week − Σ(measured ongoing load of every LIVE_STATES bet) −
+    reserve_hours_per_week. `lifestyle` bets earn zero in-flight slots (by
+    design — they are a terminal) while consuming operator hours forever;
+    this is the accounting that makes that visible. None (never guessed) when
+    means.json is absent or has no numeric hours_per_week."""
+    means = load_means(root)
+    if means is None or not isinstance(means.get("hours_per_week"), (int, float)):
+        return None
+    reserve = means.get("reserve_hours_per_week", 0) or 0
+    loads = {
+        b["id"]: ongoing_load_hours_per_week(root, b["id"], as_of)
+        for b in all_bets(root) if b.get("state") in LIVE_STATES
+    }
+    total_load = sum(loads.values())
+    return {
+        "hours_per_week": means["hours_per_week"],
+        "reserve_hours_per_week": reserve,
+        "live_loads": loads,
+        "total_load_hours_per_week": total_load,
+        "remaining_hours_per_week": means["hours_per_week"] - total_load - reserve,
+    }
+
+
+def capacity_findings(root: Path, as_of: date | None = None) -> list[str]:
+    """Capacity-based cap (#274 item 2): fires when the live fleet alone has
+    exhausted (or exceeded) the attention budget — independent of, and a
+    second bound alongside, the integer --max-in-flight cap (whichever binds
+    first is visible; this one counts the fleet the other cannot see). Never
+    gates (NEVER_GATES_PREFIXES: "capacity:") — a brand-new reinterpretation
+    of what the existing cap reports, unvalidated until run against a real
+    portfolio (docs/gate-rollout.md)."""
+    cap = attention_capacity(root, as_of)
+    if cap is None:
+        return ["skipped: no means.json hours_per_week — capacity-based cap needs it"]
+    if cap["remaining_hours_per_week"] <= 0:
+        detail = ", ".join(
+            f"{bid} {h:g}h/wk" for bid, h in sorted(cap["live_loads"].items())
+        ) or "none"
+        return [
+            "capacity: attention exhausted — "
+            f"{cap['hours_per_week']:g}h/wk available − {cap['total_load_hours_per_week']:g}h/wk "
+            f"live-product load ({detail}) − {cap['reserve_hours_per_week']:g}h/wk reserve = "
+            f"{cap['remaining_hours_per_week']:g}h/wk remaining (§9.6.3) — the live fleet "
+            "alone consumes the attention budget; starting another bet has no slack"
+        ]
+    return []
+
+
+def addition_rule_findings(
+    root: Path, entering_id: str, as_of: date | None = None,
+) -> list[str]:
+    """Addition rule (#274 item 3, §9.6.3): only start product n+1 once
+    product n — the most recently added live (lifestyle) product — has run
+    below its target load for two consecutive trailing weekly measurement
+    periods. No live products yet → nothing to check. Never gates
+    ("capacity:" — unvalidated new check, docs/gate-rollout.md)."""
+    as_of = as_of or date.today()
+    live = [
+        b for b in all_bets(root)
+        if b.get("state") in LIVE_STATES and b["id"] != entering_id
+    ]
+    if not live:
+        return []
+
+    def _created(b: dict) -> datetime:
+        try:
+            return datetime.fromisoformat(str(b.get("created")))
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    latest = max(live, key=_created)
+    target = latest.get("target_load_hours_per_week")
+    if not isinstance(target, (int, float)):
+        target = ATTENTION_LOAD_THRESHOLD_HOURS
+    entries = load_ledger(root, latest["id"])
+    periods = []
+    for k in range(2):
+        start = as_of - timedelta(days=7 * (k + 1))
+        end = as_of - timedelta(days=7 * k)
+        total = 0.0
+        for e in entries:
+            if not isinstance(e.get("hours"), (int, float)):
+                continue
+            try:
+                d = datetime.fromisoformat(str(e.get("ts"))).date()
+            except ValueError:
+                continue
+            if start <= d < end:
+                total += e["hours"]
+        periods.append(total)
+    if any(p >= target for p in periods):
+        return [
+            f"capacity: addition rule (§9.6.3) — the most recently added live "
+            f"product {latest['id']} has not run below its target load "
+            f"({target:g}h/wk) for two consecutive weekly periods (measured "
+            f"{periods[1]:g}h/wk then {periods[0]:g}h/wk, most recent last) — "
+            f"starting {entering_id} before {latest['id']} stabilizes risks the "
+            "zombie fleet"
+        ]
+    return []
+
+
+def attention_kill_findings(root: Path, as_of: date | None = None) -> list[str]:
+    """Attention kill criterion (#274 item 4, §9.6.3): a live product whose
+    measured steady-state load is above ATTENTION_LOAD_THRESHOLD_HOURS while
+    its (operator-entered) MRR is below ATTENTION_REVENUE_THRESHOLD_USD is a
+    kill-or-redesign candidate — attention spent without being paid for. No
+    `mrr_usd` recorded on a bet → silent for that bet (never guessed; a
+    finding must come from data, not its absence). Never gates."""
+    out = []
+    for bet in all_bets(root):
+        if bet.get("state") not in LIVE_STATES:
+            continue
+        mrr = bet.get("mrr_usd")
+        if not isinstance(mrr, (int, float)):
+            continue
+        load = ongoing_load_hours_per_week(root, bet["id"], as_of)
+        if load > ATTENTION_LOAD_THRESHOLD_HOURS and mrr < ATTENTION_REVENUE_THRESHOLD_USD:
+            out.append(
+                f"capacity: attention kill criterion (§9.6.3) — {bet['id']} costs "
+                f"{load:g}h/wk (> {ATTENTION_LOAD_THRESHOLD_HOURS:g}h/wk) while earning "
+                f"${mrr:g} MRR (< ${ATTENTION_REVENUE_THRESHOLD_USD:g}) — a kill-or-"
+                "redesign candidate, attention spent without being paid for"
+            )
+    return out
+
+
 # ---- reporting -----------------------------------------------------------------
 
 
 def report(findings: list[str], gate: bool, label: str = "bet") -> int:
     """docs/gate-rollout.md discipline: findings print always; exit 1 only under
-    --gate. Skipped checks are reported, never silently omitted."""
-    real = [f for f in findings if not f.startswith("skipped:")]
+    --gate. Skipped checks (and unvalidated new #274 capacity findings — see
+    NEVER_GATES_PREFIXES) are reported, never silently omitted, and never gate."""
+    real = [f for f in findings if not f.startswith(NEVER_GATES_PREFIXES)]
     for f in findings:
-        tag = "gated" if gate and not f.startswith("skipped:") else "report-only"
+        tag = "gated" if gate and not f.startswith(NEVER_GATES_PREFIXES) else "report-only"
         print(f"{label}: [{tag}] {f}")
     return 1 if gate and real else 0
 
@@ -1279,6 +1575,7 @@ def cmd_create(args) -> int:
 
     findings = [f"soundness: {f}" for f in criteria_soundness(criteria)]
     findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
+    findings += [f"soundness: {f}" for f in liability_soundness(envelope)]
     findings += [
         f if f.startswith("skipped:") else f"selection: {f}"
         for f in selection_lint(root, bet)
@@ -1682,6 +1979,11 @@ def cmd_transition(args) -> int:
 
     if to in IN_FLIGHT and bet["state"] not in IN_FLIGHT:
         findings += cap_findings(root, args.max_in_flight, entering=args.bet_id)
+        # #274: a second, independent bound — the live fleet's measured
+        # attention accounting and the §9.6.3 addition rule — visible
+        # alongside the integer cap; whichever binds first is seen.
+        findings += capacity_findings(root)
+        findings += addition_rule_findings(root, args.bet_id)
 
     if to == "building":
         # Evidence-strength floor (#236): ≥1 validated assumption at strength ≥4
@@ -1783,6 +2085,7 @@ def cmd_rebaseline(args) -> int:
         if not isinstance(envelope.get("cash_cap_usd"), (int, float)):
             raise BetError(f"{env_path}: envelope needs a numeric cash_cap_usd")
         findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
+        findings += [f"soundness: {f}" for f in liability_soundness(envelope)]
         details["old_envelope_hash"] = old_env_h
         details["new_envelope_hash"] = content_hash(envelope)
     if args.criteria:
@@ -1861,9 +2164,19 @@ def cmd_portfolio(args) -> int:
             "next_criterion": _next_due(criteria, today),
             "distribution": distribution_status(root, bid)["status"],
             "kill_pending_proposal": bool(pend),
+            # #274: measured (never guessed) ongoing load — only meaningful
+            # for a LIVE_STATES (lifestyle) bet, the zombie-fleet population.
+            "ongoing_load_hours_per_week": (
+                ongoing_load_hours_per_week(root, bid, today)
+                if bet["state"] in LIVE_STATES else None
+            ),
         })
 
     findings += cap_findings(root, args.max_in_flight)
+    findings += capacity_findings(root, today)
+    findings += attention_kill_findings(root, today)
+    attention = attention_capacity(root, today)
+    liab = liability_concurrency(root)
 
     # Loss distribution + kill hygiene per DEAD bet — process accountability
     # (Simonson & Staw), never a per-bet win/lose ranking.
@@ -1900,20 +2213,42 @@ def cmd_portfolio(args) -> int:
             "in_flight": in_flight_bets(root),
             "max_in_flight": args.max_in_flight,
             "dead_bets": dead,
+            "attention": attention,
+            "liability_concurrency": liab,
             "findings": findings,
         }, indent=2))
-        return 1 if args.gate and findings else 0
+        real = [f for f in findings if not f.startswith(NEVER_GATES_PREFIXES)]
+        return 1 if args.gate and real else 0
 
     print(f"portfolio: {root}")
     print(f"  bets: {len(bets)} — in flight: {len(in_flight_bets(root))}/{args.max_in_flight} "
           f"({', '.join(in_flight_bets(root)) or 'none'})")
+    if attention is not None:
+        # #274 zombie-fleet visibility: shown always, not only when exhausted —
+        # the whole point is that the live fleet's attention draw is COUNTED.
+        print(
+            f"  attention: {attention['hours_per_week']:g}h/wk available − "
+            f"{attention['total_load_hours_per_week']:g}h/wk live-product load "
+            f"({len(attention['live_loads'])} lifestyle bet(s)) − "
+            f"{attention['reserve_hours_per_week']:g}h/wk reserve = "
+            f"{attention['remaining_hours_per_week']:g}h/wk remaining"
+        )
+    print(
+        f"  uncapped liability: {liab['count']} bet(s) currently carrying an "
+        f"uncapped exposure ({', '.join(liab['bets']) or 'none'}) — a considered "
+        "bet alone, a portfolio-survival question concurrently (#277)"
+    )
     for r in rows:
         pend = "  [KILL PROPOSAL PENDING]" if r["kill_pending_proposal"] else ""
+        load_note = (
+            f"; ongoing load: {r['ongoing_load_hours_per_week']:g}h/wk"
+            if r["ongoing_load_hours_per_week"] is not None else ""
+        )
         print(
             f"  {r['id']:24s} {r['state']:12s} spend ${r['spend_usd']:g}/"
             f"${r['unlocked_usd']:g} unlocked (cap ${r['cash_cap_usd']:g}), "
             f"{r['hours']:g}h; next criterion: {r['next_criterion']}; "
-            f"distribution: {r['distribution']}{pend}"
+            f"distribution: {r['distribution']}{load_note}{pend}"
         )
     if dead:
         losses = sorted(d["loss_usd"] for d in dead)

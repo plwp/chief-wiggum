@@ -22,8 +22,8 @@
     "created": { "type": "string", "description": "ISO timestamp the bet was created." },
     "state": {
       "type": "string",
-      "enum": ["proposed", "probing", "validating", "building", "scaling", "kill_pending", "killed", "parked", "lifestyle", "sold"],
-      "description": "proposed → probing → validating → building → scaling; kill_pending reachable from anywhere; terminals killed|parked|lifestyle|sold. `killed` is blocked until retrospective.md exists non-trivially and a harvest check ran."
+      "enum": ["proposed", "probing", "validating", "building", "scaling", "kill_pending", "killed", "parked", "lifestyle", "sold", "wound_down"],
+      "description": "proposed → probing → validating → building → scaling; kill_pending reachable from anywhere; terminals killed|parked|lifestyle|sold|wound_down. `killed` is blocked until retrospective.md exists non-trivially and a harvest check ran. `wound_down` (chief-wiggum#274) is a distinct terminal for a PLANNED graceful hold-then-shutdown (or handing the product to a loyal customer) — the normal ending for a small vertical vendor, not a kill, and it carries no retrospective/harvest requirement of its own. `lifestyle` is the LIVE terminal: a revenue-producing, support-consuming product that earns zero in-flight slots forever — its measured ongoing_load feeds the portfolio's attention-capacity accounting (see `bet.py`'s LIVE_STATES)."
     },
     "envelope": { "$ref": "#/$defs/envelope" },
     "acquisition": {
@@ -75,6 +75,16 @@
       "minimum": 0,
       "description": "Paid heads on this bet (excluding the founder). The channel engine's zero-headcount filter flags sales-led channels (sales, business-development) while this is 0. Absent → falls back to means.json headcount, then 0."
     },
+    "target_load_hours_per_week": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Per-bet override of the addition-rule target load (chief-wiggum#274, §9.6.3): the most recently added LIVE (lifestyle) product must run below this for two consecutive trailing weekly periods before another bet may start. Absent → defaults to ATTENTION_LOAD_THRESHOLD_HOURS (2h/wk)."
+    },
+    "mrr_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Current monthly recurring revenue, USD — operator-entered (not derivable in-repo), unlike ongoing_load which is always measured. Feeds the attention kill criterion (chief-wiggum#274, §9.6.3): a live product costing more than ATTENTION_LOAD_THRESHOLD_HOURS/wk while earning less than ATTENTION_REVENUE_THRESHOLD_USD MRR is a kill-or-redesign candidate. Absent → the check is silent for this bet, never guessed."
+    },
     "predecessor": {
       "type": ["string", "null"],
       "description": "Bet id this bet succeeded via a pivot, or null."
@@ -95,6 +105,39 @@
         "time_cap_hours": { "type": "number", "minimum": 0 },
         "calendar_cap_days": { "type": "number", "minimum": 0 },
         "attention_slots": { "type": "number", "minimum": 0 },
+        "liability_exposure": {
+          "description": "The affordable-loss envelope's liability/exposure dimension (chief-wiggum#277) — Dew et al.'s 2009 field list omits it, so an uncapped contractual indemnity records identically to no exposure at all. Enumerated, never free text. `bet.py create`/`rebaseline` flag this field's total ABSENCE as a soundness finding; a STATED value — including uncapped_entity/uncapped_personal — is NEVER itself a finding, at create or anywhere else: the operator's risk appetite is a deliberate, sized, counted choice (docs/business-factory.md §9.4 addendum: terms as an undercutting mechanism), not a defect. See also the portfolio-level uncapped-liability concurrency count (`bet.py portfolio`) — one such bet is a considered risk, several concurrently is a portfolio-survival question.",
+          "oneOf": [
+            {
+              "type": "object", "required": ["type", "amount_usd"], "additionalProperties": false,
+              "properties": {
+                "type": { "const": "capped_at" },
+                "amount_usd": { "type": "number", "minimum": 0, "description": "The liability cap, USD." }
+              }
+            },
+            {
+              "type": "object", "required": ["type", "policy"], "additionalProperties": false,
+              "properties": {
+                "type": { "const": "insured" },
+                "policy": { "type": "string", "minLength": 1, "description": "Policy name/id covering this exposure." },
+                "responds": {
+                  "type": "string", "enum": ["yes", "unverified", "no"],
+                  "description": "Insurability is a separate fact from insurance (#277 decision 2): holding a policy does not establish that it responds to a contractually-assumed liability — a common PI exclusion. Defaults to `unverified` when absent; only a human answer moves it to yes/no."
+                }
+              }
+            },
+            {
+              "type": "object", "required": ["type"], "additionalProperties": false,
+              "properties": { "type": { "const": "uncapped_entity" } },
+              "description": "Unbounded liability held by the operating entity."
+            },
+            {
+              "type": "object", "required": ["type"], "additionalProperties": false,
+              "properties": { "type": { "const": "uncapped_personal" } },
+              "description": "Unbounded liability with personal exposure (no entity shield, or the entity does not cure it)."
+            }
+          ]
+        },
         "tranches": {
           "type": "array",
           "description": "Gompers (1995) staging: the cash cap released stepwise. A tranche with unlock_milestone_id null is unlocked from creation; others unlock via a journaled `--unlock-milestone` act. Invariant: cumulative spend ≤ cumulative unlocked tranches.",

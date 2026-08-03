@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,11 +31,52 @@ ENVELOPE = {
     "time_cap_hours": 120,
     "calendar_cap_days": 90,
     "attention_slots": 1,
+    # A stated liability_exposure (chief-wiggum#277) — most tests in this file
+    # are not about the liability dimension, so the shared fixture carries a
+    # valid one and the dedicated liability tests below override it.
+    "liability_exposure": {"type": "capped_at", "amount_usd": 900},
     "tranches": [
         {"amount_usd": 300, "unlock_milestone_id": None},
         {"amount_usd": 600, "unlock_milestone_id": "M1"},
     ],
 }
+
+
+def _envelope(**overrides):
+    env = json.loads(json.dumps(ENVELOPE))
+    env.update(overrides)
+    return env
+
+
+def _envelope_without_liability():
+    env = json.loads(json.dumps(ENVELOPE))
+    del env["liability_exposure"]
+    return env
+
+
+def _iso(days_ago: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+
+
+def _ledger_entry(portfolio: Path, bet_id: str, *, hours=None, amount_usd=None,
+                   ts: str | None = None, tag: str | None = None, note: str = "") -> None:
+    """Append a ledger entry directly (bypassing `spend`, whose ts is always
+    'now') so tests can construct trailing-window measurement history."""
+    entry = {"ts": ts or _iso(0), "type": "spend", "amount_usd": amount_usd,
+              "hours": hours, "note": note}
+    if tag:
+        entry["tag"] = tag
+    path = portfolio / "bets" / bet_id / "ledger.jsonl"
+    with path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def _write_means(portfolio: Path, **fields) -> None:
+    """Raw means.json writer for the capacity/zombie-fleet tests (#274) — the
+    existing `_means()` helper further down is specific to the selection-lint
+    tests' skills shape."""
+    portfolio.mkdir(parents=True, exist_ok=True)
+    (portfolio / "means.json").write_text(json.dumps(fields))
 
 CRITERIA = {
     "criteria": [
@@ -545,3 +587,314 @@ def test_journal_chain_matches_ratchet_format(portfolio, tmp_path):
         body = {k: v for k, v in rec.items() if k != "record_hash"}
         assert rec["record_hash"] == stable_hash(prev, json.dumps(body, sort_keys=True))
         prev = rec["record_hash"]
+
+
+# ---- zombie fleet: measured ongoing load + capacity-based cap (#274) -----------
+
+
+def test_ongoing_load_measured_from_trailing_ledger_hours(portfolio, tmp_path):
+    _create(portfolio, tmp_path)
+    _run(portfolio, "transition", "b1", "lifestyle")
+    # 3h/wk spread evenly over the trailing 4 weeks -> measured average 3h/wk,
+    # never a typed-in guess.
+    for wk in range(4):
+        _ledger_entry(portfolio, "b1", hours=3, ts=_iso(7 * wk))
+    js = _run(portfolio, "portfolio", "--format", "json")
+    assert js.returncode == 0, js.stderr
+    data = json.loads(js.stdout)
+    row = next(r for r in data["bets"] if r["id"] == "b1")
+    assert row["ongoing_load_hours_per_week"] == 3.0
+
+
+def test_ongoing_load_is_none_for_non_live_states(portfolio, tmp_path):
+    _create(portfolio, tmp_path)
+    _run(portfolio, "spend", "b1", "--hours", "5")
+    js = _run(portfolio, "portfolio", "--format", "json")
+    data = json.loads(js.stdout)
+    row = next(r for r in data["bets"] if r["id"] == "b1")
+    assert row["ongoing_load_hours_per_week"] is None
+
+
+def test_capacity_cap_sees_the_zombie_fleet_the_in_flight_cap_misses(portfolio, tmp_path):
+    """The exact #274 gap: five lifestyle products consume zero in-flight
+    slots (the count-based cap reports room) while eating the whole
+    attention budget — the capacity cap is the thing that sees it."""
+    _write_means(portfolio, hours_per_week=15)
+    for i in range(5):
+        bid = f"L{i}"
+        _create(portfolio, tmp_path, bid)
+        _run(portfolio, "transition", bid, "lifestyle")
+        for wk in range(4):
+            _ledger_entry(portfolio, bid, hours=4, ts=_iso(7 * wk))  # 4h/wk each x5 = 20h/wk
+    proc = _run(portfolio, "portfolio")
+    assert proc.returncode == 0, proc.stderr
+    assert "exceed the cap of 2" not in proc.stdout  # old cap: 0 bets in flight, "room"
+    assert "capacity" in proc.stdout and "exhausted" in proc.stdout
+    # a brand-new gate: never blocks even under --gate until validated (docs/gate-rollout.md)
+    gated = _run(portfolio, "portfolio", "--gate")
+    assert gated.returncode == 0, gated.stdout
+    js = _run(portfolio, "portfolio", "--format", "json")
+    data = json.loads(js.stdout)
+    assert data["attention"]["total_load_hours_per_week"] == 20.0
+    assert data["attention"]["remaining_hours_per_week"] == -5.0
+
+
+def test_capacity_cap_skipped_without_means_hours_per_week(portfolio, tmp_path):
+    _create(portfolio, tmp_path)
+    _run(portfolio, "transition", "b1", "lifestyle")
+    for wk in range(4):
+        _ledger_entry(portfolio, "b1", hours=40, ts=_iso(7 * wk))
+    proc = _run(portfolio, "portfolio")
+    assert proc.returncode == 0
+    assert "skipped: no means.json" in proc.stdout
+
+
+def test_capacity_cap_reported_at_transition_into_flight(portfolio, tmp_path):
+    _write_means(portfolio, hours_per_week=10)
+    _create(portfolio, tmp_path, "L0")
+    _run(portfolio, "transition", "L0", "lifestyle")
+    for wk in range(4):
+        _ledger_entry(portfolio, "L0", hours=15, ts=_iso(7 * wk))  # already over 10h/wk alone
+    _create(portfolio, tmp_path, "b2")
+    proc = _run(portfolio, "transition", "b2", "probing")
+    assert proc.returncode == 0
+    assert "capacity" in proc.stdout and "exhausted" in proc.stdout
+
+
+# ---- fleet mechanics: addition rule (§9.6.3, #274) ------------------------------
+
+
+def test_addition_rule_flags_starting_before_the_latest_live_product_stabilizes(
+    portfolio, tmp_path,
+):
+    _create(portfolio, tmp_path, "L0")
+    _run(portfolio, "transition", "L0", "lifestyle")
+    # both trailing weekly periods over the default 2h/wk target
+    _ledger_entry(portfolio, "L0", hours=5, ts=_iso(3))   # this week
+    _ledger_entry(portfolio, "L0", hours=5, ts=_iso(10))  # last week
+    _create(portfolio, tmp_path, "b2")
+    proc = _run(portfolio, "transition", "b2", "probing")
+    assert proc.returncode == 0
+    assert "addition rule" in proc.stdout
+    assert "L0" in proc.stdout
+
+
+def test_addition_rule_silent_once_the_latest_live_product_stabilizes(portfolio, tmp_path):
+    _create(portfolio, tmp_path, "L0")
+    _run(portfolio, "transition", "L0", "lifestyle")
+    # both trailing weekly periods under the default 2h/wk target
+    _ledger_entry(portfolio, "L0", hours=1, ts=_iso(3))
+    _ledger_entry(portfolio, "L0", hours=1, ts=_iso(10))
+    _create(portfolio, tmp_path, "b2")
+    proc = _run(portfolio, "transition", "b2", "probing")
+    assert proc.returncode == 0
+    assert "addition rule" not in proc.stdout
+
+
+def test_addition_rule_silent_with_no_live_products_yet(portfolio, tmp_path):
+    _create(portfolio, tmp_path, "b1")
+    proc = _run(portfolio, "transition", "b1", "probing")
+    assert proc.returncode == 0
+    assert "addition rule" not in proc.stdout
+
+
+# ---- attention kill criterion (§9.6.3, #274) ------------------------------------
+
+
+def test_attention_kill_criterion_flags_high_load_low_revenue(portfolio, tmp_path):
+    _create(portfolio, tmp_path, "L0")
+    _run(portfolio, "transition", "L0", "lifestyle")
+    bet_path = portfolio / "bets" / "L0" / "bet.json"
+    bet = json.loads(bet_path.read_text())
+    bet["mrr_usd"] = 100  # well below the $2k proposed threshold
+    bet_path.write_text(json.dumps(bet))
+    for wk in range(4):
+        _ledger_entry(portfolio, "L0", hours=5, ts=_iso(7 * wk))  # > 2h/wk threshold
+    proc = _run(portfolio, "portfolio")
+    assert proc.returncode == 0
+    assert "attention kill criterion" in proc.stdout
+    assert "L0" in proc.stdout
+
+
+def test_attention_kill_criterion_silent_without_mrr_recorded(portfolio, tmp_path):
+    """Never guessed: no mrr_usd means no finding, not an assumed one."""
+    _create(portfolio, tmp_path, "L0")
+    _run(portfolio, "transition", "L0", "lifestyle")
+    for wk in range(4):
+        _ledger_entry(portfolio, "L0", hours=5, ts=_iso(7 * wk))
+    proc = _run(portfolio, "portfolio")
+    assert proc.returncode == 0
+    assert "attention kill criterion" not in proc.stdout
+
+
+def test_attention_kill_criterion_silent_when_revenue_clears_the_bar(portfolio, tmp_path):
+    _create(portfolio, tmp_path, "L0")
+    _run(portfolio, "transition", "L0", "lifestyle")
+    bet_path = portfolio / "bets" / "L0" / "bet.json"
+    bet = json.loads(bet_path.read_text())
+    bet["mrr_usd"] = 5000
+    bet_path.write_text(json.dumps(bet))
+    for wk in range(4):
+        _ledger_entry(portfolio, "L0", hours=5, ts=_iso(7 * wk))
+    proc = _run(portfolio, "portfolio")
+    assert proc.returncode == 0
+    assert "attention kill criterion" not in proc.stdout
+
+
+# ---- new terminal: wound_down (§9.6.5, #274) ------------------------------------
+
+
+def test_wound_down_is_a_distinct_terminal_from_killed(portfolio, tmp_path):
+    _create(portfolio, tmp_path)
+    proc = _run(portfolio, "transition", "b1", "wound_down", "--reason",
+               "planned graceful wind-down; handed to a loyal customer")
+    assert proc.returncode == 0, proc.stderr
+    assert _state(portfolio, "b1") == "wound_down"
+    # a distinct event from `killed` — no retrospective/harvest discipline required
+    assert not (portfolio / "bets" / "b1" / "retrospective.md").exists()
+    events = [r["event"] for r in _journal(portfolio) if r["ref"] == "b1"]
+    assert events == ["bet-create", "transition"]
+    trans = [r for r in _journal(portfolio) if r["event"] == "transition"][-1]
+    assert trans["details"]["to"] == "wound_down"
+    # frozen like every other terminal
+    assert _run(portfolio, "transition", "b1", "probing").returncode == 2
+    assert _run(portfolio, "spend", "b1", "--amount-usd", "1").returncode == 2
+
+
+def test_wound_down_not_counted_as_killed_in_portfolio_dead_bets(portfolio, tmp_path):
+    _create(portfolio, tmp_path)
+    _run(portfolio, "transition", "b1", "wound_down", "--reason", "graceful shutdown")
+    js = _run(portfolio, "portfolio", "--format", "json")
+    data = json.loads(js.stdout)
+    assert data["dead_bets"] == []  # dead_bets tracks `killed` only, never wound_down
+
+
+# ---- liability exposure (#277) --------------------------------------------------
+
+
+def test_liability_exposure_unset_is_flagged_report_only(portfolio, tmp_path):
+    proc = _create(portfolio, tmp_path, envelope=_envelope_without_liability())
+    assert proc.returncode == 0
+    assert "liability_exposure unset" in proc.stdout
+
+
+def test_liability_exposure_unset_blocks_under_gate(portfolio, tmp_path):
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=_envelope_without_liability())
+    assert proc.returncode == 1
+    assert "liability_exposure unset" in proc.stdout
+    assert not (portfolio / "bets" / "b1").exists()
+
+
+def test_liability_exposure_uncapped_choice_is_never_a_finding(portfolio, tmp_path):
+    """The load-bearing distinction (#277): a DELIBERATE uncapped exposure must
+    never itself read as a problem — only its total absence does."""
+    env = _envelope(liability_exposure={"type": "uncapped_entity"})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 0, proc.stdout
+    assert "liability_exposure" not in proc.stdout
+
+
+def test_liability_exposure_uncapped_personal_is_never_a_finding(portfolio, tmp_path):
+    env = _envelope(liability_exposure={"type": "uncapped_personal"})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_liability_exposure_capped_at_recorded_cleanly(portfolio, tmp_path):
+    env = _envelope(liability_exposure={"type": "capped_at", "amount_usd": 50000})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_liability_exposure_insured_defaults_responds_to_unverified(portfolio, tmp_path):
+    """Insurability is a separate fact from insurance (#277 decision 2): a
+    stated `insured` exposure with no `responds` is complete, not malformed —
+    the default is `unverified`, moved only by a human answer."""
+    env = _envelope(liability_exposure={"type": "insured", "policy": "PI-12345"})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 0, proc.stdout
+    assert "liability_exposure" not in proc.stdout  # a stated value is never a finding
+
+
+def test_liability_exposure_insured_bad_responds_is_malformed(portfolio, tmp_path):
+    env = _envelope(
+        liability_exposure={"type": "insured", "policy": "PI-1", "responds": "maybe"}
+    )
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 1
+    assert "malformed" in proc.stdout
+    assert not (portfolio / "bets" / "b1").exists()
+
+
+def test_liability_exposure_missing_policy_on_insured_is_malformed(portfolio, tmp_path):
+    env = _envelope(liability_exposure={"type": "insured"})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 1
+    assert "malformed" in proc.stdout
+
+
+def test_liability_exposure_bad_type_is_malformed(portfolio, tmp_path):
+    env = _envelope(liability_exposure={"type": "whatever"})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 1
+    assert "malformed" in proc.stdout
+
+
+def test_liability_exposure_capped_at_missing_amount_is_malformed(portfolio, tmp_path):
+    env = _envelope(liability_exposure={"type": "capped_at"})
+    proc = _create(portfolio, tmp_path, "b1", "--gate", envelope=env)
+    assert proc.returncode == 1
+    assert "malformed" in proc.stdout
+
+
+def test_liability_soundness_also_checked_at_rebaseline(portfolio, tmp_path):
+    _create(portfolio, tmp_path)
+    bad_env = tmp_path / "bad-envelope.json"
+    bad_env.write_text(json.dumps(_envelope_without_liability()))
+    proc = _run(portfolio, "rebaseline", "b1", "--envelope", str(bad_env),
+                "--reason", "re-scoping", "--gate")
+    assert proc.returncode == 1
+    assert "liability_exposure unset" in proc.stdout
+
+
+# ---- portfolio-level uncapped-liability concurrency count (#277) ---------------
+
+
+def test_portfolio_reports_uncapped_liability_concurrency(portfolio, tmp_path):
+    uncapped = _envelope(liability_exposure={"type": "uncapped_entity"})
+    capped = _envelope(liability_exposure={"type": "capped_at", "amount_usd": 1000})
+    _create(portfolio, tmp_path, "b1", envelope=uncapped)
+    _create(portfolio, tmp_path, "b2", envelope=capped)
+    _create(portfolio, tmp_path, "b3", envelope=uncapped)
+    proc = _run(portfolio, "portfolio")
+    assert proc.returncode == 0, proc.stderr
+    assert "uncapped liability" in proc.stdout
+    assert "b1" in proc.stdout and "b3" in proc.stdout
+    js = _run(portfolio, "portfolio", "--format", "json")
+    data = json.loads(js.stdout)
+    assert data["liability_concurrency"]["count"] == 2
+    assert sorted(data["liability_concurrency"]["bets"]) == ["b1", "b3"]
+
+
+def test_liability_concurrency_excludes_exited_positions(portfolio, tmp_path):
+    uncapped = _envelope(liability_exposure={"type": "uncapped_personal"})
+    _create(portfolio, tmp_path, "b1", envelope=uncapped)
+    _retro(portfolio, "b1")
+    _run(portfolio, "transition", "b1", "killed")
+    js = _run(portfolio, "portfolio", "--format", "json")
+    data = json.loads(js.stdout)
+    assert data["liability_concurrency"]["count"] == 0
+    assert data["liability_concurrency"]["bets"] == []
+
+
+def test_liability_concurrency_counts_parked_bets_as_still_carrying_exposure(
+    portfolio, tmp_path,
+):
+    """A paused (parked) bet's contract may still be outstanding — an
+    unresolved position, not an exited one."""
+    uncapped = _envelope(liability_exposure={"type": "uncapped_entity"})
+    _create(portfolio, tmp_path, "b1", envelope=uncapped)
+    _run(portfolio, "transition", "b1", "parked")
+    js = _run(portfolio, "portfolio", "--format", "json")
+    data = json.loads(js.stdout)
+    assert data["liability_concurrency"]["count"] == 1
