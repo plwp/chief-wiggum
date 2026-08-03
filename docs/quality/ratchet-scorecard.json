@@ -56,7 +56,6 @@
     "note": "cyclomatic complexity requires lizard (pip install lizard)",
     "skipped": "lizard not found"
   },
-  "target_sha": "425e78d22ec30ccf8a53fa1afee40321a22585be",
   "test_files": {},
   "test_files_unresolved": [],
   "tests_run": true,
