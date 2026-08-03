@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import factory_log  # noqa: E402
 
-
 PRICING = {"claude-opus-5": {"input_per_mtok": 5.0, "output_per_mtok": 25.0}}
 MULTS = {"cache_read": 0.1, "cache_write_5m": 1.25, "cache_write_1h": 2.0}
 
