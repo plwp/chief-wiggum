@@ -184,10 +184,20 @@ def test_applicability_and_outcome_on_clean_model():
     assert report.measured["edges"] > 0
 
 
-def test_applicability_is_inapplicable_when_model_absent():
+def test_applicability_is_error_when_the_named_model_is_absent():
+    """The architecture model is a REQUIRED positional argument, so a path
+    that does not exist is a broken INVOCATION — the caller believes the model
+    is being gated and it is not — rather than an empty subject.
+
+    Classifying it `error` keeps the #289 vocabulary consistent across gates:
+    `inapplicable` exits 0 under --gate everywhere, `error` exits 1. Reporting
+    `inapplicable` here while exiting 1 (as the first cut of this fix did)
+    would make the same word mean different things in different gates, which
+    defeats the point of standardising it.
+    """
     report = ca.ArchitectureReport(model_present=False)
-    assert report.applicability == "inapplicable"
-    assert report.outcome == "inapplicable"
+    assert report.applicability == "error"
+    assert report.outcome == "error"
 
 
 def test_cli_unloadable_system_contracts_is_finding_and_gate_blocks(tmp_path):

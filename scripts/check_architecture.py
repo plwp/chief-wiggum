@@ -186,12 +186,21 @@ class ArchitectureReport:
     def applicability(self) -> str:
         """The standard three-state gate vocabulary (#289,
         `check_traceability.py`'s idiom): `applicable` / `inapplicable` /
-        `error`. `inapplicable` is honest absence — no `architecture.json` at
-        all. `error` is a broken instrument — an artifact that was GIVEN
-        (`--system-contracts`) but could not be read/parsed, as opposed to
-        one simply not supplied."""
+        `error`.
+
+        The line is drawn on whether the caller ASKED for the artifact, not
+        merely on whether it exists. `--system-contracts` given but unreadable
+        is `error`; not supplied at all is honest absence. The architecture
+        model is a REQUIRED positional argument, so naming a path that does
+        not exist is a broken invocation — the caller believes the model is
+        being gated and it is not — hence `error`, not `inapplicable`.
+
+        This matters for consistency, which is the whole point of the #289
+        vocabulary: `inapplicable` exits 0 under `--gate` in every gate, and
+        `error` exits 1. Reporting `inapplicable` here while exiting 1 would
+        make the same word mean different things in different gates."""
         if not self.model_present:
-            return "inapplicable"
+            return "error"
         if self.system_contracts_error is not None:
             return "error"
         return "applicable"
@@ -864,8 +873,11 @@ def main(argv: list[str] | None = None) -> int:
         # pass — that is the exact fail-open `test_cli_absent_model_exits_
         # zero_even_under_gate` used to lock in (now
         # `test_cli_absent_model_exits_one_under_gate`, INTENTIONALLY
-        # reversed). Report-only mode is unchanged: absent model still exits
-        # 0 there, preserving /architect's incremental-adoption story.
+        # reversed). The report classifies this as `error` (not
+        # `inapplicable`) so the exit code matches the standard rule every
+        # other gate follows: error => 1 under --gate, inapplicable => 0
+        # always. Report-only mode is unchanged: absent model still exits 0
+        # there, preserving /architect's incremental-adoption story.
         return 1 if args.gate else 0
 
     try:
