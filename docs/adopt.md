@@ -196,7 +196,7 @@ module that merely *imports* the resolver has no such effect.
 walks each gate's import closure **transitively** and pins the separation, so a
 later refactor cannot quietly undo it.
 
-## Not measured is not measured clean (#259)
+## Not measured is not measured clean (#263)
 
 An honest report of "nothing measurable" and a real report of "everything
 measured, all clean" used to render **identically** on every surface a human

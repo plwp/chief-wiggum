@@ -43,7 +43,7 @@ unscanned language is never presented as health (the `code_query` posture).
 | Engine | What it finds | Tiers |
 | --- | --- | --- |
 | `dead_code.py` | unused exports/symbols (`file:line` + symbol) | Python: `vulture` if importable, else a conservative built-in AST pass; Go: `staticcheck` (U1000-class, `-f json`) if on PATH, else skipped; TS/JS: `knip` if on PATH, else skipped |
-| `clones.py` | per-clone locations clustered into **clone classes** ("these N spans are the same"), keyed by a content hash of the normalized span | jscpd via the ONE shared runner (`duplication.run_jscpd`) — skipped when jscpd/node absent |
+| `clones.py` | per-clone locations clustered into **clone classes** ("these N spans are the same"), keyed by a content hash of the normalized span | jscpd via the ONE shared runner (`duplication.run_jscpd`), handed an explicit **scope-narrowed production corpus** (#265) — `skipped` when jscpd/node absent, `crashed` when it was expected to run and died |
 | `test_health.py` | orphaned tests (subject module gone — conservative per-language name mapping, reported verbatim in the result), assertion-free tests (Python ast; Go regex tier), skipped/quarantined suites (pytest/`t.Skip`/`.skip(`) | pure Python + git |
 | `markers.py` | source-level TODO/FIXME/HACK/XXX with `file:line` + trailing text (first 80 chars) — `check_unresolved.py` covers docs/models only; this covers source | pure Python + git |
 
@@ -79,7 +79,11 @@ member list, `boundary: true`, never counted in `counts` or `items`).
 captured** (`boundary_note` states it): markers, dead code, and test-health
 findings in out-of-scope files — those corpora are scope-narrowed at the
 source, so out-of-scope instances are never observed; absence from the
-boundary section is NOT evidence the out-of-scope code is clean. A
+boundary section is NOT evidence the out-of-scope code is clean. **Since #265
+clones joins them**: its corpus is scope-narrowed too, so an out-of-scope clone
+partner is never scanned and the engine records
+`boundary_detection: unobservable` rather than letting an empty list read as
+clean. (It had to be narrowed — see "Corpus and crash reporting" below.) A
 `pending_candidates` block names the pending store, its count, and any
 old-layout candidates migrated on this run.
 
@@ -134,6 +138,59 @@ are never renumbered.
 
 Severity never feeds the ID — re-ranking a file's hotspot decile changes an
 item's severity, not its identity.
+
+## Corpus and crash reporting (#265)
+
+jscpd used to be handed the **repo root**, with the #213 scope filter applied
+only afterwards when clustering. A narrow `scope.json` therefore reduced the
+findings but not the work: on a large adopted repo a 61-file scope still fed
+the tool the whole tracked corpus, which ran ~177s and died at the default
+~4 GB V8 heap. The engine recorded `{"skipped": "jscpd produced no report"}`
+and `debt.json` reported **0 items** — a whole detection dimension gone, in the
+same shape a language with no clone tier produces.
+
+Two fixes, because either alone leaves the failure invisible:
+
+1. **The corpus is narrowed at the source.** `clones.corpus()` builds the
+   explicit file list from `population.tracked_source(repo, path_filter)` minus
+   test files (preserving the production-only contract `duplication.IGNORE`
+   enforced when jscpd did its own walking) and passes it to
+   `run_jscpd(..., files=[...])`. Scope narrowing now genuinely reduces work,
+   and the engine reports `files_in_corpus` so the scanned count can be
+   asserted against the in-scope population. With **no** scope filter there is
+   nothing to narrow, so the historical whole-repo walk is kept unchanged —
+   that keeps `prevention_signals` (which deliberately wants repo-wide clone
+   context to answer "does this diff copy EXISTING code?") exactly as it was,
+   and avoids warning about scope-narrowing an operator never asked for.
+   `duplication.analyze` likewise still passes `files=None` — its aggregate
+   percentage is calibrated against GitClear's repo-wide bands, so narrowing it
+   would change what that number means.
+2. **`crashed` is not `skipped`.** A tier that declares no support for a
+   language is a known limitation; a tool that was expected to run and died is
+   a defect. `run_jscpd` now returns `status: "crashed"` (plus `crashed`,
+   `exit_code`, and the captured `note`) for a timeout, a missing report, an
+   unreadable report, or a failure to start. The legacy `skipped` key is kept
+   on every problem shape so existing consumers still branch correctly on "no
+   data". `format_report` prints `CRASHED — ... (dimension NOT measured)`, and
+   `/status` surfaces it via `crashed_engines` — **not** gated on the item
+   count, unlike the #259 `NOT MEASURED`/`PARTIAL COVERAGE` markers, because a
+   dead engine is news however many items the other three produced.
+
+Ceilings: `CW_JSCPD_TIMEOUT_SECONDS` (default 600) and
+`CW_JSCPD_MAX_OLD_SPACE_MB` (default 4096, exported as `NODE_OPTIONS
+--max-old-space-size`). The child leads its own process group and the group is
+killed on timeout — `npx` spawns node as a grandchild, so a plain
+`subprocess.run` timeout would reap the wrapper and leave the process actually
+eating the heap alive.
+
+If the corpus exceeds `ARGV_BUDGET_BYTES` (256 KiB of argv, ~6k paths) the run
+falls back to scanning the repo root and records `corpus_fallback` on the
+engine result, which both `format_report` and the envelope surface. Because
+that scan is repo-wide, the selected count is reported as
+`scope_candidate_files` and `files_in_corpus` is omitted — presenting a scoped
+number as the scanned count would let an AC-style assertion pass on a run that
+was never scoped. The fallback is allowed to be wide; it is never allowed to be
+silent.
 
 ## Authority boundary
 

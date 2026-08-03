@@ -38,7 +38,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import duplication
+from . import duplication, population
 
 CONTENT_HASH_LEN = 16
 
@@ -150,25 +150,81 @@ def cluster(repo: str, duplicates: list[dict], path_filter=None,
     return out
 
 
+def corpus(repo: str, path_filter=None) -> list[str]:
+    """The files jscpd is handed: the #213 scope-narrowed PRODUCTION population.
+
+    Narrowed at the source (#265), matching ``markers``/``dead_code``/
+    ``test_health``, so a narrow ``scope.json`` genuinely reduces the work.
+    Previously jscpd walked the repo root and scope was applied only afterwards
+    in :func:`cluster`, so a 61-file scope still handed the tool the entire
+    tracked corpus — and exhausted a 4 GB V8 heap.
+
+    Test files are dropped here because ``duplication.IGNORE`` dropped them when
+    jscpd did its own walking; an explicit file list must preserve that
+    production-only contract rather than silently widen the corpus."""
+    return [f for f in population.tracked_source(repo, path_filter=path_filter)
+            if not population.is_test_file(f)]
+
+
+BOUNDARY_UNOBSERVABLE = (
+    "unobservable — the clone corpus is scope-narrowed (#265), so clone "
+    "partners outside the scope are never scanned; an empty boundary list is "
+    "NOT evidence the out-of-scope code is clone-free"
+)
+
+
 def analyze(repo: str, workdir: str, path_filter=None, name: str | None = None) -> dict:
     """Clone classes for ``repo`` via the shared jscpd runner."""
     name = name or repo.rstrip("/").split("/")[-1]
-    data, skip = duplication.run_jscpd(repo, workdir)
-    if skip is not None:
-        return {"repo": name, "engine": "clones", **skip}
+    base: dict = {"repo": name, "engine": "clones"}
+
+    if path_filter is None:
+        # Nothing to narrow, so keep the historical whole-repo walk. Building an
+        # explicit list here would buy no reduction (it IS the whole population)
+        # while a big unscoped repo would cross the argv budget and warn about
+        # scope-narrowing the operator never asked for.
+        files = None
+    else:
+        files = corpus(repo, path_filter=path_filter)
+        base["files_in_corpus"] = len(files)
+        # Narrowing means an out-of-scope clone partner is never scanned, so
+        # #216's boundary referrals cannot be observed. Say so — the other three
+        # engines are narrowed at the source too, and the envelope's boundary
+        # note already warns that absence there is not evidence of cleanliness.
+        base["boundary_detection"] = BOUNDARY_UNOBSERVABLE
+        if not files:
+            # A scope selecting nothing was MEASURED and found nothing. Claiming
+            # a skip (or a crash) is the same over-claim #259 warns about.
+            return {**base, "status": "measured", "clone_pairs_reported": 0,
+                    "clone_classes": [], "boundary_classes": []}
+
+    data, problem = duplication.run_jscpd(repo, workdir, files=files)
+    if problem is not None:
+        return {**base, **{k: v for k, v in problem.items() if v is not None}}
+
     duplicates = data.get("duplicates") or []
     boundary: list[dict] = []
     classes = cluster(repo, duplicates, path_filter=path_filter,
                       boundary_out=boundary)
-    return {
-        "repo": name,
-        "engine": "clones",
+    out = {
+        **base,
+        "status": "measured",
         "clone_pairs_reported": len(duplicates),
         "clone_classes": classes,
         # Classes with >= 2 total spans that fell below 2 in-scope members —
         # boundary evidence for the owning team, never in-scope findings.
         "boundary_classes": boundary,
     }
+    if data.get("_corpus_fallback"):
+        out["corpus_fallback"] = data["_corpus_fallback"]
+        # The scan was repo-wide, so it CAN see out-of-scope partners again...
+        out.pop("boundary_detection", None)
+        # ...and the selected count is NOT what jscpd scanned. Reporting it as
+        # `files_in_corpus` would let an AC1-style assertion read a scoped
+        # number off a run that was never scoped.
+        out.pop("files_in_corpus", None)
+        out["scope_candidate_files"] = len(files or [])
+    return out
 
 
 def main() -> int:

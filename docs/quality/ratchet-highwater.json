@@ -52,6 +52,7 @@
   },
   "pass_set": [],
   "quality": {},
+  "quarantined": {},
   "verifier_test_hashes": {
     "tests/fixtures/gate_validation/ratchet_clean/test_ratchet_fixture_smoke.py::test_widget_addition": "a8fb730202323daae6284f0c9e42a37872763af7f41ef6546466692082cf8910",
     "tests/fixtures/gate_validation/ratchet_clean/test_ratchet_fixture_smoke.py::test_widget_identity": "6c98bffa773f213921fadf683b7ef43a7968af139e24341048aa180e59477565",

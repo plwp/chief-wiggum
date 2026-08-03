@@ -7,6 +7,7 @@ from pathlib import Path
 
 import artifacts
 import pytest
+import ratchet
 import status
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -224,7 +225,8 @@ def test_cli_json_format(user_dir, tmp_path, capsys):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert set(data) == {"resolver", "gates", "ratchet", "patterns", "debt",
-                         "not_measured", "partial_coverage", "adoption"}
+                         "not_measured", "partial_coverage", "crashed_engines",
+                         "adoption"}
 
 
 def test_cli_missing_target_is_usage_error(user_dir, tmp_path, capsys):
@@ -246,3 +248,125 @@ def test_cli_never_writes_anything(user_dir, tmp_path, capsys):
     assert not (Path(str(user_dir)) / "meta").exists() or not any(
         (Path(str(user_dir)) / "meta").rglob("election.json")
     )
+
+
+# --- quarantine surfacing (chief-wiggum#278) --------------------------------
+
+
+def _append_ratchet_record(quality_dir, pass_set=None, merged=True, retired_cases=None):
+    """Minimal hash-chained ratchet-journal.jsonl record — the same body
+    shape ratchet.cmd_record writes — built directly against the journal file
+    so /status's quarantine reader (ratchet.verified_prefix) has something
+    real to fold."""
+    journal = quality_dir / ratchet.JOURNAL_NAME
+    quality_dir.mkdir(parents=True, exist_ok=True)
+    records = []
+    if journal.is_file():
+        records = [json.loads(ln) for ln in journal.read_text().splitlines() if ln.strip()]
+    body = {
+        "record_id": f"rec-{len(records) + 1:05d}",
+        "event": "ticket",
+        "ref": "#278",
+        "gate_result": "pass",
+        "merged": merged,
+        "scorecard": {"pass_set": sorted(pass_set or [])},
+        "amended": {},
+        "retired": [],
+        "amended_verifiers": {},
+        "retired_verifiers": [],
+        "retired_cases": retired_cases or [],
+        "ratchet_status": "quarantined" if retired_cases else "held",
+        "notes": "",
+    }
+    prev = records[-1]["record_hash"] if records else "genesis"
+    body["record_hash"] = ratchet.stable_hash(prev, json.dumps(body, sort_keys=True))
+    with journal.open("a") as f:
+        f.write(json.dumps(body, sort_keys=True) + "\n")
+
+
+def test_status_shows_quarantined_cases_with_reason_and_expiry(user_dir, tmp_path):
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": ["s::t1"], "contract_hashes": {}, "verifier_test_hashes": {},
+    }))
+    _append_ratchet_record(q, pass_set={"s::t1", "s::flaky"}, merged=True)
+    _append_ratchet_record(q, pass_set={"s::t1"}, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "order-dependent shared state", "owner": "plwp",
+        "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    st = status.gather(target)
+    assert st["ratchet"]["quarantined"] == 1
+    assert "ratchet" in st["partial_coverage"]
+    text = status.render_text(st)
+    assert "PARTIAL COVERAGE" in text
+    assert "quarantined: 1 case(s)" in text
+    assert "2099-01-01" in text
+    assert "order-dependent shared state" in text
+
+
+def test_status_warns_loudly_on_expired_quarantine(user_dir, tmp_path):
+    """The EXPIRED-quarantine WARNING must read at the same volume as the
+    expired-grandfather WARNING (AC #3 — 'as loudly as an expired grandfather')."""
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": ["s::t1"], "contract_hashes": {}, "verifier_test_hashes": {},
+    }))
+    _append_ratchet_record(q, pass_set={"s::t1", "s::flaky"}, merged=True)
+    _append_ratchet_record(q, pass_set={"s::t1"}, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2020-01-01", "created_at": "2019-01-01T00:00:00Z",
+    }])
+    st = status.gather(target)
+    text = status.render_text(st)
+    assert "WARNING" in text
+    assert "EXPIRED" in text
+    assert "s::flaky" in text
+
+
+def test_status_survives_a_broken_journal_chain(user_dir, tmp_path):
+    """A tolerant read: /status must describe a broken chain, never crash on
+    one — and never silently under-report by hiding the fact it's truncated."""
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": ["s::t1"], "contract_hashes": {}, "verifier_test_hashes": {},
+    }))
+    _append_ratchet_record(q, pass_set={"s::t1", "s::flaky"}, merged=True)
+    _append_ratchet_record(q, pass_set={"s::t1"}, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    journal = q / ratchet.JOURNAL_NAME
+    lines = journal.read_text().splitlines()
+    doctored = json.loads(lines[0])
+    doctored["scorecard"]["pass_set"] = []  # break the chain without re-hashing
+    lines[0] = json.dumps(doctored, sort_keys=True)
+    journal.write_text("\n".join(lines) + "\n")
+
+    st = status.gather(target)  # must not raise
+    text = status.render_text(st)  # must not raise
+    assert "chain broken" in text.lower()
+
+
+def test_status_with_no_quarantines_is_unchanged(user_dir, tmp_path):
+    target = _make_target(tmp_path)
+    q = target / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet.json").write_text(json.dumps({"suites": []}))
+    (q / "ratchet-scorecard.json").write_text(json.dumps({
+        "pass_set": ["s::t1"], "contract_hashes": {}, "verifier_test_hashes": {},
+    }))
+    _append_ratchet_record(q, pass_set={"s::t1"}, merged=True)
+    st = status.gather(target)
+    assert "quarantined" not in st["ratchet"]
+    text = status.render_text(st)
+    assert "PARTIAL COVERAGE" not in text
+    assert "WARNING" not in text

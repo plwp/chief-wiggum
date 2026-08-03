@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -90,7 +91,7 @@ def scorecard_from(cfg, pass_set):
     }
 
 
-def append_record(cfg, sc, merged=True, amended=None, retired=None):
+def append_record(cfg, sc, merged=True, amended=None, retired=None, retired_cases=None):
     records = ratchet.load_journal(cfg)
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
@@ -101,6 +102,7 @@ def append_record(cfg, sc, merged=True, amended=None, retired=None):
         "scorecard": sc,
         "amended": amended or {},
         "retired": retired or [],
+        "retired_cases": retired_cases or [],
         "ratchet_status": "held",
         "notes": "",
     }
@@ -1002,3 +1004,572 @@ def test_score_quality_scope_filters_population(tmp_path, monkeypatch):
     (repo / "docs" / "scope.json").write_text(json.dumps({"includes": ["app/*"]}))
     q_bad = ratchet.score_quality(cfg)
     assert "skipped" in q_bad and "includes" in q_bad["skipped"]
+
+
+# ---- pass-set retirement (quarantine, #278) ----------------------------------
+
+
+def _prep_quarantine_repo(tmp_path, flaky_still_passing=False):
+    """A repo with 's::flaky' already in the high-water mark (merged), and a
+    CURRENT scorecard either containing it (still passing, for the V8
+    anti-abuse test) or not (excluded from the suite — the flaky-quarantine
+    scenario every other CLI test needs)."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    cur = {"s::t1", "s::flaky"} if flaky_still_passing else {"s::t1"}
+    _write_scorecard(cfg, scorecard_from(cfg, cur))
+    return cfg
+
+
+def test_flaky_quarantine_round_trip(tmp_path):
+    """chief-wiggum#278 AC round trip, five explicitly-labelled phases:
+    (1) a flaky case enters the high-water mark, (2) it is excluded from the
+    suite and shows as a permanent-red missing_tests violation, (3) a human
+    journals a --retire-case quarantine for it, (4) the ratchet reads clean
+    while the quarantine is live, (5) once the expiry passes the case
+    re-enters missing_tests and blocks again."""
+    cfg = make_repo(tmp_path)
+
+    # 1. in high-water
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["pass_set"] == ["s::flaky", "s::t1"]
+
+    # 2. excluded from the suite — the permanent-red bug
+    sc = scorecard_from(cfg, {"s::t1"})
+    assert ratchet.violations(sc, hw)["missing_tests"] == ["s::flaky"]
+
+    # 3. retired
+    append_record(cfg, sc, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "order-dependent shared state", "owner": "plwp",
+        "expiry": "2026-11-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["pass_set"] == ["s::t1"]
+    assert "s::flaky" in hw["quarantined"]
+
+    # 4. ratchet clean
+    v = ratchet.violations(sc, hw, today=date(2026, 8, 3))
+    assert v["missing_tests"] == []
+    assert len(v["quarantined"]) == 1
+    assert v["quarantined"][0]["reason"] == "order-dependent shared state"
+    assert v["expired_quarantines"] == []
+
+    # 5. expiry passes -> surfaced again
+    v = ratchet.violations(sc, hw, today=date(2026, 11, 2))
+    assert v["missing_tests"] == ["s::flaky"]
+    assert v["expired_quarantines"][0]["id"] == "s::flaky"
+    assert v["quarantined"] == []
+
+
+# --- fold / derivation ------------------------------------------------------
+
+
+def test_retired_case_is_restored_when_it_passes_again(tmp_path):
+    """D7: a case that returns to a later MERGED record's pass_set is
+    un-quarantined by the fold — stale quarantine metadata is dropped too,
+    with no second human act."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::flaky" in hw["quarantined"]
+    assert "s::flaky" not in hw["pass_set"]
+    # the flaky case passes again in a later MERGED record
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    hw2 = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::flaky" in hw2["pass_set"]
+    assert "s::flaky" not in hw2["quarantined"]
+
+
+def test_retire_wins_over_a_repass_within_one_record(tmp_path):
+    """A single record that is merged=True with the case in its pass_set AND
+    carries a retired_cases entry for it lands on quarantined — the explicit
+    human act wins inside its own record."""
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, {"s::t1", "s::flaky"})
+    append_record(cfg, sc, merged=True, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::flaky" not in hw["pass_set"]
+    assert "s::flaky" in hw["quarantined"]
+
+
+def test_last_retirement_wins_renewal(tmp_path):
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, sc, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2026-11-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    append_record(cfg, sc, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky, renewed", "owner": "plwp",
+        "expiry": "2027-02-01", "created_at": "2026-11-02T00:00:00Z",
+    }])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["quarantined"]["s::flaky"]["expiry"] == "2027-02-01"
+
+
+def test_backward_compat_journal_without_retired_cases(tmp_path):
+    """A pre-#278 journal record — hand-built with NO retired_cases key at
+    all (the exact shape append_record wrote before this ticket) — derives an
+    empty quarantine map and raises nothing."""
+    cfg = make_repo(tmp_path)
+    body = {
+        "record_id": "rec-00001", "event": "ticket", "ref": "#1",
+        "gate_result": "pass", "merged": True,
+        "scorecard": scorecard_from(cfg, {"s::t1"}),
+        "amended": {}, "retired": [], "ratchet_status": "held", "notes": "",
+    }
+    body["record_hash"] = ratchet.stable_hash("genesis", json.dumps(body, sort_keys=True))
+    cfg.journal.parent.mkdir(parents=True, exist_ok=True)
+    with cfg.journal.open("a") as f:
+        f.write(json.dumps(body, sort_keys=True) + "\n")
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["quarantined"] == {}
+
+
+def test_violations_tolerates_highwater_without_quarantined_key():
+    """Old ratchet-highwater.json caches / hand-built high-water dicts lack
+    the 'quarantined' key entirely — violations() must read it with .get, not
+    KeyError (the tests/test_verifier_hashes.py:361 shape)."""
+    hw = {"pass_set": ["s::t1"], "contract_hashes": {}}
+    sc = {"pass_set": ["s::t1"], "contract_hashes": {}}
+    v = ratchet.violations(sc, hw)
+    assert v["quarantined"] == []
+    assert v["expired_quarantines"] == []
+
+
+# --- expiry posture (inherited fail-closed) ----------------------------------
+
+
+def test_missing_expiry_counts_as_expired(tmp_path):
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, sc, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "created_at": "2026-08-03T00:00:00Z",
+    }])  # no "expiry" key at all
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    v = ratchet.violations(sc, hw, today=date(2026, 8, 3))
+    assert "s::flaky" in v["missing_tests"]
+    assert v["expired_quarantines"][0]["id"] == "s::flaky"
+
+
+def test_unparseable_expiry_counts_as_expired(tmp_path):
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, sc, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "next tuesday", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    v = ratchet.violations(sc, hw, today=date(2026, 8, 3))
+    assert "s::flaky" in v["missing_tests"]
+    assert v["expired_quarantines"][0]["id"] == "s::flaky"
+
+
+def test_expiry_day_itself_still_waives(tmp_path):
+    """`grandfather.is_expired` is strictly `<` — the expiry day itself still
+    waives."""
+    cfg = make_repo(tmp_path)
+    sc = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, sc, merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2026-11-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    v = ratchet.violations(sc, hw, today=date(2026, 11, 1))
+    assert "s::flaky" not in v["missing_tests"]
+    assert v["expired_quarantines"] == []
+
+
+# --- cmd_record validation (real CLI, exit 2) --------------------------------
+
+
+def test_retire_case_requires_a_reason(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "reason" in proc.stderr.lower()
+
+
+def test_retire_case_rejects_a_past_expiry(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::flaky",
+         "--retire-case-reason", "flaky", "--retire-case-expiry", "2020-01-01"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "past" in proc.stderr.lower()
+
+
+def test_retire_case_rejects_an_unparseable_expiry(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::flaky",
+         "--retire-case-reason", "flaky", "--retire-case-expiry", "next tuesday"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "iso" in proc.stderr.lower()
+
+
+def test_retire_case_refuses_a_case_not_in_highwater(tmp_path):
+    """Same doctrine as --retire-verifier: a typo'd case must be SURFACED,
+    not a silent no-op — the error names the '<suite>::<case id>' form."""
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::not_a_real_case",
+         "--retire-case-reason", "flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "s::not_a_real_case" in proc.stderr
+    assert "case id" in proc.stderr.lower() or "no case" in proc.stderr.lower()
+
+
+def test_retire_case_refuses_a_currently_passing_case(tmp_path):
+    """The anti-abuse test: an agent must not be able to pre-emptively
+    retire the cases it is about to break."""
+    _prep_quarantine_repo(tmp_path, flaky_still_passing=True)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::flaky",
+         "--retire-case-reason", "flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "s::flaky" in proc.stderr
+    assert "passing" in proc.stderr.lower()
+
+
+def test_retire_case_companion_flags_without_a_case_are_an_error(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case-reason", "flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "--retire-case" in proc.stderr
+
+
+def test_retire_case_file_that_resolves_nothing_is_an_error(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    case_file = tmp_path / "cases.txt"
+    case_file.write_text("# just a comment\n\n")
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case-file", str(case_file),
+         "--retire-case-reason", "flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+
+
+# --- glob semantics -----------------------------------------------------------
+
+
+def test_retire_case_glob_expands_and_materializes(tmp_path):
+    cfg = _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::flaky*",
+         "--retire-case-reason", "flaky class"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    recs = ratchet.load_journal(cfg)
+    last = recs[-1]
+    assert last["retired_cases"][0]["id"] == "s::flaky"
+    assert not any("*" in e["id"] for e in last["retired_cases"])
+    # a later merged record introducing a NEW case that also matches the glob
+    # must NOT be quarantined — globs are materialized, never stored.
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky_new"}), merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::flaky_new" in hw["pass_set"]
+    assert "s::flaky_new" not in hw["quarantined"]
+
+
+def test_retire_case_glob_matching_nothing_is_an_error(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case", "s::nope-*",
+         "--retire-case-reason", "flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "no case" in proc.stderr.lower()
+
+
+def test_retire_case_glob_matches_go_ids_with_slashes(tmp_path):
+    """The fnmatch vs _glob_to_re trap: this fails if someone 'simplifies' to
+    _glob_to_re, whose '*' compiles to '[^/]*' and cannot match a go case ID
+    carrying '/' in its package path."""
+    cfg = make_repo(tmp_path)
+    append_record(
+        cfg, scorecard_from(cfg, {"go::github.com/acme/app/internal::TestX"}), merged=True,
+    )
+    _write_scorecard(cfg, scorecard_from(cfg, set()))
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278",
+         "--retire-case", "go::github.com/acme/app/*",
+         "--retire-case-reason", "flaky go test"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    recs = ratchet.load_journal(cfg)
+    assert recs[-1]["retired_cases"][0]["id"] == "go::github.com/acme/app/internal::TestX"
+
+
+def test_retire_case_file_accepts_comments_and_blanks(tmp_path):
+    cfg = _prep_quarantine_repo(tmp_path)
+    case_file = tmp_path / "cases.txt"
+    case_file.write_text("# flaky class\n\ns::flaky\n\n  \n")
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--retire-case-file", str(case_file),
+         "--retire-case-reason", "flaky"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    recs = ratchet.load_journal(cfg)
+    assert recs[-1]["retired_cases"][0]["id"] == "s::flaky"
+
+
+# --- verdict + chain -----------------------------------------------------------
+
+
+def _record_args(tmp_path, **overrides):
+    base = dict(
+        repo=str(tmp_path), event="ticket", ref="#278", gate="pass", merged=False,
+        notes="", amend_verifier=None, retire_verifier=None, amend=None, retire=None,
+        retire_case=None, retire_case_file=None, retire_case_reason="",
+        retire_case_owner="unassigned", retire_case_expiry=None,
+        retire_case_expiry_days=ratchet.DEFAULT_QUARANTINE_DAYS,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_record_status_is_quarantined_when_cases_retired(tmp_path):
+    """Verdict precedence (D4): a record that ALSO advances the pass-set but
+    carries retired_cases still reads 'quarantined', not 'advanced'."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1", "s::t2"}))  # advances + drops flaky
+    args = _record_args(
+        tmp_path, merged=False, retire_case=["s::flaky"],
+        retire_case_reason="order-dependent shared state", retire_case_owner="plwp",
+        retire_case_expiry="2099-01-01",
+    )
+    assert ratchet.cmd_record(args) == 0
+    recs = ratchet.load_journal(cfg)
+    assert recs[-1]["ratchet_status"] == "quarantined"
+
+
+def test_record_status_is_violated_when_an_expired_quarantine_is_still_missing(tmp_path):
+    """An expired quarantine plus --merged reads 'violated', proving
+    cmd_record uses effective_pass_set and not the bare pass_set."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2020-01-01", "created_at": "2019-01-01T00:00:00Z",  # already expired
+    }])
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))  # flaky still missing
+    args = _record_args(tmp_path, merged=True)
+    assert ratchet.cmd_record(args) == 0
+    recs = ratchet.load_journal(cfg)
+    assert recs[-1]["ratchet_status"] == "violated"
+
+
+def test_record_with_retired_cases_still_hash_chains(tmp_path):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::t2"}), merged=True)
+    recs = ratchet.load_journal(cfg)  # raises TamperError if the chain is broken
+    assert len(recs) == 3
+
+
+def test_recent_prints_the_quarantined_status(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = _record_args(
+        tmp_path, merged=False, retire_case=["s::flaky"],
+        retire_case_reason="order-dependent shared state", retire_case_owner="plwp",
+        retire_case_expiry="2099-01-01",
+    )
+    assert ratchet.cmd_record(args) == 0
+    capsys.readouterr()
+    assert ratchet.cmd_recent(argparse.Namespace(repo=str(tmp_path), n=5)) == 0
+    assert "[quarantined]" in capsys.readouterr().out
+
+
+# --- `check` surfacing ---------------------------------------------------------
+
+
+def test_check_reports_quarantines_report_only_and_exits_zero(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "order-dependent shared state", "owner": "plwp",
+        "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z",
+    }])
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0
+    out = capsys.readouterr()
+    assert "1 case(s) quarantined" in out.out
+    assert "[report-only]" in out.err
+
+
+def test_check_ok_line_is_unchanged_with_no_quarantines(tmp_path, capsys):
+    """Pins the existing success string byte-for-byte (guards downstream
+    prose/log matching) — must not change when there is nothing quarantined."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0
+    out = capsys.readouterr().out
+    assert out.strip() == "ratchet: OK (pass-set and contract definitions hold the high-water mark)"
+
+
+def test_check_blocks_and_labels_an_expired_quarantine(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    # built via append_record (bypassing V5), so no clock freezing is needed.
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[{
+        "id": "s::flaky", "reason": "flaky", "owner": "plwp",
+        "expiry": "2020-01-01", "created_at": "2019-01-01T00:00:00Z",
+    }])
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 1
+    err = capsys.readouterr().err
+    assert "EXPIRED" in err
+    assert "s::flaky" in err
+
+    args_json = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    assert ratchet.cmd_check(args_json) == 1
+    data = json.loads(capsys.readouterr().out)
+    assert "s::flaky" in data["missing_tests"]
+
+
+def test_check_json_gains_quarantine_keys_additively(tmp_path, capsys):
+    """Asserts the five original violations() keys are all still present with
+    unchanged names, plus the two new ones."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0
+    data = json.loads(capsys.readouterr().out)
+    for key in ("missing_tests", "weakened_contracts", "removed_contracts",
+                "weakened_verifier_tests", "removed_verifier_tests"):
+        assert key in data
+    assert "quarantined" in data
+    assert "expired_quarantines" in data
+
+
+def test_highwater_overlays_live_expiry(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(
+        cfg, scorecard_from(cfg, {"s::t1", "s::future", "s::past"}), merged=True,
+    )
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[
+        {"id": "s::future", "reason": "flaky", "owner": "plwp",
+         "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z"},
+        {"id": "s::past", "reason": "flaky", "owner": "plwp",
+         "expiry": "2020-01-01", "created_at": "2019-01-01T00:00:00Z"},
+    ])
+    assert ratchet.cmd_highwater(argparse.Namespace(repo=str(tmp_path))) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["quarantined"]["s::future"]["expired"] is False
+    assert data["quarantined"]["s::past"]["expired"] is True
+
+
+# ---- quarantine: paths only reachable through the real CLI (#278 review) ----
+# The three bugs below all shipped with every test green because the original
+# suite reached the fold by injecting journal records directly (append_record)
+# instead of driving cmd_record. Each of these drives the REAL CLI.
+
+
+def test_retire_case_renewal_through_the_cli(tmp_path):
+    """A quarantined case must stay retirable so the documented renewal path
+    (D7: 'renewal is a new record, not an edit') is reachable through the real
+    CLI. Regression: hw_cases was built from pass_set alone, but a quarantined
+    case has already LEFT pass_set, so V7 rejected every renewal with
+    'matches no case in the current high-water mark'."""
+    cfg = _prep_quarantine_repo(tmp_path)
+    base = [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+            "--event", "ticket", "--retire-case", "s::flaky", "--retire-case-reason", "flaky"]
+    first = subprocess.run(base + ["--retire-case-expiry", "2026-11-01"],
+                           capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+
+    renewal = subprocess.run(base + ["--retire-case-expiry", "2027-02-01"],
+                             capture_output=True, text=True)
+    assert renewal.returncode == 0, renewal.stderr
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    # last-wins: the renewal's expiry is the live one.
+    assert hw["quarantined"]["s::flaky"]["expiry"] == "2027-02-01"
+    assert "s::flaky" not in hw["pass_set"]
+
+
+def test_record_merged_with_retired_cases_reads_quarantined(tmp_path):
+    """A record that BOTH merges and retires reads 'quarantined', per D4.
+    Regression: this record's own retirements were still required by
+    prev_hw while V8 guarantees they are absent from the new scorecard, so
+    the verdict could only ever be 'violated' and the 'quarantined' branch
+    was unreachable in exactly the combination /implement produces."""
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#278", "--merged",
+         "--retire-case", "s::flaky", "--retire-case-reason", "order-dependent shared state"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "status=quarantined" in proc.stdout, proc.stdout
+
+
+def test_retire_case_exact_id_with_fnmatch_metacharacters(tmp_path):
+    """A pytest parameterized case ID carries fnmatch metacharacters and does
+    NOT fnmatch itself, so an exact ID pasted verbatim must match exactly
+    before glob interpretation — otherwise the most obvious possible
+    invocation fails with 'matches no case'."""
+    cid = "pytest::tests/test_x.py::test_y[param-1]"
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {cid, "s::t1"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", cid, "--retire-case-reason", "flaky param"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert cid in hw["quarantined"]
