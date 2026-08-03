@@ -19,7 +19,8 @@
     "grandfathered": 0,
     "expired_grandfathers": 0,
     "malformed_ids": 0,
-    "unparsed_artifacts": 0
+    "unparsed_artifacts": 0,
+    "unscanned": 0
   },
   "applicability": "applicable",
   "outcome": "findings",
@@ -60,6 +61,7 @@
   ],
   "malformed_ids": [],
   "unparsed_artifacts": [],
+  "unscanned": [],
   "suspect_links": [],
   "suspect_contracts": [],
   "justified_contracts": [],

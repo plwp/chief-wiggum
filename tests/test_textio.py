@@ -20,7 +20,6 @@ import os
 import sys
 
 import pytest
-
 from chief_wiggum.textio import read_text_safe
 
 
@@ -52,7 +51,7 @@ def test_utf16_be_bom_is_decoded_correctly(tmp_path):
 
 def test_utf8_bom_is_stripped(tmp_path):
     p = tmp_path / "sig.py"
-    p.write_bytes(b"\xef\xbb\xbf" + "def f(): pass\n".encode("utf-8"))
+    p.write_bytes(b"\xef\xbb\xbf" + b"def f(): pass\n")
     text, reason = read_text_safe(p)
     assert reason is None
     assert text == "def f(): pass\n"

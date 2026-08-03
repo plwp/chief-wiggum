@@ -7,9 +7,8 @@ import os
 import sys
 from datetime import date
 
-import pytest
-
 import check_traceability as ct
+import pytest
 from chief_wiggum.hashing import hash_epic_definitions
 from chief_wiggum.trace_links import SIDECAR_RELPATH, build_sidecar, load_sidecar, write_sidecar
 

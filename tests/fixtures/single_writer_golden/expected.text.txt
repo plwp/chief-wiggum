@@ -1,7 +1,7 @@
 # Single-Writer Audit
 
 Single-write-path invariants: 4
-Writers found: 7  |  Violations: 2  |  Grandfathered: 0  |  Malformed metadata: 0
+Writers found: 7  |  Violations: 2  |  Grandfathered: 0  |  Malformed metadata: 0  |  Unscanned: 0
 
 - Soundness (metadata well-formed): OK
 - Coverage (no unsanctioned writer): FINDINGS

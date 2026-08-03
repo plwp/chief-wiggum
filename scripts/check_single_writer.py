@@ -149,6 +149,13 @@ from chief_wiggum.annotations import ATTR_RE, WRITES_TAG_RE  # noqa: E402, F401
 from chief_wiggum.hashing import scanner_version  # noqa: E402
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 
+# Decode-defensive bulk-source read (#282): a bare path.read_text() crashes the
+# ENTIRE gate with UnicodeDecodeError on a UTF-16 (or otherwise non-UTF-8)
+# file — no verdict, and the traceback names the reader, not the file. Shared
+# with check_traceability.py's scan_source so the two scanners can't drift on
+# decode policy. See chief_wiggum/textio.py.
+from chief_wiggum.textio import read_text_safe  # noqa: E402
+
 # The write-site emission family (regexes, WriteSite, emit_write_sites) moved to
 # chief_wiggum.write_emission (#162) so scripts/emitters/*.py can sit BEHIND the
 # same per-file emission logic this checker uses — re-exported here unchanged
@@ -283,6 +290,14 @@ class SingleWriterReport:
     # `violations` (blocks again) carrying grandfather_expired/expiry labels.
     grandfathered: list[dict] = field(default_factory=list)
     malformed: list[dict] = field(default_factory=list)     # bad metadata (soundness)
+    # Files that could not be READ at all during the scan (chief-wiggum#282) —
+    # permissions, a race where the file vanished mid-walk, a broken symlink,
+    # ... A UTF-16/non-UTF-8 file is NOT here: read_text_safe BOM-sniffs and
+    # falls back to a lossy decode rather than skipping, so it stays fully
+    # scanned. Report-only by design (binding decision, #282): an unscanned
+    # file is visible (with its path) but never flips soundness_ok/coverage_ok
+    # by itself — a repo full of binary-ish files must not become unusable.
+    unscanned: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
     # declares NO single-write-path invariants — there was nothing to check, so
@@ -300,6 +315,7 @@ class SingleWriterReport:
             "boundary": len(self.boundary),
             "grandfathered": len(self.grandfathered),
             "malformed": len(self.malformed),
+            "unscanned": len(self.unscanned),
         }
 
     @property
@@ -310,7 +326,10 @@ class SingleWriterReport:
 
     @property
     def coverage_ok(self) -> bool:
-        # Close-time: no unsanctioned writer may exist.
+        # Close-time: no unsanctioned writer may exist. `unscanned` deliberately
+        # does NOT participate (#282 binding decision): it is reported, never
+        # blocking on its own — a repo full of binary-ish files must not
+        # become unusable under --gate.
         return not self.violations and not self.malformed
 
     def to_dict(self) -> dict:
@@ -325,6 +344,7 @@ class SingleWriterReport:
             "boundary": self.boundary,
             "grandfathered": self.grandfathered,
             "malformed": self.malformed,
+            "unscanned": self.unscanned,
             "warnings": self.warnings,
         }
 
@@ -524,16 +544,40 @@ def scan_writers(
     exclude: list[str] | None = None,
     only_files: set[str] | None = None,
 ) -> list[Writer]:
-    """Find every writer of every controlled field across the repo: emit
-    field-agnostic write sites per file, then claim them against each
+    """Find every writer of every controlled field across the repo. Public,
+    backward-compatible entry point (code_query.py and many existing tests
+    call this expecting a plain ``list[Writer]``) — a thin wrapper over
+    ``_scan_writers_and_unscanned``, which additionally tracks files that
+    could not be READ at all (chief-wiggum#282); ``check()`` calls that
+    directly so it can surface them, never silently."""
+    writers, _unscanned = _scan_writers_and_unscanned(
+        source_root, invariants, exclude=exclude, only_files=only_files
+    )
+    return writers
+
+
+def _scan_writers_and_unscanned(
+    source_root: str | Path,
+    invariants: list[SingleWriterInvariant],
+    exclude: list[str] | None = None,
+    only_files: set[str] | None = None,
+) -> tuple[list[Writer], list[dict]]:
+    """Emit field-agnostic write sites per file, then claim them against each
     invariant. ``only_files`` (repo-relative paths), when given, restricts the
     walk to that set instead of the whole tree — used by ``--changed-since``.
+
+    Returns ``(writers, unscanned)``: ``unscanned`` lists ``{"file", "reason"}``
+    for every candidate that could not be READ at all (chief-wiggum#282) —
+    decode failures alone can no longer land here (``read_text_safe`` BOM-sniffs
+    and falls back to a lossy decode rather than skipping), so this is
+    genuinely "could not open this file", never a silent drop.
     """
     root = Path(source_root)
     exclude = exclude or []
     writers: list[Writer] = []
+    unscanned: list[dict] = []
     if not root.exists() or not invariants:
-        return writers
+        return writers, unscanned
 
     if only_files is not None:
         candidates = sorted(only_files)
@@ -550,9 +594,9 @@ def scan_writers(
         if _excluded(rel, exclude):
             continue
         path = root / rel
-        try:
-            text = path.read_text()
-        except OSError:
+        text, skip_reason = read_text_safe(path)
+        if skip_reason is not None:
+            unscanned.append({"file": rel, "reason": skip_reason})
             continue
         # Route through the per-language emitter registry (#162) — the gate
         # consumes the SAME dispatch path scripts/emitters exposes, so a
@@ -576,7 +620,7 @@ def scan_writers(
                 tagged.append((idx, w))
         tagged.sort(key=lambda t: (t[1].line, t[0]))
         writers.extend(w for _, w in tagged)
-    return writers
+    return writers, unscanned
 
 
 def _is_sanctioned(inv: SingleWriterInvariant, rel: str, symbol: str | None) -> bool:
@@ -644,6 +688,10 @@ def _scanner_version() -> str:
         cw_dir / "hashing.py",
         cw_dir / "write_emission.py",
         cw_dir / "languages.py",
+        # Decode-defensive bulk-source read (#282) — finding-affecting: a
+        # decode-policy change here changes what a file's write sites look
+        # like once read, or whether it lands in `unscanned` at all.
+        cw_dir / "textio.py",
         # The DATA the loader reads, not just the loader (#259): moving an
         # extension between generic_tier / unsupported_extensions changes
         # exactly which files this scanner walks, with no code change at
@@ -787,7 +835,18 @@ def check(
             # .php/.cpp still triggers the coverage warning (scan_writers
             # filters back down to SOURCE_EXTS itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
-        writers = scan_writers(source_root, invariants, exclude=scan_exclude, only_files=only_files)
+        writers, unscanned = _scan_writers_and_unscanned(
+            source_root, invariants, exclude=scan_exclude, only_files=only_files
+        )
+        report.unscanned = unscanned
+        if unscanned:
+            # Never silent (#282): a file the scanner could not even read is
+            # visible with its path, same treatment as unsupported_extension_counts
+            # below — report-only, does not affect soundness_ok/coverage_ok.
+            report.warnings.append(
+                f"{len(unscanned)} file(s) could not be read during the scan (unscanned) — "
+                "see the Unscanned files section"
+            )
         if scope is not None:
             # Authority split (#213 Phase D): repo-wide detection, boundary-
             # stopped authority. In-domain writers keep today's exact gate
@@ -849,7 +908,8 @@ def render_text(report: SingleWriterReport) -> str:
         "",
         f"Single-write-path invariants: {c['invariants']}",
         f"Writers found: {c['writers']}  |  Violations: {c['violations']}  |  "
-        f"Grandfathered: {c['grandfathered']}  |  Malformed metadata: {c['malformed']}",
+        f"Grandfathered: {c['grandfathered']}  |  Malformed metadata: {c['malformed']}  |  "
+        f"Unscanned: {c['unscanned']}",
         "",
         f"- Soundness (metadata well-formed): {'OK' if report.soundness_ok else 'FINDINGS'}",
         f"- Coverage (no unsanctioned writer): {'OK' if report.coverage_ok else 'FINDINGS'}",
@@ -909,6 +969,13 @@ def render_text(report: SingleWriterReport) -> str:
                 f"{w['file']}:{w['line']}{sym}{sanc}"
             )
             lines.append(f"    {w['text']}")
+    if report.unscanned:
+        lines += [
+            "",
+            "## Unscanned files (could not be read — never blocking on their own)",
+            "",
+        ]
+        lines += [f"- {u['file']}: {u['reason']}" for u in report.unscanned]
     if report.warnings:
         lines += ["", "## Warnings", ""] + [f"- {w}" for w in report.warnings]
     return "\n".join(lines) + "\n"

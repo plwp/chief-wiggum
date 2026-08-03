@@ -6,9 +6,8 @@ import json
 import os
 import sys
 
-import pytest
-
 import check_single_writer as sw
+import pytest
 
 # --- invariant metadata parsing ---------------------------------------------
 
