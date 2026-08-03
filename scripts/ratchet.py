@@ -905,14 +905,44 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def _dotnet_present(repo: Path) -> bool:
-    """.sln/.csproj probe, shared with ``chief_wiggum.verification`` so the
-    survey's runner detection and the ratchet's suite autodetection can never
-    disagree (#259: they did — the survey saw nothing and so did the ratchet,
-    across 8,316 .cs files)."""
+def _dotnet_suites(repo: Path) -> list[dict]:
+    """Autodetected .NET suite(s), via the SAME ``chief_wiggum.verification``
+    probe the adoption survey uses — so the survey's runner detection and the
+    ratchet's suite autodetection can never disagree (#259: they did, silently,
+    across 8,316 .cs files).
+
+    `--logger trx` is the built-in VSTest logger: no NuGet package to add,
+    unlike a junit logger. `--results-directory` (never a fixed LogFileName)
+    because one logger runs PER TEST PROJECT — a fixed filename makes projects
+    overwrite each other and silently undercount the pass-set. Each solution
+    gets its own suite and its own results directory, because a bare
+    `dotnet test` fails outright (MSB1011) when a root holds several.
+
+    Note `dotnet test` builds into per-project bin/obj inside the tree, which
+    a standard .NET .gitignore covers.
+    """
     from chief_wiggum import verification  # noqa: PLC0415 — avoids an import cycle
 
-    return verification.detect_project(repo).has_dotnet
+    det = verification.detect_project(repo)
+    if not det.has_dotnet:
+        return []
+
+    def suite(name: str, results: str, target: str = "") -> dict:
+        return {
+            "name": name,
+            "cmd": f"dotnet test{target} --logger trx --results-directory {results}",
+            "cwd": ".",
+            "parser": "trx",
+            "report": results,
+        }
+
+    if len(det.dotnet_solutions) > 1:
+        return [
+            suite(f"dotnet-{stem}", f".ratchet-trx-{stem}", f' "{sln}"')
+            for sln, stem in ((s, Path(s).stem) for s in det.dotnet_solutions)
+        ]
+    target = f' "{det.dotnet_solutions[0]}"' if det.dotnet_solutions else ""
+    return [suite("dotnet", ".ratchet-trx", target)]
 
 
 def detect_suites(repo: Path) -> list[dict]:
@@ -931,22 +961,7 @@ def detect_suites(repo: Path) -> list[dict]:
                 "report": ".ratchet-junit.xml",
             }
         )
-    if _dotnet_present(repo):
-        # `--logger trx` is the built-in VSTest logger: no NuGet package to
-        # add, unlike a junit logger. `--results-directory` (not a fixed
-        # LogFileName) because a solution runs one logger PER TEST PROJECT —
-        # a fixed filename makes projects overwrite each other and silently
-        # undercount the pass-set (#259). Note `dotnet test` builds into
-        # bin/obj inside the tree, which a standard .NET .gitignore covers.
-        suites.append(
-            {
-                "name": "dotnet",
-                "cmd": 'dotnet test --logger trx --results-directory .ratchet-trx',
-                "cwd": ".",
-                "parser": "trx",
-                "report": ".ratchet-trx",
-            }
-        )
+    suites += _dotnet_suites(repo)
     if (repo / "package.json").is_file() and not suites:
         # JS runners need a junit reporter configured; leave a skeleton the
         # operator fills in (e.g. vitest --reporter=junit, jest-junit).
@@ -1438,10 +1453,11 @@ def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
     finding-affecting local dependencies (hashing.py for
     stable_hash/hash_epic_definitions, trace_ids.py for the shared stable-ID
-    grammar, trace_links.py for suspect-link propagation, and the lazily
-    imported quality engines churn.py/complexity.py that shape the
-    quality_regressions findings ``check`` reports). No hand-bumped constant to
-    forget (INV-fh-005).
+    grammar, trace_links.py for suspect-link propagation, verification.py for
+    the .sln/.csproj probe that decides whether a .NET suite is autodetected
+    at all, and the lazily imported quality engines churn.py/complexity.py
+    that shape the quality_regressions findings ``check`` reports). No
+    hand-bumped constant to forget (INV-fh-005).
     @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
@@ -1452,6 +1468,7 @@ def _scanner_version() -> str:
         cw_dir / "hashing.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",
+        cw_dir / "verification.py",
         cw_dir / "verifier_hashes.py",
         q_dir / "churn.py",
         q_dir / "complexity.py",

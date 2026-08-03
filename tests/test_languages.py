@@ -51,9 +51,15 @@ def test_generic_tier_extensions_include_rust_java_ruby():
 
 def test_all_known_extensions_matches_pre_162_source_exts():
     """Regression guard: the pre-#162 hardcoded SOURCE_EXTS in
-    check_single_writer.py was exactly this 9-extension set."""
-    expected = {".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs"}
-    assert cw_languages.all_known_extensions() == frozenset(expected)
+    check_single_writer.py was exactly this 9-extension set. It may only grow
+    by DELIBERATE additions, each listed below with the ticket that added it —
+    so an accidental widening (or a silent narrowing, which would make a
+    scanner quietly stop covering a language) still fails here."""
+    pre_162 = {".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".rs"}
+    deliberate_additions = {
+        ".cs",  # #259: C# at tier 2 — scanned by the generic regex tier
+    }
+    assert cw_languages.all_known_extensions() == frozenset(pre_162 | deliberate_additions)
 
 
 def test_unsupported_extensions_are_disjoint_from_known():

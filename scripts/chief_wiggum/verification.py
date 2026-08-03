@@ -51,13 +51,24 @@ LANG_COMMANDS: dict[str, dict[str, list[str]]] = {
 # .NET solution/project manifests. `.sln`/`.slnx` and `Directory.Build.props`
 # live at the root; `.csproj` (and F#/VB siblings) sit one directory per
 # project down, so the probe walks a bounded depth rather than the whole tree.
-_DOTNET_ROOT_GLOBS = ("*.sln", "*.slnx", "Directory.Build.props", "Directory.Packages.props")
+_DOTNET_SOLUTION_GLOBS = ("*.sln", "*.slnx")
+_DOTNET_ROOT_GLOBS = _DOTNET_SOLUTION_GLOBS + ("Directory.Build.props", "Directory.Packages.props")
 _DOTNET_PROJECT_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
 _DOTNET_PROBE_DEPTH = 3
 _DOTNET_SKIP_DIRS = {
     ".git", "node_modules", "bin", "obj", "packages", "dist", "build", "out",
     ".vs", ".venv", "venv", "vendor", "artifacts", "TestResults",
 }
+
+
+def _dotnet_solutions(root: Path) -> tuple[str, ...]:
+    """Root-level solution filenames, sorted. Named explicitly because a bare
+    `dotnet test` in a directory holding MORE THAN ONE solution fails with
+    MSB1011 — and a real .NET monolith commonly ships several (the #259 target
+    has 8), so "just run dotnet test" would never have run at all there."""
+    return tuple(sorted(
+        p.name for pattern in _DOTNET_SOLUTION_GLOBS for p in root.glob(pattern) if p.is_file()
+    ))
 
 
 def _find_dotnet(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> bool:
@@ -79,6 +90,17 @@ def _find_dotnet(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> bool:
             if entry.is_dir() and depth < max_depth and entry.name not in _DOTNET_SKIP_DIRS:
                 frontier.append((entry, depth + 1))
     return False
+
+
+def dotnet_commands(profile: str, solutions: Iterable[str]) -> list[list[str]]:
+    """`dotnet <profile>` commands for a detection's solutions: one per
+    solution when several exist (naming each explicitly), otherwise the bare
+    command (correct for a single solution or a single project)."""
+    base = LANG_COMMANDS["dotnet"][profile]
+    solutions = list(solutions)
+    if len(solutions) <= 1:
+        return [base + solutions]
+    return [base + [sln] for sln in solutions]
 
 
 # Match a make rule line (target[s] before ':'), excluding ':=' assignments.
@@ -109,6 +131,7 @@ class Detection:
     has_go: bool = False
     has_python: bool = False
     has_dotnet: bool = False
+    dotnet_solutions: tuple[str, ...] = ()
     has_node: bool = False
     node_scripts: tuple[str, ...] = ()
     has_docker_compose: bool = False
@@ -207,6 +230,7 @@ def detect_project(repo: str | Path) -> Detection:
     det.has_go = (root / "go.mod").is_file()
     det.has_python = (root / "pyproject.toml").is_file() or (root / "setup.py").is_file()
     det.has_dotnet = _find_dotnet(root)
+    det.dotnet_solutions = _dotnet_solutions(root)
 
     pkg = root / "package.json"
     if pkg.is_file():
@@ -261,7 +285,10 @@ def plan_steps(repo: str | Path, profiles: Iterable[str], detection: Detection) 
         if detection.has_node and profile in detection.node_scripts:
             steps.append(PlannedStep(profile, "node", LANG_COMMANDS["node"][profile], root))
         if detection.has_dotnet:
-            steps.append(PlannedStep(profile, "dotnet", LANG_COMMANDS["dotnet"][profile], root))
+            steps += [
+                PlannedStep(profile, "dotnet", cmd, root)
+                for cmd in dotnet_commands(profile, detection.dotnet_solutions)
+            ]
 
     return steps
 
