@@ -118,7 +118,7 @@ Consumers:
 - **`/status`** shows the Adoption section: brownfield flag, grandfather
   counts, nearest expiry, and prominent EXPIRED warnings.
 
-## Not measured is not measured clean (#259)
+## Not measured is not measured clean (#263)
 
 An honest report of "nothing measurable" and a real report of "everything
 measured, all clean" used to render **identically** on every surface a human

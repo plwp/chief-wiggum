@@ -58,7 +58,7 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 | Traceability | `check_traceability.py` | `--gate` | blocking (`/architect`, `/close-epic`); **gate-validation record: passed** (#168, retroactive) |
 | Single-writer | `check_single_writer.py` | `--gate` | blocking (precision fix in #93); **gate-validation record: passed** (#168, retroactive) |
 | Unresolved markers | `check_unresolved.py` | `--gate` | blocking (`/implement-wave`) |
-| Ratchet: pass-set + contract hashes | `ratchet.py check` | (blocks by default) | blocking (`/implement`, waves, `/close-epic`); **gate-validation record: passed** (#184, retroactive) |
+| Ratchet: pass-set + contract hashes | `ratchet.py check` | (blocks by default) | blocking (`/implement`, waves, `/close-epic`); **gate-validation record: passed** (#184, retroactive); a pass-set case may be quarantined out of the high-water via the journaled `record --retire-case` waiver (#278) — the quarantine LISTING is report-only, and an expired quarantine blocks through the existing `missing_tests` class, so no new blocking finding class was introduced and the record's eight trials still cover it |
 | **Ratchet: complexity + relative churn** | `ratchet.py check --gate-quality` | `--gate-quality` | **NEW — report-only** (#110); validate on a shipped repo before wiring as a blocker |
 | SaaS NFR | `saas_gate.py --gate` | `--gate` | blocking (`/saas-gate`); **gate-validation record: passed** (#184, fixture-served local-server target per CTR-fh-044) |
 | **Minimal-CI** | `ci_scaffold.py` | `--gate` | **report-only** (#111); wired into `/close-epic` report-only; **gate-validation record: passed** (#184) — `--gate` may now be wired per INV-fh-003 |
