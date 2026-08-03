@@ -1,0 +1,7 @@
+{
+  "$comment": "Open-beta-probe blast-radius declaration for {{product_name}} — stamped by chief-wiggum /apply-pattern (open-beta-probe, chief-wiggum#256). INV-OBP-004: this declaration is MANDATORY — stamping was refused without a bound blast_radius parameter. `mode` is DERIVED from `blast_radius`, never independently set: bounded -> live, unbounded -> compute-only. Set it by hand to match before wiring anything to this file.",
+  "product_name": "{{product_name}}",
+  "blast_radius": "{{blast_radius}}",
+  "mode": "REPLACE-WITH-live-IF-bounded-OR-compute-only-IF-unbounded",
+  "guidance": "bounded (no irreversible external effect) may run LIVE. unbounded (touches money, wages, tax, health, published records, or third-party systems) MUST run in compute-only/draft-only mode: the beta computes and presents an artifact for a human to review and cannot itself commit the irreversible act (e.g. it may compute and display a wage summary, but may not pay anyone or post to payroll)."
+}

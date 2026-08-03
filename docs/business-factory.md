@@ -169,6 +169,14 @@ Osterwalder 2019) + Ries's leap-of-faith assumptions are one structure:
   confidence; commitment currencies (scheduled time, staked reputation, paid money) are the
   only strong evidence. Vanity-metric lint: cumulative/gross counters are banned as success
   criteria (Ries — they falsify nothing); required form is per-cohort rates.
+  **Recalibrated (chief-wiggum#256, logged 2026-08-03):** the click rung's canonical
+  instrument, a landing-page smoke test, was cheap *relative to building* — that
+  calculus changed as build cost collapsed and the smoke-test signal itself degraded
+  (everyone has a waitlist page now, so a signup means less). `open-beta-probe`
+  produces strength 3–4 (time/reputation) at a cost that is often now comparable, so
+  it is frequently the better first instrument; `landing-page-smoke-test` is demoted
+  to a narrow-use case (see its pattern doc). The ladder's ORDER is unchanged — only
+  which rung is the cheap default moved.
 - **Kill review runs on fresh context**: per Boulding et al., the continue case is argued to a
   fresh-context quorum given **only** the pre-registered criteria and measured results — never
   the bet's accumulated working context. Invariant: kill-review agents must not inherit the
@@ -219,7 +227,12 @@ noisy small sample to infinity). The set that is actually valid at CW's target s
    cash-flow trough; this replaces LTV:CAC as the operative check at small n)
 3. `blended_cac < first_year_gross_profit_per_customer` (solvency without lifetime
    extrapolation)
-4. `pmf_score ≥ 40% (n ≥ 40)` before unlocking any paid-acquisition spend
+4. `pmf_score ≥ 40% (n ≥ 40)` before unlocking any paid-acquisition spend — **widened
+   (chief-wiggum#256) to every push motion**, not just paid ads: cold outreach and
+   launch campaigns wait on the same bar (Startup Genome's premature-scaling finding
+   by name). Pull motions (content, community presence, answering questions where the
+   pain is already posted) remain available throughout, including before this bar
+   clears.
 5. `chosen_price ∈ [Van Westendorp floor, ceiling]` with WTP evidence artifacts on file
    (refuse to scaffold a paid product with zero WTP evidence — "price before product" made
    mechanical)
@@ -338,8 +351,9 @@ through A+H+C before promoting anything to `--gate`.
   viability gate at authoring time, human checkpoint.
 - **C. Validation-experiment patterns + pre-registration gate** (#236) — assumption ledger,
   test cards with hashed thresholds, falsifiability (XYZ) linter, evidence-strength floor on
-  state transitions; first stamped experiment patterns: `landing-page-smoke-test` and
-  `presale`. This is the RCT-validated mechanism.
+  state transitions; stamped experiment patterns: `landing-page-smoke-test` (narrowed to a
+  non-default instrument, #256), `open-beta-probe` (#256 — usually the better first probe
+  now), and `presale`. This is the RCT-validated mechanism.
 - **D. Kill-review quorum** (#237) — a consult role whose evaluators receive only a generated
   brief of pre-registered criteria + measured results (fresh context enforced as an
   invariant), producing a `go/kill/hold/recycle` verdict ahead of the human decision.
@@ -443,10 +457,15 @@ platforms — Meta Ads, Google Ads, OpenAI-class asset generation (AI distributi
 like the GPT store count under `existing-platforms`), ESP/CRM/social/SEO/directory tooling —
 and never rebuilds them. Platform subscriptions and ad spend are ordinary cost-inputs line
 items (`flat_monthly`/meters in `templates/cost-inputs-schema.json`) counting against the bet
-envelope. **Paid channels carry the paid-spend unlock gate** (§4 invariant 4): no
-paid-acquisition spend before `pmf_score ≥ 40% (n ≥ 40)` or equivalent commitment-class
-evidence, and viability requires LTV above the channel's CAC floor — at micro price points
-paid ads are frequently underwater and the experiment verdict must say so. The stamped asset
+envelope. **Every push motion carries the push-motion unlock gate** (§4 invariant 4,
+widened chief-wiggum#256): no paid-acquisition spend, cold outreach, or launch campaign
+before `pmf_score ≥ 40% (n ≥ 40)` or equivalent commitment-class evidence — restated in
+the operator's own words: *push marketing comes only after assumptions are fully
+tested*. Viability additionally requires LTV above the channel's CAC floor for paid
+channels specifically — at micro price points paid ads are frequently underwater and
+the experiment verdict must say so. Pull motions (content, community presence,
+answering questions where the pain is already posted) are never gated by this rule. The
+stamped asset
 layer (launch checklists per `templates/launch-checklist-schema.json` — Levels'
 platform×timing×assets shape — copy scaffolds, Mom-Test scripts, prospect briefs, follow-up
 sequences) is per-bet artifacts, not a pattern category. Marketing capability graduates
@@ -553,10 +572,15 @@ pre-registered against the old thesis, so coverage and strength must be re-estab
 
 **Stamped experiment patterns** (the distinctive CW move — the factory stamps the
 experiment, not just tracks it, same #135 discipline): registry category
-`validation-experiment`, trust class `end-user-signal-driven`, both with stampable
+`validation-experiment`, trust class `end-user-signal-driven`, all three with stampable
 scaffolds via `/apply-pattern` — `landing-page-smoke-test` (honest static page +
-signup-capture instrumentation stub; strength 2–3; the cheapest universal demand test)
-and `presale` (honest pre-order checkout on an unbuilt product — not-built-yet, price,
+signup-capture instrumentation stub; strength 2–3; **narrowed to a non-default,
+narrow-use instrument, #256** — see its degradation note), `open-beta-probe` (**new,
+#256**: a working, deliberately-scoped product in real hands via an existing community,
+metered by trackable/revocable signup codes; strength 3–4; a mandatory blast-radius
+declaration forces compute-only/draft-only mode when the beta touches money, wages,
+tax, health, records, or third-party systems — "open beta is the new waitlist"), and
+`presale` (honest pre-order checkout on an unbuilt product — not-built-yet, price,
 and delivery window stated before the payment step; a REAL charge is the datum;
 refund-on-kill counted as wind-down cost; the only strength-5 producer). Their
 pre-registration/vanity-lint invariants are grounded in `assumption.py`; the page-level

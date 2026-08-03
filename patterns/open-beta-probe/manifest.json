@@ -1,0 +1,106 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/open-beta-probe/pattern.md. Third validation-experiment pattern (chief-wiggum#256): a working, deliberately-scoped product put in real hands via an existing community, metered by signup codes. Recalibrates the evidence ladder — build cost collapsed and the smoke-test signal degraded, so a strength-3/4 open beta is now often the better first instrument than a strength-2 smoke test. Pre-registration/vanity-lint invariants grounded in the in-repo assumption.py mechanism; the code-metering/blast-radius/reputation invariants are design-derived (no shipped app has run this stamped experiment yet — honest per issue #139's allowance).",
+  "id": "open-beta-probe",
+  "version": 1,
+  "title": "Open-Beta Probe",
+  "category": "validation-experiment",
+  "trust_class": "end-user-signal-driven",
+
+  "applies_when": [
+    "a demand assumption needs commitment-class-adjacent evidence (strength 3-4, time/reputation) cheaper than a full presale",
+    "the product can genuinely be built to a working, deliberately-scoped state before the test (build cost has collapsed for software this size)",
+    "an existing community or channel exists to launch a metered beta into",
+    "the operator can honestly answer the blast-radius question and accept compute-only/draft-only scope if the answer is unbounded"
+  ],
+
+  "components": [
+    "signup-code-issuance: unique, trackable, revocable codes minted per cohort — the metering AND scarcity mechanism a public waitlist form does not provide",
+    "code-redemption-tracking: redemption and revocation recorded per cohort, feeding the per-cohort returning-user rate",
+    "blast-radius-declaration: a mandatory bounded|unbounded declaration at stamp time; stamping is refused without it",
+    "compute-only-mode-guard: when blast_radius=unbounded, the beta computes/presents an artifact for human review and cannot commit the irreversible act",
+    "pre-registered-binding: the beta binds to an assumption.py test card (strength 3-4) whose threshold block was hashed into the portfolio journal before it opened",
+    "per-cohort-rate-metric: the success criterion is a per-cohort returning-user/real-work-done rate; cumulative redemption counts are rejected by the vanity-metric lint"
+  ],
+
+  "invariants": {
+    "$comment": "001-002 are realized by the in-repo validation engine (scripts/assumption.py); 003-006 are design-derived code-metering/blast-radius/reputation/evidence rules, honestly flagged until first grounded use.",
+    "cluster": [
+      {
+        "id": "INV-OBP-001",
+        "statement": "Pre-registered success bar: the beta binds to a test card (evidence strength 3-4, time/reputation) whose threshold block was content-hashed into the portfolio journal BEFORE the beta opened; the verdict is recorded only against that original hash.",
+        "realized_as": {
+          "app": "chief-wiggum",
+          "code": "scripts/assumption.py (card-create threshold hash + verdict enforcement, chief-wiggum#236)"
+        }
+      },
+      {
+        "id": "INV-OBP-002",
+        "statement": "Per-cohort rate, never a raw signup/redemption counter: the success criterion is a per-cohort returning-user/real-work-done rate among redeemed codes; cumulative redemption totals are rejected as success criteria (they falsify nothing).",
+        "realized_as": {
+          "app": "chief-wiggum",
+          "code": "scripts/assumption.py (vanity-metric lint, chief-wiggum#236)"
+        }
+      },
+      {
+        "id": "INV-OBP-003",
+        "statement": "Signup-code metering: every beta participant enters via a unique, trackable, revocable signup code; issuance, redemption, and revocation are all recorded per cohort — codes are the attribution and scarcity mechanism a public form does not provide.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-OBP-004",
+        "statement": "Blast-radius declaration is mandatory at stamp time; the pattern refuses to stamp without a bounded|unbounded declaration. bounded (no irreversible external effect) may run live; unbounded (touches money, wages, tax, health, published records, or third-party systems) MUST run in compute-only/draft-only mode — the beta computes and presents an artifact for human review and cannot itself commit the irreversible act.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-OBP-005",
+        "statement": "Reputation is single-use: a given community can be launched to once per bet; a beta shipped before it works burns the audience the bet depends on. This is a cost priced into the affordable-loss envelope, never treated as a free externality.",
+        "grounding": "design-derived"
+      },
+      {
+        "id": "INV-OBP-006",
+        "statement": "Honest evidence-strength floor: a bare code redemption is strength-2 (click) evidence at best; the strength-3/4 claim requires a RETURNING user who did real work in the product, never a single visit or bare signup.",
+        "grounding": "design-derived"
+      }
+    ]
+  },
+
+  "parameters": {
+    "product_name": {
+      "type": "string",
+      "required": true,
+      "description": "The product the open beta probes."
+    },
+    "blast_radius": {
+      "type": "string",
+      "required": true,
+      "enum": ["bounded", "unbounded"],
+      "description": "REQUIRED, no default (INV-OBP-004) — stamping is refused without it. bounded = no irreversible external effect, may run live. unbounded = touches money/wages/tax/health/published records/third-party systems, MUST run compute-only/draft-only."
+    },
+    "community_channel": {
+      "type": "string",
+      "required": false,
+      "default": "an existing community/channel (bind this before launch)",
+      "description": "The existing community/channel the beta launches into (not a discovery mechanism — the audience must already exist)."
+    },
+    "code_issuance_endpoint": {
+      "type": "string",
+      "required": false,
+      "default": "/api/open-beta/codes",
+      "description": "Where the signup-codes stub issues/redeems/revokes codes (bind to a real store before launch)."
+    }
+  },
+
+  "success_metrics": {
+    "$comment": "Per-cohort rates only (INV-OBP-002). The bound test card's threshold is the pre-registered pass bar.",
+    "metrics": [
+      {"id": "returning_user_rate_pct", "goal": "up", "desc": "redeemed codes whose holder returned and did real work / redeemed codes per cohort — the experiment's primary (strength 3-4) measure"},
+      {"id": "code_redemption_rate_pct", "goal": "up", "desc": "redeemed / issued codes per cohort"},
+      {"id": "cost_per_redeemed_code_usd", "goal": "down", "desc": "outreach + support spend / redeemed codes per cohort (counts against the bet envelope)"}
+    ]
+  },
+
+  "protected_paths": ["the stamped blast-radius declaration + signup-codes stub (the compute-only guard is only meaningful if it matched what was declared)"],
+
+  "depends_on": null,
+  "feeds": null
+}

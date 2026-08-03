@@ -4,7 +4,9 @@
 - **Trust class:** end-user-signal-driven — the page and its measured conversion are the signal; nothing here is asserted, only measured
 - **Status:** specified (with a stampable `scaffold/`)
 - **Depends on:** nothing
-- **Feeds:** [`presale`](../presale) — smoke-test signups are the audience a presale converts
+- **Feeds:** [`presale`](../presale) — smoke-test signups are the audience a presale converts.
+  **Narrow-use instrument as of chief-wiggum#256** — see the degradation note below;
+  [`open-beta-probe`](../open-beta-probe) is now usually the better first probe.
 
 ## What it is
 
@@ -24,12 +26,33 @@ leaves an email") but can never *validate* willingness to pay. The evidence-stre
 floor on `bet.py transition <id> building` will not accept it as commitment-class
 evidence; graduating to strength 5 is the [`presale`](../presale) pattern's job.
 
-## When to apply
+**Degradation note (chief-wiggum#256, logged 2026-08-03): this is no longer the
+default first probe.** Two things changed the calculus that made a smoke test
+canonical: build cost for software this size has largely collapsed (the cost
+argument for a fake door over a real one has mostly evaporated), and the signal
+itself degraded (when a landing page + waitlist costs an afternoon and everyone
+has one, a signup means materially less than it used to — the base rate of
+"real product behind the page" has fallen, and prospects increasingly know it).
+So this pattern now buys weak (strength-2) evidence at a cost that no longer
+clearly justifies the weakness, while stronger rungs
+([`open-beta-probe`](../open-beta-probe), [`presale`](../presale)) became
+affordable too. **Open beta is the new waitlist** — see
+[`open-beta-probe`](../open-beta-probe) for the usually-better first instrument.
 
-- A bet is `probing|validating` and its demand assumption has nothing behind it
-  but opinions (strength 1).
-- You want the cheapest test that produces a real, pre-registered per-cohort rate.
-- The signup audience will seed the follow-up experiment (presale, interviews).
+## When to apply (narrowed, chief-wiggum#256)
+
+This pattern is now a **narrow-use instrument**, not the default first probe:
+
+- The product genuinely **cannot** be built cheaply enough to open-beta instead
+  (rare, but real — e.g. it needs an integration or dataset that takes real time
+  regardless of AI-assisted build speed).
+- The test is of **positioning/message**, not demand — you already have working
+  product and community, and want to A/B a value proposition before a push.
+- A **Tier-C-signal sanity check** (chief-wiggum#254): a cheap, disposable probe
+  before spending real effort chasing a contested public signal.
+
+If none of these apply and a working, scoped beta is buildable, prefer
+[`open-beta-probe`](../open-beta-probe).
 
 ## Mechanism — invariant cluster
 

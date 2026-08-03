@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Signup-code metering stub for {{product_name}}'s open-beta probe.
+
+Stamped by chief-wiggum /apply-pattern (open-beta-probe, chief-wiggum#256). This is a
+SCAFFOLD, not a product — wire issue()/redeem()/revoke() to a real store (a database
+table, not this in-memory dict) before launch.
+
+INV-OBP-003 (signup-code metering): every beta participant enters via a unique,
+trackable, revocable code — codes are the attribution AND scarcity mechanism a public
+waitlist form does not provide.
+
+INV-OBP-006 (honest evidence-strength floor): redemption alone is strength-2 (click)
+evidence. The strength-3/4 claim this pattern exists to produce requires a RETURNING
+user who did real work in the product — track `returned` and `did_real_work`
+separately from `redeemed`, and never report redemption rate as if it were the
+returning-user rate.
+
+TODO before launch:
+  - wire issue()/redeem()/revoke() to your real datastore
+  - wire mark_returned()/mark_real_work() to your product's own auth/usage events
+  - post redeemed/returned/real-work counts to {{code_issuance_endpoint}} per cohort
+"""
+
+from __future__ import annotations
+
+import secrets
+from dataclasses import dataclass, field
+
+
+@dataclass
+class SignupCode:
+    code: str
+    cohort: str
+    issued: bool = True
+    redeemed: bool = False
+    revoked: bool = False
+    returned: bool = False       # came back after first use
+    did_real_work: bool = False  # the strength-3/4 evidence itself
+
+
+# TODO: replace this in-memory store with a real datastore before launch.
+_CODES: dict[str, SignupCode] = {}
+
+
+def issue(cohort: str) -> str:
+    code = secrets.token_urlsafe(8)
+    _CODES[code] = SignupCode(code=code, cohort=cohort)
+    return code
+
+
+def redeem(code: str) -> bool:
+    c = _CODES.get(code)
+    if c is None or c.revoked:
+        return False
+    c.redeemed = True
+    return True
+
+
+def revoke(code: str) -> bool:
+    c = _CODES.get(code)
+    if c is None:
+        return False
+    c.revoked = True
+    return True
+
+
+def mark_returned(code: str) -> None:
+    c = _CODES.get(code)
+    if c is not None:
+        c.returned = True
+
+
+def mark_real_work(code: str) -> None:
+    """Call this ONLY from a real product event proving the holder did real work —
+    never from the redemption event itself (INV-OBP-006)."""
+    c = _CODES.get(code)
+    if c is not None:
+        c.did_real_work = True
+
+
+def cohort_status(cohort: str) -> dict:
+    codes = [c for c in _CODES.values() if c.cohort == cohort]
+    issued = len(codes)
+    redeemed = sum(1 for c in codes if c.redeemed)
+    returning = sum(1 for c in codes if c.did_real_work)
+    return {
+        "cohort": cohort,
+        "issued": issued,
+        "redeemed": redeemed,
+        "code_redemption_rate_pct": (redeemed / issued * 100) if issued else 0.0,
+        "returning_user_rate_pct": (returning / redeemed * 100) if redeemed else 0.0,
+    }

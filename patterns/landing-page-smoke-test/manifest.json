@@ -1,5 +1,5 @@
 {
-  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/landing-page-smoke-test/pattern.md. First validation-experiment pattern (chief-wiggum#236): the factory stamps the EXPERIMENT (scaffold + instrumentation stub), not just tracks it. The pre-registration/vanity-lint invariants are grounded in the in-repo assumption.py mechanism; the page-level invariants are design-derived (no shipped app has run this exact stamped experiment yet — honest per issue #139's 'design-derived statements where not yet built').",
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/landing-page-smoke-test/pattern.md. First validation-experiment pattern (chief-wiggum#236): the factory stamps the EXPERIMENT (scaffold + instrumentation stub), not just tracks it. The pre-registration/vanity-lint invariants are grounded in the in-repo assumption.py mechanism; the page-level invariants are design-derived (no shipped app has run this exact stamped experiment yet — honest per issue #139's 'design-derived statements where not yet built'). DEGRADED (chief-wiggum#256, logged 2026-08-03): build cost collapsed and the smoke-test signal itself degraded (a waitlist page now costs an afternoon and means less), so this is a NARROW-USE instrument, not the default first probe — see open-beta-probe.",
   "id": "landing-page-smoke-test",
   "version": 1,
   "title": "Landing-Page Smoke Test",
@@ -7,10 +7,11 @@
   "trust_class": "end-user-signal-driven",
 
   "applies_when": [
-    "a bet is probing|validating and its demand assumption has no evidence beyond opinions",
-    "you want the cheapest universal demand test: a page stating the value proposition and a signup ask",
+    "NARROWED (chief-wiggum#256): the product genuinely cannot be built cheaply enough to open-beta instead",
+    "OR the test is of positioning/message rather than demand (working product + community already exist)",
+    "OR a Tier-C-signal sanity check (chief-wiggum#254) — a cheap, disposable probe before chasing a contested public signal",
     "the success bar must be pre-registered (assumption.py test card) BEFORE the page goes live",
-    "expected evidence strength is 2-3 (click/engagement, at best scheduled time) — never treat signups as purchase intent"
+    "expected evidence strength is 2-3 (click/engagement, at best scheduled time) — never treat signups as purchase intent; prefer open-beta-probe (strength 3-4) when a working, scoped beta is buildable"
   ],
 
   "components": [

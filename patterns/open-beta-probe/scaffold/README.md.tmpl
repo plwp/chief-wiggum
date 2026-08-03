@@ -1,0 +1,44 @@
+# Open-beta probe: {{product_name}}
+
+Stamped by chief-wiggum `/apply-pattern` (`open-beta-probe`, chief-wiggum#256). This is
+an EXPERIMENT scaffold, not product code.
+
+## Before launch, in order
+
+1. **Confirm the blast-radius declaration** in `blast_radius.json` — `bounded` may run
+   live; `unbounded` MUST run in compute-only/draft-only mode (the beta computes and
+   presents an artifact for human review and cannot itself commit the irreversible
+   act). This is not optional (INV-OBP-004): if the declared value is wrong, fix it
+   before wiring anything else.
+2. **Pre-register the test card** at evidence strength 3–4 BEFORE the beta opens:
+
+   ```bash
+   python3 scripts/assumption.py card <bet-id> --asm ASM-NNN \
+       --method open-beta-probe --metric returning_user_rate_pct \
+       --comparator ">=" --value <X> --sample-min <N> --evidence-strength 4
+   ```
+
+   The threshold is content-hashed into the portfolio journal at creation; the verdict
+   may only be recorded against that original hash.
+3. **Wire `signup_codes.py`** to a real datastore and to your product's own auth/usage
+   events (`mark_returned` / `mark_real_work` must come from real product signals,
+   never from the redemption event itself — INV-OBP-006).
+4. **Reputation is single-use** (INV-OBP-005): {{community_channel}} can be launched to
+   ONCE for this bet. Price a burnt-audience outcome into the bet's affordable-loss
+   envelope before you launch, not after.
+
+## Sequencing rule
+
+Push marketing (cold outreach, paid ads, launch campaigns) comes only after
+assumptions are fully tested — this beta IS that test. Pull motions (content,
+community presence, answering questions where the pain is already posted) remain
+available throughout. Do not run a push motion to fill this beta before its own
+predecessor evidence (e.g. a smoke test) has cleared its bar.
+
+## Recording the verdict
+
+```bash
+python3 scripts/assumption.py verdict <bet-id> <card-id> \
+    --result <measured returning_user_rate_pct> --sample-n <redeemed count> \
+    --verdict validated|falsified
+```
