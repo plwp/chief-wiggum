@@ -798,6 +798,69 @@ def low_cap_screen_findings(root: Path, bet: dict) -> list[str]:
     )
 
 
+# ---- signal-source tiering + competitor sweep (#254) ---------------------------
+
+SIGNAL_TIERS = ("A", "B", "C")
+# Convergence-risk staleness bar (chief-wiggum#254): a Tier-C (public) signal's
+# competitor sweep older than this is stale — public boards move, and the whole
+# point is that someone else may be reading the same page today.
+STALE_SWEEP_DAYS = 30
+
+
+def competitor_sweep_soundness(sweep) -> list[str]:
+    """states-and-dates-style soundness for a `competitor_sweep` block: every
+    required field present and well-typed. Malformed input is a finding, never a
+    crash — mirrors `criteria_soundness`'s shape for the same reason."""
+    if not isinstance(sweep, dict):
+        return ["competitor_sweep must be an object"]
+    out = []
+    if not _valid_date(sweep.get("date")):
+        out.append("competitor_sweep.date missing or not ISO (YYYY-MM-DD)")
+    if not isinstance(sweep.get("sources"), list):
+        out.append("competitor_sweep.sources must be a list")
+    competitors = sweep.get("competitors")
+    if not isinstance(competitors, list):
+        out.append("competitor_sweep.competitors must be a list")
+    elif any(not isinstance(c, dict) or not c.get("name") for c in competitors):
+        out.append("competitor_sweep.competitors entries each need a non-empty `name`")
+    if not isinstance(sweep.get("unresolved"), list):
+        out.append("competitor_sweep.unresolved must be a list")
+    return out
+
+
+def competitor_sweep_findings(bet: dict, as_of: date) -> list[str]:
+    """Tier-C signal grounding must be legible (chief-wiggum#254): a bet whose
+    thesis rests solely on a public (Tier C) signal is contested by construction —
+    the competitor sweep for it must exist and be current, checked at CREATE time,
+    not at name-pick time (the sequencing that missed a real direct-twin collision).
+    Report-only always: contested markets are frequently the correct call (§9.4 —
+    neglect arbitrage, judo strategy); the mandate is that contestedness is KNOWN
+    and STATED, never discovered after the domain is bought. Tier A/B or an
+    undeclared tier never produce a finding here beyond the `skipped:` note."""
+    tier = bet.get("signal_tier")
+    if tier is None:
+        return ["skipped: signal_tier not declared (chief-wiggum#254)"]
+    if tier != "C":
+        return []
+    sweep = bet.get("competitor_sweep")
+    if not sweep:
+        return [
+            "Tier-C signal (public, contested by construction) with no "
+            "competitor_sweep recorded — run one now, not at name-pick time "
+            "(chief-wiggum#254)"
+        ]
+    try:
+        age = (as_of - date.fromisoformat(sweep["date"])).days
+    except (KeyError, TypeError, ValueError):
+        return ["competitor_sweep.date is missing/malformed — cannot assess staleness"]
+    if age > STALE_SWEEP_DAYS:
+        return [
+            f"competitor_sweep is {age}d old (>{STALE_SWEEP_DAYS}d) — stale for a "
+            "Tier-C bet; someone else may be reading the same public signal today"
+        ]
+    return []
+
+
 # ---- ledger --------------------------------------------------------------------
 
 
@@ -1184,6 +1247,37 @@ def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tupl
     time_cap = env.get("time_cap_hours")
     if isinstance(time_cap, (int, float)):
         lines.append(fact("time cap", f"{time_cap:g}h", bet_src))
+    lines.append("")
+
+    # -- signal-source grounding + competitor sweep (#254): a Tier-C bet's
+    #    convergence risk must be legible to the fresh-context evaluator, not just
+    #    to the operator at create time.
+    lines.append("## Signal grounding (convergence risk)")
+    lines.append("")
+    tier = bet.get("signal_tier")
+    lines.append(fact("signal tier", tier if tier else "UNRESOLVED: not declared", bet_src))
+    sweep = bet.get("competitor_sweep")
+    if sweep and isinstance(sweep, dict):
+        names = ", ".join(c.get("name", "?") for c in sweep.get("competitors") or []) or "none found"
+        lines.append(fact(
+            "competitor sweep",
+            f"run {sweep.get('date', '?')} via {', '.join(sweep.get('sources') or []) or '?'} "
+            f"— competitors: {names}",
+            bet_src,
+        ))
+        if sweep.get("unresolved"):
+            lines.append(fact("sweep unresolved items", "; ".join(sweep["unresolved"]), bet_src))
+    else:
+        lines.append(fact(
+            "competitor sweep",
+            "UNRESOLVED: no competitor_sweep recorded"
+            + (" — REQUIRED for a Tier-C bet" if tier == "C" else ""),
+            None,
+        ))
+    for f in competitor_sweep_findings(bet, as_of):
+        if not f.startswith("skipped:"):
+            findings_note = f"- **finding**: {f}"
+            lines.append(findings_note)
     lines.append("")
 
     # -- open-assumption evidence table (assumption.py owns the ledger; the
@@ -1793,6 +1887,16 @@ def cmd_create(args) -> int:
 
     criteria = parse_criteria_file(Path(args.criteria))
 
+    competitor_sweep = None
+    if args.competitor_sweep:
+        csp = Path(args.competitor_sweep)
+        if not csp.is_file():
+            raise BetError(f"competitor sweep file not found: {csp}")
+        try:
+            competitor_sweep = json.loads(csp.read_text())
+        except json.JSONDecodeError as e:
+            raise BetError(f"cannot parse {csp}: {e}") from e
+
     bet = {
         "id": args.bet_id,
         "title": args.title,
@@ -1829,10 +1933,16 @@ def cmd_create(args) -> int:
         if not isinstance(low_cap_screens, dict):
             raise BetError(f"{lcs_path}: low-cap screens data must be a JSON object")
         bet["low_cap_screens"] = low_cap_screens
+    if args.signal_tier is not None:
+        bet["signal_tier"] = args.signal_tier
+    if competitor_sweep is not None:
+        bet["competitor_sweep"] = competitor_sweep
 
     findings = [f"soundness: {f}" for f in criteria_soundness(criteria)]
     findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
     findings += [f"soundness: {f}" for f in liability_soundness(envelope)]
+    if competitor_sweep is not None:
+        findings += [f"soundness: {f}" for f in competitor_sweep_soundness(competitor_sweep)]
     findings += [
         f if f.startswith("skipped:") else f"selection: {f}"
         for f in selection_lint(root, bet)
@@ -1840,6 +1950,10 @@ def cmd_create(args) -> int:
     # Low-cap distribution-divergence screens (#275, §9.6.5 screens 8-13) —
     # already self-prefixed 'screen: ' (NEVER_GATES_PREFIXES), no re-tagging.
     findings += low_cap_screen_findings(root, bet)
+    findings += [
+        f if f.startswith("skipped:") else f"signal: {f}"
+        for f in competitor_sweep_findings(bet, date.today())
+    ]
 
     rc = report(findings, args.gate)
     if rc:
@@ -1861,6 +1975,7 @@ def cmd_create(args) -> int:
         # per-bet override is a decision, not a mutable knob.
         "rep_cadence_per_week": args.cadence if args.cadence is not None else DEFAULT_REP_CADENCE,
         "target_cac_usd": args.target_cac,
+        "signal_tier": args.signal_tier,
     })
     print(
         f"bet: created {args.bet_id} [proposed] — envelope+criteria hashed into the "
@@ -2287,6 +2402,9 @@ def cmd_transition(args) -> int:
             ecosystem_channel=None, owned_audience=None,
             means_ref=None, predecessor=args.bet_id, gate=args.gate,
             cadence=None, target_cac=None, low_cap_screens=None,
+            # A pivot's successor re-derives its own signal grounding (#254) —
+            # neither carries over automatically from the closed bet.
+            signal_tier=None, competitor_sweep=None,
         )
         rc = cmd_create(sub)
         if rc:
@@ -2568,6 +2686,15 @@ def main() -> int:
                          "screens (templates/bet-schema.json low_cap_screens — #275, "
                          "docs/business-factory.md §9.6.5 screens 8-13); absent fields are "
                          "UNRESOLVED findings (report-only), never a silent pass")
+    sp.add_argument("--signal-tier", default=None, choices=SIGNAL_TIERS,
+                    help="how contestable this bet's grounding signal is (chief-wiggum#254): "
+                         "A=private (inbound/network/observation), B=semi-public (paid "
+                         "data/gated communities), C=public (feature boards/reviews/forums — "
+                         "contested by construction; assume a competitor reads it too)")
+    sp.add_argument("--competitor-sweep", default=None, metavar="JSON",
+                    help="create-time competitor sweep file: {date, sources[], "
+                         "competitors[{name,url}], unresolved[]} — required for a Tier-C "
+                         "bet to avoid the not-run-until-name-pick-time failure (#254)")
     sp.add_argument("--predecessor", default=None, help=argparse.SUPPRESS)
 
     sp = sub.add_parser("spend", help="append a spend/time/rep ledger entry")

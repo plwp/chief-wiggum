@@ -35,6 +35,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import divergence  # noqa: E402  (shared quorum classifier — chief-wiggum#253/#254)
+
 WORDLIST = Path("/usr/share/dict/words")
 
 # Modifiers carry TWO tags: a register (how the name sounds) and a convergence risk
@@ -204,33 +208,18 @@ def quorum_classify(by_provider: dict[str, list[str]]) -> tuple[list[dict], list
     is case/whitespace-normalized so "Wanderoo" and "wanderoo " count as the same name.
     Contrast chief-wiggum#254's strategy-option variant, which LABELS convergent
     options rather than discarding them — a name has no value once it collides, but an
-    obvious strategy can still be the right one.
+    obvious strategy can still be the right one. Both share one classifier primitive,
+    ``scripts/divergence.py`` — this function is the name-specific (discard) wrapper.
     """
-    sources: dict[str, list[str]] = {}
-    order: list[str] = []
-    for provider, names in by_provider.items():
-        for raw in names or []:
-            norm = str(raw).strip().lower()
-            if not norm:
-                continue
-            if norm not in sources:
-                sources[norm] = []
-                order.append(norm)
-            if provider not in sources[norm]:
-                sources[norm].append(provider)
-
-    survivors, discarded = [], []
-    for norm in order:
-        provs = sources[norm]
-        if len(provs) >= 2:
-            discarded.append({"name": norm, "sources": sorted(provs)})
-            continue
-        survivors.append({
-            "name": norm, "strategy": "quorum",
-            "seed_words": f"proposed-by:{provs[0]}",
-            "register": "quorum", "converged": False,
-            "sources": provs,
-        })
+    entries = divergence.classify(by_provider)
+    survivors_raw, discarded_raw = divergence.discard_convergent(entries)
+    survivors = [{
+        "name": e["name"], "strategy": "quorum",
+        "seed_words": f"proposed-by:{e['sources'][0]}",
+        "register": "quorum", "converged": False,
+        "sources": e["sources"],
+    } for e in survivors_raw]
+    discarded = [{"name": e["name"], "sources": e["sources"]} for e in discarded_raw]
     return survivors, discarded
 
 

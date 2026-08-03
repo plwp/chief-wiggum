@@ -85,6 +85,41 @@
       "minimum": 0,
       "description": "Current monthly recurring revenue, USD — operator-entered (not derivable in-repo), unlike ongoing_load which is always measured. Feeds the attention kill criterion (chief-wiggum#274, §9.6.3): a live product costing more than ATTENTION_LOAD_THRESHOLD_HOURS/wk while earning less than ATTENTION_REVENUE_THRESHOLD_USD MRR is a kill-or-redesign candidate. Absent → the check is silent for this bet, never guessed."
     },
+    "signal_tier": {
+      "type": "string",
+      "enum": ["A", "B", "C"],
+      "description": "How contestable this bet's grounding signal is (chief-wiggum#254): A = private signal (inbound requests, personal-network problems, direct operator observation, paid discovery conversations — not in any public corpus). B = semi-public (paid datasets, marketplace analytics behind logins, communities requiring standing). C = public (feature-request boards, review streams, forums) — contested by construction; assume a competitor's agent is reading the same page today. A Tier-C bet without a current `competitor_sweep` is a report-only finding (`bet.py create`/`kill-brief`); absent → the check reports `skipped`, never a crash."
+    },
+    "competitor_sweep": {
+      "type": "object",
+      "required": ["date", "sources", "competitors", "unresolved"],
+      "additionalProperties": false,
+      "description": "Create-time competitor sweep (chief-wiggum#254) — run BEFORE a name is picked, not after: the sequencing that missed a real direct-twin collision on the first bet. Stale (>30 days) or absent on a Tier-C bet is a report-only finding, surfaced in `bet.py create` and `kill-brief`.",
+      "properties": {
+        "date": { "type": "string", "description": "ISO date the sweep was run." },
+        "sources": {
+          "type": "array", "items": { "type": "string" },
+          "description": "Where the sweep looked (search engines, marketplace listings, review sites, ...)."
+        },
+        "competitors": {
+          "type": "array",
+          "description": "Direct competitors found, each with a name and (if known) a URL.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "url": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "unresolved": {
+          "type": "array", "items": { "type": "string" },
+          "description": "Anything the sweep could not verify — stated explicitly rather than silently assumed clear."
+        }
+      }
+    },
     "predecessor": {
       "type": ["string", "null"],
       "description": "Bet id this bet succeeded via a pivot, or null."

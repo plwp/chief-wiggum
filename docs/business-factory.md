@@ -625,6 +625,63 @@ pre-registered and tested per §2, never treated as established fact. The unifyi
 AI collapsed the cost of building software, so the *product* moat is gone economy-wide; the
 question each thesis answers is where an agile solo player capitalizes on that collapse.
 
+### 9.0 Signal-source tiering and the convergent-sampling risk (chief-wiggum#254)
+
+A failure deeper than any single screen surfaced on the first real bet: a direct competitor
+twin (same name, same product, same ecosystem, further along) was not bad luck — it is the
+**predicted output of the target-hunting method itself**. Another founder read the same
+public signal (a feature-request thread), reasoned with a model carrying the same priors,
+and reached the same wedge. Shared public input + shared model priors = convergent
+conclusions, deterministically. This puts a hole in the doctrine below: **public-board
+mining is a commodity input with decaying alpha** — any gap a public feature-request board
+reveals to us, it reveals simultaneously to everyone else running an AI-assisted version of
+the same play. A high-vote, years-old, unshipped thread is not a moat; it is a queue.
+
+**Signal-source tiering.** Every opportunity input a bet's thesis rests on is graded by how
+contestable it is:
+
+- **Tier A — private signal.** Inbound requests, personal-network problems, direct operator
+  observation, paid discovery conversations. Not in any public corpus; nobody else's agent is
+  reading it.
+- **Tier B — semi-public signal.** Paid datasets, marketplace analytics behind logins,
+  communities requiring standing/participation to see.
+- **Tier C — public signal.** Feature-request boards, review streams, forums. Cheap, real,
+  and **contested by construction** — assume a competitor is reading the same page today.
+
+A bet grounded solely on Tier C carries an explicit **convergence-risk flag** in its record,
+and the competitor sweep for it (below) must be run at CREATE time, not at name-pick time —
+running it only once a name is already chosen is exactly the sequencing that missed the
+twin on the first real bet.
+
+**Multi-model divergence with intersection-discard for option generation** (mirrors
+chief-wiggum#253's naming mechanism, applied to strategy rather than names — the reusable
+classifier is shared, `scripts/divergence.py`). When generating wedges, positioning, or
+differentiation options via the `consult_ai` quorum, options proposed independently by
+multiple models are the **converged region** — they are the obvious plays, therefore the
+contested ones. Unlike names (#253), an obvious strategy can still be *right*, so convergent
+options are not discarded outright: they are **labelled `convergent`** and require a stated
+reason why the bet wins a race every competitor's model can also see. Divergent,
+single-model options get first-class consideration rather than being averaged away.
+
+**Entropy injection into strategy generation**, purpose identical to #253 (sample the tails,
+not the mode): forced-constraint prompting (generate wedges under a randomly-drawn
+constraint — a specific segment, a specific cost structure, a specific distribution
+channel, an inversion of the obvious buyer), adversarial reframing ("argue the opposite
+thesis"), and analogical seeding from a randomly-drawn historical episode in §9.4's mined
+corpus.
+
+**The competitor sweep is a create-time gate input, not a nice-to-have**: `bet.py create`
+accepts `--competitor-sweep JSON` (`{date, sources[], competitors[{name, url}], unresolved[]}`),
+recorded on the bet as `competitor_sweep`. A bet whose sweep is missing or stale (>30 days)
+is flagged report-only at create and surfaced in the kill brief — never a hard block, since
+contested is often the correct call (§9.4: neglect arbitrage, judo strategy both thrive on
+contested markets). The mandate is only that contestedness is **known and stated at create
+time**, never discovered after the domain is bought.
+
+**Non-goal, stated plainly**: none of the above is a mandate to avoid contested markets.
+The mandate is legibility — a Tier-C-only bet with no competitor sweep is a bet whose
+convergence risk was never looked at, not a bet that was correctly screened out.
+
 ### 9.1 Ecosystem-wedge thesis
 
 **Statement**: build a micro-SaaS filling a gap inside an existing SaaS ecosystem, reach the
@@ -947,6 +1004,9 @@ field the ledger lacked before this ticket.
     contracting day rate for the same hours, not against zero and not against venture
     outcomes. This is the counterfactual the startup corpus never forces, and the ledger
     currently has no field for it.
+14. **Signal-source tier** (chief-wiggum#254, §9.0): what tier is the thesis's grounding
+    signal — private (A), semi-public (B), or public (C)? If Tier C, who else is reading
+    that same public signal right now, and has the create-time competitor sweep run?
 
 **Conflict to resolve, not paper over**: one model's screen says a high-vote public feature
 request means the platform will build it natively — *reject*. §9.3 says exactly the opposite,
