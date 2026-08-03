@@ -31,6 +31,36 @@
       "tool": "claude",
       "model": "claude-opus-4-6",
       "enabled": true
+    },
+    "deepseek": {
+      "type": "tool",
+      "tool": "openrouter",
+      "model": "deepseek/deepseek-v4-pro",
+      "enabled": true
+    },
+    "kimi": {
+      "type": "tool",
+      "tool": "openrouter",
+      "model": "moonshotai/kimi-k3",
+      "enabled": true
+    },
+    "glm": {
+      "type": "tool",
+      "tool": "openrouter",
+      "model": "z-ai/glm-5.2",
+      "enabled": true
+    },
+    "qwen": {
+      "type": "tool",
+      "tool": "openrouter",
+      "model": "qwen/qwen3.7-max",
+      "enabled": true
+    },
+    "minimax": {
+      "type": "tool",
+      "tool": "openrouter",
+      "model": "minimax/minimax-m3",
+      "enabled": true
     }
   },
   "roles": {
@@ -116,6 +146,18 @@
         "opus": "steelman-the-kill",
         "claude-interactive": "is-recycle-better"
       },
+      "optional_timeout_seconds": 300
+    },
+    "divergence": {
+      "required": [
+        "deepseek",
+        "kimi"
+      ],
+      "optional": [
+        "glm",
+        "qwen",
+        "minimax"
+      ],
       "optional_timeout_seconds": 300
     }
   }

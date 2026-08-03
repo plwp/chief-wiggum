@@ -31,6 +31,8 @@ import tempfile
 import threading
 import time
 import tomllib
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +62,7 @@ TOOL_TIMEOUTS: dict[str, int] = {
     "gemini-vertex": 600,
     "claude": 600,
     "claude-interactive": 1800,
+    "openrouter": 300,  # plain HTTP completion, no tool loop — 5 min is generous
 }
 TIMEOUT = 600  # fallback
 
@@ -581,6 +584,93 @@ def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None
         return out, Usage(usage_status="unavailable", resolved_model=model)
 
 
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+def _parse_openrouter_payload(payload: dict, model_override: str | None) -> tuple[str, Usage]:
+    """Extract text + usage from an OpenRouter chat-completion response.
+
+    Reasoning models sometimes put the answer in ``message.reasoning`` and leave
+    ``content`` empty; falling through to reasoning keeps a real answer from being
+    reported as an empty consult. Usage obeys both-tokens-or-null (INV-fh-011).
+    """
+    choices = payload.get("choices") or []
+    message = (choices[0] or {}).get("message", {}) if choices else {}
+    text = (message.get("content") or "").strip() or (message.get("reasoning") or "").strip()
+
+    usage_raw = payload.get("usage") or {}
+    tokens_in = _as_int(usage_raw.get("prompt_tokens"))
+    tokens_out = _as_int(usage_raw.get("completion_tokens"))
+    # OpenRouter reports the model that actually served the request, which may
+    # differ from the requested id (`:floor`/`:nitro` routing, auto-fallback).
+    # The BILLED id is what telemetry must price, so the payload wins (CTR-fh-013).
+    resolved = payload.get("model") or model_override
+    if tokens_in is not None and tokens_out is not None:
+        return text, Usage(tokens_in, tokens_out, resolved, "provider-json")
+    if tokens_in is not None or tokens_out is not None:
+        return text, Usage(None, None, resolved, "partial")
+    return text, Usage(resolved_model=resolved, usage_status="unavailable")
+
+
+def consult_openrouter(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+    """Call a model over the OpenRouter HTTP API.
+
+    This provider exists to widen the quorum's *distribution*, not just its
+    prompting: the frontier non-Western models (DeepSeek, Kimi, GLM, Qwen, MiniMax)
+    are pretrained on materially different corpora, so their priors diverge from
+    the Anthropic/OpenAI/Google cluster by construction rather than by roleplay
+    (which the lens doctrine forbids anyway — config/lenses.json).
+
+    Unlike every other provider here this is an API call, NOT a CLI with tool
+    access: there is no repo, no filesystem, no web. ``cwd`` is accepted for
+    signature parity and deliberately ignored. Prompts must be self-contained.
+
+    The key is fetched from the keyring at call time and passed straight into the
+    request header — never an env var, never logged (CLAUDE.md secret policy).
+    """
+    api_key = get_secret("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY not in keyring — set it with "
+            "`python3 scripts/keychain.py set OPENROUTER_API_KEY`"
+        )
+    if not model:
+        raise ValueError(
+            "openrouter requires an explicit model id (e.g. deepseek/deepseek-v4-pro); "
+            "pass --model or pin one on the provider entry in config/providers.json"
+        )
+
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    request = urllib.request.Request(
+        OPENROUTER_URL, data=body, method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            # OpenRouter attributes traffic by these; harmless if unrecognised.
+            "HTTP-Referer": "https://github.com/plwp/chief-wiggum",
+            "X-Title": "chief-wiggum",
+        },
+    )
+    timeout = TOOL_TIMEOUTS.get("openrouter", TIMEOUT)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:500]
+        raise RuntimeError(f"openrouter HTTP {exc.code} for {model}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"openrouter unreachable for {model}: {exc.reason}") from exc
+
+    # A provider-level failure arrives as HTTP 200 with an `error` object.
+    if payload.get("error") and not payload.get("choices"):
+        message = (payload["error"] or {}).get("message", payload["error"])
+        raise RuntimeError(f"openrouter error for {model}: {message}")
+    return _parse_openrouter_payload(payload, model)
+
+
 def consult_claude_interactive(
     prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
 ) -> tuple[str, Usage]:
@@ -647,6 +737,7 @@ TOOLS = {
     "gemini-vertex": consult_gemini_vertex,
     "claude": consult_claude,
     "claude-interactive": consult_claude_interactive,
+    "openrouter": consult_openrouter,
 }
 
 
@@ -657,6 +748,7 @@ ADAPTER_BY_TOOL = {
     "gemini-vertex": "vertex-sdk",
     "claude": "claude-cli",
     "claude-interactive": "claude-interactive",
+    "openrouter": "openrouter-api",
 }
 
 

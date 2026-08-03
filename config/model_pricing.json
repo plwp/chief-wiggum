@@ -5,7 +5,8 @@
     "anthropic": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-06-04",
     "openai": "developers.openai.com/api/docs/pricing",
     "google": "ai.google.dev/gemini-api/docs/pricing",
-    "zhipu": "docs.z.ai/guides/overview/pricing"
+    "zhipu": "docs.z.ai/guides/overview/pricing",
+    "openrouter": "openrouter.ai/api/v1/models (live API response, fetched 2026-08-03)"
   },
   "models": {
     "claude-fable-5":    {"input_per_mtok": 10.0, "output_per_mtok": 50.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
@@ -39,7 +40,13 @@
     "glm-4.6":       {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
     "glm-4.5":       {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
     "glm-4.7-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
-    "glm-4.5-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"}
+    "glm-4.5-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
+
+    "deepseek/deepseek-v4-pro": {"input_per_mtok": 0.43, "output_per_mtok": 0.87,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
+    "moonshotai/kimi-k3":       {"input_per_mtok": 3.0,  "output_per_mtok": 15.0,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
+    "z-ai/glm-5.2":             {"input_per_mtok": 1.19, "output_per_mtok": 3.74,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03", "note": "OpenRouter's routed rate; the direct-from-Zhipu `glm-5.2` row above is a different price for the same weights"},
+    "qwen/qwen3.7-max":         {"input_per_mtok": 1.48, "output_per_mtok": 4.42,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
+    "minimax/minimax-m3":       {"input_per_mtok": 0.3,  "output_per_mtok": 1.2,   "provider": "openrouter", "verified": true, "as_of": "2026-08-03"}
   },
   "_codex_note": "chief-wiggum#134 investigated the codex->billed-model mapping: there is no fixed 'codex' alias row to price, because `codex exec` bills whichever real gpt-* model is configured (verified live: codex-cli 0.142.5's `--json` event stream carries no model field at all; only the plain-text banner prints `model: <id>`, and $CODEX_HOME/config.toml's top-level `model` key is the CLI's own source of truth for its default, e.g. 'gpt-5.5' on this install -- already a priced row above). scripts/consult_ai.py's codex adapter resolves the real id at call time (--model override, else config.toml) and records THAT as the billed model; a resolved-but-unlisted id still records tokens with cost_usd null (the honest degradation, ADR-fh-05) rather than reviving a bare 'codex' placeholder row, which the ConsultUsageRecord contract now forbids as a resolved model id (CTR-fh-013)."
 }
