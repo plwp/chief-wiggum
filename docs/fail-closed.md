@@ -64,15 +64,15 @@ Status is as of chief-wiggum#289. "Fixed" cites the PR that closed it.
 | `check_single_writer.py` | `--gate soundness\|coverage` | `inapplicable` + banner, exit 0 | **`error`, exit 1** — 0 source files read while invariants are declared; `measured.source_files_scanned` | `--changed-since` git failure → exit 2; nonexistent `--source` → exit 2 | unparseable `state-machines.json`/`invariants.md` → `error` (was: collapsed to `inapplicable`); `unscanned` files named (report-only, #282) | **Fixed** — #289 |
 | `check_unresolved.py` | blocks by default (no `--gate` flag) | `inapplicable` + banner, exit 0 | n/a — every collected file is either read or listed as unparsed | n/a | **`error`, exit 1** — unreadable/unparseable artifacts named; telemetry no longer logs a broken run as `pass` | **Fixed** — #289 |
 | `verify_transitions.py` | `--gate` (errors only) | `inapplicable` + banner, exit 0 | **`error`** — 0 source files scanned while transitions are declared (the Go-only scanner pointed at a non-Go repo); `measured.source_files_scanned` | absent/unloadable model file → `error` (was: warn-and-skip); malformed transition → `ModelLoadError`, not a `KeyError` traceback | unreadable source files named | **Fixed** — #289. `--gate` blocks on `error` only; honest missing/undocumented transitions stay report-only, so no caller newly blocks. |
-| `check_gate_validation.py` | `--gate` | absent record → `passing: false`, exit 1 | n/a | **`_live_scanner_version` returns `None` when the gate script is absent, raises, or exits non-zero — the staleness check then silently does not run.** Byte-identical to a clean pass, and locked in by a test | `jsonschema` unimportable → `_schema_errors` returns `[]`; a corrupt record is misreported as "no record found" | **Partly sound.** Staleness itself IS caught and blocks (see below); the *probe* for it fails open. **Open** |
-| `check_architecture.py` | `--gate` | **model file absent → `ok: true`, exit 0 even under `--gate`** (deliberate, `test_cli_absent_model_exits_zero_even_under_gate`) | 1 node / 0 edges: six of eight checks measure nothing, `ok: true` | `--system-contracts` unloadable → a `not_checked` entry, `ok` untouched, exit 0 | n/a | **Open** |
-| `check_patterns.py` | blocks by default | missing/unparseable registry → exit 1 (loud) | **an empty-but-valid registry (`{}`) prints "registry OK" and exits 0**; never walks `patterns/`, so a manifest dir absent from the registry is invisible | n/a | top-level JSON array → `AttributeError` traceback | **Open** (lint-tier risk) |
+| `check_gate_validation.py` | `--gate` | absent record → `passing: false`, exit 1 | n/a | `_live_scanner_version` now returns `(version, probe_error)`: script genuinely absent → `(None, None)`, still a silent non-blocking skip (honest absence — nothing to probe, unchanged); script PRESENT but `subprocess.run` raises, times out, or exits non-zero → `(None, probe_error)`, surfaced as a loud `provenance_errors` entry (`passing: false`, exit 1 under `--gate`) instead of silently skipping the comparison. Classifies as `failure_kind() == "invalid"`, never `"stale"` (a broken probe is worse than "verified one version behind"). `--scripts-dir` added so a TARGET repo's own gate scripts can be pointed at and staleness-checked (previously always resolved to chief-wiggum's own `scripts/`, so a target's gates were silently never found) | `jsonschema` unimportable → `_schema_errors` returns `[]`; a corrupt record is misreported as "no record found" | **Fixed** — #289. Staleness itself was already caught and blocks; the *probe* for it no longer fails open. |
+| `check_architecture.py` | `--gate` | model file absent → `applicability: "inapplicable"`, exit 0 in REPORT-ONLY mode; **exit 1 under `--gate`** (was: exit 0 even under `--gate`, per `test_cli_absent_model_exits_zero_even_under_gate` — INTENTIONALLY reversed, see `test_cli_absent_model_exits_one_under_gate`) | 1 node / 0 edges: six of eight checks measure nothing, `ok: true` — `measured.nodes`/`measured.edges` make the denominator visible even when green (unchanged: a small-but-real model legitimately has few violations to find) | `--system-contracts` GIVEN but unloadable → `applicability: "error"`, a visible finding, `ok: false`, exit 1 under `--gate` (was: a silent `not_checked` entry, `ok` untouched, exit 0); simply not given stays honest-absence `not_checked` | n/a | **Fixed** — #289 |
+| `check_patterns.py` | blocks by default | `inapplicable` + banner, exit 0 (an empty registry with zero manifest-bearing `patterns/` dirs) | an ERROR **finding**, exit 1 — a registry<->`patterns/` bijection: any direct child of `patterns/` carrying its own `manifest.json` must be listed in `patterns[]` or `candidates[]`; `measured.pattern_dirs_scanned` (the scan itself did not fail — a real, present manifest was found unregistered, `applicability: applicable`) | n/a | top-level JSON array → `applicability: error`, structured finding, exit 1 (was: uncaught `AttributeError`) | **Fixed** — #289 |
 | `ux_gate.py` | blocks by default | non-frontend ticket → `inapplicable`, exit 0 | **`error`, exit 1** — a named `--ui-spec` that is not there on a FRONTEND ticket, or a `--design-dir` that is not a directory while the ui-spec declares a design contract. Scoped to frontend tickets deliberately: `/implement` passes both flags unconditionally and a backend-only epic legitimately has neither | absent `--changed-files` → exit 2 (was an uncaught traceback that, under `/implement`'s `>` redirect, left an EMPTY manifest reading as "nothing to do") | malformed ui-spec → exit 1 | **Fixed** — #289. `--have-playwright`/`--have-browser-use` remain operator-asserted booleans, never probed — a known limitation, not a fail-open of the scan itself |
-| `saas_gate.py` | `--gate` | empty/nonexistent `--repo` → 5 SKIPPED, 0 PASS, `ok: true`, exit 0 | `--repo` is never validated; `stack` is decorative — no check depends on it | **network failure → the whole header/CSRF battery becomes one `SKIPPED`, and `SKIPPED` can never fail the gate**; only the health check turns unreachability into `FAIL` | typo'd `--log-sample` → "no log sample provided" | **Open** |
-| `ci_scaffold.py` | `--gate` | absence IS the finding: `ci_present: false`, exit 1 (correct) | **`detect_ci` is a filename test — `touch .github/workflows/ci.yml` defeats the gate**; a 0-byte or non-YAML workflow reports `ci_present: true` | n/a | n/a | **Open** |
-| `quality_slop_gate.py` | `--gate` | **a repo with zero source files reports "0.0% duplication (beats the pre-AI human baseline)" — the healthiest band available** | same mechanism for a wrong ignore glob or an unparsed language | **an engine crash is rendered as "skipped"**: `duplication.py` builds `status: "crashed"`, the gate branches only on the legacy `"skipped"` key. `survival.py` never checks `returncode` and never clears a stale `survival.json`, so a crashed rerun parses the previous run's numbers as fresh | `except … return None` (report-only by design) | **Open** |
+| `saas_gate.py` | `--gate` | empty/nonexistent `--repo` → 5 SKIPPED, 0 PASS, `ok: true`, exit 0 | `--repo` is never validated; `stack` is decorative — no check depends on it | **network failure → the whole header/CSRF battery becomes one `SKIPPED`, and `SKIPPED` can never fail the gate**; only the health check turns unreachability into `FAIL` | typo'd `--log-sample` → "no log sample provided" | **Fixed (#310)** |
+| `ci_scaffold.py` | `--gate` | absence IS the finding: `ci_present: false`, exit 1 (correct) | **`detect_ci` is a filename test — `touch .github/workflows/ci.yml` defeats the gate**; a 0-byte or non-YAML workflow reports `ci_present: true` | n/a | n/a | **Fixed (#310)** |
+| `quality_slop_gate.py` | `--gate` | **a repo with zero source files reports "0.0% duplication (beats the pre-AI human baseline)" — the healthiest band available** | same mechanism for a wrong ignore glob or an unparsed language | **an engine crash is rendered as "skipped"**: `duplication.py` builds `status: "crashed"`, the gate branches only on the legacy `"skipped"` key. `survival.py` never checks `returncode` and never clears a stale `survival.json`, so a crashed rerun parses the previous run's numbers as fresh | `except … return None` (report-only by design) | **Fixed (#310)** |
 | `run_verification.py` | no `--gate`; `ok` drives exit | zero steps detected → `ok: false`, exit 1 (fail-closed) | n/a | runner exception → `ok: false`, exit 1 (fail-closed) | n/a | **Sound**, with one caveat: exit 1 is identical to "tests failed", `--repo` existence is unvalidated, and `--dry-run` always returns 0 |
-| `code_query.py` | not a gate (locator) | `unscanned` envelope distinguishes a missing path from a genuinely-clean one | the distinction is a **summary string prefix**, not a machine field — both return `facts: []`, exit 0 | n/a | `governing_facts_for_file` reads text unguarded: a non-UTF-8 file is an uncaught `UnicodeDecodeError`, not an `unscanned` envelope (#282's fix was never applied here). `_locate_definitions` drops unreadable epic docs with no warning | **Open** (advisory tier) |
+| `code_query.py` | not a gate (locator) | `unscanned` envelope, `applicability: "inapplicable"` — a machine field, not just a summary-string prefix | `applicability: "error"` — a queried path/handle exists but couldn't be decoded; `governing_facts_for_file`/`cmd_show` now read through `chief_wiggum.textio.read_text_safe` (#282) instead of an unguarded `read_text()` that crashed with an uncaught `UnicodeDecodeError` | n/a | `_locate_definitions` still drops unreadable epic docs with no warning (matches `check_traceability.py`'s own `extract_defined_ids`/`scan_epic_annotations` epic-doc-read convention — out of scope here) | **Fixed** — #289 |
 
 ## The stale-validation-record question (#289's own comment)
 
@@ -91,47 +91,58 @@ Half of this is already sound, and the sound half should not be churned:
   `demotion_reason: "stale"`, a `factory_log` demotion event, and a stderr
   `DEMOTION` banner.
 
-Two gaps remain, both real:
+One gap remains open; the other is fixed:
 
-1. **The staleness probe itself fails open.** `_live_scanner_version` returns
-   `None` — skipping the comparison entirely — when the gate script is absent,
-   when `subprocess.run` raises, **and when the probe exits non-zero**. That is
-   byte-identical to a clean pass, and `test_gate_without_scanner_version_support_skips_the_check`
-   asserts it. There is also no `--scripts-dir` flag, so for a *target repo's*
-   own gate scripts the live version is never found and staleness is silently
-   unchecked. This is the same defect class one level up: the instrument that
-   detects broken instruments is itself fail-open.
+1. **The staleness probe itself fails open. FIXED — #289.** `_live_scanner_version`
+   now returns `(version, probe_error)` rather than a bare `None`: the script
+   genuinely absent from `scripts_dir` still returns `(None, None)` — honest
+   absence, nothing to probe, a silent non-blocking skip (unchanged, and
+   correctly so: matches the `inapplicable`-never-blocks posture every other
+   gate in this table follows). A script that IS present but whose
+   `--scanner-version` invocation raises, times out, or exits non-zero now
+   returns `(None, probe_error)`, which `check()` turns into a loud
+   `provenance_errors` entry — `passing: false`, exit 1 under `--gate` — instead
+   of silently skipping the comparison. It classifies as `failure_kind() ==
+   "invalid"`, never `"stale"` (not knowing whether the record is current is
+   worse than knowing it's one version behind). A new `--scripts-dir` flag lets
+   a caller point the probe at a *target repo's own* gate scripts — previously
+   the probe always resolved to chief-wiggum's own `scripts/`, so a target's
+   gates were silently never found and their staleness never checked at all.
+   `test_gate_without_scanner_version_support_skips_the_check` was renamed
+   `test_gate_script_genuinely_absent_skips_the_check` and its docstring
+   narrowed to the one scenario that is genuinely still a skip; two new tests
+   (`test_probe_subprocess_raising_is_a_provenance_error`,
+   `test_probe_nonzero_exit_is_a_provenance_error`) cover the fixed cases.
 2. **The consumer converts a blocking exit into a silent skip.** `/close-epic`
    Step 2c2's contract is: if `check_gate_validation --gate` exits non-zero,
    *drop the corresponding blocking flag and report a finding instead*. That is
    a deliberate design (a gate without a valid record has no authority to
    block), but it means a stale record's practical effect is that the gate
    stops gating, and nothing goes red unless the agent writes the prose finding.
-
-Both are enumerated as remaining work below rather than changed here: the fix
-for (2) is a policy decision about `/close-epic`'s posture, not a bug fix.
+   Still open — this is a policy decision about `/close-epic`'s posture, not a
+   bug fix, and is not changed here.
 
 ## Remaining work
 
 Tracked under chief-wiggum#289 until each is closed. Ordered by severity of
 the fail-open, worst first:
 
-- [ ] `quality_slop_gate.py` — branch on `status: "crashed"` (not the legacy
+- [x] `quality_slop_gate.py` (PR #310) — branch on `status: "crashed"` (not the legacy
       `"skipped"` key); check `returncode` and clear stale `survival.json`
       in `survival.py`; a zero-source corpus must be `inapplicable`/`error`,
       never the best band.
-- [ ] `saas_gate.py` — validate `--repo`; a `SKIPPED` caused by an unreachable
+- [x] `saas_gate.py` (PR #310) — validate `--repo`; a `SKIPPED` caused by an unreachable
       target must be `error`, not silence; report a measured denominator.
-- [ ] `ci_scaffold.py` — parse the workflow, do not just stat its filename.
-- [ ] `check_architecture.py` — an absent model under `--gate`, and an
-      unloadable `--system-contracts`, must not exit 0.
-- [ ] `check_gate_validation.py` — a `--scanner-version` probe that fails must
+- [x] `ci_scaffold.py` (PR #310) — parse the workflow, do not just stat its filename.
+- [x] `check_architecture.py` — an absent model under `--gate`, and an
+      unloadable `--system-contracts`, must not exit 0. **Done — #289.**
+- [x] `check_gate_validation.py` — a `--scanner-version` probe that fails must
       be `error`, not a skipped check; add `--scripts-dir` so target-repo gates
-      are checkable.
-- [ ] `check_patterns.py` — an empty registry is not "OK"; add a
-      registry ↔ `patterns/` bijection check.
-- [ ] `code_query.py` — route file reads through `read_text_safe`; make
-      `unscanned` a machine field, not a summary-string prefix.
+      are checkable. **Done — #289.**
+- [x] `check_patterns.py` — an empty registry is not "OK"; add a
+      registry ↔ `patterns/` bijection check. **Done — #289.**
+- [x] `code_query.py` — route file reads through `read_text_safe`; make
+      `unscanned` a machine field, not a summary-string prefix. **Done — #289.**
 - [ ] Per-gate `instrument-broken` seeded trials in each gate's
       `validation/<gate>.json` once the class becomes mandatory
       (see [gate-validation.md](gate-validation.md)).

@@ -141,6 +141,78 @@ def test_absent_system_contracts_is_not_checked_never_passed():
     assert "not_checked" not in [f.check for f in report.findings]
 
 
+# --- #289: fail-closed — applicability/outcome/measured, and an unloadable
+# --system-contracts must be a loud finding, never a silent not_checked ------
+
+
+def test_unloadable_system_contracts_is_an_error_finding_not_silent_not_checked():
+    """--system-contracts was explicitly GIVEN but could not be read/parsed —
+    a broken instrument, not honest absence (the caller asked for a
+    cross-artifact check and the artifact couldn't be read). Before #289 this
+    degraded to a `not_checked` note with `ok` left untouched (True); it must
+    now be a visible finding (`ok` False) with `applicability: "error"`."""
+    arch = _load(EXAMPLE_ARCH)
+    report = ca.check_static(
+        arch,
+        system_contracts=None,
+        system_contracts_path="system-contracts.json",
+        system_contracts_error="invalid JSON in system-contracts.json: bad token",
+    )
+    assert not report.ok
+    assert report.applicability == "error"
+    assert report.outcome == "error"
+    assert len(report.not_checked) == 1  # still narrated, but no longer the ONLY signal
+    assert any("could not be loaded" in f.message for f in report.findings)
+
+
+def test_absent_system_contracts_stays_applicable_and_pass():
+    """Genuinely NOT GIVEN (no --system-contracts at all) is honest absence —
+    distinct from the unloadable case above — and must not be conflated with
+    a broken instrument."""
+    arch = _load(EXAMPLE_ARCH)
+    report = ca.check_static(arch)
+    assert report.applicability == "applicable"
+    assert report.outcome == "pass"
+
+
+def test_applicability_and_outcome_on_clean_model():
+    doc = _load(EXAMPLE_ARCH)
+    report = ca.check_static(doc)
+    assert report.applicability == "applicable"
+    assert report.outcome == "pass"
+    assert report.measured["nodes"] > 0
+    assert report.measured["edges"] > 0
+
+
+def test_applicability_is_error_when_the_named_model_is_absent():
+    """The architecture model is a REQUIRED positional argument, so a path
+    that does not exist is a broken INVOCATION — the caller believes the model
+    is being gated and it is not — rather than an empty subject.
+
+    Classifying it `error` keeps the #289 vocabulary consistent across gates:
+    `inapplicable` exits 0 under --gate everywhere, `error` exits 1. Reporting
+    `inapplicable` here while exiting 1 (as the first cut of this fix did)
+    would make the same word mean different things in different gates, which
+    defeats the point of standardising it.
+    """
+    report = ca.ArchitectureReport(model_present=False)
+    assert report.applicability == "error"
+    assert report.outcome == "error"
+
+
+def test_cli_unloadable_system_contracts_is_finding_and_gate_blocks(tmp_path):
+    p = tmp_path / "architecture.json"
+    p.write_text(json.dumps(_load(EXAMPLE_ARCH)))
+    bad_sc = tmp_path / "system-contracts.json"
+    bad_sc.write_text("{not valid json")
+
+    rc = ca.main([str(p), "--system-contracts", str(bad_sc)])
+    assert rc == 0  # report-only: still exits 0 with the finding printed
+
+    rc_gate = ca.main([str(p), "--system-contracts", str(bad_sc), "--gate"])
+    assert rc_gate == 1  # #289: no longer silently ok:true under --gate
+
+
 # --- one seeded violation per CHECKS entry ------------------------------------
 
 
@@ -540,9 +612,17 @@ def test_cli_absent_model_exits_zero_and_reports_not_checked_never_passed(tmp_pa
     assert ca.AUTHORITY in out
 
 
-def test_cli_absent_model_exits_zero_even_under_gate(tmp_path):
+def test_cli_absent_model_exits_one_under_gate(tmp_path):
+    """#289: this INTENTIONALLY reverses the prior locked-in behaviour (was
+    `test_cli_absent_model_exits_zero_even_under_gate`, asserting `rc == 0`).
+    A missing model silently rendering as a pass under the caller's own
+    explicit --gate request is exactly the fail-open shape #289 exists to
+    close — `--gate` now means what it says even for a model that was never
+    authored. Report-only mode (no --gate) is UNCHANGED: absent model still
+    exits 0 there (see test_cli_absent_model_exits_zero_and_reports_not_checked_never_passed),
+    so `/architect`'s incremental-adoption story for report-only runs holds."""
     rc = ca.main([str(tmp_path / "does-not-exist.json"), "--gate"])
-    assert rc == 0
+    assert rc == 1
 
 
 def test_cli_malformed_json_is_a_finding_never_a_usage_error(tmp_path, capsys):

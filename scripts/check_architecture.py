@@ -38,10 +38,15 @@ into blocking (exit ``1`` on findings); ``2`` is reserved for genuine USAGE
 errors (bad flags/paths) — a malformed/unparseable ``architecture.json``, or
 any other consistency-rule violation, is a FINDING (exit 0 report-only / 1
 under ``--gate``), never a usage error. Absent ``architecture.json`` exits 0
-with a distinct "no architecture model found" note — "not checked" is never
-conflated with "passed", so ``/architect`` can adopt this incrementally.
-Absent optional cross-artifacts (``--system-contracts``) degrade the same way:
-reported ``not_checked``, never silently "passed".
+in REPORT-ONLY mode with a distinct "no architecture model found" note —
+"not checked" is never conflated with "passed", so ``/architect`` can adopt
+this incrementally — but **exits 1 under ``--gate``** (#289): a caller that
+explicitly asked to block on findings must not see a missing model render as
+a silent pass. A cross-artifact ``--system-contracts`` that is simply not
+given degrades to ``not_checked`` (honest absence, never "passed"); one that
+IS given but cannot be read/parsed is instead a visible FINDING —
+``applicability: "error"`` — never a silent ``not_checked`` with ``ok: true``
+(#289).
 
 ``--scanner-version`` prints a hash-derived version
 (``chief_wiggum.hashing.scanner_version``) covering this module and every
@@ -166,12 +171,47 @@ class ArchitectureReport:
     waivers: list[Waiver] = field(default_factory=list)
     not_checked: list[NotChecked] = field(default_factory=list)
     derived_labels: list[DerivedLabel] = field(default_factory=list)
+    # #289: set when `--system-contracts` was explicitly GIVEN but could not
+    # be read/parsed — distinct from genuinely not being given at all (which
+    # stays in `not_checked` only, honest absence).
+    system_contracts_error: str | None = None
 
     @property
     def ok(self) -> bool:
         """Gateable status: no findings. Waivers, not_checked notes, and
         derived-label bookkeeping never affect this."""
         return not self.findings
+
+    @property
+    def applicability(self) -> str:
+        """The standard three-state gate vocabulary (#289,
+        `check_traceability.py`'s idiom): `applicable` / `inapplicable` /
+        `error`.
+
+        The line is drawn on whether the caller ASKED for the artifact, not
+        merely on whether it exists. `--system-contracts` given but unreadable
+        is `error`; not supplied at all is honest absence. The architecture
+        model is a REQUIRED positional argument, so naming a path that does
+        not exist is a broken invocation — the caller believes the model is
+        being gated and it is not — hence `error`, not `inapplicable`.
+
+        This matters for consistency, which is the whole point of the #289
+        vocabulary: `inapplicable` exits 0 under `--gate` in every gate, and
+        `error` exits 1. Reporting `inapplicable` here while exiting 1 would
+        make the same word mean different things in different gates."""
+        if not self.model_present:
+            return "error"
+        if self.system_contracts_error is not None:
+            return "error"
+        return "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error. Derived, never stored."""
+        if self.applicability in ("inapplicable", "error"):
+            return self.applicability
+        return "findings" if self.findings else "pass"
 
     @property
     def authority(self) -> str:
@@ -190,12 +230,26 @@ class ArchitectureReport:
             "waivers": len(self.waivers),
         }
 
+    @property
+    def measured(self) -> dict:
+        """The measured denominator (#289): what was actually looked at,
+        printed on every run so a zero/empty model isn't invisible even when
+        the report is green."""
+        return {
+            "nodes": self.nodes,
+            "edges": self.edges,
+            "system_contracts_error": self.system_contracts_error,
+        }
+
     def to_dict(self) -> dict:
         return {
             "model_present": self.model_present,
             "authority": self.authority,
             "ok": self.ok,
+            "applicability": self.applicability,
+            "outcome": self.outcome,
             "counts": self.counts,
+            "measured": self.measured,
             "findings": [f.to_dict() for f in self.findings],
             "waivers": [w.to_dict() for w in self.waivers],
             "not_checked": [n.to_dict() for n in self.not_checked],
@@ -665,12 +719,32 @@ def check_static(
 
     if system_contracts is not None:
         _check_cross_artifact(nodes, edges, system_contracts, report)
+    elif system_contracts_error is not None:
+        # #289: --system-contracts was explicitly GIVEN but could not be
+        # read/parsed — a broken instrument, not honest absence. Degrading
+        # this to a `not_checked` note with `ok` left untouched (True) is
+        # exactly the "inputs exist, scanner saw none" fail-open shape this
+        # ticket exists to close: the cross-artifact check silently never ran
+        # while the report still read clean.
+        report.system_contracts_error = system_contracts_error
+        report.findings.append(
+            Finding(
+                "schema",
+                system_contracts_path or "system-contracts.json",
+                f"--system-contracts could not be loaded: {system_contracts_error}",
+            )
+        )
+        report.not_checked.append(
+            NotChecked(
+                artifact=system_contracts_path or "system-contracts.json",
+                reason=system_contracts_error,
+            )
+        )
     else:
         report.not_checked.append(
             NotChecked(
                 artifact=system_contracts_path or "system-contracts.json",
-                reason=system_contracts_error
-                or "no --system-contracts given — cross-artifact consistency not checked "
+                reason="no --system-contracts given — cross-artifact consistency not checked "
                 "(never reported as passed)",
             )
         )
@@ -795,7 +869,16 @@ def main(argv: list[str] | None = None) -> int:
         report = ArchitectureReport(model_present=False)
         _print(report, args.format, note="no architecture model found")
         _emit(report)
-        return 0
+        # #289: under --gate, an absent model must not silently render as a
+        # pass — that is the exact fail-open `test_cli_absent_model_exits_
+        # zero_even_under_gate` used to lock in (now
+        # `test_cli_absent_model_exits_one_under_gate`, INTENTIONALLY
+        # reversed). The report classifies this as `error` (not
+        # `inapplicable`) so the exit code matches the standard rule every
+        # other gate follows: error => 1 under --gate, inapplicable => 0
+        # always. Report-only mode is unchanged: absent model still exits 0
+        # there, preserving /architect's incremental-adoption story.
+        return 1 if args.gate else 0
 
     try:
         schema = load_schema(Path(args.schema))

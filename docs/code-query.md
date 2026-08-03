@@ -79,7 +79,8 @@ Every verb returns exactly:
   "omitted": 0,
   "cursor": null,
   "warnings": [],
-  "provenance": { "repo": "...", "epics": ["..."], "scanner_version": "..." }
+  "provenance": { "repo": "...", "epics": ["..."], "scanner_version": "..." },
+  "applicability": "applicable"
 }
 ```
 
@@ -91,16 +92,33 @@ Every verb returns exactly:
 - **Per-fact `provenance`** (`blob_sha`, `dirty`, `from_cache: false` — phase 1
   never caches) is the fact's own lineage; the envelope's top-level
   `provenance` is query-level (repo root, epics scanned, scanner version).
+- **`applicability`** (#289) is the standard three-state machine field —
+  `check_traceability.py`'s idiom, not a second vocabulary: `applicable` (the
+  normal case, whether facts were found or not), `inapplicable` (honest
+  absence — the queried path/handle doesn't exist), or `error` (the
+  path/handle exists but the scan couldn't read/decode it — a broken
+  instrument, never rendered as a pass). A consumer checks this field, not the
+  `summary` string, to tell "unscanned" apart from a genuinely clean answer.
 
 ## Never serve unknown as empty
 
 A query against a path that genuinely can't be read (doesn't exist under the
-repo root) reports **`unscanned`** — an explicit `summary`/`warnings` marker —
-never the same `facts: []` a file that WAS scanned and genuinely has nothing
-governing it gets. Absence of knowledge and proof of absence are different
-answers. ID-shaped lookups (an invariant, a state, a contract) that aren't
-declared anywhere are always a genuine empty (there's no file-read to fail —
-it's a pure data lookup), with a `warnings` entry explaining why.
+repo root) reports **`unscanned`** — an explicit `summary`/`warnings` marker,
+backed by the machine `applicability` field (`inapplicable` for a missing
+path, `error` for one that exists but couldn't be decoded) — never the same
+`facts: []` a file that WAS scanned and genuinely has nothing governing it
+gets. Absence of knowledge and proof of absence are different answers.
+ID-shaped lookups (an invariant, a state, a contract) that aren't declared
+anywhere are always a genuine empty (there's no file-read to fail — it's a
+pure data lookup), with a `warnings` entry explaining why.
+
+Reads of arbitrary repo source (`orient`/`governs`/`show`'s file-content
+lookups) go through `chief_wiggum.textio.read_text_safe` (#282), the same
+decode-defensive reader `check_traceability.py`/`check_single_writer.py` use
+for their bulk scans — a non-UTF-8/UTF-16 file is BOM-sniffed and decoded
+rather than crashing the whole query with an uncaught `UnicodeDecodeError`;
+only a genuinely undecodable blob reports `unscanned` (`applicability:
+"error"`).
 
 ## Artifact-derived binding (`orient` binds by artifact, not only annotation)
 

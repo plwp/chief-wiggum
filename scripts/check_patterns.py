@@ -66,6 +66,55 @@ class Finding:
         return f"  [{tag}] {self.where}: {self.message}"
 
 
+@dataclass
+class PatternsReport:
+    """Findings PLUS what was actually measured (#289) — the same discipline
+    as ``check_traceability.py``/``check_unresolved.py``: a registry that
+    validates because it declares nothing must not look identical to one
+    that validates because it genuinely holds.
+
+    ``registry_readable`` is ``False`` only when ``registry.json`` itself
+    could not be read/parsed, OR parsed to something other than a JSON
+    object (the exact "top-level JSON array -> AttributeError" crash this
+    ticket closes) — a BROKEN INSTRUMENT, never a pass.
+    """
+
+    findings: list[Finding]
+    registry_readable: bool = True
+    specified_count: int = 0
+    candidate_count: int = 0
+    pattern_dirs_scanned: int = 0
+
+    @property
+    def applicability(self) -> str:
+        """The standard three-state gate vocabulary (#289): `applicable` /
+        `inapplicable` / `error`. `inapplicable` is honest absence — an empty
+        registry with zero manifest-bearing directories under `patterns/`,
+        i.e. nothing at all to validate. `error` is the registry itself being
+        unreadable/malformed — the instrument never got to look at anything."""
+        if not self.registry_readable:
+            return "error"
+        if self.specified_count == 0 and self.candidate_count == 0 and self.pattern_dirs_scanned == 0:
+            return "inapplicable"
+        return "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error. Derived, never stored."""
+        if self.applicability in ("error", "inapplicable"):
+            return self.applicability
+        return "findings" if self.findings else "pass"
+
+    @property
+    def measured(self) -> dict:
+        return {
+            "specified_patterns": self.specified_count,
+            "candidate_patterns": self.candidate_count,
+            "pattern_dirs_scanned": self.pattern_dirs_scanned,
+        }
+
+
 def _load_json(path: Path, where: str, findings: list[Finding]):
     """Return parsed JSON or None (appending an error finding on failure)."""
     try:
@@ -128,14 +177,34 @@ def _refs(value) -> list[str]:
 
 
 def validate(registry_path: Path = REGISTRY) -> list[Finding]:
+    """Backward-compatible entry point: just the findings list. Callers that
+    need to know whether the run actually MEASURED anything (#289) use
+    ``validate_report``."""
+    return validate_report(registry_path).findings
+
+
+def validate_report(registry_path: Path = REGISTRY) -> PatternsReport:
     findings: list[Finding] = []
     reg = _load_json(registry_path, "registry.json", findings)
     if reg is None:
-        return findings
+        # _load_json already appended the ERROR finding (missing file /
+        # invalid JSON) — the registry was never readable.
+        return PatternsReport(findings=findings, registry_readable=False)
+    if not isinstance(reg, dict):
+        # #289: registry.json parsed fine but isn't a JSON OBJECT (e.g. a
+        # top-level array) — `reg.get(...)` below would raise a bare
+        # AttributeError. That crash is a worse failure mode than silence:
+        # convert it into a loud, structured `error` finding instead.
+        findings.append(Finding(
+            ERROR, "registry.json",
+            f"must be a JSON object with `patterns`/`candidates` keys, got {type(reg).__name__}",
+        ))
+        return PatternsReport(findings=findings, registry_readable=False)
     # Resolve spec/manifest paths relative to the registry's repo root
     # (patterns/registry.json -> repo root), so the linter is testable on a
     # fixture registry, not just the real one.
     base = registry_path.resolve().parent.parent
+    patterns_dir = registry_path.resolve().parent
 
     specified = reg.get("patterns", [])
     candidates = reg.get("candidates", [])
@@ -207,7 +276,36 @@ def validate(registry_path: Path = REGISTRY) -> list[Finding]:
                 WARN, f"candidates/{cid}",
                 "candidate has no `success_metrics.metrics` yet (required at promotion to specified)"))
 
-    return findings
+    # #289: registry <-> patterns/ bijection. Scoped to DIRECT children of
+    # `patterns/` that carry their OWN `manifest.json` — this naturally
+    # excludes non-pattern directories that legitimately live alongside the
+    # registry (a reference-data directory with no manifest.json, or a
+    # nested stack-profile registry whose own manifests sit two levels down
+    # and are governed by a DIFFERENT registry.json) without special-casing
+    # either by name. Before this, an empty-but-"valid" registry ({}) walked
+    # NONE of `patterns/` and printed "registry OK" even with real,
+    # unregistered manifest directories sitting right next to it.
+    pattern_dirs_scanned = 0
+    if patterns_dir.is_dir():
+        for child in sorted(patterns_dir.iterdir()):
+            if not child.is_dir() or not (child / "manifest.json").is_file():
+                continue
+            pattern_dirs_scanned += 1
+            if child.name not in known_ids:
+                findings.append(Finding(
+                    ERROR, f"patterns/{child.name}",
+                    "directory has a manifest.json but is not listed in registry.json "
+                    "(neither `patterns[]` nor `candidates[]`) — "
+                    "registry<->patterns/ bijection violated",
+                ))
+
+    return PatternsReport(
+        findings=findings,
+        registry_readable=True,
+        specified_count=len(specified),
+        candidate_count=len(candidates),
+        pattern_dirs_scanned=pattern_dirs_scanned,
+    )
 
 
 def main() -> int:
@@ -216,7 +314,8 @@ def main() -> int:
     parser.add_argument("--registry", type=Path, default=REGISTRY, help="registry.json path (for testing)")
     args = parser.parse_args()
 
-    findings = validate(args.registry)
+    report = validate_report(args.registry)
+    findings = report.findings
     errors = [f for f in findings if f.severity == ERROR]
     warns = [f for f in findings if f.severity == WARN]
 
@@ -228,9 +327,31 @@ def main() -> int:
         pass
 
     if args.format == "json":
-        print(json.dumps([f.__dict__ for f in findings], indent=2))
+        print(json.dumps({
+            "findings": [f.__dict__ for f in findings],
+            # #289: the outcome and its denominator travel with the
+            # findings, so a zero count is never ambiguous about WHY it is
+            # zero (a genuinely clean registry vs. one that measured nothing).
+            "applicability": report.applicability,
+            "outcome": report.outcome,
+            "measured": report.measured,
+        }, indent=2))
     else:
-        if not findings:
+        c = report.measured
+        print(
+            f"Measured: {c['specified_patterns']} specified, {c['candidate_patterns']} "
+            f"candidate pattern(s), {c['pattern_dirs_scanned']} manifest dir(s) scanned "
+            f"under patterns/"
+        )
+        if report.applicability == "error":
+            print("check_patterns: ERROR — registry.json could not be read as a valid "
+                  "JSON object; nothing was checked (not a real pass)\n")
+            for f in findings:
+                print(f)
+        elif report.applicability == "inapplicable":
+            print("check_patterns: INAPPLICABLE — no registry entries and no pattern "
+                  "manifest directories found; nothing to check (not a real pass)")
+        elif not findings:
             print("check_patterns: registry OK — invariant-cluster model holds.")
         else:
             print(f"check_patterns: {len(errors)} error(s), {len(warns)} warning(s)")
