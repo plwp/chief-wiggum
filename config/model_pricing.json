@@ -11,6 +11,7 @@
   "models": {
     "claude-fable-5":    {"input_per_mtok": 10.0, "output_per_mtok": 50.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
     "claude-mythos-5":   {"input_per_mtok": 10.0, "output_per_mtok": 50.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
+    "claude-opus-5":     {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-08-03", "note": "same rate as Opus 4.8; Claude Opus 5 is a drop-in upgrade at Opus 4.8 pricing. Fast mode (speed=fast) bills 10.0/50.0 instead -- not modelled here, since factory telemetry has no fast-mode signal to key on"},
     "claude-opus-4-8":   {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
     "claude-opus-4-7":   {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
     "claude-opus-4-6":   {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
@@ -47,6 +48,14 @@
     "z-ai/glm-5.2":             {"input_per_mtok": 1.19, "output_per_mtok": 3.74,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03", "note": "OpenRouter's routed rate; the direct-from-Zhipu `glm-5.2` row above is a different price for the same weights"},
     "qwen/qwen3.7-max":         {"input_per_mtok": 1.48, "output_per_mtok": 4.42,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
     "minimax/minimax-m3":       {"input_per_mtok": 0.3,  "output_per_mtok": 1.2,   "provider": "openrouter", "verified": true, "as_of": "2026-08-03"}
+  },
+  "cache_multipliers": {
+    "$comment": "Multipliers applied to a model's INPUT rate for prompt-cached tokens (Anthropic prompt-caching pricing, claude-api skill reference, cached 2026-08-03). A cache READ costs ~0.1x the base input rate; a cache WRITE costs 1.25x at the default 5-minute TTL and 2x at the 1-hour TTL. factory_log.cost_for_usage applies these when a usage record carries cache token counts (Claude Code transcripts do; consult providers mostly do not). Vendor-published multipliers, not estimates -- but they are Anthropic's; a non-Anthropic model with cache counts would need its own row before these are applied to it.",
+    "cache_read": 0.1,
+    "cache_write_5m": 1.25,
+    "cache_write_1h": 2.0,
+    "as_of": "2026-08-03",
+    "applies_to_provider": "anthropic"
   },
   "_codex_note": "chief-wiggum#134 investigated the codex->billed-model mapping: there is no fixed 'codex' alias row to price, because `codex exec` bills whichever real gpt-* model is configured (verified live: codex-cli 0.142.5's `--json` event stream carries no model field at all; only the plain-text banner prints `model: <id>`, and $CODEX_HOME/config.toml's top-level `model` key is the CLI's own source of truth for its default, e.g. 'gpt-5.5' on this install -- already a priced row above). scripts/consult_ai.py's codex adapter resolves the real id at call time (--model override, else config.toml) and records THAT as the billed model; a resolved-but-unlisted id still records tokens with cost_usd null (the honest degradation, ADR-fh-05) rather than reviving a bare 'codex' placeholder row, which the ConsultUsageRecord contract now forbids as a resolved model id (CTR-fh-013)."
 }

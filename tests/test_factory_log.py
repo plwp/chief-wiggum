@@ -313,17 +313,29 @@ def test_render_report_shows_verdict_and_cost():
 
 
 def test_cost_value_verdict():
-    """Every validation costed + its value quantified into a keep/demote verdict."""
+    """Every validation costed + its value quantified into a keep/demote verdict.
+
+    Cost is UNKNOWN (None) unless something was actually attributed to the gate —
+    it does not default to 0.0. A gate with no cost record is `unpriced`, not
+    `noise-candidate`: we can't say whether it is cheap noise or expensive noise.
+    Only a *measured* 0.0 earns `noise-candidate`.
+    """
     gates = {
-        "check_patterns": {"runs": 5, "caught": 2, "total_ms": 40},   # free, catches -> earning
+        "check_patterns": {"runs": 5, "caught": 2, "total_ms": 40},   # catches -> earning
         "expensive_noise": {"runs": 4, "caught": 0, "total_ms": 0},   # runs but nothing; paid via loop
-        "cheap_noise": {"runs": 4, "caught": 0, "total_ms": 5},       # runs, nothing, ~free
+        "cheap_noise": {"runs": 4, "caught": 0, "total_ms": 5},       # runs, nothing, MEASURED free
+        "unattributed_noise": {"runs": 4, "caught": 0, "total_ms": 5},  # runs, nothing, cost unknown
     }
-    by_loop = {"expensive_noise": {"calls": 4, "cost_usd": 1.20}}
+    by_loop = {"expensive_noise": {"calls": 4, "cost_usd": 1.20},
+               "cheap_noise": {"calls": 4, "cost_usd": 0.0}}
     v = factory_log.cost_value_verdict(gates, by_loop)
-    assert v["check_patterns"]["verdict"] == "earning" and v["check_patterns"]["cost_per_catch"] == 0.0
+    assert v["check_patterns"]["verdict"] == "earning"
+    # No cost was attributed to check_patterns, so $/catch is unknown, not $0.000.
+    assert v["check_patterns"]["cost_usd"] is None
+    assert v["check_patterns"]["cost_per_catch"] is None
     assert v["expensive_noise"]["verdict"] == "demote-candidate"  # $1.20 over 4 runs, 0 catches
-    assert v["cheap_noise"]["verdict"] == "noise-candidate"       # noisy but free
+    assert v["cheap_noise"]["verdict"] == "noise-candidate"       # noisy but measured-free
+    assert v["unattributed_noise"]["verdict"] == "unpriced"       # noisy, cost never measured
     # an LLM validation that caught something -> cost_per_catch
     v2 = factory_log.cost_value_verdict(
         {"code-review": {"runs": 2, "caught": 4}}, {"code-review": {"calls": 2, "cost_usd": 0.80}})
