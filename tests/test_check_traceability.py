@@ -1053,6 +1053,206 @@ def test_cli_applicable_gate_prints_no_banner(tmp_path, capsys):
     assert "INAPPLICABLE" not in captured.err
 
 
+# --- three-state measurement: inapplicable | applicable | error (#281) ------
+#
+# A measurement can fail in two structurally different ways: "there was
+# nothing to measure" (inapplicable) vs "there WAS something to measure and
+# the instrument saw none of it" (error — a broken instrument, never a pass).
+# ID-bearing artifacts (contracts.md/.json, invariants.md,
+# state-machines.md/.json, architecture.json) that exist WITH content but
+# yield ZERO parseable stable IDs are the #281 case: the architect skill's own
+# worked example modelled two-segment `INV-001` ids, which DEFINE_RE cannot
+# see, so an epic authored from it measures nothing and used to render green.
+
+
+def _epic_with_near_miss_invariant(tmp_path):
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text(
+        "## Epic Invariants\n\n1. **INV-001 — X**: y\n"
+    )
+    return epic
+
+
+def test_epic_with_only_non_id_bearing_artifacts_is_inapplicable(tmp_path):
+    """adr.md/retrospective.md legitimately carry no declarations — their
+    presence (with content) must NOT trip the new error state."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "adr.md").write_text("# ADR\n\nWe decided to use Postgres.\n")
+    (epic / "retrospective.md").write_text("# Retro\n\nWent well.\n")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.outcome == "inapplicable"
+    assert report.soundness_ok is True
+    assert report.unparsed_artifacts == []
+
+
+def test_empty_epic_dir_is_inapplicable(tmp_path):
+    """Regression: a genuinely empty epic dir (no files at all) stays
+    inapplicable — the pre-#281 behavior must not change."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.outcome == "inapplicable"
+
+
+def test_zero_byte_id_bearing_artifact_is_inapplicable_not_error(tmp_path):
+    """A zero-byte contracts.md has nothing to parse yet — that is 'nothing to
+    measure' (inapplicable), NOT 'measured and saw nothing' (error)."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.outcome == "inapplicable"
+    assert report.unparsed_artifacts == []
+
+
+def test_whitespace_only_id_bearing_artifact_is_inapplicable(tmp_path):
+    """Same as the zero-byte case: whitespace-only content is still 'nothing
+    to measure'."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text("\n\n  \n")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "inapplicable"
+    assert report.outcome == "inapplicable"
+
+
+def test_artifacts_with_two_segment_ids_are_error(tmp_path):
+    """The #281 case itself: invariants.md is present, has content, and
+    declares ONLY the two-segment INV-001 shape DEFINE_RE cannot see. The
+    scanner parsed ZERO ids out of a real artifact — that is a BROKEN
+    instrument (error), never a clean inapplicable pass."""
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "error"
+    assert report.outcome == "error"
+    assert report.soundness_ok is False
+    assert report.unparsed_artifacts
+    assert report.unparsed_artifacts[0]["file"] == "invariants.md"
+    assert report.malformed_ids
+    assert report.malformed_ids[0]["token"] == "INV-001"
+    assert report.malformed_ids[0]["line"] == 3
+
+
+def test_prose_only_artifact_with_no_id_shaped_tokens_is_still_error(tmp_path):
+    """The error state must NOT depend on a near-miss token being present:
+    an ID-bearing artifact with content and zero KIND- shaped tokens at all is
+    just as broken a measurement as one with a near-miss."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.md").write_text(
+        "## Contracts\n\n- This document intentionally has no stable IDs yet.\n"
+        "- Placeholder prose only.\n"
+    )
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "error"
+    assert report.unparsed_artifacts
+    assert report.malformed_ids == []
+
+
+def test_partial_drift_is_applicable_but_soundness_fails(tmp_path):
+    """The realistic partial-drift shape: contracts.json is model-generated
+    and fine, invariants.md was hand-written from the (buggy) skill example.
+    The epic AS A WHOLE is applicable (something WAS measured), but the
+    near-miss in invariants.md is a soundness finding — silently
+    under-measuring must not render as clean."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.json").write_text('{"id": "CTR-order-001"}')
+    (epic / "invariants.md").write_text("**INV-001**: something\n")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.applicability == "applicable"
+    assert report.outcome == "findings"
+    assert report.malformed_ids
+    assert report.soundness_ok is False
+    assert report.unparsed_artifacts == []
+
+
+def test_ent_prefixed_id_is_not_a_near_miss(tmp_path):
+    """ENT- is not a stable-ID KIND (chief-wiggum#281 codebase-context §2B) —
+    ENT-INV-001 must never be reported as a malformed near-miss."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "contracts.json").write_text('{"id": "CTR-order-001"}')
+    (epic / "invariants.md").write_text("**ENT-INV-001** is a foreign id, not ours\n")
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.malformed_ids == []
+
+
+def test_measured_denominator_is_reported(tmp_path):
+    """#289 item 5: the denominator must be visible even when green, so a
+    zero can never hide inside an otherwise-passing report."""
+    epic = _write_epic(tmp_path)
+    report = ct.check(epic, schema=SCHEMA)
+    assert report.to_dict()["measured"] == {
+        "id_bearing_artifacts": 1,
+        "defined_ids": len(report.defined),
+    }
+
+
+def test_cli_gate_soundness_fails_on_error_state(tmp_path, capsys):
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    rc = ct.main([str(epic), "--gate", "soundness"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "ZERO stable IDs" in err
+
+
+def test_cli_gate_coverage_fails_on_error_state(tmp_path, capsys):
+    """The one that would be 0 under the old (inapplicable) semantics: a
+    broken measurement must fail EITHER gate, not just soundness."""
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    rc = ct.main([str(epic), "--gate", "coverage"])
+    assert rc == 1
+
+
+def test_cli_report_only_on_error_state_exits_zero(tmp_path, capsys):
+    """The report-only doctrine holds even for a broken instrument: no
+    --gate means exit 0, but the JSON must not silently say 'inapplicable'."""
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    rc = ct.main([str(epic), "--format", "json"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["applicability"] == "error"
+
+
+def test_cli_error_text_output_says_failure_not_pass(tmp_path, capsys):
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    rc = ct.main([str(epic), "--gate", "soundness", "--format", "text"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out
+    assert "FAILURE" in out
+    assert "INAPPLICABLE" not in out
+
+
+def test_cli_json_carries_outcome_and_measured(tmp_path, capsys):
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    rc = ct.main([str(epic), "--format", "json"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["outcome"] == "error"
+    assert data["measured"]["defined_ids"] == 0
+
+
+def test_write_links_skipped_on_error_state(tmp_path, capsys):
+    """A broken measurement must never be recorded as a validated sidecar —
+    the near-miss epic's --write-links run must leave the sidecar untouched."""
+    epic = _epic_with_near_miss_invariant(tmp_path)
+    links_path = tmp_path / "links.json"
+    ct.main([str(epic), "--write-links", "--links", str(links_path), "--format", "json"])
+    capsys.readouterr()
+    assert not links_path.exists(), (
+        "the trace-links sidecar must never be written from a broken/error-state "
+        "scan (chief-wiggum#281)"
+    )
+
+
 def test_write_links_sidecar_stamps_target_sha(tmp_path):
     """#213 version binding: the sidecar carries the source repo's HEAD as an
     ADDITIVE target_sha key (None outside a git repo — unverifiable, never a

@@ -186,3 +186,40 @@ def test_verifies_from_probe_is_valid_but_from_code_still_invalid(tmp_path):
     assert any(
         d["reason"] == "verifies cannot originate from code" for d in report.invalid_links
     )
+
+
+# --- near-miss declaration detection (chief-wiggum#281) ----------------------
+#
+# near_miss_ids() is the complement of the grammar in the same declaration
+# positions DEFINE_RE uses: a token that looks like a stable-ID declaration
+# but is NOT one (in practice, the two-segment `INV-001` shape the architect
+# skill's own worked example used to model). It is what tells "artifacts
+# present, nothing parseable" (an error) apart from "nothing to measure"
+# (inapplicable) in check_traceability.py.
+
+
+def test_near_miss_ids_flags_two_segment_declaration():
+    assert trace_ids.near_miss_ids("**INV-001** x") == ["INV-001"]
+
+
+def test_near_miss_ids_ignores_valid_ids():
+    assert trace_ids.near_miss_ids("**INV-order-001** x") == []
+
+
+def test_near_miss_ids_ignores_non_declaration_positions():
+    # No heading/bold/JSON-id prefix at the INV-001 offset -> not a near miss.
+    assert trace_ids.near_miss_ids("see INV-001 above") == []
+
+
+def test_near_miss_ids_ignores_foreign_prefixes():
+    # ENT- is not a stable-ID KIND; ENT-INV-001 must never be misread as a
+    # two-segment INV near miss (chief-wiggum#281 codebase-context §2B).
+    assert trace_ids.near_miss_ids('"id": "ENT-INV-001"') == []
+
+
+def test_near_miss_ids_matches_json_id_position():
+    assert trace_ids.near_miss_ids('"id": "INV-001"') == ["INV-001"]
+
+
+def test_near_miss_ids_matches_heading_position():
+    assert trace_ids.near_miss_ids("### INV-001 — x") == ["INV-001"]
