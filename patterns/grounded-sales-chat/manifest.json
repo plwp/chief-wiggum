@@ -1,0 +1,201 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/grounded-sales-chat/pattern.md. Mined from a shipped production SaaS's landing-page sales assistant (eval-tuned prompt, 19/20 on its probe corpus); per the registry's provenance policy, private-repo paths are held out of the public registry -- realized_as describes the realized mechanism instead. INV-GSC-007's retention clause is design-derived from the mined gap (indefinite transcript retention). Per-call token/cost metering is platform-cost-observability discipline, not re-derived here.",
+  "id": "grounded-sales-chat",
+  "version": 1,
+  "title": "Grounded Sales Chat (public pre-signup assistant)",
+  "category": "monetization",
+  "trust_class": "eval-gated-prompt-and-public-spend-surface-protected-path",
+  "applies_when": [
+    "a self-serve product wants pre-signup questions answered 24/7 without a human sales touch",
+    "the product's facts (tiers, limits, workflows) have in-repo sources of truth the prompt can be derived from and checked against",
+    "the operator accepts bounded LLM spend on an anonymous public surface and wants it contained by construction"
+  ],
+  "components": [
+    "server-owned-prompt: system prompt is a server-side constant prepended in the handler; client role allowlist excludes system; never echoed, persisted, or client-supplied",
+    "grounded-closed-world: every prompt fact traces to a declared in-repo source of truth; capability/pricing lists declared COMPLETE -- absent means non-existent, denied plainly",
+    "eval-gate: harness extracts the prompt from the shipped source, replicates production params, hash-stamps transcripts, replays a six-category probe corpus; prompt changes ship only re-validated",
+    "untrusted-render: assistant text rendered as plain text; allowlist-only linkification with hrefs from a hardcoded canonical map, never from model output; no raw HTML path",
+    "spend-stack: structural env-off (no key => routes unregistered) -> admin kill switch (TTL-cached, fail-open, audited) -> credits breaker (atomic half-open probe admission) -> two-tier rate limiter; checks ordered kill-switch -> breaker -> rate-limit -> body-bind",
+    "server-caps: max messages, max untrimmed message length, arithmetically derived body cap, last-message-must-be-user -- all server-enforced; UI mirrors are affordances",
+    "anonymous-transcript: client-held conversation window; at most one write-only transcript doc per client-minted regex-validated session id (unique index); no IP/UA/identity; best-effort logging; declared retention",
+    "key-confinement: provider key secret-store -> auth header only; never logged, never error-wrapped, never in a client response; upstream error bodies drained unlogged; fixed opaque client error codes",
+    "lazy-widget: no network call on mount; deferred fail-open availability probe fired at most once; generation-counter guard so a stale reply cannot resurrect a reset transcript"
+  ],
+  "invariants": {
+    "$comment": "All nine mined from the landing-page sales assistant; INV-GSC-007's retention clause is design-derived from the mined gap.",
+    "cluster": [
+      {
+        "id": "INV-GSC-001",
+        "statement": "Server-owned system prompt: the prompt is a server-side constant prepended in the handler into a fresh message slice; the client role allowlist excludes 'system' (rejected before the model is called); the prompt is never echoed to the client, never persisted in transcripts, never client-supplied.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "handler prepends the prompt const into a fresh slice; role validation rejects 'system' with 400 before the completer is invoked; transcript model excludes the system message"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-002",
+        "statement": "Grounded closed-world knowledge: every fact in the prompt (pricing, limits, workflows) traces to a declared in-repo source of truth, and the prompt declares its capability and pricing lists COMPLETE -- anything absent does not exist and is denied plainly and positively; the assistant never invents features, integrations, discounts, timelines, or UI mechanisms.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "prompt doc-comment declares the tier matrix and workflow docs as sources of truth; unit tests assert the prompt contains the grounded pricing and workflow facts and the closure-clause wording"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-003",
+        "statement": "Eval-gated prompt changes: the prompt is a versioned artifact; the eval harness extracts it from the shipped source (hard-failing if the constant stops being parseable), replicates production model parameters exactly, hash-stamps every transcript with the prompt digest, and replays a probe corpus spanning factual, hallucination-bait, discount-pressure, prompt-extraction, off-topic, and tone categories; a prompt change ships only with a re-validated score.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "eval harness parses the prompt const out of the handler source, mirrors the production model and params, stamps sha256 prefixes into transcript rows, and grades 20 probes across six categories against per-probe expectations; the shipped v3 prompt scored 19 of 20"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-004",
+        "statement": "Untrusted output rendering: assistant text is rendered as plain text; only allowlisted hosts become links and their hrefs come from a hardcoded canonical map, never from model output; markdown links to any other host are reduced to their visible label; no raw-HTML render path exists; sanitization applies to assistant messages only.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "render helper with a two-host canonical map and explicit 'a model is not a contract' rationale; no dangerouslySetInnerHTML anywhere in the widget"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-005",
+        "statement": "Four-layer spend stack, gate-ordered: (1) no provider key => handler never constructed => public and admin routes unregistered (404); (2) TTL-cached admin kill switch that fails open on read failure and durably audits every real transition; (3) credits circuit breaker tripped by the vendor's quota-exhausted signal, admitting exactly one half-open probe per interval, resettable only by the request atomically admitted as the probe; (4) two-tier rate limiter (per-client + global) where a per-client denial never consumes global budget and a missing client identifier is limited, not exempt. Checks run kill-switch -> breaker -> rate-limit -> body-bind.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "nil-handler route registration; settings cache that never caches a read failure; breaker allow() returning (allowed, isProbe) under one lock with reset gated on isProbe; fixed-window limiter with per-IP-denial-not-consuming-global and empty-IP-bucketed-and-limited; ordering asserted by a DisabledCheckPrecedesRateLimit test"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-006",
+        "statement": "Server-enforced conversation caps: max messages per window, max per-message length counted on untrimmed content, a request body cap derived arithmetically from those two, and last-message-must-be-user-role -- all enforced server-side; UI mirrors (composer maxLength, cap affordances) are conveniences, never the enforcement.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "caps of 20 messages, 2000 untrimmed runes, and a 256 KiB body, with the body cap justified arithmetically in a comment; full validation table covered by handler tests"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-007",
+        "statement": "Anonymous write-only transcript: the conversation window is client-held and replayed each turn; the server persists at most one transcript document per client-minted, regex-validated session id (unique index; insert/update upsert split; duplicate-key treated as benign race), storing no IP, no user-agent, no account identity; transcript logging is best-effort and can never fail the visitor's reply; transcripts carry a declared retention period.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "global non-tenant transcript collection with a documented no-IP, no-UA, no-identity field set, unique session-id index, an upsert splitting set-on-insert identity from per-turn updates, and log-failure-still-succeeds handler behavior; the retention clause is the exception -- the mined system has no TTL, which is the gap this clause closes"
+        },
+        "grounding": "mined-anonymized except the retention clause, which is design-derived from the mined gap (indefinite retention of visitor free text)"
+      },
+      {
+        "id": "INV-GSC-008",
+        "statement": "Key confinement and opaque errors: the provider key travels secret-store -> auth header only -- never logged, never wrapped into an error chain, never present in a client response; upstream error bodies are drained without logging (they can echo prompt or visitor text); clients receive fixed error codes, never upstream prose.",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "secret-manager-only key sourcing; transport errors deliberately un-wrapped with an inline rationale; non-2xx upstream bodies drained and discarded unlogged; fixed error-code vocabulary asserted by an upstream-error-no-leak test"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      },
+      {
+        "id": "INV-GSC-009",
+        "statement": "Zero cost until the visitor speaks: the widget makes no network call on mount; the availability probe is deferred to visibility/intent, fires at most once per mount, and fails open on unknown; a stale in-flight reply can never resurrect a reset transcript (generation counter bumped before clear).",
+        "realized_as": {
+          "app": "a shipped production SaaS (private; path provenance held out of the public registry)",
+          "code": "IntersectionObserver + focusin one-shot probe with a ref guard and fail-open null semantics; send-generation counter invalidating in-flight replies across a reset; no-fetch-on-mount asserted by widget tests"
+        },
+        "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"
+      }
+    ]
+  },
+  "parameters": {
+    "model": {
+      "type": "string",
+      "required": true,
+      "description": "Inference model slug, config-overridable so a vendor rename is not a deploy (mined: low-cost flash-tier model, ~400 max completion tokens, temperature 0.3)."
+    },
+    "knowledge_sources": {
+      "type": "object",
+      "required": true,
+      "description": "The in-repo sources of truth the prompt's facts must trace to (tier matrix, workflow docs) -- INV-GSC-002's authority."
+    },
+    "probe_corpus": {
+      "type": "string",
+      "required": true,
+      "description": "Path to the eval probes (with per-probe expectations), covering at least the six mandatory categories (INV-GSC-003)."
+    },
+    "link_allowlist": {
+      "type": "object",
+      "required": true,
+      "description": "Canonical host->href map the renderer may linkify (INV-GSC-004)."
+    },
+    "caps": {
+      "type": "object",
+      "required": true,
+      "description": "max_messages, max_message_len (untrimmed), upstream timeout; the body cap is derived (INV-GSC-006). Mined: 20 messages, 2000 runes, 30s."
+    },
+    "rate_limits": {
+      "type": "object",
+      "required": true,
+      "description": "Per-client and global windows (mined: 6/min per IP, 120/10min global -- per instance; true ceiling is window x max_instances until a shared store binds it)."
+    },
+    "transcript_retention": {
+      "type": "string",
+      "required": true,
+      "description": "Declared transcript TTL (INV-GSC-007). The mined system's indefinite retention is the gap, not the default."
+    },
+    "regulated_advice_carveout": {
+      "type": "string",
+      "required": false,
+      "description": "Domain-specific 'never advise on X, refer to a professional' prompt rule (mined instance: clinical advice -> 'ask your vet')."
+    },
+    "kill_switch_cache_ttl": {
+      "type": "string",
+      "required": false,
+      "default": "30s",
+      "description": "Settings-cache TTL for the admin kill switch (fail-open)."
+    },
+    "breaker_probe_interval": {
+      "type": "string",
+      "required": false,
+      "default": "15m",
+      "description": "Credits-breaker half-open probe interval."
+    }
+  },
+  "success_metrics": {
+    "$comment": "Eval scores and transcripts are end-user signal for the improvement loop; per-call cost rolls up through platform-cost-observability.",
+    "metrics": [
+      {
+        "id": "eval_pass_rate",
+        "goal": "up",
+        "desc": "shipped-prompt score on the probe corpus (INV-GSC-003)"
+      },
+      {
+        "id": "hallucination_probe_failures",
+        "goal": "zero",
+        "desc": "closed-world discipline holding under bait (INV-GSC-002)"
+      },
+      {
+        "id": "chat_to_signup_rate",
+        "goal": "up",
+        "desc": "sessions reaching the CTA that convert to signups"
+      },
+      {
+        "id": "cost_per_session",
+        "goal": "down",
+        "desc": "inference spend per transcript, from vendor-reported cost"
+      },
+      {
+        "id": "breaker_trips",
+        "goal": "zero",
+        "desc": "each trip is a spend-ceiling event worth a finding (INV-GSC-005)"
+      }
+    ]
+  },
+  "protected_paths": [
+    "the system prompt, its grounded factual lists, and the probe corpus (changes ship only with a re-validated eval score -- trust class)",
+    "the spend stack: rate windows, breaker thresholds, kill switch, caps (bounds an unauthenticated paid surface)",
+    "the render link allowlist and canonical href map (INV-GSC-004)"
+  ],
+  "depends_on": "provider-neutral-adapter",
+  "feeds": "frictionless-onboarding, platform-cost-observability, improvement-loop"
+}

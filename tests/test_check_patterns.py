@@ -488,3 +488,46 @@ def test_validation_experiment_scaffolds_exist_and_are_honest():
                / "index.html.tmpl").read_text()
     assert "not built yet" in presale
     assert "refund" in presale.lower()
+
+
+# --- grounded-sales-chat: harvested public pre-signup assistant ---------------
+
+def test_grounded_sales_chat_is_specified_with_honest_grounding():
+    """The harvested landing-page sales assistant: specified, monetization,
+    a nine-invariant mined-anonymized cluster (mechanism-described, path-free
+    per the #221 policy), with exactly one honestly-flagged design-derived
+    clause — the transcript-retention requirement promoted from the mined
+    gap."""
+    reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
+    entry = next((e for e in reg["patterns"] if e["id"] == "grounded-sales-chat"), None)
+    assert entry is not None, "grounded-sales-chat must be a specified pattern"
+    assert entry["status"] == "specified"
+    assert entry["category"] == "monetization"
+    assert entry.get("depends_on") == "provider-neutral-adapter"
+    assert entry.get("feeds") == (
+        "frictionless-onboarding, platform-cost-observability, improvement-loop")
+    assert entry["invariants"] == "INV-GSC-001..009"
+    assert not any(c.get("id") == "grounded-sales-chat"
+                   for c in reg.get("candidates", []))
+
+    manifest = json.loads(
+        (SCRIPTS.parent / "patterns" / "grounded-sales-chat" / "manifest.json").read_text())
+    cluster = check_patterns.cluster_entries(manifest["invariants"])
+    assert [e["id"] for e in cluster] == [f"INV-GSC-00{i}" for i in range(1, 10)]
+    assert manifest["success_metrics"]["metrics"], (
+        "specified patterns must declare non-empty success_metrics.metrics")
+    for e in cluster:
+        grounding = e.get("grounding", "")
+        assert grounding.startswith("mined-anonymized"), (
+            f"{e['id']} must carry mined-anonymized grounding")
+        assert isinstance(e.get("realized_as"), dict), (
+            f"{e['id']} mined without a realized_as mechanism description")
+    # the one design-derived strengthening is named, and only there
+    retention = next(e for e in cluster if e["id"] == "INV-GSC-007")
+    assert "design-derived" in retention["grounding"]
+    assert "retention" in retention["statement"]
+    assert not any("design-derived" in e.get("grounding", "")
+                   for e in cluster if e["id"] != "INV-GSC-007")
+    # the headline technique travels with the pattern
+    closure = next(e for e in cluster if e["id"] == "INV-GSC-002")
+    assert "COMPLETE" in closure["statement"]
