@@ -7,6 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import artifacts  # scripts/artifacts.py — the meta-location resolver (#213)
 import pytest
 import tracker
 from tracker import (
@@ -20,6 +21,35 @@ from tracker import (
 )
 
 CW_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def user_dir(tmp_path, monkeypatch):
+    """Isolate every test from the real ~/.chief-wiggum — tests must never
+    touch it (resolve_backend_name/LocalBackend now consult the resolver)."""
+    d = tmp_path / "cw-user"
+    monkeypatch.setenv("CHIEF_WIGGUM_USER_DIR", str(d))
+    return d
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def make_sidecar_target(tmp_path, remote="https://github.com/acme/app.git"):
+    """A tmp git repo elected into sidecar mode — tracker config and issue
+    storage must resolve OUTSIDE this tree, in the sidecar meta root."""
+    repo = tmp_path / "target"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "README.md").write_text("hi\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    _git(repo, "remote", "add", "origin", remote)
+    artifacts.elect(repo, "sidecar", backing="local")
+    return repo
 
 # --- fake gh CLI (statefully mocks the subprocess boundary) ------------------
 
@@ -366,6 +396,103 @@ class TestGetTracker:
             tracker.get_tracker("acme/app", repo_root=tmp_path)
 
 
+# --- sidecar awareness (#266) --------------------------------------------------
+
+
+class TestSidecarAwareness:
+    def test_resolve_backend_name_reads_sidecar_meta_root(self, tmp_path):
+        """Placing docs/cw/tracker.json in the TARGET tree must NOT select the
+        local backend on a sidecar-elected repo — the config has to live in
+        the sidecar meta root to be honored (and placing it there dirties the
+        tree the sidecar footprint exists to keep clean)."""
+        repo = make_sidecar_target(tmp_path)
+        (repo / "docs" / "cw").mkdir(parents=True)
+        (repo / "docs" / "cw" / "tracker.json").write_text(json.dumps({"backend": "local"}))
+        assert resolve_backend_name(repo) == "github"  # wrong location: ignored
+
+        resolver = artifacts.Resolver.resolve(repo)
+        sidecar_cfg = resolver.meta_root / "cw" / "tracker.json"
+        sidecar_cfg.parent.mkdir(parents=True, exist_ok=True)
+        sidecar_cfg.write_text(json.dumps({"backend": "local"}))
+        assert resolve_backend_name(repo) == "local"
+
+    def test_sidecar_local_backend_stores_and_lists_from_meta_root(self, tmp_path):
+        repo = make_sidecar_target(tmp_path)
+        resolver = artifacts.Resolver.resolve(repo)
+        (resolver.meta_root / "cw").mkdir(parents=True)
+        (resolver.meta_root / "cw" / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        backend = tracker.get_tracker("acme/app", repo_root=repo)
+        assert isinstance(backend, LocalBackend)
+        ref = backend.create(IssueDraft(title="Sidecar issue"))
+
+        # the file physically lives under the SIDECAR meta root...
+        expected = resolver.meta_root / "issues" / "0001.md"
+        assert expected.is_file()
+        # ...never under the target tree.
+        assert not (repo / "docs").exists()
+
+        titles = {i.title for i in backend.list()}
+        assert titles == {"Sidecar issue"}
+        assert backend.get(ref).title == "Sidecar issue"
+
+    def test_sidecar_local_backend_writes_zero_files_into_target_tree(self, tmp_path):
+        repo = make_sidecar_target(tmp_path)
+        resolver = artifacts.Resolver.resolve(repo)
+        (resolver.meta_root / "cw").mkdir(parents=True)
+        (resolver.meta_root / "cw" / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        backend = tracker.get_tracker("acme/app", repo_root=repo)
+        ref = backend.create(IssueDraft(title="Clean tree"))
+        backend.comment(ref, "a comment")
+        backend.update(ref, {"state": "closed"})
+
+        status = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert status == "", f"sidecar tracker writes leaked into the target tree: {status!r}"
+
+    def test_sidecar_local_backend_used_even_when_upstream_issues_disabled(self, tmp_path, monkeypatch):
+        """Prove the local backend is reached WITHOUT ever falling through to
+        the github default: the (unused) github path is wired to explode with
+        the exact error an issues-disabled upstream returns, so a resolver
+        regression that silently defaults to github fails loudly here rather
+        than passing by accident."""
+        repo = make_sidecar_target(tmp_path)
+        resolver = artifacts.Resolver.resolve(repo)
+        (resolver.meta_root / "cw").mkdir(parents=True)
+        (resolver.meta_root / "cw" / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        def exploding_gh(args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1, args, output="", stderr="the 'acme/app' repository has disabled issues"
+            )
+
+        monkeypatch.setattr(subprocess, "run", exploding_gh)
+
+        backend = tracker.get_tracker("acme/app", repo_root=repo)
+        assert isinstance(backend, LocalBackend)
+        ref = backend.create(IssueDraft(title="Works despite disabled issues"))
+        assert backend.get(ref).title == "Works despite disabled issues"
+
+    def test_embedded_mode_unchanged_by_resolver_adoption(self, tmp_path):
+        """No election at all (today's status quo) must resolve identically
+        to before sidecar-awareness was wired in."""
+        cw_dir = tmp_path / "docs" / "cw"
+        cw_dir.mkdir(parents=True)
+        (cw_dir / "tracker.json").write_text(json.dumps({"backend": "local"}))
+        assert resolve_backend_name(tmp_path) == "local"
+
+        backend = tracker.get_tracker("acme/app", repo_root=tmp_path)
+        assert isinstance(backend, LocalBackend)
+        assert backend.root == tmp_path.resolve()
+        assert backend.issues_dir == tmp_path.resolve() / "docs" / "issues"
+        ref = backend.create(IssueDraft(title="Embedded issue"))
+        assert (tmp_path / "docs" / "issues" / "0001.md").is_file()
+        assert backend.get(ref).title == "Embedded issue"
+
+
 # --- local backend frontmatter format -----------------------------------------
 
 
@@ -512,6 +639,38 @@ class TestCLI:
         out = capsys.readouterr().out
         assert exit_code == 0
         assert json.loads(out)[0]["title"] == "CLI issue"
+
+    def test_create_get_list_via_cli_sidecar_target(self, tmp_path, capsys):
+        """AC (#266): 'tracker.py --repo-root <target> list' finds issues
+        stored in the sidecar meta root on a sidecar-elected target."""
+        repo = make_sidecar_target(tmp_path)
+        resolver = artifacts.Resolver.resolve(repo)
+        (resolver.meta_root / "cw").mkdir(parents=True)
+        (resolver.meta_root / "cw" / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        exit_code = tracker.main(
+            ["--repo-root", str(repo), "create", "acme/app", "--title", "CLI sidecar issue"]
+        )
+        assert exit_code == 0
+        ref = capsys.readouterr().out.strip()
+
+        exit_code = tracker.main(["--repo-root", str(repo), "list", "acme/app"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert json.loads(out)[0]["title"] == "CLI sidecar issue"
+
+        exit_code = tracker.main(["--repo-root", str(repo), "get", ref])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert json.loads(out)["title"] == "CLI sidecar issue"
+
+        # zero footprint in the target tree
+        assert not (repo / "docs").exists()
+        status = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert status == ""
 
     def test_get_via_cli_github_backend(self, tmp_path, monkeypatch, capsys):
         fake = FakeGh()
