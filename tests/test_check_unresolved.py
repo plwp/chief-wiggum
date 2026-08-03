@@ -93,3 +93,76 @@ def test_cli_exit_codes(tmp_path):
     missing = subprocess.run([sys.executable, str(script), str(tmp_path / "nope")],
                              capture_output=True, text=True)
     assert missing.returncode == 2
+
+
+# --- broken instrument: the scanner saw nothing (chief-wiggum#289) -----------
+#
+# This is the gate that stops dependent work being built on a guess. An
+# artifact it could not parse contributed zero findings, printed "OK: no
+# unresolved markers found", exited 0, and was logged to factory telemetry as
+# a pass — the marker-bearing file it never read notwithstanding.
+
+
+def _run(*args):
+    return subprocess.run([sys.executable, str(SCRIPTS / "check_unresolved.py"), *args],
+                          capture_output=True, text=True)
+
+
+def test_unparseable_json_artifact_is_error_not_ok(tmp_path):
+    (tmp_path / "contracts.json").write_text('{"entities": [ TBD ')
+    report = check_unresolved.scan_report([tmp_path])
+    assert report.outcome == "error"
+    assert report.unparsed
+    assert "contracts.json" in report.unparsed[0]["file"]
+
+
+def test_unparseable_artifact_exits_nonzero(tmp_path):
+    (tmp_path / "contracts.json").write_text('{"entities": [ TBD ')
+    result = _run(str(tmp_path), "--format", "json")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["outcome"] == "error"
+    assert payload["measured"]["files_scanned"] == 0
+
+
+def test_clean_scan_reports_the_measured_denominator(tmp_path):
+    (tmp_path / "contracts.json").write_text(json.dumps({"entities": []}))
+    (tmp_path / "adr.md").write_text("# ADR\n\nall confirmed\n")
+    report = check_unresolved.scan_report([tmp_path])
+    assert report.outcome == "pass"
+    assert report.measured["files_scanned"] == 2
+
+
+def test_no_scannable_artifacts_is_inapplicable_not_a_pass(tmp_path):
+    """An epic dir holding no .md/.json yet has nothing to scan. Honest
+    absence — but it must not print the same OK a measured clean scan does."""
+    (tmp_path / "notes.txt").write_text("TBD: not an artifact this gate reads\n")
+    report = check_unresolved.scan_report([tmp_path])
+    assert report.outcome == "inapplicable"
+    assert report.measured["files_scanned"] == 0
+
+
+def test_inapplicable_says_so_and_still_exits_zero(tmp_path):
+    (tmp_path / "notes.txt").write_text("nothing scannable\n")
+    result = _run(str(tmp_path))
+    assert result.returncode == 0
+    assert "INAPPLICABLE" in result.stdout + result.stderr
+
+
+def test_markers_found_is_findings(tmp_path):
+    (tmp_path / "adr.md").write_text("TBD: confirm\n")
+    report = check_unresolved.scan_report([tmp_path])
+    assert report.outcome == "findings"
+    assert report.measured["files_scanned"] == 1
+
+
+def test_text_output_prints_the_denominator(tmp_path):
+    (tmp_path / "contracts.json").write_text(json.dumps({"entities": []}))
+    result = _run(str(tmp_path))
+    assert "1 file(s) scanned" in result.stdout
+
+
+def test_scan_stays_a_plain_finding_list(tmp_path):
+    """Backward compatibility: existing callers unpack a list, not a report."""
+    (tmp_path / "adr.md").write_text("TBD: confirm\n")
+    assert isinstance(check_unresolved.scan([tmp_path]), list)

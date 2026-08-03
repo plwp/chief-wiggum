@@ -138,7 +138,23 @@ def _sw_seed_sampling_gap(corpus: Path) -> None:
     ))
 
 
+def _sw_seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the code (#289).
+
+    The invariant metadata is left completely intact; the SOURCE TREE the gate
+    is pointed at is emptied of every scannable file. Before #289 that reported
+    `applicable`, `coverage_ok: true`, exit 0 — a gate that scanned nothing
+    and called it clean. Expected: fire.
+    """
+    src = corpus / "src"
+    for f in sorted(src.rglob("*")):
+        if f.is_file():
+            f.unlink()
+    (src / "README.txt").write_text("no scannable source here\n")
+
+
 SW_EXECUTORS = {
+    "sw-instrument-broken-01": _sw_seed_instrument_broken,
     "sw-direct-01": _sw_seed_direct,
     "sw-omission-01": _sw_seed_omission,
     "sw-config-indirection-01": _sw_seed_config_indirection,
@@ -148,6 +164,12 @@ SW_EXECUTORS = {
 
 def _sw_outcome(corpus: Path) -> str:
     report = _run("check_single_writer.py", corpus / "epic", corpus / "src")
+    # applicability == "error" MUST count as fired (#289). A harness that only
+    # sums `violations` reports "not-fired" for a broken instrument while the
+    # gate is correctly erroring — the very bug the error state was added to
+    # catch, reproduced inside the machinery that certifies it.
+    if report.get("applicability") == "error":
+        return "fired"
     return "fired" if report["counts"]["violations"] > 0 else "not-fired"
 
 
@@ -560,6 +582,9 @@ def _rt_outcome(corpus: Path) -> str:
     # "not-fired" while the gate is firing correctly — reproducing the very
     # bug the class was added to catch, inside the machinery that certifies it.
     findings += len(rep.get("contract_measurement_error") or [])
+    # suite_measurement_error is likewise a HARD finding (#289) — a dead suite
+    # or a stale report must not read as a clean ratchet.
+    findings += len(rep.get("suite_measurement_error") or [])
     return "fired" if findings else "not-fired"
 
 

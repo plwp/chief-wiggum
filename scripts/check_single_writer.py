@@ -197,6 +197,12 @@ INV_DEFINE_RE = re.compile(r"\*\*\s*(INV-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3})\s*\*
 SOURCE_EXTS = cw_languages.all_known_extensions()
 SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv", "vendor", "dist", "build"}
 
+# The epic artifacts this gate DECLARES as its metadata sources (module
+# docstring, "Contract"). A parse failure in one of these is a broken
+# instrument (#289); a parse failure anywhere else in the epic dir is another
+# gate's business.
+DECLARED_METADATA_SOURCES = {"state-machines.json", "invariants.md"}
+
 
 def canonical_id(node_id: str) -> str:
     kind, _, rest = node_id.partition("-")
@@ -299,12 +305,50 @@ class SingleWriterReport:
     # by itself — a repo full of binary-ish files must not become unusable.
     unscanned: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    # Vacuous-pass fix (chief-wiggum#213 Phase E): "inapplicable" when the epic
-    # declares NO single-write-path invariants — there was nothing to check, so
-    # a green exit is vacuous, not evidence. Exit codes are unchanged (existing
-    # pipelines keep passing); the verdict is machine-distinguishable here and
-    # human-visible in the text output.
+    # #289: a DECLARED metadata source (state-machines.json / invariants.md)
+    # that exists with content and could not be read or parsed at all. Distinct
+    # from `unscanned` (source files) and from `malformed` (metadata that
+    # parsed but is incomplete): this is the instrument failing to see its own
+    # input, so it forces the `error` state instead of collapsing to
+    # "no invariants found → inapplicable".
+    unparsed_artifacts: list[dict] = field(default_factory=list)
+    # #289 item 5: the measured denominator — how many source files the scan
+    # actually READ. A zero here is what separates "no unsanctioned writer
+    # exists" from "the scanner never opened anything", which were the same
+    # green report before.
+    source_files_scanned: int = 0
+    # Vacuous-pass fix (chief-wiggum#213 Phase E, widened to three states by
+    # #289): "inapplicable" when the epic declares NO single-write-path
+    # invariants — there was nothing to check, so a green exit is vacuous, not
+    # evidence. "error" when there WAS something to measure (invariants
+    # declared, a source root given) and the scan read zero files, or when a
+    # declared metadata source could not be parsed — a broken instrument,
+    # never a pass. Vocabulary is #289's standard outcome model.
+    #   "applicable"   — the inventory was measured
+    #   "inapplicable" — nothing exists to measure
+    #   "error"        — inputs exist and the scanner saw none of them
     applicability: str = "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error.
+
+        Derived, never stored — "failed to run" and "found nothing" must not
+        be able to drift apart into two fields that disagree.
+        """
+        if self.applicability == "error":
+            return "error"
+        if self.applicability == "inapplicable":
+            return "inapplicable"
+        return "pass" if (self.soundness_ok and self.coverage_ok) else "findings"
+
+    @property
+    def measured(self) -> dict:
+        return {
+            "source_files_scanned": self.source_files_scanned,
+            "invariants": len(self.invariants),
+        }
 
     @property
     def counts(self) -> dict:
@@ -316,26 +360,35 @@ class SingleWriterReport:
             "grandfathered": len(self.grandfathered),
             "malformed": len(self.malformed),
             "unscanned": len(self.unscanned),
+            "unparsed_artifacts": len(self.unparsed_artifacts),
         }
 
     @property
     def soundness_ok(self) -> bool:
         # Design-time: metadata must be well-formed. Existing writers are surfaced,
         # not failed on (the fix may be part of the epic being architected).
-        return not self.malformed
+        # #289: a broken measurement is not a clean soundness result either —
+        # both booleans follow `applicability` so the JSON can never say
+        # "outcome: error" beside "soundness_ok: true".
+        return self.applicability != "error" and not self.malformed
 
     @property
     def coverage_ok(self) -> bool:
         # Close-time: no unsanctioned writer may exist. `unscanned` deliberately
         # does NOT participate (#282 binding decision): it is reported, never
         # blocking on its own — a repo full of binary-ish files must not
-        # become unusable under --gate.
-        return not self.violations and not self.malformed
+        # become unusable under --gate. A zero-file SCAN is a different animal
+        # (#289): that is not "some files were skipped", it is "no inventory
+        # was taken", and an empty violation list from it means nothing.
+        return (self.applicability != "error"
+                and not self.violations and not self.malformed)
 
     def to_dict(self) -> dict:
         return {
             "counts": self.counts,
             "applicability": self.applicability,
+            "outcome": self.outcome,
+            "measured": self.measured,
             "soundness_ok": self.soundness_ok,
             "coverage_ok": self.coverage_ok,
             "invariants": self.invariants,
@@ -345,6 +398,7 @@ class SingleWriterReport:
             "grandfathered": self.grandfathered,
             "malformed": self.malformed,
             "unscanned": self.unscanned,
+            "unparsed_artifacts": self.unparsed_artifacts,
             "warnings": self.warnings,
         }
 
@@ -454,11 +508,32 @@ def parse_structured_invariants(data: dict, rel: str) -> tuple[list[SingleWriter
 
 
 def collect_invariants(epic_dir: str | Path) -> tuple[list[SingleWriterInvariant], list[dict]]:
+    """Public, backward-compatible entry point (code_query.py and many existing
+    tests call this expecting a 2-tuple) — a thin wrapper over
+    ``collect_invariants_full``, which additionally reports DECLARED metadata
+    sources that could not be parsed at all (#289)."""
+    invariants, malformed, _unparsed = collect_invariants_full(epic_dir)
+    return invariants, malformed
+
+
+def collect_invariants_full(
+    epic_dir: str | Path,
+) -> tuple[list[SingleWriterInvariant], list[dict], list[dict]]:
+    """``(invariants, malformed, unparsed_artifacts)``.
+
+    A parse failure in a DECLARED metadata source (``state-machines.json`` /
+    ``invariants.md``) is a broken instrument, not an absent precondition
+    (#289): swallowing it yields zero invariants, which the caller would
+    otherwise report as "nothing to check — inapplicable". Parse failures in
+    any OTHER epic file stay swallowed: this gate has no authority over a
+    malformed ui-spec.json, and blocking on one would be noise.
+    """
     root = Path(epic_dir)
     invariants: list[SingleWriterInvariant] = []
     malformed: list[dict] = []
+    unparsed: list[dict] = []
     if not root.exists():
-        return invariants, malformed
+        return invariants, malformed, unparsed
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -474,9 +549,11 @@ def collect_invariants(epic_dir: str | Path) -> tuple[list[SingleWriterInvariant
                 invs, bad = parse_prose_invariants(path.read_text(), rel)
                 invariants += invs
                 malformed += bad
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            if path.name in DECLARED_METADATA_SOURCES:
+                unparsed.append({"file": rel, "reason": f"{type(exc).__name__}: {exc}"})
             continue
-    return invariants, malformed
+    return invariants, malformed, unparsed
 
 
 # --- scanning the repo for writers ------------------------------------------
@@ -550,7 +627,7 @@ def scan_writers(
     ``_scan_writers_and_unscanned``, which additionally tracks files that
     could not be READ at all (chief-wiggum#282); ``check()`` calls that
     directly so it can surface them, never silently."""
-    writers, _unscanned = _scan_writers_and_unscanned(
+    writers, _unscanned, _scanned = _scan_writers_and_unscanned(
         source_root, invariants, exclude=exclude, only_files=only_files
     )
     return writers
@@ -561,23 +638,26 @@ def _scan_writers_and_unscanned(
     invariants: list[SingleWriterInvariant],
     exclude: list[str] | None = None,
     only_files: set[str] | None = None,
-) -> tuple[list[Writer], list[dict]]:
+) -> tuple[list[Writer], list[dict], int]:
     """Emit field-agnostic write sites per file, then claim them against each
     invariant. ``only_files`` (repo-relative paths), when given, restricts the
     walk to that set instead of the whole tree — used by ``--changed-since``.
 
-    Returns ``(writers, unscanned)``: ``unscanned`` lists ``{"file", "reason"}``
-    for every candidate that could not be READ at all (chief-wiggum#282) —
-    decode failures alone can no longer land here (``read_text_safe`` BOM-sniffs
-    and falls back to a lossy decode rather than skipping), so this is
-    genuinely "could not open this file", never a silent drop.
+    Returns ``(writers, unscanned, scanned)``: ``unscanned`` lists
+    ``{"file", "reason"}`` for every candidate that could not be READ at all
+    (chief-wiggum#282) — decode failures alone can no longer land here
+    (``read_text_safe`` BOM-sniffs and falls back to a lossy decode rather than
+    skipping), so this is genuinely "could not open this file", never a silent
+    drop. ``scanned`` is the count of files actually read: the measured
+    denominator (#289), so a zero-file scan cannot pass for a clean inventory.
     """
     root = Path(source_root)
     exclude = exclude or []
     writers: list[Writer] = []
     unscanned: list[dict] = []
+    scanned = 0
     if not root.exists() or not invariants:
-        return writers, unscanned
+        return writers, unscanned, scanned
 
     if only_files is not None:
         candidates = sorted(only_files)
@@ -598,6 +678,7 @@ def _scan_writers_and_unscanned(
         if skip_reason is not None:
             unscanned.append({"file": rel, "reason": skip_reason})
             continue
+        scanned += 1
         # Route through the per-language emitter registry (#162) — the gate
         # consumes the SAME dispatch path scripts/emitters exposes, so a
         # per-language emitter can never drift from what the gate actually
@@ -620,7 +701,7 @@ def _scan_writers_and_unscanned(
                 tagged.append((idx, w))
         tagged.sort(key=lambda t: (t[1].line, t[0]))
         writers.extend(w for _, w in tagged)
-    return writers, unscanned
+    return writers, unscanned, scanned
 
 
 def _is_sanctioned(inv: SingleWriterInvariant, rel: str, symbol: str | None) -> bool:
@@ -799,9 +880,23 @@ def check(
     leaves the violation blocking, labeled. ``today`` overrides the
     expiry-check clock (defaults to the real today)."""
     report = SingleWriterReport()
-    invariants, malformed = collect_invariants(epic_dir)
+    invariants, malformed, unparsed = collect_invariants_full(epic_dir)
     report.invariants = [inv.to_dict() for inv in invariants]
     report.malformed = malformed
+    report.unparsed_artifacts = unparsed
+
+    if unparsed:
+        # #289: the declared metadata source exists and could not be parsed.
+        # Whatever invariant list came out of this run is short by an unknown
+        # amount — a broken instrument, never "nothing to check".
+        report.applicability = "error"
+        for entry in unparsed:
+            report.warnings.append(
+                f"{entry['file']}: declared metadata source could not be parsed "
+                f"({entry['reason']}) — the invariant set is incomplete by breakage, "
+                "not by absence (ERROR, not inapplicable)"
+            )
+        return report
 
     if not invariants:
         report.applicability = "inapplicable"
@@ -835,10 +930,27 @@ def check(
             # .php/.cpp still triggers the coverage warning (scan_writers
             # filters back down to SOURCE_EXTS itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
-        writers, unscanned = _scan_writers_and_unscanned(
+        writers, unscanned, scanned = _scan_writers_and_unscanned(
             source_root, invariants, exclude=scan_exclude, only_files=only_files
         )
         report.unscanned = unscanned
+        report.source_files_scanned = scanned
+        if scanned == 0 and only_files is None:
+            # #289 — THE fail-open this gate shipped with: invariants declared,
+            # a source root given, and the scan read nothing (root absent, no
+            # file of a scannable language, or an --exclude that swallowed the
+            # tree). The empty violation list below is the absence of a
+            # measurement, not a clean inventory. Under --changed-since
+            # (only_files is not None) a zero is EXPECTED — a diff that touched
+            # no source file genuinely has nothing to measure — so that path
+            # stays applicable.
+            report.applicability = "error"
+            report.warnings.append(
+                f"scanned 0 source files under {source_root} while "
+                f"{len(invariants)} single-write-path invariant(s) are declared — "
+                "no writer inventory was taken, so an empty violation list proves "
+                "nothing (ERROR, not a pass)"
+            )
         if unscanned:
             # Never silent (#282): a file the scanner could not even read is
             # visible with its path, same treatment as unsupported_extension_counts
@@ -907,10 +1019,14 @@ def render_text(report: SingleWriterReport) -> str:
         "# Single-Writer Audit",
         "",
         f"Single-write-path invariants: {c['invariants']}",
+        # #289 item 5: the denominator is printed on every run, green or not,
+        # so a zero is visible without reading the JSON.
+        f"Measured: {report.source_files_scanned} source file(s) scanned",
         f"Writers found: {c['writers']}  |  Violations: {c['violations']}  |  "
         f"Grandfathered: {c['grandfathered']}  |  Malformed metadata: {c['malformed']}  |  "
         f"Unscanned: {c['unscanned']}",
         "",
+        f"- Outcome: {report.outcome.upper()}",
         f"- Soundness (metadata well-formed): {'OK' if report.soundness_ok else 'FINDINGS'}",
         f"- Coverage (no unsanctioned writer): {'OK' if report.coverage_ok else 'FINDINGS'}",
     ]
@@ -919,6 +1035,14 @@ def render_text(report: SingleWriterReport) -> str:
             "- Applicability: INAPPLICABLE — no single-write-path invariants defined; "
             "nothing was checked (not a real pass)"
         )
+    if report.applicability == "error":
+        lines.append(
+            "- Applicability: ERROR — the instrument measured nothing; this result "
+            "is the absence of a finding, not the absence of a problem"
+        )
+    if report.unparsed_artifacts:
+        lines += ["", "## Unparsed metadata sources", ""]
+        lines += [f"- {u['file']}: {u['reason']}" for u in report.unparsed_artifacts]
     if report.malformed:
         lines += ["", "## Malformed metadata", ""]
         lines += [f"- {m['id']} ({m['source']}): {m['reason']}" for m in report.malformed]
@@ -1051,6 +1175,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: epic dir not found: {args.epic_dir}", file=sys.stderr)
         return 2
 
+    # #289: a --source that does not exist is a typo, not a repo with no
+    # unsanctioned writers. Caught here with a clear message rather than left
+    # to become an `error` outcome further down (check() still classifies it
+    # as one for library callers).
+    if args.source and not Path(args.source).exists():
+        print(f"Error: --source repo not found: {args.source}", file=sys.stderr)
+        return 2
+
     scope = None
     if args.scope:
         # load_scope_file raises ValueError on a malformed or unknown-key scope
@@ -1127,6 +1259,23 @@ def main(argv: list[str] | None = None) -> int:
             "not a real green)",
             file=sys.stderr,
         )
+
+    # #289: a BROKEN measurement fails EITHER gate. "The scanner read nothing"
+    # is not a clean soundness result and not a clean coverage result — it is
+    # the absence of a result. Exit stays in the uniform 0/1/2 contract every
+    # gate shares (docs/gate-rollout.md); the state is carried by the banner
+    # and by "applicability": "error" / "outcome": "error" in the JSON.
+    if args.gate and report.applicability == "error":
+        print(
+            "check_single_writer: ERROR — "
+            f"{report.source_files_scanned} source file(s) scanned for "
+            f"{len(report.invariants)} single-write-path invariant(s); "
+            f"--gate {args.gate} measured nothing (FAILURE, not a pass). "
+            "See the warnings for which input the instrument could not see "
+            "(chief-wiggum#289)",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.gate == "soundness" and not report.soundness_ok:
         return 1

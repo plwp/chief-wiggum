@@ -1190,3 +1190,147 @@ def test_cli_inapplicable_text_output_says_so(tmp_path, capsys):
     rc = sw.main([str(epic)])
     assert rc == 0
     assert "INAPPLICABLE" in capsys.readouterr().out
+
+
+# --- broken instrument: the scan measured NOTHING (chief-wiggum#289) ---------
+#
+# The whole point of the four-state outcome is that "there was nothing to
+# measure" (inapplicable) and "there was something to measure and the
+# instrument saw none of it" (error) are different verdicts. Before #289 both
+# collapsed to a clean green: an epic with real single-write-path invariants
+# pointed at a source root the scanner never read reported
+# `coverage_ok: true`, `applicability: "applicable"`, exit 0 — byte-identical
+# to a repo with zero unsanctioned writers.
+
+
+def test_missing_source_root_is_error_not_clean_pass(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    report = sw.check(epic, tmp_path / "does-not-exist")
+    assert report.applicability == "error"
+    assert report.outcome == "error"
+    assert report.coverage_ok is False
+    assert report.measured["source_files_scanned"] == 0
+
+
+def test_source_root_without_scannable_files_is_error(tmp_path):
+    """The root exists and holds files, but none of them are files this gate
+    can read — the inventory it reports is empty by breakage, not by
+    cleanliness."""
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "NOTES.rst").write_text("prose, no emitter, nothing scannable\n")
+    report = sw.check(epic, src)
+    assert report.outcome == "error"
+    assert report.measured["source_files_scanned"] == 0
+
+
+def test_exclude_that_removes_every_file_is_error(tmp_path):
+    """A wrong --exclude glob is the classic broken instrument: the scan runs,
+    reads nothing, and reports a clean bill of health."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    report = sw.check(epic, src, exclude=["internal/**"])
+    assert report.outcome == "error"
+    assert report.measured["source_files_scanned"] == 0
+
+
+def test_clean_scan_reports_measured_denominator_and_passes(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    (src / "internal" / "billing").mkdir(parents=True)
+    (src / "internal" / "billing" / "reconcile.go").write_text(
+        "func ReconcileStripe(p *Provider, v string) {\n\tp.StripePlan = v\n}\n"
+    )
+    report = sw.check(epic, src)
+    assert report.outcome == "pass"
+    assert report.measured["source_files_scanned"] == 1
+    assert report.to_dict()["measured"]["source_files_scanned"] == 1
+
+
+def test_outcome_is_findings_when_a_violation_exists(tmp_path):
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    report = sw.check(epic, src)
+    assert report.violations
+    assert report.outcome == "findings"
+
+
+def test_no_invariants_outcome_is_inapplicable_not_error(tmp_path):
+    """Genuinely-absent preconditions stay inapplicable — the error state must
+    not swallow the honest 'nothing declared here' case."""
+    epic = tmp_path / "epic"
+    epic.mkdir()
+    (epic / "invariants.md").write_text("# Invariants\n\nnothing structured here\n")
+    report = sw.check(epic, tmp_path / "src")
+    assert report.outcome == "inapplicable"
+
+
+def test_no_source_given_is_not_error(tmp_path):
+    """Metadata-only mode (/architect soundness) never scans a repo, so a zero
+    denominator there is expected, not a broken instrument."""
+    report = sw.check(_write_billing_epic(tmp_path))
+    assert report.outcome in ("pass", "findings")
+    assert report.applicability == "applicable"
+
+
+def test_changed_since_with_empty_changeset_is_not_error(tmp_path, monkeypatch):
+    """A ticket-scoped scan whose diff touched no source file genuinely has
+    nothing to measure — that is inapplicable, never a broken instrument."""
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    monkeypatch.setattr(sw, "changed_paths", lambda *a, **k: [])
+    report = sw.check(epic, src, changed_since="HEAD~1")
+    assert report.outcome != "error"
+    assert report.measured["source_files_scanned"] == 0
+
+
+def test_unparseable_state_machines_json_is_error_not_inapplicable(tmp_path):
+    """The declared metadata source exists with content but cannot be parsed.
+    Today the exception is swallowed, yielding zero invariants — reported as
+    'nothing to check'. A broken instrument must never masquerade as an
+    absent precondition."""
+    epic = tmp_path / "epic"
+    (epic / "models").mkdir(parents=True)
+    (epic / "models" / "state-machines.json").write_text("{ this is not json ")
+    report = sw.check(epic, tmp_path / "src")
+    assert report.outcome == "error"
+    assert report.unparsed_artifacts
+    assert "state-machines.json" in report.unparsed_artifacts[0]["file"]
+
+
+def test_cli_gate_exits_1_on_broken_instrument(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "NOTES.rst").write_text("nothing scannable here\n")
+    rc = sw.main([str(epic), "--source", str(src), "--gate", "coverage",
+                  "--format", "json"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["outcome"] == "error"
+    assert "ERROR" in captured.err
+
+
+def test_cli_gate_soundness_also_fails_on_broken_instrument(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "NOTES.rst").write_text("nothing scannable here\n")
+    rc = sw.main([str(epic), "--source", str(src), "--gate", "soundness"])
+    assert rc == 1
+
+
+def test_cli_nonexistent_source_is_a_usage_error(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    rc = sw.main([str(epic), "--source", str(tmp_path / "nope")])
+    assert rc == 2
+    assert "source" in capsys.readouterr().err.lower()
+
+
+def test_cli_text_output_shows_the_measured_denominator(tmp_path, capsys):
+    epic = _write_billing_epic(tmp_path)
+    src = _write_two_writer_src(tmp_path)
+    sw.main([str(epic), "--source", str(src)])
+    out = capsys.readouterr().out
+    assert "2 source file(s) scanned" in out

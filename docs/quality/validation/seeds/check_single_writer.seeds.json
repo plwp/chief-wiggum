@@ -4,6 +4,15 @@
   "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds check_single_writer` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
   "seeds": [
     {
+      "seed_id": "sw-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/single_writer_clean",
+      "corpus_digest": "sha256:5cd5b32d0dc70a1554a4770c93d24324258694ec183bd11b86eb1365a11daa8a",
+      "injected": "the invariant metadata is left intact; every scannable file is removed from the --source tree (one unscannable README remains). Nothing about the code under test changed \u2014 only the gate's ability to see any of it.",
+      "expected": "fire"
+    },
+    {
       "seed_id": "sw-direct-01",
       "seed_class": "direct",
       "seed_version": "1",

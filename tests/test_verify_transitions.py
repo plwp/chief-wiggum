@@ -8,6 +8,9 @@ that classifies transitions as covered / missing / undocumented.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import verify_transitions as vt
 
@@ -257,3 +260,145 @@ def test_format_text_zero_transitions_is_safe():
     out = vt.format_text("Empty", [], [])
     assert "0 covered, 0 missing, 0 undocumented" in out
     assert "0% coverage" in out
+
+
+# --- broken instrument: the verifier could not measure (chief-wiggum#289) ----
+#
+# This verifier's scanner is Go-only. Pointed at a TypeScript repo, at an empty
+# root, or at a model file that does not exist, it produced "0 covered, N
+# missing, 0% coverage" and exit 0 — the same report a working instrument
+# gives when the code genuinely lacks the transitions. main() had no return
+# value at all, so the process could not fail whatever it found.
+
+SCRIPT = Path(__file__).parent.parent / "scripts" / "verify_transitions.py"
+
+_MODEL = {
+    "name": "Booking Status State Machine",
+    "states": {"pending": {}, "confirmed": {}},
+    "transitions": [{"from": "pending", "to": "confirmed", "event": "confirm"}],
+}
+
+
+def _write_sm(tmp_path, data=None, name="state-machines.json"):
+    path = tmp_path / name
+    path.write_text(json.dumps(data if data is not None else _MODEL))
+    return path
+
+
+def _run(*args):
+    return subprocess.run([sys.executable, str(SCRIPT), *args],
+                          capture_output=True, text=True)
+
+
+def _go_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "handler.go").write_text(
+        'package main\n\nfunc Confirm(b *Booking) {\n\tb.Status = "confirmed"\n}\n'
+    )
+    return repo
+
+
+def test_missing_model_file_is_error_not_a_silent_skip(tmp_path):
+    repo = _go_repo(tmp_path)
+    result = _run(str(repo), str(tmp_path / "nope.json"), "--format", "json")
+    doc = json.loads(result.stdout)
+    assert doc["outcome"] == "error"
+    assert doc["measured"]["model_files_loaded"] == 0
+
+
+def test_unparseable_model_is_error_not_a_traceback(tmp_path):
+    repo = _go_repo(tmp_path)
+    bad = tmp_path / "state-machines.json"
+    bad.write_text("{ not json ")
+    result = _run(str(repo), str(bad), "--format", "json")
+    assert "Traceback" not in result.stderr
+    assert json.loads(result.stdout)["outcome"] == "error"
+
+
+def test_model_with_malformed_transition_is_error_not_a_traceback(tmp_path):
+    repo = _go_repo(tmp_path)
+    model = _write_sm(tmp_path, {"name": "Booking", "states": {"a": {}},
+                                    "transitions": [{"to": "a"}]})
+    result = _run(str(repo), str(model), "--format", "json")
+    assert "Traceback" not in result.stderr
+    assert json.loads(result.stdout)["outcome"] == "error"
+
+
+def test_no_scannable_source_is_error_not_zero_percent_coverage(tmp_path):
+    """The motivating shape: a Go-only scanner pointed at a TypeScript repo
+    reports every transition MISSING at 0% coverage — identical to a Go repo
+    that genuinely never implements them."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "handler.ts").write_text("export function confirm(b) { b.status = 'confirmed'; }\n")
+    model = _write_sm(tmp_path)
+    result = _run(str(repo), str(model), "--format", "json")
+    doc = json.loads(result.stdout)
+    assert doc["outcome"] == "error"
+    assert doc["measured"]["source_files_scanned"] == 0
+
+
+def test_model_with_zero_transitions_is_inapplicable_not_error(tmp_path):
+    repo = _go_repo(tmp_path)
+    model = _write_sm(tmp_path, {"name": "Empty", "states": {}, "transitions": []})
+    doc = json.loads(_run(str(repo), str(model), "--format", "json").stdout)
+    assert doc["outcome"] == "inapplicable"
+
+
+def test_measured_denominator_is_reported_on_a_working_scan(tmp_path):
+    repo = _go_repo(tmp_path)
+    model = _write_sm(tmp_path)
+    doc = json.loads(_run(str(repo), str(model), "--format", "json").stdout)
+    assert doc["measured"]["source_files_scanned"] == 1
+    assert doc["measured"]["model_files_loaded"] == 1
+    assert doc["outcome"] in ("pass", "findings")
+
+
+def test_missing_transitions_are_findings_not_error(tmp_path):
+    """A Go repo that was really scanned and really lacks the transition is
+    `findings` — and must NOT be blocked by --gate, which fails only on a
+    broken instrument."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "other.go").write_text("package main\n\nfunc Noop() {}\n")
+    model = _write_sm(tmp_path)
+    result = _run(str(repo), str(model), "--gate", "--format", "json")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["outcome"] == "findings"
+
+
+def test_report_only_exits_0_on_error_but_says_so(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    model = _write_sm(tmp_path)
+    result = _run(str(repo), str(model), "--format", "json")
+    assert result.returncode == 0
+    assert "ERROR" in result.stderr
+
+
+def test_gate_exits_1_on_a_broken_instrument(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    model = _write_sm(tmp_path)
+    result = _run(str(repo), str(model), "--gate", "--format", "json")
+    assert result.returncode == 1
+    assert "ERROR" in result.stderr
+
+
+def test_text_output_prints_the_measured_denominator(tmp_path):
+    repo = _go_repo(tmp_path)
+    model = _write_sm(tmp_path)
+    result = _run(str(repo), str(model), "--format", "text")
+    assert "1 source file(s) scanned" in result.stdout
+    assert "OUTCOME:" in result.stdout
+
+
+def test_written_transition_map_carries_the_outcome(tmp_path):
+    repo = _go_repo(tmp_path)
+    model = _write_sm(tmp_path)
+    out = tmp_path / "transition-map.json"
+    _run(str(repo), str(model), "--output", str(out), "--format", "text")
+    doc = json.loads(out.read_text())
+    assert doc["outcome"] in ("pass", "findings")
+    assert doc["measured"]["source_files_scanned"] == 1

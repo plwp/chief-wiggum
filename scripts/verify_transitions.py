@@ -49,17 +49,43 @@ class ModelTransition:
 # Phase 1: Parse state machine model
 # ---------------------------------------------------------------------------
 
+class ModelLoadError(Exception):
+    """The named model file exists but could not be turned into transitions.
+
+    Raised instead of leaking a JSONDecodeError/KeyError traceback (#289): a
+    model the verifier cannot read is a BROKEN INSTRUMENT, and the run must
+    say so rather than proceed with an empty transition list that renders as
+    "0 transitions, nothing missing".
+    """
+
+
 def load_model(path: Path) -> tuple[str, list[ModelTransition], set[str]]:
-    """Load state machine JSON, return (entity_name, transitions, all_states)."""
-    with open(path) as f:
-        data = json.load(f)
+    """Load state machine JSON, return (entity_name, transitions, all_states).
+
+    Raises ``ModelLoadError`` when the file is unreadable, is not JSON, is not
+    a JSON object, or holds a transition without ``from``/``to``.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except OSError as exc:
+        raise ModelLoadError(f"{path}: cannot read: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ModelLoadError(f"{path}: not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ModelLoadError(f"{path}: expected a JSON object, got {type(data).__name__}")
 
     name = data.get("name", path.stem)
     entity = _extract_entity_name(name)
-    states = set(data.get("states", {}).keys())
+    states = set((data.get("states") or {}).keys())
     transitions = []
 
-    for t in data.get("transitions", []):
+    for i, t in enumerate(data.get("transitions") or []):
+        if not isinstance(t, dict) or "from" not in t or "to" not in t:
+            raise ModelLoadError(
+                f"{path}: transitions[{i}] is missing 'from'/'to' — the model cannot be "
+                "compared against code"
+            )
         tickets = []
         for p in t.get("derived_from", []):
             if p.get("type") == "ticket":
@@ -130,8 +156,27 @@ def camel_to_snake(name: str) -> str:
 
 
 def scan_go_files(repo_path: Path) -> list[CodeMatch]:
-    """Scan Go files for status assignments."""
+    """Scan Go files for status assignments.
+
+    Backward-compatible entry point returning just the matches; ``main`` calls
+    ``scan_go_files_measured`` so it can report the denominator (#289).
+    """
+    matches, _scanned, _unreadable = scan_go_files_measured(repo_path)
+    return matches
+
+
+def scan_go_files_measured(repo_path: Path) -> tuple[list[CodeMatch], int, list[str]]:
+    """``(matches, files_scanned, unreadable)``.
+
+    ``files_scanned`` is the measured denominator: how many Go files this
+    scanner actually READ. Zero is the broken-instrument signal — the scanner
+    is Go-only, so a TypeScript repo, an empty root, or a wrong root yields
+    zero matches and reports every model transition MISSING, exactly as a Go
+    repo that genuinely never implements them would (#289).
+    """
     matches = []
+    scanned = 0
+    unreadable: list[str] = []
 
     for go_file in repo_path.rglob("*.go"):
         rel = go_file.relative_to(repo_path)
@@ -142,8 +187,13 @@ def scan_go_files(repo_path: Path) -> list[CodeMatch]:
 
         try:
             lines = go_file.read_text().splitlines()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            # #289: never a silent drop — a file the scanner could not open is
+            # named in the report, the same treatment check_traceability and
+            # check_single_writer give `unscanned` (#282).
+            unreadable.append(f"{rel}: {type(exc).__name__}")
             continue
+        scanned += 1
 
         current_func = ""
         func_guard_statuses: list[str] = []
@@ -216,7 +266,7 @@ def scan_go_files(repo_path: Path) -> list[CodeMatch]:
                         raw_line=stripped,
                     ))
 
-    return matches
+    return matches, scanned, unreadable
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +438,27 @@ def format_text(
     return "\n".join(lines)
 
 
+def derive_outcome(applicability: str, missing: int, undocumented: int) -> str:
+    """The standard four-state gate outcome (#289): pass | findings |
+    inapplicable | error.
+
+    Derived, never stored — "failed to run" and "found nothing" must not be
+    able to drift apart into two fields that disagree.
+    """
+    if applicability == "error":
+        return "error"
+    if applicability == "inapplicable":
+        return "inapplicable"
+    return "findings" if (missing or undocumented) else "pass"
+
+
 def build_json(
     repo_path: str,
     all_entities: list[tuple[str, list[TransitionResult], list[UndocumentedResult]]],
+    *,
+    measured: dict | None = None,
+    applicability: str = "applicable",
+    errors: list[str] | None = None,
 ) -> dict:
     """Build the transition-map JSON."""
     entities = []
@@ -444,6 +512,14 @@ def build_json(
         "entities": entities,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "repo": repo_path,
+        # #289: the standard outcome model. `applicability` is the raw state,
+        # `outcome` the derived verdict, `measured` the denominator — so a
+        # consumer can tell "the code implements none of these transitions"
+        # from "the scanner read no code at all", which were the same document.
+        "applicability": applicability,
+        "outcome": derive_outcome(applicability, total_missing, total_undocumented),
+        "measured": measured or {},
+        "errors": errors or [],
         "summary": {
             "total_model_transitions": total_model,
             "covered": total_covered,
@@ -457,34 +533,61 @@ def build_json(
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Verify state machine transitions against source code")
     parser.add_argument("repo_path", help="Path to the target repository")
     parser.add_argument("model_files", nargs="+", help="State machine JSON file(s)")
     parser.add_argument("--ticket", help="Filter to transitions for a specific ticket (e.g., '#42')")
     parser.add_argument("--output", "-o", help="Write transition-map JSON to this file")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help="Exit 1 when the verifier could not MEASURE (outcome: error) — a model file "
+        "that cannot be loaded, or a scan that read zero source files. Honest findings "
+        "(missing/undocumented transitions) stay report-only: this checker is advisory "
+        "about coverage and blocking only about its own instrument (docs/gate-rollout.md).",
+    )
     args = parser.parse_args()
 
     repo = Path(args.repo_path).resolve()
     if not repo.is_dir():
         print(f"Error: {repo} is not a directory", file=sys.stderr)
-        sys.exit(1)
+        return 2
+
+    errors: list[str] = []
 
     # Scan code once
     print(f"Scanning {repo} for status assignments...", file=sys.stderr)
-    code_matches = scan_go_files(repo)
-    print(f"Found {len(code_matches)} status assignments in code", file=sys.stderr)
+    code_matches, files_scanned, unreadable = scan_go_files_measured(repo)
+    print(f"Found {len(code_matches)} status assignments in code "
+          f"({files_scanned} source file(s) scanned)", file=sys.stderr)
+    for u in unreadable:
+        print(f"Warning: could not read {u}", file=sys.stderr)
 
     all_entities = []
+    models_loaded = 0
+    model_transitions_total = 0
 
     for model_path_str in args.model_files:
         model_path = Path(model_path_str)
         if not model_path.exists():
-            print(f"Warning: {model_path} not found, skipping", file=sys.stderr)
+            # #289: NOT a warn-and-skip. The operator named this model; its
+            # absence means the comparison never happened, and the all-zero
+            # summary that follows would otherwise read as a clean map.
+            errors.append(f"{model_path}: model file not found")
+            print(f"Error: {model_path} not found — nothing was verified against it",
+                  file=sys.stderr)
             continue
 
-        entity, model_transitions, all_states = load_model(model_path)
+        try:
+            entity, model_transitions, all_states = load_model(model_path)
+        except ModelLoadError as exc:
+            errors.append(str(exc))
+            print(f"Error: {exc}", file=sys.stderr)
+            continue
+        models_loaded += 1
+        model_transitions_total += len(model_transitions)
         print(f"Loaded model: {entity} ({len(model_transitions)} transitions, {len(all_states)} states)", file=sys.stderr)
 
         # Filter code matches to those whose target status is in this model's states
@@ -501,15 +604,76 @@ def main():
         if args.format == "text":
             print(format_text(entity, results, undocumented))
 
-    if args.format == "json" or args.output:
-        doc = build_json(str(repo), all_entities)
-        if args.output:
-            with open(args.output, "w") as f:
-                json.dump(doc, f, indent=2)
-            print(f"Wrote transition-map to {args.output}", file=sys.stderr)
-        if args.format == "json":
-            print(json.dumps(doc, indent=2))
+    # #289 — the standard outcome model.
+    #   error        — a named model could not be loaded, OR there are
+    #                  transitions to look for and the scanner READ NOTHING.
+    #                  The Go-only scanner pointed at a TypeScript repo is
+    #                  exactly this: every transition comes back MISSING at
+    #                  "0% coverage", which is what a working scanner reports
+    #                  for a repo that genuinely never implements them.
+    #   inapplicable — models loaded, zero transitions declared: nothing to
+    #                  verify. Honest absence, never an error.
+    #   pass/findings — the comparison actually happened.
+    if errors:
+        applicability = "error"
+    elif model_transitions_total == 0:
+        applicability = "inapplicable"
+    elif files_scanned == 0:
+        applicability = "error"
+        errors.append(
+            f"scanned 0 source files under {repo} while {model_transitions_total} model "
+            "transition(s) are declared — this scanner reads Go only, so every 'MISSING' "
+            "below is the absence of a measurement, not the absence of an implementation"
+        )
+    else:
+        applicability = "applicable"
+
+    measured = {
+        "source_files_scanned": files_scanned,
+        "unreadable_files": len(unreadable),
+        "model_files_loaded": models_loaded,
+        "model_files_requested": len(args.model_files),
+        "model_transitions": model_transitions_total,
+        "code_matches": len(code_matches),
+    }
+
+    doc = build_json(str(repo), all_entities, measured=measured,
+                     applicability=applicability, errors=errors)
+
+    if args.format == "text":
+        print(f"\nMeasured: {files_scanned} source file(s) scanned, "
+              f"{models_loaded}/{len(args.model_files)} model file(s) loaded, "
+              f"{len(code_matches)} status assignment(s) found")
+        print(f"OUTCOME: {doc['outcome'].upper()}")
+
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(doc, f, indent=2)
+        print(f"Wrote transition-map to {args.output}", file=sys.stderr)
+    if args.format == "json":
+        print(json.dumps(doc, indent=2))
+
+    if applicability == "error":
+        # Loud in EVERY mode (docs/gate-rollout.md: report-only still prints
+        # the outcome); blocking only under --gate.
+        print(
+            "verify_transitions: ERROR — the verifier measured nothing "
+            f"({files_scanned} source file(s) scanned, "
+            f"{models_loaded}/{len(args.model_files)} model file(s) loaded). "
+            "This transition map is the absence of a measurement, not a clean bill of "
+            "health (chief-wiggum#289): " + "; ".join(errors),
+            file=sys.stderr,
+        )
+        if args.gate:
+            return 1
+    elif applicability == "inapplicable":
+        print(
+            "verify_transitions: INAPPLICABLE — the model(s) declare zero transitions; "
+            "nothing was verified (not a real pass)",
+            file=sys.stderr,
+        )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

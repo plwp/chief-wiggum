@@ -170,3 +170,106 @@ def test_cli_exit_1_when_blocked(tmp_path, capsys):
     spec.write_text(json.dumps({"design": {"tokens": {"c": 1}, "component_library": "x"}}))
     rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend", "--ui-spec", str(spec)])
     assert rc == 1  # design contract present, no capture tooling
+
+
+# --- broken instrument: the gate was disarmed by a missing input (#289) -----
+#
+# The ONLY thing that can set `blocked` is a design contract, and the design
+# contract comes from the ui-spec. A typo'd or wrong-root --ui-spec path was
+# silently read as "this ticket has no design contract" — so the gate passed
+# unconditionally, exactly when its input had gone missing.
+
+
+def _spec(tmp_path):
+    spec = tmp_path / "ui-spec.json"
+    spec.write_text(json.dumps({"design": {"tokens": {"c": 1}, "component_library": "x"}}))
+    return spec
+
+
+def test_cli_missing_ui_spec_is_error_not_a_pass(tmp_path, capsys):
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(tmp_path / "nope.json"), "--json"])
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "error"
+    assert payload["errors"]
+
+
+def test_cli_missing_design_dir_is_error(tmp_path, capsys):
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(_spec(tmp_path)),
+                       "--design-dir", str(tmp_path / "no-design"), "--json"])
+    assert rc == 1
+    assert json.loads(capsys.readouterr().out)["outcome"] == "error"
+
+
+def test_cli_missing_changed_files_is_a_usage_error(tmp_path, capsys):
+    rc = ux_gate.main(["--changed-files", str(tmp_path / "nope.txt")])
+    assert rc == 2
+    assert "changed-files" in capsys.readouterr().err
+
+
+def test_cli_present_inputs_report_the_measured_denominator(tmp_path, capsys):
+    design = tmp_path / "design"
+    design.mkdir()
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(_spec(tmp_path)), "--design-dir", str(design),
+                       "--have-playwright", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "pass"
+    assert payload["measured"]["changed_files"] == 1
+    assert payload["measured"]["ui_spec_loaded"] is True
+
+
+def test_cli_non_frontend_is_inapplicable_not_pass(tmp_path, capsys):
+    changed = tmp_path / "changed.txt"
+    changed.write_text("server/api.go\n")
+    rc = ux_gate.main(["--changed-files", str(changed), "--label", "backend", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "inapplicable"
+
+
+def test_cli_blocked_is_findings(tmp_path, capsys):
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(_spec(tmp_path)), "--json"])
+    assert rc == 1
+    assert json.loads(capsys.readouterr().out)["outcome"] == "findings"
+
+
+def test_cli_no_ui_spec_argument_at_all_is_not_an_error(tmp_path, capsys):
+    """Not passing --ui-spec is a caller that has no spec to offer — honest
+    absence. Only a NAMED path that is not there is a broken instrument."""
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] != "error"
+
+
+def test_cli_backend_ticket_with_missing_ui_spec_is_not_an_error(tmp_path, capsys):
+    """/implement passes --ui-spec and --design-dir unconditionally, and a
+    backend-only epic legitimately has neither. Erroring there would be pure
+    noise — the disarming only matters when the gate would otherwise run."""
+    rc = ux_gate.main(["--changed", "server/api.go", "--label", "backend",
+                       "--ui-spec", str(tmp_path / "nope.json"),
+                       "--design-dir", str(tmp_path / "no-design"), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "inapplicable"
+
+
+def test_cli_frontend_without_design_contract_tolerates_missing_design_dir(tmp_path, capsys):
+    """No design section means no reference-screenshot baseline was ever
+    promised — an absent docs/design/ is honest absence, not a broken scan."""
+    spec = tmp_path / "ui-spec.json"
+    spec.write_text(json.dumps({"pages": []}))
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(spec),
+                       "--design-dir", str(tmp_path / "no-design"), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "pass"
+
+
+def test_markdown_output_shows_the_outcome(tmp_path, capsys):
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(tmp_path / "nope.json"), "--markdown"])
+    assert rc == 1
+    assert "ERROR" in capsys.readouterr().out

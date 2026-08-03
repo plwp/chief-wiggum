@@ -6,9 +6,15 @@
     "boundary": 0,
     "grandfathered": 0,
     "malformed": 0,
-    "unscanned": 0
+    "unscanned": 0,
+    "unparsed_artifacts": 0
   },
   "applicability": "applicable",
+  "outcome": "findings",
+  "measured": {
+    "source_files_scanned": 6,
+    "invariants": 4
+  },
   "soundness_ok": true,
   "coverage_ok": false,
   "invariants": [
@@ -162,5 +168,6 @@
   "grandfathered": [],
   "malformed": [],
   "unscanned": [],
+  "unparsed_artifacts": [],
   "warnings": []
 }

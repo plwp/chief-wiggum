@@ -247,6 +247,147 @@ def test_no_epic_at_all_stays_inapplicable_not_error(tmp_path):
     assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
 
 
+# ---- broken instrument: the SUITE measured nothing (chief-wiggum#289) ----------
+#
+# #295 gave the contract-hash dimension a three-state measurement. The pass-set
+# dimension — the ratchet's other half — had none: a suite command that died
+# (OOM, kill, missing interpreter) or collected zero tests produced an empty
+# pass-set, and `check` compared empty-against-empty and printed
+# "ratchet: OK (pass-set and contract definitions hold the high-water mark)".
+
+
+def _junit(cases: str) -> str:
+    return f'<testsuites><testsuite name="s" tests="1">{cases}</testsuite></testsuites>'
+
+
+_PASSING_JUNIT = _junit('<testcase classname="a.b" name="t1"/>')
+
+
+def _suite_repo(tmp_path, cmd):
+    return make_repo(tmp_path, suites=[{
+        "name": "py", "cmd": cmd, "cwd": ".", "parser": "junit-xml",
+        "report": "report.xml",
+    }])
+
+
+def test_dead_command_with_a_stale_report_is_not_a_pass_set(tmp_path):
+    """The worst shape: a leftover report from an earlier run plus a command
+    that dies writing nothing fabricates a NON-ZERO pass count out of stale
+    bytes. TRX already pre-cleared for exactly this reason; junit did not."""
+    cfg = _suite_repo(tmp_path, "exit 137")
+    (tmp_path / "report.xml").write_text(_PASSING_JUNIT)
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.run_suite(cfg, cfg.suites[0])
+
+
+def test_unparseable_report_is_a_clean_error_not_a_traceback(tmp_path):
+    """A truncated/zero-byte report reached ET.fromstring unguarded and exited
+    with an ElementTree traceback — outside the documented 0/1/2/3/4 taxonomy,
+    so no wrapper could classify it."""
+    cfg = _suite_repo(tmp_path, "printf '' > report.xml")
+    with pytest.raises(ratchet.RatchetError) as exc:
+        ratchet.run_suite(cfg, cfg.suites[0])
+    assert "report.xml" in str(exc.value)
+
+
+def test_dead_command_scores_as_a_suite_measurement_error(tmp_path):
+    """A reportless parser (go-test-json / pass-fail-lines) has no
+    missing-report guard at all: a command that dies just yields an empty
+    pass-set, which `check` compares against an empty high-water and calls
+    OK."""
+    make_repo(tmp_path, suites=[{
+        "name": "smoke", "cmd": "exit 137", "cwd": ".", "parser": "pass-fail-lines",
+    }])
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert sc["suite_measurement"]["status"] == "error"
+    assert sc["suite_measurement"]["suites"][0]["exit_code"] == 137
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 1
+
+
+def test_zero_collected_tests_is_an_error_not_a_clean_run(tmp_path):
+    """A wrong -k, an empty testpath, or a rootdir slip: the runner exits 0,
+    the report parses, and ZERO cases come back. Before #289 that was a
+    silent, warning-free green."""
+    empty = '<testsuites><testsuite name="s" tests="0"></testsuite></testsuites>'
+    _suite_repo(tmp_path, f"printf '{empty}' > report.xml")
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    sm = sc["suite_measurement"]
+    assert sm["status"] == "error"
+    assert sm["suites"][0]["passing_cases"] == 0
+    assert sm["suites"][0]["suite"] == "py"
+
+
+def test_suite_measurement_error_is_never_a_clean_ratchet_check(tmp_path):
+    empty = '<testsuites><testsuite name="s" tests="0"></testsuite></testsuites>'
+    _suite_repo(tmp_path, f"printf '{empty}' > report.xml")
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 1
+
+
+def test_violations_reports_suite_measurement_error(tmp_path):
+    empty = '<testsuites><testsuite name="s" tests="0"></testsuite></testsuites>'
+    _suite_repo(tmp_path, f"printf '{empty}' > report.xml")
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    cfg = ratchet.load_config(tmp_path)
+    sc = json.loads(cfg.scorecard.read_text())
+    v = ratchet.violations(sc, ratchet.derive_highwater(ratchet.load_journal(cfg)))
+    assert v["suite_measurement_error"]
+
+
+def test_healthy_suite_stays_applicable_and_passes_check(tmp_path):
+    """Regression: a suite that really ran and really passed must NOT trip the
+    new error state."""
+    _suite_repo(tmp_path, f"printf '{_PASSING_JUNIT}' > report.xml")
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert sc["suite_measurement"]["status"] == "applicable"
+    assert sc["suite_measurement"]["suites"][0]["passing_cases"] == 1
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
+
+
+def test_failing_tests_are_findings_not_a_measurement_error(tmp_path):
+    """Tests that RAN and FAILED are a real measurement — the pass-set ratchet
+    handles them. Only a suite contributing zero passing cases is broken."""
+    mixed = _junit('<testcase classname="a.b" name="t1"/>'
+                   '<testcase classname="a.b" name="t2"><failure/></testcase>')
+    _suite_repo(tmp_path, f"printf '{mixed}' > report.xml; exit 1")
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert sc["suite_measurement"]["status"] == "applicable"
+
+
+def test_no_tests_flag_is_inapplicable_not_error(tmp_path):
+    """--no-tests is an explicit operator choice, not a broken instrument — but
+    it must not read as a measured green either."""
+    _suite_repo(tmp_path, f"printf '{_PASSING_JUNIT}' > report.xml")
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=True))
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert sc["suite_measurement"]["status"] == "inapplicable"
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
+
+
+def test_no_suites_configured_is_inapplicable_not_error(tmp_path):
+    make_repo(tmp_path)
+    ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert sc["suite_measurement"]["status"] == "inapplicable"
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
+
+
+def test_scorecard_predating_suite_measurement_is_tolerated(tmp_path):
+    """An older scorecard carries no suite_measurement key: tolerated as empty,
+    never read as 'error' (same rule #295 set for contract_measurement)."""
+    make_repo(tmp_path)
+    ratchet.cmd_score(_score_ns(tmp_path))
+    cfg = ratchet.load_config(tmp_path)
+    sc = json.loads(cfg.scorecard.read_text())
+    del sc["suite_measurement"]
+    v = ratchet.violations(sc, ratchet.derive_highwater([]))
+    assert v["suite_measurement_error"] == []
+
+
 # ---- high-water derivation + violations ----------------------------------------
 
 

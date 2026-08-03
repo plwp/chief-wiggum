@@ -43,17 +43,30 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.changed_files:
-        changed = [ln.strip() for ln in Path(args.changed_files).read_text().splitlines() if ln.strip()]
+        try:
+            raw = Path(args.changed_files).read_text()
+        except OSError as exc:
+            # #289: was an uncaught FileNotFoundError traceback — and under
+            # /implement's `> manifest.md` redirect it left an EMPTY manifest
+            # behind, which reads as "nothing to do".
+            print(f"Error: --changed-files {args.changed_files}: {exc}", file=sys.stderr)
+            return 2
+        changed = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     else:
         changed = args.changed
 
     ui_spec = None
-    if args.ui_spec and Path(args.ui_spec).exists():
-        try:
-            ui_spec = json.loads(Path(args.ui_spec).read_text())
-        except json.JSONDecodeError as exc:
-            print(f"Error: malformed ui-spec: {exc}", file=sys.stderr)
-            return 1
+    ui_spec_missing = False
+    if args.ui_spec:
+        spec_path = Path(args.ui_spec)
+        if not spec_path.exists():
+            ui_spec_missing = True
+        else:
+            try:
+                ui_spec = json.loads(spec_path.read_text())
+            except json.JSONDecodeError as exc:
+                print(f"Error: malformed ui-spec: {exc}", file=sys.stderr)
+                return 1
 
     manifest = ux.build_ux_manifest(
         changed,
@@ -65,10 +78,78 @@ def main(argv: list[str] | None = None) -> int:
         screenshot_dir=args.screenshot_dir,
     )
 
+    # #289 — a NAMED input that is not there is a broken instrument, not an
+    # absent design contract. The only thing that can set `blocked` is the
+    # ui-spec's design section, so a typo'd or wrong-root --ui-spec disarmed
+    # the gate entirely: it passed unconditionally, exactly when its input had
+    # gone missing.
+    #
+    # Scoped to FRONTEND tickets on purpose. /implement passes --ui-spec and
+    # --design-dir unconditionally, and a backend-only epic legitimately has
+    # neither; erroring there would be pure noise, and a noisy gate teaches the
+    # operator to --force past every gate (docs/gate-rollout.md). The
+    # disarming only matters when the gate would otherwise have run.
+    errors: list[str] = []
+    if manifest.should_run_gate:
+        if ui_spec_missing:
+            errors.append(
+                f"--ui-spec {args.ui_spec}: not found on a FRONTEND ticket — the design "
+                "contract could not be read, so this gate has nothing to hold the build "
+                "against and cannot block"
+            )
+        # A missing design dir only breaks a measurement that was actually
+        # expected: reference screenshots are the design contract's baseline,
+        # so this is an error only when a design contract exists.
+        if (args.design_dir and not Path(args.design_dir).is_dir()
+                and manifest.design_binding.has_design_section):
+            errors.append(
+                f"--design-dir {args.design_dir}: not a directory while the ui-spec "
+                "declares a design contract — the reference screenshots were looked for "
+                "in a place that does not exist, so an empty list means nothing"
+            )
+
+    # The standard four-state outcome (#289). `inapplicable` is the honest
+    # "this ticket does not touch the frontend"; `error` is "an input I was
+    # pointed at is not there".
+    if errors:
+        applicability, outcome = "error", "error"
+    elif not manifest.should_run_gate:
+        applicability, outcome = "inapplicable", "inapplicable"
+    else:
+        applicability = "applicable"
+        outcome = "findings" if manifest.blocked else "pass"
+
+    payload = manifest.to_dict()
+    payload["applicability"] = applicability
+    payload["outcome"] = outcome
+    payload["measured"] = {
+        "changed_files": len(changed),
+        "frontend_files": len(manifest.frontend.frontend_files),
+        "reference_screenshots": len(manifest.reference_screenshots),
+        "ui_spec_loaded": ui_spec is not None,
+    }
+    payload["errors"] = errors
+
     if args.markdown:
         print(manifest.render_markdown())
+        print(f"- Measured: {len(changed)} changed file(s), "
+              f"{len(manifest.frontend.frontend_files)} frontend, "
+              f"{len(manifest.reference_screenshots)} reference screenshot(s), "
+              f"ui-spec {'loaded' if ui_spec is not None else 'not loaded'}")
+        print(f"- OUTCOME: {outcome.upper()}")
+        for e in errors:
+            print(f"  - ERROR: {e}")
     else:
-        print(json.dumps(manifest.to_dict(), indent=2))
+        print(json.dumps(payload, indent=2))
+
+    if errors:
+        print(
+            "ux_gate: ERROR — an input this gate was pointed at is missing; a green "
+            "result here would be the absence of a measurement, not the absence of a "
+            "problem (chief-wiggum#289):\n  " + "\n  ".join(errors),
+            file=sys.stderr,
+        )
+        return 1
 
     # A frontend ticket with a design contract but no capture tooling is blocked.
     return 1 if manifest.blocked else 0

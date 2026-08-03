@@ -352,6 +352,44 @@ def contract_measurement(cfg: Config, contract_hashes: dict[str, str]) -> dict:
     }
 
 
+SUITE_STATUS_APPLICABLE = "applicable"
+SUITE_STATUS_INAPPLICABLE = "inapplicable"
+SUITE_STATUS_ERROR = "error"
+
+
+def suite_measurement(entries: list[dict], *, tests_run: bool, suites_configured: int) -> dict:
+    """The pass-set dimension's measurement diagnostics — the sibling of
+    ``contract_measurement`` for the ratchet's other half (#289).
+
+    The ratchet's whole premise is that a pass-set is a high-water mark. A
+    suite that contributes ZERO passing cases contributes no measurement: the
+    empty pass-set it produces compares clean against an empty high-water and
+    prints "OK". That happens when the command dies (OOM, kill, missing
+    interpreter), when a wrong ``-k``/testpath collects nothing, or when a
+    rootdir slip runs the wrong tree — and it is indistinguishable, today,
+    from a healthy greenfield.
+
+    ``inapplicable`` is reserved for the honest absences: ``--no-tests`` (an
+    explicit operator choice) and a config declaring no suites at all. A
+    CONFIGURED suite yielding nothing is ``error``.
+    """
+    if not tests_run:
+        return {"status": SUITE_STATUS_INAPPLICABLE, "suites": [], "broken": [],
+                "total_passing": 0,
+                "reason": "--no-tests: the pass-set dimension was not measured"}
+    if not suites_configured:
+        return {"status": SUITE_STATUS_INAPPLICABLE, "suites": [], "broken": [],
+                "total_passing": 0,
+                "reason": "no suites configured; the pass-set has nothing to measure"}
+    broken = [e for e in entries if not e["passing_cases"]]
+    return {
+        "status": SUITE_STATUS_ERROR if broken else SUITE_STATUS_APPLICABLE,
+        "suites": entries,
+        "broken": broken,
+        "total_passing": sum(e["passing_cases"] for e in entries),
+    }
+
+
 # ---- suite parsers (pluggable, per target repo) --------------------------------
 
 
@@ -574,11 +612,34 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
     """Run one suite; return (passing case IDs, case-ID -> source file/dir map),
     both namespaced by suite name.
 
+    Backward-compatible entry point; ``cmd_score`` calls
+    ``run_suite_measured`` so it can record the suite's exit code alongside
+    what the parser saw (#289).
+    """
+    ids, files, _exit_code = run_suite_measured(cfg, suite)
+    return ids, files
+
+
+def run_suite_measured(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str], int]:
+    """``(passing case IDs, case-ID -> source file/dir map, exit code)``.
+
     A non-zero exit is expected when tests fail — the parsed per-case results
     are the signal, not the exit code. The file map (#207) feeds `protected`'s
     report-only high-water-test-file cue; unresolvable cases are absent here
-    and surfaced by ``score`` as ``test_files_unresolved``.
+    and surfaced by ``score`` as ``test_files_unresolved``. The exit code is
+    returned so ``suite_measurement`` (#289) can distinguish "the suite ran
+    and nothing passed" from "the suite never ran".
     """
+    if suite.parser == "junit-xml" and suite.report:
+        # #289: the same reason TRX pre-clears below, on the parser CW itself
+        # uses. A report left over from an earlier run, plus a cmd that dies
+        # writing nothing (OOM, kill, missing interpreter), fabricates a
+        # NON-ZERO pass count out of stale bytes — strictly worse than an
+        # empty one, because no downstream check can even see it is empty.
+        stale_report = cfg.repo / suite.report
+        if stale_report.is_file():
+            stale_report.unlink()
+
     if suite.parser == "trx" and suite.report:
         # A TRX results DIRECTORY accumulates: `dotnet test` adds a new
         # timestamped file per run per project, so a stale file from an
@@ -605,8 +666,17 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
                 f"suite {suite.name!r}: report {report} not written by cmd:\n"
                 f"{proc.stderr[-2000:]}"
             )
-        passed = parse_junit_xml(report.read_text())
-        files = junit_case_files(cfg, suite, report.read_text())
+        # #289: a truncated/zero-byte/half-written report reached ET.fromstring
+        # unguarded and exited with an ElementTree traceback — outside the
+        # documented 0/1/2/3/4 exit taxonomy, so no wrapper could classify it.
+        try:
+            passed = parse_junit_xml(report.read_text())
+            files = junit_case_files(cfg, suite, report.read_text())
+        except ET.ParseError as exc:
+            raise RatchetError(
+                f"suite {suite.name!r}: report {report} is not parseable XML ({exc}) — "
+                f"the run produced no usable measurement:\n{proc.stderr[-2000:]}"
+            ) from exc
     elif suite.parser == "trx":
         if not suite.report:
             raise RatchetError(f"suite {suite.name!r}: trx parser needs `report`")
@@ -624,13 +694,16 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
         passed = parse_pass_fail_lines(proc.stdout)
     else:
         raise RatchetError(f"suite {suite.name!r}: unknown parser {suite.parser!r}")
-    if not passed and proc.returncode != 0:
+    if not passed:
+        # #289: warn whatever the exit code was. A suite that exits 0 having
+        # collected nothing (wrong -k, empty testpath, rootdir slip) used to
+        # print nothing at all — the quietest broken instrument in the tool.
         sys.stderr.write(
             f"ratchet: suite {suite.name!r} produced no passing cases "
             f"(exit {proc.returncode}):\n{proc.stderr[-2000:]}\n"
         )
     ids = {f"{suite.name}::{cid}" for cid in passed}
-    return ids, {cid: f for cid, f in files.items() if cid in ids}
+    return ids, {cid: f for cid, f in files.items() if cid in ids}, proc.returncode
 
 
 # ---- reuse an already-written report (#284) -------------------------------------
@@ -1155,6 +1228,17 @@ def violations(scorecard: dict, highwater: dict, today: date | None = None) -> d
         list(cmeas.get("unparsed_artifacts") or []) if cmeas.get("status") == CONTRACT_STATUS_ERROR
         else []
     )
+    # Vacuous pass-set gate (#289): the same rule for the ratchet's other
+    # dimension. A suite that contributed zero passing cases produced no
+    # measurement, so "the pass-set holds its high-water mark" holds
+    # vacuously. HARD finding, matching contract_measurement_error — the
+    # pass-set dimension has always been unconditionally blocking, so a broken
+    # instrument for it must block the same way. A scorecard predating this
+    # dimension carries no key; tolerated as empty, never "error".
+    smeas = scorecard.get("suite_measurement") or {}
+    suite_measurement_error = (
+        list(smeas.get("broken") or []) if smeas.get("status") == SUITE_STATUS_ERROR else []
+    )
     return {
         "missing_tests": missing,
         "weakened_contracts": weakened,
@@ -1165,6 +1249,7 @@ def violations(scorecard: dict, highwater: dict, today: date | None = None) -> d
         "expired_quarantines": q_expired,
         "removed_cases": removed_cases,
         "contract_measurement_error": contract_measurement_error,
+        "suite_measurement_error": suite_measurement_error,
     }
 
 
@@ -1478,13 +1563,23 @@ def cmd_score(args) -> int:
     reuse_max_age = getattr(args, "reuse_report_max_age", DEFAULT_REUSE_REPORT_MAX_AGE)
     pass_set: set[str] = set()
     test_files: dict[str, str] = {}
+    suite_entries: list[dict] = []
     for suite in cfg.suites:
         if args.no_tests:
             break
         if suite.name in reuse_map:
             ids, files = reuse_suite_report(cfg, suite, reuse_map[suite.name], reuse_max_age)
+            exit_code = None  # nothing was executed; the report is the evidence
+            source = "reused-report"
         else:
-            ids, files = run_suite(cfg, suite)
+            ids, files, exit_code = run_suite_measured(cfg, suite)
+            source = "run"
+        suite_entries.append({
+            "suite": suite.name,
+            "source": source,
+            "exit_code": exit_code,
+            "passing_cases": len(ids),
+        })
         pass_set |= ids
         test_files.update(files)
     quality = {"skipped": "quality metrics disabled (--no-quality)"}
@@ -1495,6 +1590,8 @@ def cmd_score(args) -> int:
     # definitions. Files the extractor cannot hash are SURFACED, not dropped.
     vscan = scan_verifier_hashes(cfg.repo)
     cmeas = contract_measurement(cfg, contract_hashes)
+    smeas = suite_measurement(suite_entries, tests_run=not args.no_tests,
+                              suites_configured=len(cfg.suites))
     sc = {
         "passed": len(pass_set),
         "pass_set": sorted(pass_set),
@@ -1502,6 +1599,10 @@ def cmd_score(args) -> int:
         # #295: alongside the hashes themselves, whether hashing actually
         # MEASURED anything — see contract_measurement()'s docstring.
         "contract_measurement": cmeas,
+        # #289: the same question for the pass-set dimension — did any suite
+        # actually produce a measurement, or is this empty pass-set the
+        # residue of a suite that never ran?
+        "suite_measurement": smeas,
         "verifier_test_hashes": vscan.hashes,
         "verifier_targets": vscan.targets,
         "test_files": test_files,
@@ -1536,6 +1637,19 @@ def cmd_score(args) -> int:
         f"{cmeas['id_bearing_artifacts']} artifact(s) scanned, "
         f"{len(vscan.hashes)} verifier test hash(es); {qmsg}"
     )
+    if smeas["status"] == SUITE_STATUS_ERROR:
+        sys.stderr.write(
+            "ratchet: ERROR — suite(s) contributed ZERO passing cases; the pass-set "
+            "high-water gate is measuring NOTHING, not passing cleanly "
+            "(chief-wiggum#289):\n"
+        )
+        for e in smeas["broken"]:
+            sys.stderr.write(
+                f"  suite {e['suite']!r} ({e['source']}, exit {e['exit_code']}): "
+                "0 passing cases\n"
+            )
+    elif smeas["status"] == SUITE_STATUS_INAPPLICABLE:
+        sys.stderr.write(f"ratchet: INAPPLICABLE — {smeas['reason']}\n")
     if cmeas["status"] == CONTRACT_STATUS_ERROR:
         sys.stderr.write(
             "ratchet: ERROR — epic artifact(s) present with content but ZERO "
@@ -1585,10 +1699,13 @@ def cmd_check(args) -> int:
     # dimension has always been unconditionally blocking, so a broken
     # instrument for it (artifacts present, ZERO ids parsed) must block the
     # same way — never an opt-in --gate flag, and never a clean pass.
+    # suite_measurement_error (#289) joins the same tier for the same reason,
+    # one dimension over: a suite that contributed zero passing cases makes
+    # "the pass-set holds its high-water mark" true vacuously.
     hard = {
         k: v[k] for k in (
             "missing_tests", "weakened_contracts", "removed_contracts",
-            "contract_measurement_error",
+            "contract_measurement_error", "suite_measurement_error",
         )
     }
     # Verifier-test findings (#206) are a NEW dimension: report-only per
@@ -1611,6 +1728,18 @@ def cmd_check(args) -> int:
              "removed_cases": removed_cases,
              "quality_regressions": qregs, "suspect_links": susp}, indent=2))
     else:
+        if hard["suite_measurement_error"]:
+            sys.stderr.write(
+                "ratchet: ERROR — suite(s) contributed ZERO passing cases; the pass-set "
+                "high-water gate measures NOTHING here, not a clean pass "
+                "(chief-wiggum#289). Re-run `score` and check the suite command, its "
+                "test selection, and its report path:\n"
+            )
+            for e in hard["suite_measurement_error"]:
+                sys.stderr.write(
+                    f"  suite {e.get('suite')!r} ({e.get('source')}, "
+                    f"exit {e.get('exit_code')}): 0 passing cases\n"
+                )
         if hard["contract_measurement_error"]:
             sys.stderr.write(
                 "ratchet: ERROR — epic artifact(s) present with content but ZERO stable IDs "
@@ -1682,7 +1811,8 @@ def cmd_check(args) -> int:
                 f" missing_tests={hard['missing_tests']}"
                 f" weakened_contracts={hard['weakened_contracts']}"
                 f" removed_contracts={hard['removed_contracts']}"
-                f" contract_measurement_error={bool(hard['contract_measurement_error'])}\n"
+                f" contract_measurement_error={bool(hard['contract_measurement_error'])}"
+                f" suite_measurement_error={bool(hard['suite_measurement_error'])}\n"
             )
         return 1
     if gate_verifier and any(vfind.values()):
