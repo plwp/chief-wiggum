@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -415,6 +416,184 @@ def generate_hypothesis(sm: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Expression idiom: non_codegen guards, pseudo-operator transpile, slugify
+# ---------------------------------------------------------------------------
+#
+# Contract preconditions/postconditions carry a "Python-flavored pseudo-code"
+# `expression` string (see templates/formal-models/contracts-schema.json)
+# that the guard/deal generators below interpolate directly into generated
+# Python and Go. Two idioms in that pseudo-code are NOT directly
+# codegen-able and must be handled before interpolation:
+#
+#   1. `non_codegen(<kind>): <description>` — a build/provision-time
+#      assertion (archguard, index, provisioning, ...) that has no runtime
+#      representation. It must render as a comment/stub, never as an
+#      executable `if`/`lambda` guard.
+#   2. Pseudo-code operators — `implies`, `⇒` (implication), `×`
+#      (multiplication), `Δ` (delta / change-of) — which read naturally in
+#      prose but are not valid Python or Go syntax as-is.
+
+NON_CODEGEN_PREFIX = "non_codegen("
+
+# Unicode pseudo-operator glyph -> ASCII word/symbol form. Applied before the
+# word-level transpile below so `⇒` and `implies` share one code path.
+_UNICODE_OPERATOR_ALIASES = {
+    "⇒": "implies",
+    "×": "*",
+    "Δ": "delta",
+}
+
+
+def is_non_codegen(expression: str | None) -> bool:
+    """True if `expression` is a build/provision-time assertion (the
+    `non_codegen(<kind>): ...` idiom) that must never be emitted as a
+    runtime guard."""
+    if not expression:
+        return False
+    return expression.strip().startswith(NON_CODEGEN_PREFIX)
+
+
+def _normalize_unicode_operators(expression: str) -> str:
+    """Replace pseudo-code unicode operator glyphs with their ASCII form,
+    then collapse the whitespace runs that substitution introduces."""
+    normalized = expression
+    for glyph, ascii_form in _UNICODE_OPERATOR_ALIASES.items():
+        normalized = normalized.replace(glyph, f" {ascii_form} ")
+    return re.sub(r"[ \t]+", " ", normalized).strip()
+
+
+def _split_top_level(expression: str, operator: str) -> tuple[str, str] | None:
+    """Split `expression` on the first top-level (paren-depth 0) standalone
+    occurrence of the word `operator`. Returns (left, right), or None if the
+    operator does not appear at the top nesting level."""
+    for match in re.finditer(rf"(?<!\w){re.escape(operator)}(?!\w)", expression):
+        prefix = expression[: match.start()]
+        depth = prefix.count("(") - prefix.count(")")
+        if depth == 0:
+            left = expression[: match.start()].strip()
+            right = expression[match.end():].strip()
+            if left and right:
+                return left, right
+    return None
+
+
+def transpile_expression(expression: str, lang: str = "python") -> str:
+    """Transpile the pseudo-code expression idiom into compilable syntax for
+    `lang` ("python" or "go"). Handles the established operators (and their
+    unicode glyphs):
+
+        A implies B  /  A ⇒ B   ->  (not (A)) or (B)      [python]
+                                 ->  (!(A) || (B))         [go]
+        A × B                    ->  A * B                 [both]
+        A Δ B                    ->  (A - B)                [both]  (delta / change-of)
+
+    Expressions without any of these tokens pass through unchanged (after
+    unicode normalization, which is a no-op when no glyphs are present).
+    Callers must check `is_non_codegen` first — non_codegen expressions are
+    never meant to reach this function.
+    """
+    working = _normalize_unicode_operators(expression)
+
+    implies_split = _split_top_level(working, "implies")
+    if implies_split:
+        left, right = implies_split
+        if lang == "go":
+            return f"(!({left}) || ({right}))"
+        return f"(not ({left})) or ({right})"
+
+    delta_split = _split_top_level(working, "delta")
+    if delta_split:
+        left, right = delta_split
+        return f"({left} - {right})"
+
+    return working
+
+
+_SLUG_SPLIT_RE = re.compile(r"[^0-9A-Za-z_]+")
+
+
+def slugify_identifier(name: str, *, pascal_case: bool = False) -> str:
+    """Convert an arbitrary contract/operation name into a legal Python/Go
+    identifier: strips apostrophes/quotes outright, splits on any other
+    run of non-alphanumeric characters (spaces, hyphens, em-dashes,
+    parentheses, ...), and guards against a leading digit.
+
+    `pascal_case=True` renders Go-style PascalCase (for exported function
+    names); otherwise renders snake_case (for Python function names).
+    """
+    cleaned = re.sub(r"['’\"]", "", name)
+    words = [w for w in _SLUG_SPLIT_RE.split(cleaned) if w]
+    if not words:
+        return "_unnamed"
+
+    if pascal_case:
+        slug = "".join(w[:1].upper() + w[1:] for w in words)
+    else:
+        slug = "_".join(w.lower() for w in words)
+
+    if slug[0].isdigit():
+        slug = f"_{slug}"
+    return slug
+
+
+def _render_precondition_python(pre: dict, op: dict) -> list[str]:
+    """Render one precondition as Python guard-clause lines: a runtime `if`
+    guard for a codegen-able expression, or a comment stub for a
+    `non_codegen(...)` build/provision-time assertion."""
+    expr = pre.get("expression", "False  # TODO")
+    description = pre["description"]
+
+    if is_non_codegen(expr):
+        return [
+            f"    # BUILD/PROVISION-TIME GUARD (not enforced at runtime): {description}",
+            f"    # {expr}",
+            "",
+        ]
+
+    lines = [
+        f"    # REQUIRES: {description}",
+        f"    if not ({transpile_expression(expr)}):",
+    ]
+    error_status = 400
+    for ec in op.get("error_cases", []):
+        if any(word in ec["condition"].lower() for word in description.lower().split()):
+            error_status = ec["status"]
+            break
+    lines.append(f'        raise HTTPError({error_status}, "{description}")')
+    lines.append("")
+    return lines
+
+
+def _render_precondition_go(pre: dict, op: dict) -> list[str]:
+    """Render one precondition as Go guard-clause lines: a runtime `if`
+    guard for a codegen-able expression, or a comment stub for a
+    `non_codegen(...)` build/provision-time assertion."""
+    expr = pre.get("expression", "false /* TODO */")
+    description = pre["description"]
+
+    if is_non_codegen(expr):
+        return [
+            f"\t// BUILD/PROVISION-TIME GUARD (not enforced at runtime): {description}",
+            f"\t// {expr}",
+            "",
+        ]
+
+    error_status = 400
+    for ec in op.get("error_cases", []):
+        if any(word in ec["condition"].lower() for word in description.lower().split()):
+            error_status = ec["status"]
+            break
+    return [
+        f"\t// REQUIRES: {description}",
+        f"\tif !({transpile_expression(expr, lang='go')}) {{",
+        f'\t\thttp.Error(w, "{description}", {error_status})',
+        f"\t\treturn",
+        f"\t}}",
+        "",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Code generation: deal/icontract DbC decorators
 # ---------------------------------------------------------------------------
 
@@ -445,17 +624,25 @@ def generate_deal_decorators(contracts: dict) -> str:
             ])
 
         for op in entity.get("operations", []):
-            func_name = op["name"].lower().replace(" ", "_")
+            func_name = slugify_identifier(op["name"])
             lines.append(f"# {op['method']} {op['path']}")
 
             # Preconditions
             for pre in op.get("preconditions", []):
                 expr = pre.get("expression", "True  # TODO: implement")
+                if is_non_codegen(expr):
+                    lines.append(f"# BUILD/PROVISION-TIME (not enforced at runtime): {pre['description']} — {expr}")
+                    continue
+                expr = transpile_expression(expr)
                 lines.append(f"@deal.pre(lambda: {expr}, message=\"{pre['description']}\")")
 
             # Postconditions
             for post in op.get("postconditions", []):
                 expr = post.get("expression", "True  # TODO: implement")
+                if is_non_codegen(expr):
+                    lines.append(f"# BUILD/PROVISION-TIME (not enforced at runtime): {post['description']} — {expr}")
+                    continue
+                expr = transpile_expression(expr)
                 lines.append(f"@deal.post(lambda result: {expr}, message=\"{post['description']}\")")
 
             lines.extend([
@@ -486,25 +673,13 @@ def generate_guards_python(contracts: dict) -> str:
 
     for entity in contracts.get("entities", []):
         for op in entity.get("operations", []):
-            func_name = op["name"].lower().replace(" ", "_")
+            func_name = slugify_identifier(op["name"])
             lines.append(f"def {func_name}(request):")
             lines.append(f'    """{op.get("description", op["name"])}"""')
 
             # Guard clauses from preconditions
             for pre in op.get("preconditions", []):
-                expr = pre.get("expression", "False  # TODO")
-                lines.extend([
-                    f"    # REQUIRES: {pre['description']}",
-                    f"    if not ({expr}):",
-                ])
-                # Find matching error case
-                error_status = 400
-                for ec in op.get("error_cases", []):
-                    if any(word in ec["condition"].lower() for word in pre["description"].lower().split()):
-                        error_status = ec["status"]
-                        break
-                lines.append(f'        raise HTTPError({error_status}, "{pre["description"]}")')
-                lines.append("")
+                lines.extend(_render_precondition_python(pre, op))
 
             lines.extend([
                 "    # --- implementation ---",
@@ -533,27 +708,12 @@ def generate_guards_go(contracts: dict) -> str:
 
     for entity in contracts.get("entities", []):
         for op in entity.get("operations", []):
-            func_name = "".join(
-                word.capitalize() for word in op["name"].split()
-            )
+            func_name = slugify_identifier(op["name"], pascal_case=True)
             lines.append(f"// {op['method']} {op['path']}")
             lines.append(f"func {func_name}(w http.ResponseWriter, r *http.Request) {{")
 
             for pre in op.get("preconditions", []):
-                expr = pre.get("expression", "false /* TODO */")
-                error_status = 400
-                for ec in op.get("error_cases", []):
-                    if any(word in ec["condition"].lower() for word in pre["description"].lower().split()):
-                        error_status = ec["status"]
-                        break
-                lines.extend([
-                    f"\t// REQUIRES: {pre['description']}",
-                    f"\tif !({expr}) {{",
-                    f'\t\thttp.Error(w, "{pre["description"]}", {error_status})',
-                    f"\t\treturn",
-                    f"\t}}",
-                    "",
-                ])
+                lines.extend(_render_precondition_go(pre, op))
 
             lines.extend([
                 "\t// --- implementation ---",
