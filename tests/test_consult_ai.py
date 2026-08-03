@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import consult_ai
@@ -1321,3 +1322,180 @@ def test_role_consult_threads_ticket_into_consult_provider(tmp_path, monkeypatch
     consult_ai.main()
 
     assert received_ticket["codex"] == "99"
+
+
+# ---- openrouter provider (frontier non-Western models for quorum entropy) -------
+
+
+def _openrouter_payload(content="answer", model="deepseek/deepseek-v4-pro", **usage):
+    return {
+        "model": model,
+        "choices": [{"message": {"content": content}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 200, **usage},
+    }
+
+
+def test_openrouter_parses_text_and_usage():
+    text, usage = consult_ai._parse_openrouter_payload(_openrouter_payload(), None)
+    assert text == "answer"
+    assert (usage.tokens_in, usage.tokens_out) == (100, 200)
+    assert usage.usage_status == "provider-json"
+    assert usage.resolved_model == "deepseek/deepseek-v4-pro"
+
+
+def test_openrouter_prefers_payload_model_over_requested():
+    """OpenRouter may route elsewhere; the BILLED id is what telemetry must price."""
+    payload = _openrouter_payload(model="deepseek/deepseek-v4-flash")
+    _, usage = consult_ai._parse_openrouter_payload(payload, "deepseek/deepseek-v4-pro")
+    assert usage.resolved_model == "deepseek/deepseek-v4-flash"
+
+
+def test_openrouter_partial_usage_nulls_both_tokens():
+    """INV-fh-011: never fabricate the missing half of a token pair."""
+    payload = _openrouter_payload()
+    del payload["usage"]["completion_tokens"]
+    _, usage = consult_ai._parse_openrouter_payload(payload, None)
+    assert (usage.tokens_in, usage.tokens_out) == (None, None)
+    assert usage.usage_status == "partial"
+
+
+def test_openrouter_missing_usage_is_unavailable_not_zero():
+    payload = _openrouter_payload()
+    del payload["usage"]
+    _, usage = consult_ai._parse_openrouter_payload(payload, None)
+    assert usage.usage_status == "unavailable"
+    assert (usage.tokens_in, usage.tokens_out) == (None, None)
+
+
+def test_openrouter_falls_back_to_reasoning_when_content_empty():
+    """Reasoning models sometimes leave `content` empty — an answer is still an answer."""
+    payload = _openrouter_payload(content="")
+    payload["choices"][0]["message"]["reasoning"] = "the real answer"
+    text, _ = consult_ai._parse_openrouter_payload(payload, None)
+    assert text == "the real answer"
+
+
+def test_openrouter_requires_explicit_model(monkeypatch):
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-test")
+    with pytest.raises(ValueError, match="explicit model"):
+        consult_ai.consult_openrouter("prompt", model=None)
+
+
+def test_openrouter_requires_key_in_keyring(monkeypatch):
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: None)
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
+        consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")
+
+
+def test_openrouter_raises_on_error_object_in_200_response(monkeypatch):
+    """A provider-level failure arrives as HTTP 200 with an `error` body."""
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-test")
+
+    class FakeResponse:
+        def read(self):
+            return json.dumps({"error": {"message": "upstream is down"}}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    with pytest.raises(RuntimeError, match="upstream is down"):
+        consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")
+
+
+def test_openrouter_key_is_sent_as_header_not_env(monkeypatch):
+    """CLAUDE.md secret policy: fetched at call time, passed to the request, never env."""
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-secret")
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return json.dumps(_openrouter_payload()).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["auth"] = request.get_header("Authorization")
+        captured["body"] = json.loads(request.data.decode())
+        return FakeResponse()
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", fake_urlopen)
+    consult_ai.consult_openrouter("a prompt", model="deepseek/deepseek-v4-pro")
+
+    assert captured["auth"] == "Bearer sk-secret"
+    assert captured["body"]["model"] == "deepseek/deepseek-v4-pro"
+    assert captured["body"]["messages"][0]["content"] == "a prompt"
+    import os
+    assert "OPENROUTER_API_KEY" not in os.environ
+
+
+def test_openrouter_is_a_registered_tool_with_a_timeout():
+    assert consult_ai.TOOLS["openrouter"] is consult_ai.consult_openrouter
+    assert consult_ai.ADAPTER_BY_TOOL["openrouter"] == "openrouter-api"
+    assert consult_ai.TOOL_TIMEOUTS["openrouter"] > 0
+
+
+def test_shipped_provider_config_is_valid_including_openrouter_entries():
+    """The divergence role must resolve, and must NOT leak into the default roles —
+    these models are opt-in entropy, not the everyday quorum."""
+    from pathlib import Path as _Path
+
+    import providers as providers_mod
+
+    config = providers_mod.load_config(_Path(__file__).resolve().parents[1] / "config" / "providers.json")
+    errors = providers_mod.validate_config(
+        config,
+        supported_tools=set(consult_ai.TOOLS),
+        supported_delegates={"claude-interactive"},
+    )
+    assert errors == []
+
+    roles = providers_mod.roles_from_config(config)
+    assert "divergence" in roles
+    openrouter_names = {
+        name for name, p in providers_mod.providers_from_config(config).items()
+        if p.tool == "openrouter"
+    }
+    assert openrouter_names, "expected openrouter-backed providers"
+    for role_name, role in roles.items():
+        if role_name == "divergence":
+            continue
+        assert not (set(role.required) | set(role.optional)) & openrouter_names, (
+            f"role {role_name} pulls in opt-in entropy providers"
+        )
+
+
+def test_openrouter_enforces_a_wall_clock_deadline(monkeypatch):
+    """urllib's timeout bounds each socket op, not total elapsed — a slow-but-steady
+    stream never trips it. Observed live at ~30 min against a 300s budget."""
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-test")
+    monkeypatch.setitem(consult_ai.TOOL_TIMEOUTS, "openrouter", 1)
+
+    def never_returns(request, timeout=None):
+        _time.sleep(30)
+        raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", never_returns)
+    started = _time.monotonic()
+    with pytest.raises(TimeoutError, match="budget"):
+        consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")
+    assert _time.monotonic() - started < 10, "deadline did not actually fire"
+
+
+def test_openrouter_deadline_reraises_the_original_error(monkeypatch):
+    """A fast failure must surface as itself, not as a timeout."""
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-test")
+
+    def boom(request, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError, match="unreachable"):
+        consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")
