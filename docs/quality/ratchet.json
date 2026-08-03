@@ -16,5 +16,13 @@
     "relative_churn_abs": 0.05,
     "relative_churn_rel": 0.25
   },
-  "suites": []
+  "suites": [
+    {
+      "cmd": "python3 -m pytest --junit-xml=.ratchet-junit.xml -q",
+      "cwd": ".",
+      "name": "pytest",
+      "parser": "junit-xml",
+      "report": ".ratchet-junit.xml"
+    }
+  ]
 }

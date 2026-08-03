@@ -219,6 +219,31 @@ Records also serve as **amnesia context**: `ratchet.py recent` replays the
 last N iterations' notes so a fresh session doesn't oscillate on decisions a
 previous one already made.
 
+## chief-wiggum's own pass-set (#262)
+
+This repo ratchets itself. `docs/quality/ratchet.json` configures the pytest
+suite, and the baseline record puts the whole passing suite into the high-water
+mark. Before #262 `suites` was `[]`, so the pass-set mark was vacuously zero —
+it could not slide because there was nothing to slide, while the contract (49)
+and verifier-hash (116) dimensions were always real. #259's `NOT MEASURED`
+marker is what surfaced it.
+
+Two consequences worth knowing before you touch a test here:
+
+- **Test ids are now goalposts.** Renaming, moving, re-parametrising or
+  deleting a test drops its case id from the pass-set and `check` blocks with
+  `missing_tests`. The sanctioned way out is a journaled `record --retire-case`
+  (below), never an edit to the scorecard. Parametrised cases are pinned
+  individually, so one `@pytest.mark.parametrize` id edit moves a whole table —
+  use a glob or `--retire-case-file`.
+- **`score` runs the full suite** (~3 min), including inside `/implement`
+  Step 8, which has already run it. That double run is tracked in #284.
+
+Note the semantic gap for a **permanent** removal: `--retire-case` is a
+quarantine with a mandatory expiry, designed so a flaky test stays visible
+pressure. A renamed or deleted case never comes back, so its quarantine expires
+and re-blocks, needing renewal forever. Tracked in #290.
+
 ## Retiring a pass-set case (flaky quarantine, #278)
 
 A test case excluded from the suite — moved, deleted, or disabled because it
