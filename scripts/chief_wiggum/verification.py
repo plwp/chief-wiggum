@@ -13,6 +13,7 @@ any build tool. Execution is a thin, injectable layer.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections.abc import Callable, Iterable
@@ -20,6 +21,16 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 PROFILES = ("test", "lint", "build", "smoke")
+
+# Repo-relative junit-xml report path a pytest-based "test" step is expected
+# to write (chief-wiggum#284): `/implement` Step 8 runs the suite via this
+# runner, then Step 8b's `ratchet.py score` re-ran the SAME suite from
+# scratch just to hash the pass-set — paying for it twice. `verify()` sets
+# PYTEST_ADDOPTS so pytest writes its results here regardless of whether it
+# was invoked directly (LANG_COMMANDS) or via a Makefile target that happens
+# to shell out to pytest (this repo's own `make test`); `ratchet.py score
+# --reuse-report` (see ratchet.py) then parses it instead of re-running.
+PYTEST_JUNIT_REPORT = ".cw-verify-pytest.xml"
 
 # Per-language command for each non-smoke profile.
 LANG_COMMANDS: dict[str, dict[str, list[str]]] = {
@@ -190,6 +201,10 @@ class PlannedStep:
     tool: str
     command: list[str]
     cwd: str
+    # Repo-relative junit-xml path this step is expected to WRITE, when the
+    # tool is plausibly pytest (#284) — None for every other case (unchanged
+    # behavior: go/node/dotnet/smoke steps never set this).
+    report: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -206,6 +221,7 @@ class StepEvidence:
     log_tail: str = ""
     ok: bool = False
     planned_only: bool = False
+    report: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -319,15 +335,25 @@ def plan_steps(repo: str | Path, profiles: Iterable[str], detection: Detection) 
                 )
             continue
 
+        # A "test"-profile step that's plausibly pytest gets the junit report
+        # path attached (#284) — whether reached via LANG_COMMANDS directly,
+        # or via a Makefile target on a repo that also has_python (this
+        # repo's own `make test` is a bare pytest underneath; a Makefile
+        # target is opaque text, so has_python is the best available signal).
+        pytest_report = PYTEST_JUNIT_REPORT if (profile == "test" and detection.has_python) else None
+
         # Prefer a Makefile target named exactly for the profile.
         if detection.has_makefile and profile in detection.make_targets:
-            steps.append(PlannedStep(profile, "make", ["make", profile], root))
+            steps.append(PlannedStep(profile, "make", ["make", profile], root, report=pytest_report))
             continue
 
         if detection.has_go:
             steps.append(PlannedStep(profile, "go", LANG_COMMANDS["go"][profile], root))
         if detection.has_python:
-            steps.append(PlannedStep(profile, "python", LANG_COMMANDS["python"][profile], root))
+            steps.append(
+                PlannedStep(profile, "python", LANG_COMMANDS["python"][profile], root,
+                            report=pytest_report)
+            )
         if detection.has_node and profile in detection.node_scripts:
             steps.append(PlannedStep(profile, "node", LANG_COMMANDS["node"][profile], root))
         if detection.has_dotnet:
@@ -340,9 +366,27 @@ def plan_steps(repo: str | Path, profiles: Iterable[str], detection: Detection) 
     return steps
 
 
-def _default_runner(command: list[str], cwd: str) -> tuple[int, str]:
-    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=1800)
+def _default_runner(command: list[str], cwd: str, env: dict[str, str] | None = None) -> tuple[int, str]:
+    result = subprocess.run(
+        command, cwd=cwd, capture_output=True, text=True, timeout=1800, env=env
+    )
     return result.returncode, (result.stdout or "") + (result.stderr or "")
+
+
+def _call_runner(
+    runner: Runner, command: list[str], cwd: str, env: dict[str, str] | None
+) -> tuple[int, str]:
+    """Call ``runner`` with an ``env`` override when one applies, falling back
+    to the original 2-arg call when the runner doesn't accept it (#284:
+    ``Runner`` predates the ``env`` kwarg — every existing custom runner, in
+    this codebase and any caller's, is a 2-arg callable and must keep working
+    unchanged; the kwarg is purely additive)."""
+    if env is not None:
+        try:
+            return runner(command, cwd, env=env)
+        except TypeError:
+            pass
+    return runner(command, cwd)
 
 
 def _log_tail(output: str, lines: int = 50) -> str:
@@ -372,7 +416,8 @@ def verify(
 
     if dry_run:
         report.steps = [
-            StepEvidence(p.profile, p.tool, p.command, p.cwd, planned_only=True) for p in planned
+            StepEvidence(p.profile, p.tool, p.command, p.cwd, planned_only=True, report=p.report)
+            for p in planned
         ]
         return report
 
@@ -380,15 +425,31 @@ def verify(
 
     now = clock or time.monotonic
     for step in planned:
+        env_override: dict[str, str] | None = None
+        if step.report:
+            # Pre-clear (#284, mirrors the trx pre-run clearing in
+            # ratchet.py's run_suite): a stale report surviving from an
+            # earlier, unrelated run must never be silently read as this
+            # run's result if the runner fails to (re)write it.
+            report_path = Path(step.cwd) / step.report
+            try:
+                report_path.unlink()
+            except OSError:
+                pass
+            existing_addopts = os.environ.get("PYTEST_ADDOPTS", "")
+            junit_opt = f"--junit-xml={report_path}"
+            env_override = dict(os.environ)
+            env_override["PYTEST_ADDOPTS"] = f"{existing_addopts} {junit_opt}".strip()
+
         start = now()
         try:
-            exit_code, output = runner(step.command, step.cwd)
+            exit_code, output = _call_runner(runner, step.command, step.cwd, env_override)
         except Exception as exc:  # noqa: BLE001 - a missing tool shouldn't abort the run
             report.steps.append(
                 StepEvidence(
                     step.profile, step.tool, step.command, step.cwd,
                     exit_code=None, duration_s=round(now() - start, 3),
-                    log_tail=f"runner error: {exc}", ok=False,
+                    log_tail=f"runner error: {exc}", ok=False, report=step.report,
                 )
             )
             continue
@@ -397,6 +458,7 @@ def verify(
                 step.profile, step.tool, step.command, step.cwd,
                 exit_code=exit_code, duration_s=round(now() - start, 3),
                 log_tail=_log_tail(output, log_tail_lines), ok=(exit_code == 0),
+                report=step.report,
             )
         )
     return report

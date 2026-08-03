@@ -93,6 +93,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -185,6 +186,13 @@ DEFAULT_PROTECTED = [
 # expiry is mandatory, so it must have a default a human never has to think
 # about, and it must be short enough to force re-litigation.
 DEFAULT_QUARANTINE_DAYS = 90
+
+# --reuse-report freshness window (#284): generous enough for a real suite +
+# static-analysis + review pass to complete between the verification run and
+# the `score` call that reuses its report, short enough that a report left
+# over from an earlier, unrelated ticket reads as stale rather than silently
+# scored against.
+DEFAULT_REUSE_REPORT_MAX_AGE = 1800
 
 
 class RatchetError(Exception):
@@ -562,6 +570,95 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
         )
     ids = {f"{suite.name}::{cid}" for cid in passed}
     return ids, {cid: f for cid, f in files.items() if cid in ids}
+
+
+# ---- reuse an already-written report (#284) -------------------------------------
+#
+# /implement Step 8 already runs the full suite once via run_verification.py;
+# `score` re-running the same `cmd` moments later pays for it twice. `--reuse-
+# report SUITE=PATH` parses an EXISTING on-disk report instead — but only when
+# it looks like it actually describes the CURRENT tree: missing or stale (older
+# than --reuse-report-max-age) both fail loudly, never silently. A silently
+# stale report would keep a since-deleted case in the pass-set forever — the
+# same failure mode the trx parser's pre-run clearing (above) already guards
+# against for the run-fresh path.
+
+
+def _report_mtime(report_path: Path) -> float:
+    """Newest mtime backing ``report_path`` — the file itself, or (TRX) the
+    newest ``*.trx`` inside it when it names a directory. Raises RatchetError
+    when there is nothing there to be fresh OR stale about."""
+    if report_path.is_dir():
+        times = [p.stat().st_mtime for p in report_path.rglob("*.trx")]
+        if not times:
+            raise RatchetError(f"--reuse-report {report_path}: directory has no .trx files")
+        return max(times)
+    if report_path.is_file():
+        return report_path.stat().st_mtime
+    raise RatchetError(
+        f"--reuse-report {report_path}: not found — run the suite (or drop "
+        "--reuse-report) before scoring"
+    )
+
+
+def reuse_suite_report(
+    cfg: Config, suite: Suite, report_path: Path, max_age_seconds: float
+) -> tuple[set[str], dict[str, str]]:
+    """Parse an ALREADY-WRITTEN report instead of re-running ``suite.cmd``.
+
+    Mirrors ``run_suite``'s return shape exactly so callers can't tell the
+    difference except in cost. Fails loudly (``RatchetError``) on a missing,
+    stale, or parser-unsupported report — see module note above.
+    """
+    report_path = Path(report_path)
+    mtime = _report_mtime(report_path)  # raises if missing
+    age = time.time() - mtime
+    if age > max_age_seconds:
+        raise RatchetError(
+            f"suite {suite.name!r}: --reuse-report {report_path} is "
+            f"{int(age)}s old (max {int(max_age_seconds)}s) — treated as "
+            "STALE, not reused (a silently stale report would keep "
+            "since-deleted cases in the pass-set); re-run the suite fresh "
+            "or drop --reuse-report"
+        )
+    if suite.parser == "junit-xml":
+        text = report_path.read_text()
+        passed = parse_junit_xml(text)
+        files = junit_case_files(cfg, suite, text)
+    elif suite.parser == "trx":
+        docs = _trx_documents(report_path)
+        if not docs:
+            raise RatchetError(f"suite {suite.name!r}: no .trx found at reused report {report_path}")
+        passed = parse_trx(docs)
+        files = trx_case_files(cfg, suite, docs)
+    else:
+        raise RatchetError(
+            f"suite {suite.name!r}: --reuse-report is not supported for parser "
+            f"{suite.parser!r} (no on-disk report to reuse — only junit-xml/trx)"
+        )
+    ids = {f"{suite.name}::{cid}" for cid in passed}
+    return ids, {cid: f for cid, f in files.items() if cid in ids}
+
+
+def _parse_reuse_report(items: list[str] | None, suite_names: set[str]) -> dict[str, Path]:
+    """``["pytest=/tmp/x.xml"]`` -> ``{"pytest": Path("/tmp/x.xml")}``. Raises
+    RatchetError on a malformed entry or a name naming no configured suite —
+    a typo must be surfaced, never silently do nothing (house doctrine, see
+    ``_resolve_retire_cases``)."""
+    out: dict[str, Path] = {}
+    for item in items or []:
+        name, sep, path = item.partition("=")
+        name, path = name.strip(), path.strip()
+        if not sep or not name or not path:
+            raise RatchetError(f"--reuse-report must be SUITE=PATH, got {item!r}")
+        out[name] = Path(path)
+    unknown = sorted(set(out) - suite_names)
+    if unknown:
+        raise RatchetError(
+            f"--reuse-report names unknown suite(s): {', '.join(unknown)} "
+            f"(configured: {', '.join(sorted(suite_names)) or '(none)'})"
+        )
+    return out
 
 
 # ---- complexity + churn snapshot (report-only dimension) -----------------------
@@ -1225,12 +1322,22 @@ def cmd_init(args) -> int:
 def cmd_score(args) -> int:
     cfg = load_config(repo_root(args.repo))
     contract_hashes = load_contract_hashes(cfg)
+    # --reuse-report (#284): read with getattr defaults so a hand-built
+    # argparse.Namespace predating this flag (house precedent, see
+    # _resolve_retire_cases) degrades gracefully instead of AttributeError.
+    reuse_map = _parse_reuse_report(
+        getattr(args, "reuse_report", None), {s.name for s in cfg.suites}
+    )
+    reuse_max_age = getattr(args, "reuse_report_max_age", DEFAULT_REUSE_REPORT_MAX_AGE)
     pass_set: set[str] = set()
     test_files: dict[str, str] = {}
     for suite in cfg.suites:
         if args.no_tests:
             break
-        ids, files = run_suite(cfg, suite)
+        if suite.name in reuse_map:
+            ids, files = reuse_suite_report(cfg, suite, reuse_map[suite.name], reuse_max_age)
+        else:
+            ids, files = run_suite(cfg, suite)
         pass_set |= ids
         test_files.update(files)
     quality = {"skipped": "quality metrics disabled (--no-quality)"}
@@ -1799,6 +1906,19 @@ def main() -> int:
                     help="skip the complexity/churn snapshot (skip if lizard is unavailable)")
     sp.add_argument("--venv", default=None, help="virtualenv with lizard/radon for the quality snapshot")
     sp.add_argument("--gobin", default=None, help="dir containing gocognit for the quality snapshot")
+    sp.add_argument(
+        "--reuse-report", action="append", metavar="SUITE=PATH",
+        help="parse an ALREADY-WRITTEN report instead of re-running that suite's `cmd` "
+             "(#284 — reuse /implement Step 8's verification run instead of paying for "
+             "the suite twice); repeatable, one per suite name. Fails loudly if the "
+             "report is missing or older than --reuse-report-max-age.",
+    )
+    sp.add_argument(
+        "--reuse-report-max-age", type=int, default=DEFAULT_REUSE_REPORT_MAX_AGE,
+        metavar="SECONDS",
+        help=f"max age of a --reuse-report file before it is treated as STALE "
+             f"(default {DEFAULT_REUSE_REPORT_MAX_AGE}s)",
+    )
 
     for name in ("check", "regressed", "highwater", "recent"):
         sp = sub.add_parser(name)
