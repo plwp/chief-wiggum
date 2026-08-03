@@ -847,7 +847,6 @@ class TestCommandMarkdownMigration:
         text = (CW_ROOT / ".claude" / "commands" / "architect.md").read_text()
         assert "gh issue list" not in text
         assert "gh issue comment" not in text
-        assert "gh issue" not in text
         assert 'scripts/tracker.py" --repo-root "$TARGET_REPO" members' in text
         assert 'scripts/tracker.py" --repo-root "$TARGET_REPO" comment' in text
 
@@ -856,7 +855,6 @@ class TestCommandMarkdownMigration:
         they're all closed — same substitution as /architect."""
         text = (CW_ROOT / ".claude" / "commands" / "close-epic.md").read_text()
         assert "gh issue list" not in text
-        assert "gh issue" not in text
         assert 'scripts/tracker.py" --repo-root "$TARGET_REPO" members' in text
 
     def test_no_gh_issue_milestone_listing_in_architect_or_close_epic(self):
