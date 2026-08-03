@@ -75,6 +75,7 @@ import check_single_writer  # noqa: E402
 import check_traceability  # noqa: E402
 from chief_wiggum import external_links  # noqa: E402 — sidecar link store (#213 Phase C)
 from chief_wiggum.hashing import scanner_version  # noqa: E402
+from chief_wiggum.textio import read_text_safe  # noqa: E402 — decode-defensive bulk-scan reads (#282/#289)
 from chief_wiggum.trace_ids import DEFINE_RE, ID_KINDS  # noqa: E402
 
 DEFAULT_LIMIT = 40
@@ -265,7 +266,15 @@ def build_envelope(
     query_provenance: dict,
     limit: int = DEFAULT_LIMIT,
     cursor: str | None = None,
+    applicability: str = "applicable",
 ) -> dict:
+    """`applicability` (#289: the standard three-state gate vocabulary,
+    `check_traceability.py`'s idiom) is a MACHINE field, not a summary-string
+    prefix a consumer has to parse: `applicable` (the normal case — the query
+    ran, whether it found facts or not), `inapplicable` (honest absence — the
+    queried path/handle doesn't exist), or `error` (the path/handle exists but
+    the instrument could not read it — a broken instrument, never a pass).
+    Every envelope carries it; `_unscanned_envelope` sets the latter two."""
     ranked = rank_facts(facts, verb)
     try:
         start = int(cursor) if cursor else 0
@@ -283,6 +292,7 @@ def build_envelope(
         "cursor": next_cursor,
         "warnings": warnings,
         "provenance": query_provenance,
+        "applicability": applicability,
     }
 
 
@@ -331,6 +341,10 @@ def _scanner_version() -> str:
     # a resolution change changes what a query returns, so it versions too.
     # external_links.py (#213 Phase C) is Plane B's second annotation source in
     # sidecar mode — its entry/tier semantics shape annotation facts.
+    # textio.py (#282/#289) is finding-affecting the same way it is for
+    # check_traceability/check_single_writer: a decode-policy change there
+    # changes whether a queried file's facts are computed at all, or the
+    # query instead reports it `unscanned`/`error`.
     return scanner_version(
         here,
         here.parent / "artifacts.py",
@@ -341,10 +355,18 @@ def _scanner_version() -> str:
         cw_dir / "external_links.py",
         cw_dir / "languages.py",
         cw_dir / "manifest.py", cw_dir / "hashing.py",
+        cw_dir / "textio.py",
     )
 
 
-def _unscanned_envelope(reason: str, *, query_provenance: dict) -> dict:
+def _unscanned_envelope(
+    reason: str, *, query_provenance: dict, applicability: str = "inapplicable"
+) -> dict:
+    """`applicability` defaults to `inapplicable` (a genuinely-missing path —
+    no precondition to scan). Callers that reach this AFTER confirming the
+    path/handle exists but failed to read/decode it (#289) pass
+    `applicability="error"` — the same envelope shape, a different machine
+    verdict, per `docs/fail-closed.md`'s inapplicable/error split."""
     return {
         "summary": f"unscanned: {reason}",
         "facts": [],
@@ -352,6 +374,7 @@ def _unscanned_envelope(reason: str, *, query_provenance: dict) -> dict:
         "cursor": None,
         "warnings": [f"unscanned — {reason}"],
         "provenance": query_provenance,
+        "applicability": applicability,
     }
 
 
@@ -614,15 +637,22 @@ _SUSPECT_NOTE = (
 
 def governing_facts_for_file(
     repo_root: Path, rel: str, epics: list[Epic]
-) -> tuple[list[Fact], list[str]]:
+) -> tuple[list[Fact], list[str], str | None]:
     """Shared computation behind `orient` and `governs <path>`: every fact that
     governs `rel`, tagged `exact` (direct annotation / precise code_location
     match) or not (artifact-derived proximity match). Returns
-    ``(facts, warnings)`` — the warnings surface unresolved external-link
-    entries for this file (F7: warned about, never folded as facts)."""
+    ``(facts, warnings, unscanned_reason)`` — the warnings surface unresolved
+    external-link entries for this file (F7: warned about, never folded as
+    facts); ``unscanned_reason`` is ``None`` on a normal read and a message
+    naming the file when it exists but could not be decoded (#282/#289) — the
+    caller turns that into an `error`-applicability envelope rather than
+    letting a bare ``read_text()`` crash the whole query with an uncaught
+    ``UnicodeDecodeError``."""
     root = Path(repo_root)
     full = root / rel
-    text = full.read_text()
+    text, skip_reason = read_text_safe(full)
+    if text is None:
+        return [], [], f"{rel}: {skip_reason}"
     suffix = full.suffix
     direct_anns = check_traceability.emit_source_annotations(rel, text, suffix)
     all_ext, all_unresolved = _external_link_entries(root)
@@ -813,7 +843,7 @@ def governing_facts_for_file(
                     violation=not w.sanctioned,
                     proximity=0,
                 ))
-    return facts, warnings
+    return facts, warnings, None
 
 
 _HOTSPOTS_PATH = Path("docs") / "quality" / "hotspots.json"
@@ -1017,7 +1047,15 @@ def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAUL
             f"{rel} not found under {repo_root}",
             query_provenance=_query_provenance(repo_root, epics),
         )
-    facts, ext_warnings = governing_facts_for_file(repo_root, rel, epics)
+    facts, ext_warnings, unscanned_reason = governing_facts_for_file(repo_root, rel, epics)
+    if unscanned_reason is not None:
+        # File exists (checked above) but couldn't be read/decoded — a broken
+        # instrument, not an honest absence (#289).
+        return _unscanned_envelope(
+            f"could not read {unscanned_reason}",
+            query_provenance=_query_provenance(repo_root, epics),
+            applicability="error",
+        )
     facts += _hotspot_facts_for_file(repo_root, rel)
     facts += _debt_facts_for_file(repo_root, rel)
     warnings = [w for e in epics for w in e.warnings] + ext_warnings
@@ -1043,7 +1081,13 @@ def cmd_governs(repo_root: Path, target: str, epic: str | None, limit: int = DEF
     full = Path(repo_root) / rel
     looks_like_path = "/" in target or Path(target).suffix in _PATH_LIKE_EXTS
     if full.is_file():
-        facts, ext_warnings = governing_facts_for_file(repo_root, rel, epics)
+        facts, ext_warnings, unscanned_reason = governing_facts_for_file(repo_root, rel, epics)
+        if unscanned_reason is not None:
+            return _unscanned_envelope(
+                f"could not read {unscanned_reason}",
+                query_provenance=_query_provenance(repo_root, epics),
+                applicability="error",
+            )
         for f in facts:
             # A suspect external-link fact keeps its explicit marking rather
             # than being relabeled inferred (F7).
@@ -1847,7 +1891,17 @@ def cmd_show(repo_root: Path, handle: str, epic: str | None, limit: int = DEFAUL
             return _unscanned_envelope(
                 f"{rel} not found under {repo_root}", query_provenance=_query_provenance(repo_root, epics)
             )
-        lines = full.read_text().splitlines()
+        text, skip_reason = read_text_safe(full)
+        if text is None:
+            # File exists but couldn't be read/decoded — broken instrument,
+            # not honest absence (#289; the crash class #282 already fixed
+            # for check_traceability/check_single_writer's bulk scans).
+            return _unscanned_envelope(
+                f"could not read {rel}: {skip_reason}",
+                query_provenance=_query_provenance(repo_root, epics),
+                applicability="error",
+            )
+        lines = text.splitlines()
         lo, hi = max(0, line - 3), min(len(lines), line + 2)
         window = lines[lo:hi]
         symbol = check_single_writer._enclosing_symbol(lines, min(line - 1, len(lines) - 1)) if lines else None
@@ -1869,7 +1923,14 @@ def cmd_show(repo_root: Path, handle: str, epic: str | None, limit: int = DEFAUL
         if canonical in e.defined:
             rel, line = e.defined[canonical]
             full = e.dir / rel
-            lines = full.read_text().splitlines()
+            text, skip_reason = read_text_safe(full)
+            if text is None:
+                return _unscanned_envelope(
+                    f"could not read docs/epics/{e.slug}/{rel}: {skip_reason}",
+                    query_provenance=_query_provenance(repo_root, epics),
+                    applicability="error",
+                )
+            lines = text.splitlines()
             lo, hi = max(0, line - 1), min(len(lines), line + 4)
             fact = Fact(
                 kind="declaration", id=canonical, statement=e.statement_for(canonical),

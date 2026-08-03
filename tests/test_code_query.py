@@ -737,6 +737,7 @@ def test_scanner_version_includes_both_checker_sources():
         cw / "external_links.py",
         cw / "languages.py",
         cw / "manifest.py", cw / "hashing.py",
+        cw / "textio.py",
     )
     assert code_query._scanner_version() == expected
 
@@ -855,7 +856,7 @@ def test_external_store_bogus_hash_is_never_an_exact_fact(tmp_path, monkeypatch)
         assert all("re-verify" in (f.get("note") or "") for f in ext)
 
     # ...and internally it never ranks as exact.
-    facts, _w = code_query.governing_facts_for_file(
+    facts, _w, _unscanned = code_query.governing_facts_for_file(
         repo, "order.py", code_query.discover_epics(repo, None))
     ext_facts = [f for f in facts if f.extra.get("source") == "external-link-store"]
     assert ext_facts and all(not f.exact for f in ext_facts)
