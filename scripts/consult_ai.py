@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -70,6 +71,68 @@ TIMEOUT = 600  # fallback
 # runs. A silent multi-minute consult is indistinguishable from a hang to a worker's
 # stream-watchdog; a periodic line proves the consult is alive and progressing.
 HEARTBEAT_INTERVAL = 30
+
+
+def _positive_int(value) -> int | None:
+    """Coerce ``value`` to a positive ``int``, else ``None``.
+
+    Used to validate every rung of the timeout override chain (chief-wiggum#291):
+    a non-numeric or non-positive candidate (a typo'd env var, a stray ``--timeout
+    0``) must be IGNORED and fall through to the next source, never raise and
+    abort an in-progress consult.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _env_timeout(name: str) -> int | None:
+    """Read a positive-integer timeout from env var ``name``, else ``None``
+    (unset, non-numeric, or non-positive — chief-wiggum#291)."""
+    return _positive_int(os.environ.get(name))
+
+
+def tool_timeout(tool: str, *, override: int | None = None) -> int:
+    """Resolve ``tool``'s wall-clock timeout (seconds) through a single override
+    chain (chief-wiggum#291), highest precedence first:
+
+    1. ``override`` — an explicit per-call value (the ``--timeout`` CLI flag in
+       single-tool mode, or a role's optional-provider cap threaded through
+       ``consult_claude_interactive``'s existing ``timeout`` parameter).
+    2. ``CW_CONSULT_TIMEOUT_<TOOL>`` — tool name upper-cased, every
+       non-alphanumeric character replaced with ``_`` (e.g. ``gemini-vertex`` ->
+       ``CW_CONSULT_TIMEOUT_GEMINI_VERTEX``).
+    3. ``CW_CONSULT_TIMEOUT`` — applies to every tool.
+    4. The ``TOOL_TIMEOUTS`` table default (``TIMEOUT`` if the tool is unlisted).
+
+    Every candidate is validated by ``_positive_int``: a non-numeric or
+    non-positive value at ANY source (including ``override``) is ignored and
+    falls through to the next source rather than raising — a bad knob must
+    degrade the timeout, never crash a consult mid-workflow.
+
+    This is the ONE place the precedence lives — every call site below routes
+    through it, replacing four independent ``TOOL_TIMEOUTS.get(...)`` reads that
+    would otherwise drift.
+    """
+    valid_override = _positive_int(override)
+    if valid_override is not None:
+        return valid_override
+    tool_env_name = "CW_CONSULT_TIMEOUT_" + re.sub(r"[^A-Za-z0-9]", "_", tool.upper())
+    specific = _env_timeout(tool_env_name)
+    if specific is not None:
+        return specific
+    general = _env_timeout("CW_CONSULT_TIMEOUT")
+    if general is not None:
+        return general
+    return TOOL_TIMEOUTS.get(tool, TIMEOUT)
 
 # ``DEFAULT_OPTIONAL_TIMEOUT_SECONDS`` and ``optional_provider_timeout`` are the SINGLE
 # source of the required/optional delegate-timeout decision — they live in providers.py
@@ -304,7 +367,9 @@ def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> 
     return Usage(usage_status="unavailable", resolved_model=resolved)
 
 
-def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+def consult_codex(
+    prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+) -> tuple[str, Usage]:
     """Call codex CLI in read-only sandbox. Uses its own auth session.
 
     Passes prompt via stdin (``-``) to avoid shell argument length issues
@@ -316,6 +381,9 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
     Overrides reasoning effort to ``high`` (instead of user's default which
     may be ``xhigh``) to keep response times reasonable for consultations.
 
+    ``timeout`` overrides the resolved budget (chief-wiggum#291 — see
+    ``tool_timeout``); ``None`` resolves through the env-var/table chain.
+
     @cw-trace guards CTR-fh-010
     """
     cmd = [
@@ -326,7 +394,7 @@ def consult_codex(prompt: str, model: str | None = None, cwd: str | None = None)
         cmd.extend(["--model", model])
     cmd.extend(["--json", "-"])  # JSON event stream; read prompt from stdin
     out, err = _run_capture(
-        cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("codex", TIMEOUT),
+        cmd, input_text=prompt, timeout=tool_timeout("codex", override=timeout),
         cwd=cwd, tool="codex",
     )
     # @cw-trace guards CTR-fh-011 — BOTH text reconstruction and usage parsing
@@ -413,7 +481,9 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str, Usage]:
     return stdout, Usage(usage_status="unavailable")
 
 
-def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+def consult_gemini(
+    prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+) -> tuple[str, Usage]:
     """Call gemini CLI. Uses its own auth session.
 
     Passes prompt via stdin to avoid shell argument length issues.
@@ -422,13 +492,16 @@ def consult_gemini(prompt: str, model: str | None = None, cwd: str | None = None
     Uses ``--output-format json`` (rather than ``text``) so usage is
     available at all.
 
+    ``timeout`` overrides the resolved budget (chief-wiggum#291 — see
+    ``tool_timeout``); ``None`` resolves through the env-var/table chain.
+
     @cw-trace guards CTR-fh-010
     """
     cmd = ["gemini", "--yolo", "--output-format", "json", "-p", ""]
     if model:
         cmd.extend(["-m", model])
     out, err = _run_capture(
-        cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("gemini", TIMEOUT),
+        cmd, input_text=prompt, timeout=tool_timeout("gemini", override=timeout),
         cwd=cwd, tool="gemini",
     )
     # @cw-trace guards CTR-fh-011 — a usage-parsing exception never fails
@@ -460,11 +533,20 @@ def _parse_vertex_usage(response, requested_model: str) -> Usage:
     return Usage(tokens_in=tin, tokens_out=tout, usage_status="sdk-metadata", resolved_model=resolved)
 
 
-def consult_gemini_vertex(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+def consult_gemini_vertex(
+    prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+) -> tuple[str, Usage]:
     """Call Gemini via Vertex AI (google-genai SDK). Fetches credentials from keyring.
 
     Gemini 3.x text models generate only via the `global` location on Vertex,
     and the legacy vertexai.generative_models surface 404s on them.
+
+    ``timeout`` is accepted for CLI signature parity with the other tool
+    adapters (chief-wiggum#291) but is NOT enforced here: this call is a
+    synchronous SDK request with no subprocess to bound, and no wall-clock
+    deadline was wired for it before this ticket either — a pre-existing gap,
+    out of scope for #291 (which only threads the override chain through
+    call sites that already had a real ``TOOL_TIMEOUTS`` read to replace).
     """
     project = get_secret("GOOGLE_CLOUD_PROJECT")
     location = get_secret("GOOGLE_CLOUD_LOCATION") or "global"
@@ -564,9 +646,14 @@ def _parse_claude_output(stdout: str, stderr: str, model_override: str | None) -
     return stdout, Usage(usage_status="unavailable", resolved_model=model_override)
 
 
-def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+def consult_claude(
+    prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+) -> tuple[str, Usage]:
     """Call claude CLI. Uses its own auth session. Uses ``--output-format json``
     (rather than ``text``) so usage is available at all.
+
+    ``timeout`` overrides the resolved budget (chief-wiggum#291 — see
+    ``tool_timeout``); ``None`` resolves through the env-var/table chain.
 
     @cw-trace guards CTR-fh-010
     """
@@ -574,7 +661,7 @@ def consult_claude(prompt: str, model: str | None = None, cwd: str | None = None
     if model:
         cmd.extend(["--model", model])
     out, err = _run_capture(
-        cmd, input_text=prompt, timeout=TOOL_TIMEOUTS.get("claude", TIMEOUT),
+        cmd, input_text=prompt, timeout=tool_timeout("claude", override=timeout),
         cwd=cwd, tool="claude",
     )
     # @cw-trace guards CTR-fh-011
@@ -644,7 +731,9 @@ def _parse_openrouter_payload(payload: dict, model_override: str | None) -> tupl
     return text, Usage(resolved_model=resolved, usage_status="unavailable")
 
 
-def consult_openrouter(prompt: str, model: str | None = None, cwd: str | None = None) -> tuple[str, Usage]:
+def consult_openrouter(
+    prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+) -> tuple[str, Usage]:
     """Call a model over the OpenRouter HTTP API.
 
     This provider exists to widen the quorum's *distribution*, not just its
@@ -659,6 +748,9 @@ def consult_openrouter(prompt: str, model: str | None = None, cwd: str | None = 
 
     The key is fetched from the keyring at call time and passed straight into the
     request header — never an env var, never logged (CLAUDE.md secret policy).
+
+    ``timeout`` overrides the resolved budget (chief-wiggum#291 — see
+    ``tool_timeout``); ``None`` resolves through the env-var/table chain.
     """
     api_key = get_secret("OPENROUTER_API_KEY")
     if not api_key:
@@ -686,9 +778,9 @@ def consult_openrouter(prompt: str, model: str | None = None, cwd: str | None = 
             "X-Title": "chief-wiggum",
         },
     )
-    timeout = TOOL_TIMEOUTS.get("openrouter", TIMEOUT)
+    effective_timeout = tool_timeout("openrouter", override=timeout)
     try:
-        payload = _http_json_with_deadline(request, timeout)
+        payload = _http_json_with_deadline(request, effective_timeout)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:500]
         raise RuntimeError(f"openrouter HTTP {exc.code} for {model}: {detail}") from exc
@@ -712,12 +804,15 @@ def consult_claude_interactive(
     writes token counts) — this adapter is ALWAYS ``usage_status='unavailable'``,
     per ADR-fh-05.
 
-    ``timeout`` overrides the default 1800s budget (``TOOL_TIMEOUTS["claude-interactive"]``)
-    when given. This is how a role quorum caps this delegate to a much shorter
-    wall-clock when it is running in an OPTIONAL slot (chief-wiggum#188) — the
-    ``subprocess.TimeoutExpired`` this raises is caught by ``_run_one_provider``
-    exactly like any other optional-provider failure, so a shortened timeout
-    still degrades to a clean, non-blocking skip.
+    ``timeout`` overrides the resolved budget (default 1800s, ``TOOL_TIMEOUTS
+    ["claude-interactive"]``) when given — resolved through ``tool_timeout``
+    (chief-wiggum#291), so an explicit ``timeout`` (highest precedence) still
+    wins, but a ``None`` now also falls through the ``CW_CONSULT_TIMEOUT*`` env
+    vars before the table default. This is how a role quorum caps this delegate
+    to a much shorter wall-clock when it is running in an OPTIONAL slot
+    (chief-wiggum#188) — the ``subprocess.TimeoutExpired`` this raises is caught
+    by ``_run_one_provider`` exactly like any other optional-provider failure,
+    so a shortened timeout still degrades to a clean, non-blocking skip.
 
     @cw-trace guards CTR-fh-010
     """
@@ -729,7 +824,7 @@ def consult_claude_interactive(
     prompt_file = Path(prompt_name)
     try:
         prompt_file.write_text(prompt)
-        effective_timeout = timeout if timeout is not None else TOOL_TIMEOUTS["claude-interactive"]
+        effective_timeout = tool_timeout("claude-interactive", override=timeout)
         cmd = [
             sys.executable,
             str(script),
@@ -840,6 +935,14 @@ def consult_provider(
     raise ValueError(f"unsupported provider type: {provider.type}")
 
 
+def _timeout_arg(value: str) -> int | None:
+    """``type=`` callable for ``--timeout``: a bad value (non-numeric,
+    non-positive) resolves to ``None`` rather than aborting argparse
+    (chief-wiggum#291 AC2 — an invalid override falls through to the next
+    source, it never crashes the CLI invocation)."""
+    return _positive_int(value)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Consult an AI tool with a prompt.",
@@ -851,6 +954,13 @@ def main():
     parser.add_argument("--context", help="Optional context file to append")
     parser.add_argument("--model", help="Override model ID for this call")
     parser.add_argument("--cwd", help="Working directory for the AI tool (e.g., target repo path)")
+    parser.add_argument(
+        "--timeout", type=_timeout_arg, default=None, metavar="SECONDS",
+        help="Override this call's provider timeout in seconds (chief-wiggum#291; highest "
+             "precedence, above CW_CONSULT_TIMEOUT[_<TOOL>] and the TOOL_TIMEOUTS default). "
+             "Single-tool mode only, not --role. A non-numeric/non-positive value is ignored, "
+             "falling through to the env-var/table chain rather than erroring.",
+    )
     parser.add_argument("--ticket", help="Issue/ticket number this consult is for (cost-by-ticket telemetry, #134)")
     parser.add_argument("--role", help="Provider role to consult from config/providers.json")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Provider config path")
@@ -983,14 +1093,18 @@ def main():
 
     assert target is not None
     fn = TOOLS[target]
-    tool_timeout = TOOL_TIMEOUTS.get(target, TIMEOUT)
+    # --timeout (chief-wiggum#291) is the top of the override chain for a
+    # single-tool call; resolved here only for the timeout-expiry message
+    # below — the real resolution (including the env-var rungs) happens
+    # inside the consult_* function itself via tool_timeout().
+    effective_timeout = tool_timeout(target, override=args.timeout)
     out_path = Path(args.output) if args.output else None
     if out_path:
         # Create missing parent directories up front so writing the response —
         # success OR failure message — never fails with FileNotFoundError.
         out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        output, usage = fn(prompt, model=args.model, cwd=args.cwd)
+        output, usage = fn(prompt, model=args.model, cwd=args.cwd, timeout=args.timeout)
         _emit_consult_telemetry(target, args.model, args.cwd, usage, ticket=args.ticket)
         if out_path:
             out_path.write_text(output)
@@ -998,7 +1112,7 @@ def main():
         else:
             print(output)
     except subprocess.TimeoutExpired:
-        msg = f"Timeout: {target} did not respond within {tool_timeout}s"
+        msg = f"Timeout: {target} did not respond within {effective_timeout}s"
         if out_path:
             out_path.write_text(msg)
         print(msg, file=sys.stderr)

@@ -114,6 +114,21 @@ passing ``--gate`` until a ``validation/bet-gates.json`` record exists):
   always visible, never a finding/never gates — one uncapped exposure is a
   considered bet, several concurrently is a portfolio that cannot survive one
   bad event.
+- **low-cap distribution-divergence screens** (create, #275, §9.6.5 screens
+  8-13): six candidates from the low-cap distribution-divergence sweep (#272)
+  — enumerable buyers (500-5,000 named prospects), support-obligation hazard
+  (reject real-time/critical-path/regulatory-deadline functionality),
+  structural retention (>=5y record retention or a weekly-recurring
+  workflow), channel existence (>=1 of a cheap newsletter/marketplace/small
+  trade show/large member group), dark-matter demand (a keyword cluster with
+  nonzero CPC, or >=3 "what software do you use for X" threads), and the
+  opportunity-cost benchmark (projected $/hr vs the operator's contracting
+  rate — means.json ``contracting_rate_usd_per_hour``). ALL brand-new
+  reinterpretations and so NEVER gate, even under ``--gate``
+  (``NEVER_GATES_PREFIXES``'s ``"screen:"`` entry), until validated against a
+  real candidate set. An absent screen input is UNRESOLVED (cannot run),
+  never a silent pass — three of the six (buyers, channels, demand) need
+  genuinely external data CW cannot produce itself.
 
 Channel-experiment records themselves (Bullseye states, completeness,
 exactly-one-focused, CAC join, headcount filter) are ``scripts/channel.py``'s
@@ -213,7 +228,28 @@ DEFAULT_MAX_IN_FLIGHT = 2
 # checks that reinterpret what the existing --max-in-flight cap reports, so
 # per docs/gate-rollout.md they ship report-only until validated against a
 # real portfolio — they must never harden into a blocker on their own.
-NEVER_GATES_PREFIXES = ("skipped:", "capacity:")
+# "screen:" is the #275 low-cap distribution-divergence screens (§9.6.5
+# screens 8-13) — same posture: brand-new bet-selection lints, never gated
+# until validated against a real candidate set.
+NEVER_GATES_PREFIXES = ("skipped:", "capacity:", "screen:")
+
+# Low-cap distribution-divergence screens (#275, docs/business-factory.md
+# §9.6.5 screens 8-13) — six candidate additions to the §9.5 standing
+# screens, mined from the same distribution-divergence sweep as §9.6 (#272).
+ENUMERABLE_BUYERS_MIN = 500
+ENUMERABLE_BUYERS_MAX = 5000
+CHANNEL_NEWSLETTER_MAX_COST_USD = 500
+CHANNEL_TRADE_SHOW_MAX_ATTENDEES = 5000
+CHANNEL_MEMBER_GROUP_MIN_MEMBERS = 2000
+DARK_MATTER_MIN_CLUSTER = 10
+DARK_MATTER_MAX_CLUSTER = 20
+DARK_MATTER_MIN_SEARCHES = 10
+DARK_MATTER_MAX_SEARCHES = 300
+DARK_MATTER_MIN_THREADS = 3
+STRUCTURAL_RETENTION_MIN_YEARS = 5
+# Standard month-average weeks/month (52/12), used to turn a weekly hours
+# projection into a monthly one for screen 13's hourly-rate comparison.
+WEEKS_PER_MONTH = 4.345
 
 # Live states whose products consume operator attention indefinitely despite
 # being a TERMINAL — the zombie-fleet gap (#274, docs/business-factory.md
@@ -553,6 +589,213 @@ def liability_concurrency(root: Path) -> dict:
         in UNCAPPED_LIABILITY_TYPES
     ]
     return {"count": len(carriers), "bets": sorted(carriers)}
+
+
+# ---- low-cap distribution-divergence screens (#275, §9.6.5 screens 8-13) -------
+#
+# Six candidate additions to the §9.5 standing screens, mechanized as
+# report-only bet.json lints (docs/gate-rollout.md — a new blocking signal
+# needs a precision dry-run first; NEVER_GATES_PREFIXES's "screen:" entry is
+# how they stay report-only even under --gate, same posture as #274's
+# "capacity:" checks). Every screen's operator-entered facts live under
+# `bet["low_cap_screens"]` (templates/bet-schema.json) — an ABSENT field means
+# that screen is UNRESOLVED (cannot run), never a silent pass. Screens 8, 11,
+# and 12 need genuinely external data (a public-source headcount, channel
+# research, keyword/CPC or forum data) that CW cannot produce itself; 9, 10,
+# and 13 are answerable directly from the operator's own description of the
+# product, but are held to the SAME unresolved-not-silent-pass discipline for
+# one consistent convention rather than a special case per screen.
+
+
+def _screen(msg: str) -> str:
+    return f"screen: {msg}"
+
+
+def enumerable_buyers_findings(bet: dict) -> list[str]:
+    """Screen 8: >=500 named prospects producible from public sources in an
+    afternoon; reject above 5,000 — the dead zone too big for personal
+    outbound and too small for paid."""
+    n = (bet.get("low_cap_screens") or {}).get("enumerable_buyers_count")
+    if n is None:
+        return [_screen(
+            "enumerable buyers unresolved — needs a headcount of named prospects "
+            "producible from public sources in an afternoon (§9.6.5 screen 8)"
+        )]
+    if n < ENUMERABLE_BUYERS_MIN:
+        return [_screen(
+            f"enumerable buyers count {n} is below {ENUMERABLE_BUYERS_MIN} — no "
+            "list, no distribution, no business (§9.6.5 screen 8)"
+        )]
+    if n > ENUMERABLE_BUYERS_MAX:
+        return [_screen(
+            f"enumerable buyers count {n} exceeds {ENUMERABLE_BUYERS_MAX} — the "
+            "dead zone too big for personal outbound and too small for paid "
+            "(§9.6.5 screen 8)"
+        )]
+    return []
+
+
+def support_hazard_findings(bet: dict) -> list[str]:
+    """Screen 9: reject real-time/critical-path/regulatory-deadline
+    functionality — a solo operator cannot carry an on-call obligation.
+    Reaches the same conclusion as #260's regulated-calculation-liability
+    rabbitry kill from the attention direction rather than liability — the
+    convergence is corroboration, so this is ONE check with both rationales
+    named, not two overlapping ones."""
+    hazard = (bet.get("low_cap_screens") or {}).get("support_hazard")
+    flag = hazard.get("has_realtime_or_regulatory_hazard") if isinstance(hazard, dict) else None
+    if flag is None:
+        return [_screen(
+            "support-obligation hazard unresolved — needs an explicit answer: does "
+            "this bet involve real-time, critical-path, or regulatory-deadline "
+            "functionality? (§9.6.5 screen 9)"
+        )]
+    if flag:
+        return [_screen(
+            "support-obligation hazard — bet declares real-time/critical-path/"
+            "regulatory-deadline functionality a solo operator cannot carry "
+            "on-call (§9.6.5 screen 9; converges with #260's liability-direction "
+            "rabbitry kill)"
+        )]
+    return []
+
+
+def structural_retention_findings(bet: dict) -> list[str]:
+    """Screen 10: passes if the product stores records the buyer must retain
+    >=5 years, or runs a weekly-recurring workflow. Satisfaction is not
+    retention."""
+    sr = (bet.get("low_cap_screens") or {}).get("structural_retention")
+    years = sr.get("retention_years") if isinstance(sr, dict) else None
+    weekly = sr.get("weekly_recurring_workflow") if isinstance(sr, dict) else None
+    if years is None and weekly is None:
+        return [_screen(
+            "structural retention unresolved — needs retention_years and/or "
+            "weekly_recurring_workflow (§9.6.5 screen 10)"
+        )]
+    if weekly or (years is not None and years >= STRUCTURAL_RETENTION_MIN_YEARS):
+        return []
+    return [_screen(
+        "no structural retention — product neither retains records "
+        f">= {STRUCTURAL_RETENTION_MIN_YEARS} years nor runs a weekly-recurring "
+        "workflow; satisfaction is not retention (§9.6.5 screen 10)"
+    )]
+
+
+def _channel_passes(entry: dict) -> bool:
+    t = entry.get("type")
+    if t == "association_newsletter":
+        cost = entry.get("cost_usd")
+        return isinstance(cost, (int, float)) and cost < CHANNEL_NEWSLETTER_MAX_COST_USD
+    if t == "app_marketplace":
+        return True  # existence alone is the bar — a browsed marketplace
+    if t == "trade_show":
+        attendees = entry.get("attendees")
+        return isinstance(attendees, (int, float)) and attendees < CHANNEL_TRADE_SHOW_MAX_ATTENDEES
+    if t == "member_group":
+        members = entry.get("members")
+        return isinstance(members, (int, float)) and members > CHANNEL_MEMBER_GROUP_MIN_MEMBERS
+    return False
+
+
+def channel_existence_findings(bet: dict) -> list[str]:
+    """Screen 11: >=1 of: sponsorable association newsletter <$500, a browsed
+    app marketplace, a trade show <5,000 attendees, a >2k-member group. Needs
+    external channel research the operator supplies; absent -> UNRESOLVED,
+    never a silent pass (#275 — one of the three screens needing external
+    data sources)."""
+    channels = (bet.get("low_cap_screens") or {}).get("channels")
+    if not channels:
+        return [_screen(
+            "channel existence unresolved — needs >=1 researched channel: "
+            "sponsorable association newsletter <$500, a browsed app marketplace, "
+            "a trade show <5,000 attendees, or a >2k-member group (§9.6.5 screen 11)"
+        )]
+    if any(_channel_passes(c) for c in channels if isinstance(c, dict)):
+        return []
+    return [_screen(
+        f"channel existence — none of {len(channels)} entered channel(s) meet the "
+        "size/cost bar (§9.6.5 screen 11)"
+    )]
+
+
+def dark_matter_demand_findings(bet: dict) -> list[str]:
+    """Screen 12: 10-300 searches/mo across a 10-20 keyword cluster with
+    nonzero CPC, OR >=3 findable 'what software do you use for X' threads.
+    Supersedes the cruder 'reject if search volume is high' heuristic two
+    models proposed independently: volume alone is ambiguous,
+    volume-with-commercial-intent is the signal. Needs external keyword/
+    thread research; absent -> UNRESOLVED, never a silent pass (#275 — one of
+    the three screens needing external data sources)."""
+    dm = (bet.get("low_cap_screens") or {}).get("dark_matter_demand")
+    if not isinstance(dm, dict):
+        dm = {}
+    cluster = dm.get("keyword_cluster_size")
+    searches = dm.get("monthly_searches")
+    cpc = dm.get("nonzero_cpc")
+    threads = dm.get("so_threads_count")
+    if cluster is None and searches is None and cpc is None and threads is None:
+        return [_screen(
+            "dark-matter demand unresolved — needs keyword-cluster search-volume/"
+            "CPC data or a count of 'what software do you use for X' threads "
+            "(§9.6.5 screen 12)"
+        )]
+    keyword_pass = (
+        cluster is not None and DARK_MATTER_MIN_CLUSTER <= cluster <= DARK_MATTER_MAX_CLUSTER
+        and searches is not None and DARK_MATTER_MIN_SEARCHES <= searches <= DARK_MATTER_MAX_SEARCHES
+        and bool(cpc)
+    )
+    thread_pass = threads is not None and threads >= DARK_MATTER_MIN_THREADS
+    if keyword_pass or thread_pass:
+        return []
+    return [_screen(
+        "dark-matter demand — keyword/CPC/thread data present but below every "
+        "pass threshold (§9.6.5 screen 12)"
+    )]
+
+
+def opportunity_cost_findings(bet: dict, means: dict | None) -> list[str]:
+    """Screen 13: every low-cap bet is judged against the operator's
+    contracting rate for the same hours — never against zero, never against
+    venture outcomes. This is the counterfactual the startup corpus never
+    forces, and the ledger had no field for it before #275. Needs
+    means.json's contracting_rate_usd_per_hour AND this bet's
+    projected_mrr_usd/projected_hours_per_week; either absent -> UNRESOLVED,
+    never a silent pass."""
+    rate = (means or {}).get("contracting_rate_usd_per_hour")
+    oc = (bet.get("low_cap_screens") or {}).get("opportunity_cost") or {}
+    projected_mrr = oc.get("projected_mrr_usd")
+    projected_hours = oc.get("projected_hours_per_week")
+    if rate is None or projected_mrr is None or not projected_hours:
+        return [_screen(
+            "opportunity-cost benchmark unresolved — needs means.json "
+            "contracting_rate_usd_per_hour plus this bet's projected_mrr_usd/"
+            "projected_hours_per_week (§9.6.5 screen 13)"
+        )]
+    hourly = projected_mrr / (projected_hours * WEEKS_PER_MONTH)
+    if hourly >= rate:
+        return []
+    return [_screen(
+        f"opportunity-cost benchmark — projected ${hourly:,.2f}/hr is below the "
+        f"operator's ${rate:,.2f}/hr contracting rate (§9.6.5 screen 13)"
+    )]
+
+
+def low_cap_screen_findings(root: Path, bet: dict) -> list[str]:
+    """All six low-cap screens (#275, §9.6.5 screens 8-13), combined. Every
+    finding is already prefixed 'screen: ' (NEVER_GATES_PREFIXES) — this whole
+    dimension is a brand-new reinterpretation of the §9.5 standing screens and
+    so never gates, even under --gate, until validated against a real
+    candidate set (docs/gate-rollout.md), same posture as #274's 'capacity:'
+    checks."""
+    means = load_means(root)
+    return (
+        enumerable_buyers_findings(bet)
+        + support_hazard_findings(bet)
+        + structural_retention_findings(bet)
+        + channel_existence_findings(bet)
+        + dark_matter_demand_findings(bet)
+        + opportunity_cost_findings(bet, means)
+    )
 
 
 # ---- ledger --------------------------------------------------------------------
@@ -1572,6 +1815,20 @@ def cmd_create(args) -> int:
         bet["rep_cadence_per_week"] = args.cadence
     if args.target_cac is not None:
         bet["target_cac_usd"] = args.target_cac
+    # getattr with a default (house precedent, e.g. _resolve_retire_cases in
+    # ratchet.py): a hand-built Namespace predating this flag (the pivot path
+    # in cmd_transition, above) must degrade gracefully, not AttributeError.
+    if getattr(args, "low_cap_screens", None):
+        lcs_path = Path(args.low_cap_screens)
+        if not lcs_path.is_file():
+            raise BetError(f"--low-cap-screens file not found: {lcs_path}")
+        try:
+            low_cap_screens = json.loads(lcs_path.read_text())
+        except json.JSONDecodeError as e:
+            raise BetError(f"cannot parse {lcs_path}: {e}") from e
+        if not isinstance(low_cap_screens, dict):
+            raise BetError(f"{lcs_path}: low-cap screens data must be a JSON object")
+        bet["low_cap_screens"] = low_cap_screens
 
     findings = [f"soundness: {f}" for f in criteria_soundness(criteria)]
     findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
@@ -1580,6 +1837,9 @@ def cmd_create(args) -> int:
         f if f.startswith("skipped:") else f"selection: {f}"
         for f in selection_lint(root, bet)
     ]
+    # Low-cap distribution-divergence screens (#275, §9.6.5 screens 8-13) —
+    # already self-prefixed 'screen: ' (NEVER_GATES_PREFIXES), no re-tagging.
+    findings += low_cap_screen_findings(root, bet)
 
     rc = report(findings, args.gate)
     if rc:
@@ -2026,7 +2286,7 @@ def cmd_transition(args) -> int:
             envelope=args.envelope, criteria=args.criteria,
             ecosystem_channel=None, owned_audience=None,
             means_ref=None, predecessor=args.bet_id, gate=args.gate,
-            cadence=None, target_cac=None,
+            cadence=None, target_cac=None, low_cap_screens=None,
         )
         rc = cmd_create(sub)
         if rc:
@@ -2303,6 +2563,11 @@ def main() -> int:
     sp.add_argument("--target-cac", type=float, default=None, metavar="USD",
                     help="target CAC the channel engine joins measured channel-CAC "
                          "against (absent → the join reports skipped — #241)")
+    sp.add_argument("--low-cap-screens", default=None, metavar="JSON",
+                    help="operator-entered facts for the six low-cap distribution-divergence "
+                         "screens (templates/bet-schema.json low_cap_screens — #275, "
+                         "docs/business-factory.md §9.6.5 screens 8-13); absent fields are "
+                         "UNRESOLVED findings (report-only), never a silent pass")
     sp.add_argument("--predecessor", default=None, help=argparse.SUPPRESS)
 
     sp = sub.add_parser("spend", help="append a spend/time/rep ledger entry")

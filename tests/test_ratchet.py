@@ -1587,6 +1587,7 @@ def _record_args(tmp_path, **overrides):
         retire_case=None, retire_case_file=None, retire_case_reason="",
         retire_case_owner="unassigned", retire_case_expiry=None,
         retire_case_expiry_days=ratchet.DEFAULT_QUARANTINE_DAYS,
+        retire_case_permanent=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -1797,3 +1798,326 @@ def test_retire_case_exact_id_with_fnmatch_metacharacters(tmp_path):
     assert proc.returncode == 0, proc.stderr
     hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
     assert cid in hw["quarantined"]
+
+
+# ==== permanent retirement (#290) ==============================================
+#
+# #278's --retire-case is a QUARANTINE: mandatory expiry, self-renewing
+# pressure, designed for a flaky/order-dependent test that should come back.
+# It is the wrong shape for a case that was renamed/re-parametrised/deleted
+# and will NEVER pass again — the quarantine just expires and re-blocks,
+# needing renewal forever. --retire-case-permanent is a DISTINCT, honestly
+# named terminal path: still journaled/reasoned/owned, but no expiry, and
+# never re-added by effective_pass_set.
+#
+# Reuses the ``_record_args`` helper defined above (now with a
+# ``retire_case_permanent=False`` default) rather than a second definition.
+
+
+def test_a_case_vanishing_without_a_journal_entry_still_fires(tmp_path):
+    """#290 must not become a silent escape hatch.
+
+    Permanent retirement removes a case from the pass-set for good, so the
+    property that actually matters is the NEGATIVE one: a case that simply
+    DISAPPEARS from the suite, with no journaled retirement behind it, must
+    still fire missing_tests. Otherwise the ratchet could be dodged by
+    deleting a test instead of recording that you retired it, and the
+    tamper-evidence argument collapses.
+
+    The positive path is covered by the tests below; this pins the negative.
+    """
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::flaky"}), merged=True)
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+
+    # the case vanishes from the suite. No `record --retire-case-permanent`,
+    # no journal entry, no owner, no reason — just gone.
+    sc = scorecard_from(cfg, {"s::t1"})
+
+    assert ratchet.violations(sc, hw)["missing_tests"] == ["s::flaky"], (
+        "a case that vanished with no journaled retirement must still be a "
+        "missing_tests violation — the #290 retirement path is the ONLY way "
+        "a case may legitimately leave the pass-set"
+    )
+
+
+def test_retire_case_permanent_requires_explicit_owner(tmp_path):
+    """Attribution is not the thing being relaxed for a permanent retirement —
+    the quarantine path's lax 'unassigned' default does not carry over."""
+    _prep_quarantine_repo(tmp_path)
+    args = _record_args(
+        tmp_path, retire_case=["s::flaky"], retire_case_reason="renamed",
+        retire_case_permanent=True,
+    )
+    with pytest.raises(ratchet.RatchetError, match="explicit --retire-case-owner"):
+        ratchet.cmd_record(args)
+
+
+def test_retire_case_permanent_rejects_an_expiry(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    args = _record_args(
+        tmp_path, retire_case=["s::flaky"], retire_case_reason="renamed",
+        retire_case_owner="plwp", retire_case_permanent=True,
+        retire_case_expiry="2099-01-01",
+    )
+    with pytest.raises(ratchet.RatchetError, match="rejects an expiry"):
+        ratchet.cmd_record(args)
+
+
+def test_retire_case_permanent_rejects_expiry_days(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    args = _record_args(
+        tmp_path, retire_case=["s::flaky"], retire_case_reason="renamed",
+        retire_case_owner="plwp", retire_case_permanent=True,
+        retire_case_expiry_days=30,
+    )
+    with pytest.raises(ratchet.RatchetError, match="rejects an expiry"):
+        ratchet.cmd_record(args)
+
+
+def test_retire_case_permanent_still_requires_a_reason(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    args = _record_args(
+        tmp_path, retire_case=["s::flaky"], retire_case_owner="plwp",
+        retire_case_permanent=True,
+    )
+    with pytest.raises(ratchet.RatchetError, match="reason"):
+        ratchet.cmd_record(args)
+
+
+def test_retire_case_permanent_companion_flags_without_a_case_are_an_error(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    args = _record_args(tmp_path, retire_case_permanent=True)
+    with pytest.raises(ratchet.RatchetError, match="--retire-case"):
+        ratchet.cmd_record(args)
+
+
+def test_retire_case_permanent_round_trip(tmp_path):
+    """AC1: a permanently retired case never re-enters missing_tests, no
+    matter how far in the future — unlike quarantine, there is no expiry to
+    even check."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::renamed_away"}), merged=True)
+    sc = scorecard_from(cfg, {"s::t1"})
+    _write_scorecard(cfg, sc)
+    args = _record_args(
+        tmp_path, retire_case=["s::renamed_away"],
+        retire_case_reason="renamed to s::t1_v2, old id gone for good",
+        retire_case_owner="plwp", retire_case_permanent=True,
+    )
+    assert ratchet.cmd_record(args) == 0
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::renamed_away" not in hw["pass_set"]
+    assert "s::renamed_away" in hw["removed_cases"]
+    assert "s::renamed_away" not in hw["quarantined"]
+    assert hw["removed_cases"]["s::renamed_away"]["expiry"] is None
+
+    # Decades in the future — still never blocks (no expiry logic applies).
+    v = ratchet.violations(sc, hw, today=date(2099, 1, 1))
+    assert v["missing_tests"] == []
+    assert v["expired_quarantines"] == []
+    assert len(v["removed_cases"]) == 1
+    assert v["removed_cases"][0]["id"] == "s::renamed_away"
+
+
+def test_removed_case_is_separate_from_quarantined_in_the_fold(tmp_path):
+    cfg = make_repo(tmp_path)
+    append_record(
+        cfg, scorecard_from(cfg, {"s::t1", "s::flaky", "s::gone"}), merged=True,
+    )
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[
+        {"id": "s::flaky", "reason": "flaky", "owner": "plwp",
+         "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z"},
+        {"id": "s::gone", "reason": "deleted", "owner": "plwp", "expiry": None,
+         "created_at": "2026-08-03T00:00:00Z", "kind": "removed"},
+    ])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert set(hw["quarantined"]) == {"s::flaky"}
+    assert set(hw["removed_cases"]) == {"s::gone"}
+    assert "s::flaky" not in hw["pass_set"]
+    assert "s::gone" not in hw["pass_set"]
+
+
+def test_removed_case_self_heals_when_it_passes_again(tmp_path):
+    """Same self-healing doctrine as quarantine (#278 D7): if the exact case
+    ID somehow reappears in a later MERGED pass_set, it is restored — no
+    second human act needed."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::gone"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[
+        {"id": "s::gone", "reason": "deleted", "owner": "plwp", "expiry": None,
+         "created_at": "2026-08-03T00:00:00Z", "kind": "removed"},
+    ])
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::gone" in hw["removed_cases"]
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::gone"}), merged=True)
+    hw2 = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::gone" in hw2["pass_set"]
+    assert "s::gone" not in hw2["removed_cases"]
+
+
+def test_a_quarantined_case_can_graduate_to_permanent(tmp_path):
+    """An operator gives up renewing a flaky quarantine and permanently
+    retires it instead — the case must stay retirable via the CLI (same
+    reachability guard as quarantine renewal, #278 review) and the fold must
+    land it in removed_cases only, not both."""
+    cfg = _prep_quarantine_repo(tmp_path)
+    quarantine = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", "s::flaky", "--retire-case-reason", "flaky",
+         "--retire-case-expiry", "2026-11-01"],
+        capture_output=True, text=True,
+    )
+    assert quarantine.returncode == 0, quarantine.stderr
+    permanent = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", "s::flaky",
+         "--retire-case-reason", "giving up, deleting the test",
+         "--retire-case-owner", "plwp", "--retire-case-permanent"],
+        capture_output=True, text=True,
+    )
+    assert permanent.returncode == 0, permanent.stderr
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::flaky" in hw["removed_cases"]
+    assert "s::flaky" not in hw["quarantined"]
+
+
+def test_record_status_is_removed_for_a_permanent_only_retirement(tmp_path):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::gone"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = _record_args(
+        tmp_path, retire_case=["s::gone"], retire_case_reason="deleted",
+        retire_case_owner="plwp", retire_case_permanent=True,
+    )
+    assert ratchet.cmd_record(args) == 0
+    recs = ratchet.load_journal(cfg)
+    assert recs[-1]["ratchet_status"] == "removed"
+
+
+def test_recent_prints_the_removed_status_distinctly_from_quarantined(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::gone"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = _record_args(
+        tmp_path, retire_case=["s::gone"], retire_case_reason="deleted",
+        retire_case_owner="plwp", retire_case_permanent=True,
+    )
+    assert ratchet.cmd_record(args) == 0
+    capsys.readouterr()
+    assert ratchet.cmd_recent(argparse.Namespace(repo=str(tmp_path), n=5)) == 0
+    out = capsys.readouterr().out
+    assert "[removed]" in out
+    assert "[quarantined]" not in out
+
+
+def test_check_reports_removed_cases_separately_from_quarantined(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(
+        cfg, scorecard_from(cfg, {"s::t1", "s::flaky", "s::gone"}), merged=True,
+    )
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[
+        {"id": "s::flaky", "reason": "order-dependent", "owner": "plwp",
+         "expiry": "2099-01-01", "created_at": "2026-08-03T00:00:00Z"},
+        {"id": "s::gone", "reason": "deleted", "owner": "plwp", "expiry": None,
+         "created_at": "2026-08-03T00:00:00Z", "kind": "removed"},
+    ])
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0
+    out = capsys.readouterr()
+    assert "1 case(s) quarantined" in out.out
+    assert "1 case(s) permanently retired" in out.out
+    assert "s::gone" in out.err
+    assert "permanently retired" in out.err
+
+    args_json = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    assert ratchet.cmd_check(args_json) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["quarantined"][0]["id"] == "s::flaky"
+    assert data["removed_cases"][0]["id"] == "s::gone"
+
+
+def test_check_ok_line_unchanged_with_no_removed_cases(tmp_path, capsys):
+    """Regression pin: the pre-#290 OK string must stay byte-identical when
+    nothing is quarantined AND nothing is permanently retired."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="text", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0
+    out = capsys.readouterr().out
+    assert out.strip() == "ratchet: OK (pass-set and contract definitions hold the high-water mark)"
+
+
+def test_check_json_gains_removed_cases_key_additively(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=True)
+    _write_scorecard(cfg, scorecard_from(cfg, {"s::t1"}))
+    args = argparse.Namespace(repo=str(tmp_path), format="json", gate_quality=False)
+    assert ratchet.cmd_check(args) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["removed_cases"] == []
+
+
+def test_highwater_includes_removed_cases(tmp_path, capsys):
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1", "s::gone"}), merged=True)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=False, retired_cases=[
+        {"id": "s::gone", "reason": "deleted", "owner": "plwp", "expiry": None,
+         "created_at": "2026-08-03T00:00:00Z", "kind": "removed"},
+    ])
+    assert ratchet.cmd_highwater(argparse.Namespace(repo=str(tmp_path))) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert "s::gone" in data["removed_cases"]
+
+
+def test_backward_compat_journal_without_removed_cases_key(tmp_path):
+    """A journal predating #290 has NO entries carrying a 'kind' key at all —
+    derive_highwater must default them all to quarantined, and violations()
+    must tolerate a highwater dict from an even-older cache lacking
+    'removed_cases' entirely."""
+    hw = {"pass_set": ["s::t1"], "contract_hashes": {}, "quarantined": {}}
+    sc = {"pass_set": ["s::t1"], "contract_hashes": {}}
+    v = ratchet.violations(sc, hw)
+    assert v["removed_cases"] == []
+
+
+def test_retire_case_permanent_via_real_cli(tmp_path):
+    cfg = _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", "s::flaky",
+         "--retire-case-reason", "renamed, id gone for good",
+         "--retire-case-owner", "plwp", "--retire-case-permanent"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "status=removed" in proc.stdout, proc.stdout
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::flaky" in hw["removed_cases"]
+
+
+def test_retire_case_permanent_via_real_cli_rejects_default_owner(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", "s::flaky",
+         "--retire-case-reason", "renamed", "--retire-case-permanent"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "owner" in proc.stderr.lower()
+
+
+def test_retire_case_permanent_via_real_cli_rejects_expiry(tmp_path):
+    _prep_quarantine_repo(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--retire-case", "s::flaky",
+         "--retire-case-reason", "renamed", "--retire-case-owner", "plwp",
+         "--retire-case-permanent", "--retire-case-expiry", "2099-01-01"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "expiry" in proc.stderr.lower()

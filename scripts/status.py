@@ -159,6 +159,26 @@ def ratchet_quarantines(quality_dir: Path) -> dict:
     }
 
 
+def ratchet_removed_cases(quality_dir: Path) -> dict:
+    """Permanently-retired high-water cases (#290) from the TOLERANT verified
+    journal prefix — same read path as ``ratchet_quarantines``, but for the
+    DISTINCT ``removed_cases`` bucket: renamed/re-parametrised/deleted cases
+    that never expire and never re-block. Kept as a SEPARATE function (rather
+    than folded into ``ratchet_quarantines``) so the two render as visibly
+    distinct sections, per the doctrine that the flaky-quarantine list must
+    stay a list of flakes."""
+    journal = quality_dir / JOURNAL_NAME
+    empty = {"count": 0, "entries": [], "chain_broken": False}
+    if not journal.is_file():
+        return empty
+    raw_lines = [ln for ln in journal.read_text().splitlines() if ln.strip()]
+    prefix = ratchet.verified_prefix(journal)
+    chain_broken = len(prefix) != len(raw_lines)
+    removed = ratchet.derive_highwater(prefix).get("removed_cases") or {}
+    entries = sorted(removed.values(), key=lambda e: e.get("id", ""))
+    return {"count": len(entries), "entries": entries, "chain_broken": chain_broken}
+
+
 def ratchet_quarantine_reason(q: dict) -> str | None:
     """PARTIAL COVERAGE reason for a non-empty quarantine, or None (#278):
     coverage is deliberately below the high-water mark while cases are
@@ -380,6 +400,16 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
         if q["chain_broken"]:
             rt["quarantine_chain_broken"] = True
         rt["quarantine_detail"] = q
+    # Permanent retirement (#290) — a DISTINCT section from quarantine, same
+    # zero-noise gating: a target with none renders byte-identically to
+    # pre-#290 /status.
+    removed = ratchet_removed_cases(quality_dir)
+    if removed["count"] or removed["chain_broken"]:
+        if removed["count"]:
+            rt["removed_cases"] = removed["count"]
+        if removed["chain_broken"]:
+            rt["removed_cases_chain_broken"] = True
+        rt["removed_cases_detail"] = removed
     debt = debt_counts(quality_dir)
     # NOT MEASURED (#259): section -> reason, for every surface whose "clean"
     # rendering is indistinguishable from "measured nothing". A section absent
@@ -483,6 +513,24 @@ def render_text(status: dict) -> str:
             if rt.get("quarantine_chain_broken"):
                 lines.append(
                     "WARNING: ratchet journal chain broken — quarantine list may be incomplete"
+                )
+        # Permanent retirement (#290) — rendered as its OWN line, distinct from
+        # quarantine: no expiry, no "block again" warning is possible for it.
+        if rt.get("removed_cases") or rt.get("removed_cases_chain_broken"):
+            rdetail = rt.get("removed_cases_detail") or {}
+            if rt.get("removed_cases"):
+                ids = ", ".join(e.get("id", "?") for e in (rdetail.get("entries") or [])[:5])
+                more = (
+                    f" … and {rt['removed_cases'] - 5} more" if rt["removed_cases"] > 5 else ""
+                )
+                lines.append(
+                    f"permanently retired: {rt['removed_cases']} case(s), never re-blocks "
+                    f"(docs/ratchet.md): {ids}{more}"
+                )
+            if rt.get("removed_cases_chain_broken"):
+                lines.append(
+                    "WARNING: ratchet journal chain broken — permanently-retired list may be "
+                    "incomplete"
                 )
     lines += ["", "## Adopted patterns", ""]
     if not status["patterns"]:

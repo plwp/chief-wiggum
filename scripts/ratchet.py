@@ -1012,20 +1012,34 @@ def derive_highwater(records: list[dict]) -> dict:
     act wins inside its own record). Self-healing: a case that re-enters a
     LATER merged record's pass_set is restored to ``pass_set`` and its stale
     quarantine metadata is dropped (``quarantined.pop``) with no second human
-    act — a fixed flaky test must not show as quarantined forever."""
+    act — a fixed flaky test must not show as quarantined forever.
+
+    Permanent retirement (#290): an entry carrying ``"kind": "removed"`` (a
+    renamed/re-parametrised/deleted case, journaled via ``--retire-case-
+    permanent``) goes to a SEPARATE ``removed_cases`` bucket, never
+    ``quarantined`` — it is never re-added by ``effective_pass_set`` (no
+    expiry logic applies to it at all, by construction) and renders
+    separately everywhere a human looks, so the flaky-quarantine list stays a
+    list of flakes. An entry with no ``kind`` key (every pre-#290 journal
+    record) defaults to quarantined — unchanged backward compatibility. Same
+    self-healing as quarantine: a case that returns to a LATER merged record's
+    pass_set is restored and dropped from whichever bucket it was in.
+    """
     pass_set: set[str] = set()
     contract_hashes: dict[str, str] = {}
     verifier_hashes: dict[str, str] = {}
     quarantined: dict[str, dict] = {}
+    removed_cases: dict[str, dict] = {}
     for rec in records:
         if rec.get("merged"):
             sc = rec.get("scorecard", {}) or {}
             incoming = set(sc.get("pass_set", []) or [])
             pass_set |= incoming
             for cid in incoming:
-                # self-healing: a re-passing case un-quarantines, and its
-                # stale metadata is dropped at the same moment.
+                # self-healing: a re-passing case un-quarantines/un-removes,
+                # and its stale metadata is dropped at the same moment.
                 quarantined.pop(cid, None)
+                removed_cases.pop(cid, None)
             for cid, h in (sc.get("contract_hashes", {}) or {}).items():
                 contract_hashes.setdefault(canonical_id(cid), h)
             # Verifier-test hashes (#206): same first-entry-wins semantics.
@@ -1043,15 +1057,22 @@ def derive_highwater(records: list[dict]) -> dict:
             verifier_hashes.pop(ref, None)
         for entry in rec.get("retired_cases") or []:
             cid = entry.get("id")
-            if cid:
-                pass_set.discard(cid)
+            if not cid:
+                continue
+            pass_set.discard(cid)
+            if entry.get("kind") == "removed":
+                removed_cases[cid] = entry  # last-wins
+                quarantined.pop(cid, None)  # a standing quarantine graduates to permanent
+            else:
                 quarantined[cid] = entry  # last-wins == renewal
+                removed_cases.pop(cid, None)
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
         "verifier_test_hashes": verifier_hashes,
         "quality": derive_quality_highwater(records),
         "quarantined": quarantined,
+        "removed_cases": removed_cases,
     }
 
 
@@ -1060,7 +1081,13 @@ def effective_pass_set(highwater: dict, today: date | None = None) -> set[str]:
     ``pass_set`` plus every case whose quarantine has EXPIRED (expiry is
     visible pressure, not amnesty). Kept out of ``derive_highwater`` so that
     fold stays pure and date-free; shared by ``violations`` and ``cmd_record``
-    so the two verdicts never drift (#278)."""
+    so the two verdicts never drift (#278).
+
+    ``removed_cases`` (permanent retirement, #290) is deliberately NOT read
+    here at all: there is no expiry logic for it, by construction — a
+    permanently retired case never re-enters this set, regardless of elapsed
+    time, which is the whole point of a terminal kind distinct from quarantine.
+    """
     q = highwater.get("quarantined") or {}
     return set(highwater.get("pass_set") or []) | {
         cid for cid, e in q.items() if grandfather.is_expired(e, today)
@@ -1108,6 +1135,12 @@ def violations(scorecard: dict, highwater: dict, today: date | None = None) -> d
         else:
             q_live.append(entry)
     missing = sorted(set(missing))
+    # Permanent retirement (#290): report-only, like quarantine above, but with
+    # NO expiry-driven re-blocking at all — a removed case never re-enters
+    # `missing_tests`, regardless of elapsed time. Tolerate a highwater dict
+    # that lacks the `removed_cases` key entirely (pre-#290 caches).
+    removed_cases_hw = highwater.get("removed_cases") or {}
+    removed_cases = sorted(removed_cases_hw.values(), key=lambda e: e.get("id", ""))
     # Vacuous contract-hash gate (#295): an "error" measurement status means
     # the epic has ID-bearing artifacts with content but the scanner parsed
     # ZERO stable IDs out of them — "contracts cannot be weakened" would
@@ -1130,6 +1163,7 @@ def violations(scorecard: dict, highwater: dict, today: date | None = None) -> d
         "removed_verifier_tests": vremoved,
         "quarantined": q_live,
         "expired_quarantines": q_expired,
+        "removed_cases": removed_cases,
         "contract_measurement_error": contract_measurement_error,
     }
 
@@ -1177,6 +1211,15 @@ def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[di
     Returns ``[]`` when neither ``--retire-case`` nor ``--retire-case-file``
     was given — the common, no-op-for-this-feature case.
 
+    ``--retire-case-permanent`` (#290) is the SAME resolution path with a
+    different terminal kind: a renamed/re-parametrised/deleted case will never
+    pass again, so an expiring quarantine just forces renewal forever. A
+    permanent entry carries ``"kind": "removed"`` and no expiry at all — never
+    re-added by ``effective_pass_set``, regardless of elapsed time. Every
+    OTHER guard (journaled, protected path, mandatory reason, exact-id-before-
+    glob, refuses a still-passing or not-in-high-water case) is shared with
+    the quarantine path; only the terminal kind and the expiry policy differ.
+
     Reads every new arg with ``getattr(..., default)`` (house precedent:
     ``cmd_check``'s ``gate_verifier_tests`` read) so a hand-built
     ``argparse.Namespace`` (``adopt.py``) that predates these flags degrades
@@ -1188,6 +1231,7 @@ def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[di
     owner = getattr(args, "retire_case_owner", None) or "unassigned"
     expiry = getattr(args, "retire_case_expiry", None)
     expiry_days = getattr(args, "retire_case_expiry_days", DEFAULT_QUARANTINE_DAYS)
+    permanent = bool(getattr(args, "retire_case_permanent", False))
 
     file_patterns = _read_case_file(case_file) if case_file else []
     patterns = cases + file_patterns
@@ -1200,10 +1244,11 @@ def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[di
             or getattr(args, "retire_case_expiry", None) is not None
             or getattr(args, "retire_case_expiry_days", DEFAULT_QUARANTINE_DAYS)
             != DEFAULT_QUARANTINE_DAYS
+            or permanent
         )
         if companion_given:
             raise RatchetError(
-                "--retire-case-{reason,owner,expiry,expiry-days} requires "
+                "--retire-case-{reason,owner,expiry,expiry-days,permanent} requires "
                 "--retire-case or --retire-case-file"
             )
         return []
@@ -1215,23 +1260,45 @@ def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[di
             "reason is amnesty, not a journaled decision"
         )
 
-    # V4/V5/V6 — mandatory expiry, never unparseable, never in the past.
-    if expiry is not None:
-        try:
-            expiry_date = date.fromisoformat(expiry)
-        except ValueError as e:
+    if permanent:
+        # #290: attribution is not the thing being relaxed for a PERMANENT
+        # retirement — an explicit owner is mandatory (quarantine's laxer
+        # "unassigned" default doesn't apply), and an expiry is a usage error:
+        # accepting one would make this indistinguishable from a quarantine
+        # that just never intends to be renewed, defeating the entire point
+        # of a distinct, honestly-named permanent path (docs/ratchet.md).
+        if owner == "unassigned":
             raise RatchetError(
-                f"--retire-case-expiry must be an ISO date (YYYY-MM-DD): {expiry}"
-            ) from e
-        if expiry_date < today:
-            raise RatchetError(
-                f"--retire-case-expiry {expiry} is in the past — a "
-                "pre-expired quarantine is invisible pressure; pick a future date"
+                "--retire-case-permanent requires an explicit --retire-case-owner "
+                "(attribution is not the thing being relaxed for a permanent "
+                "retirement)"
             )
+        if expiry is not None or expiry_days != DEFAULT_QUARANTINE_DAYS:
+            raise RatchetError(
+                "--retire-case-permanent rejects an expiry "
+                "(--retire-case-expiry/--retire-case-expiry-days): a permanent "
+                "retirement never comes back, so it never expires — use plain "
+                "--retire-case for a flaky quarantine instead"
+            )
+        expiry = None
     else:
-        if expiry_days < 1:
-            raise RatchetError("--retire-case-expiry-days must be >= 1")
-        expiry = (today + timedelta(days=expiry_days)).isoformat()
+        # V4/V5/V6 — mandatory expiry, never unparseable, never in the past.
+        if expiry is not None:
+            try:
+                expiry_date = date.fromisoformat(expiry)
+            except ValueError as e:
+                raise RatchetError(
+                    f"--retire-case-expiry must be an ISO date (YYYY-MM-DD): {expiry}"
+                ) from e
+            if expiry_date < today:
+                raise RatchetError(
+                    f"--retire-case-expiry {expiry} is in the past — a "
+                    "pre-expired quarantine is invisible pressure; pick a future date"
+                )
+        else:
+            if expiry_days < 1:
+                raise RatchetError("--retire-case-expiry-days must be >= 1")
+            expiry = (today + timedelta(days=expiry_days)).isoformat()
 
     # V7/V8 — deterministic, clock-free resolution.
     # An ALREADY-quarantined case stays retirable: renewal after (or before)
@@ -1270,8 +1337,12 @@ def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[di
         )
 
     created_at = datetime.now(timezone.utc).isoformat()
+    entry_kind = "removed" if permanent else "quarantined"
     return [
-        {"id": cid, "reason": reason, "owner": owner, "expiry": expiry, "created_at": created_at}
+        {
+            "id": cid, "reason": reason, "owner": owner, "expiry": expiry,
+            "created_at": created_at, "kind": entry_kind,
+        }
         for cid in sorted(resolved)
     ]
 
@@ -1529,10 +1600,15 @@ def cmd_check(args) -> int:
     # `missing_tests` (already covered by `hard` above).
     quarantined = v["quarantined"]
     expired_q = v["expired_quarantines"]
+    # Permanent retirement (#290): a DISTINCT report-only label from
+    # quarantine — never expires, never re-enters missing_tests, so it never
+    # shows up in expired_quarantines either.
+    removed_cases = v["removed_cases"]
     gate_verifier = getattr(args, "gate_verifier_tests", False)
     if args.format == "json":
         print(json.dumps(
             {**hard, **vfind, "quarantined": quarantined, "expired_quarantines": expired_q,
+             "removed_cases": removed_cases,
              "quality_regressions": qregs, "suspect_links": susp}, indent=2))
     else:
         if hard["contract_measurement_error"]:
@@ -1565,6 +1641,14 @@ def cmd_check(args) -> int:
             sys.stderr.write(
                 f"ratchet: {len(quarantined)} case(s) quarantined [report-only] — coverage "
                 f"is BELOW the high-water mark; nearest expiry {nearest}: {shown}{more}\n"
+            )
+        if removed_cases:
+            ids = [e.get("id", "?") for e in removed_cases]
+            shown = ", ".join(ids[:5])
+            more = f" … and {len(ids) - 5} more" if len(ids) > 5 else ""
+            sys.stderr.write(
+                f"ratchet: {len(removed_cases)} case(s) permanently retired [report-only] — "
+                f"renamed/deleted, never re-blocks, no expiry (docs/ratchet.md): {shown}{more}\n"
             )
         if any(vfind.values()):
             tag = "VIOLATED (gated)" if gate_verifier else "report-only"
@@ -1606,10 +1690,20 @@ def cmd_check(args) -> int:
     if args.gate_quality and qregs:
         return 1
     if args.format != "json":
+        # Pin the pre-#278 OK string byte-for-byte when there is nothing to
+        # report (test_check_ok_line_is_unchanged_with_no_quarantines);
+        # quarantined/removed_cases each add their own clause, independently,
+        # so the byte-identical no-op case never changes as more report-only
+        # dimensions are added.
+        clauses = []
         if quarantined:
+            clauses.append(f"{len(quarantined)} case(s) quarantined")
+        if removed_cases:
+            clauses.append(f"{len(removed_cases)} case(s) permanently retired")
+        if clauses:
             print(
                 "ratchet: OK (pass-set and contract definitions hold the high-water mark; "
-                f"{len(quarantined)} case(s) quarantined)"
+                + "; ".join(clauses) + ")"
             )
         else:
             print("ratchet: OK (pass-set and contract definitions hold the high-water mark)")
@@ -1694,17 +1788,26 @@ def cmd_record(args) -> int:
     # Verdict (D4): effective_pass_set folds in cases whose quarantine has
     # EXPIRED, so an expired waiver still reads 'violated' rather than
     # silently clean — cmd_record and violations() must never drift on this.
-    # Precedence: violated > quarantined > advanced > held. This record
-    # carrying retired_cases reads 'quarantined' even if it ALSO advances the
-    # pass-set, because `recent` is an event log of what the record DID.
-    # THIS record's own retirements are excused from its own verdict: V8
-    # guarantees a retired case is absent from `new_pass`, while `prev_hw`
-    # still requires it — so without this subtraction a `--merged
+    # Precedence: violated > removed/quarantined > advanced > held. This record
+    # carrying retired_cases reads 'quarantined' (or 'removed', #290) even if
+    # it ALSO advances the pass-set, because `recent` is an event log of what
+    # the record DID. THIS record's own retirements are excused from its own
+    # verdict: V8 guarantees a retired case is absent from `new_pass`, while
+    # `prev_hw` still requires it — so without this subtraction a `--merged
     # --retire-case` record could only ever read 'violated' and the
-    # 'quarantined' branch below would be unreachable.
+    # 'quarantined'/'removed' branch below would be unreachable.
     hw_required = effective_pass_set(prev_hw) - {e["id"] for e in retired_cases}
+    # #290: a record whose retirements are ALL permanent reads 'removed', not
+    # 'quarantined' — `recent` is one of the surfaces the ACs require to
+    # render permanent retirement separately from quarantine. A mixed or
+    # quarantine-only batch keeps the existing 'quarantined' verdict (the CLI
+    # only ever produces a homogeneous batch per call — see
+    # _resolve_retire_cases — so "mixed" only arises from a hand-built record).
+    retired_kinds = {e.get("kind", "quarantined") for e in retired_cases}
     if args.merged and not hw_required <= new_pass:
         status = "violated"
+    elif retired_cases and retired_kinds <= {"removed"}:
+        status = "removed"
     elif retired_cases:
         status = "quarantined"
     elif new_pass - hw_required:
@@ -2086,6 +2189,12 @@ def main() -> int:
     sp.add_argument("--retire-case-expiry-days", type=int, default=DEFAULT_QUARANTINE_DAYS,
                     help=f"quarantine length in days when --retire-case-expiry is omitted "
                          f"(default {DEFAULT_QUARANTINE_DAYS})")
+    sp.add_argument("--retire-case-permanent", action="store_true",
+                    help="permanently retire (never re-blocks, no expiry — #290) instead of "
+                         "quarantining: for a case that was renamed/re-parametrised/deleted and "
+                         "will never pass again. Requires --retire-case-reason and an EXPLICIT "
+                         "--retire-case-owner (not the 'unassigned' default); rejects "
+                         "--retire-case-expiry/--retire-case-expiry-days as a usage error")
 
     sp = sub.add_parser("protected", help="flag branch diffs touching the protected pathset")
     common(sp)

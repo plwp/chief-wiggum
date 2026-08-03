@@ -898,3 +898,230 @@ def test_liability_concurrency_counts_parked_bets_as_still_carrying_exposure(
     js = _run(portfolio, "portfolio", "--format", "json")
     data = json.loads(js.stdout)
     assert data["liability_concurrency"]["count"] == 1
+
+
+# ==== low-cap distribution-divergence screens (chief-wiggum#275, §9.6.5) =======
+#
+# Six candidate additions to the §9.5 standing screens, mechanized as
+# report-only bet.json lints. ALL must be tagged report-only in `create`'s
+# output (never gated, even with --gate — NEVER_GATES_PREFIXES's "screen:"
+# entry) until a validation record exists (docs/gate-rollout.md). Absent
+# input -> UNRESOLVED, never a silent pass.
+
+
+def _low_cap(tmp_path, data, name="low-cap-screens.json") -> str:
+    p = tmp_path / name
+    p.write_text(json.dumps(data))
+    return str(p)
+
+
+def test_low_cap_screens_all_unresolved_when_absent(portfolio, tmp_path):
+    """No --low-cap-screens at all: every one of the six screens is
+    UNRESOLVED, report-only, and creation still succeeds."""
+    proc = _create(portfolio, tmp_path)
+    assert proc.returncode == 0
+    assert "screen: enumerable buyers unresolved" in proc.stdout
+    assert "screen: support-obligation hazard unresolved" in proc.stdout
+    assert "screen: structural retention unresolved" in proc.stdout
+    assert "screen: channel existence unresolved" in proc.stdout
+    assert "screen: dark-matter demand unresolved" in proc.stdout
+    assert "screen: opportunity-cost benchmark unresolved" in proc.stdout
+    for line in proc.stdout.splitlines():
+        if line.startswith("bet: [") and "screen:" in line:
+            assert "[report-only]" in line
+
+
+def test_low_cap_screens_never_gate_even_with_gate_flag(portfolio, tmp_path):
+    """Every screen finding stays report-only under --gate, and --gate does
+    not refuse creation on their account (a FAILING combination, not just
+    unresolved, to prove the never-gates posture holds for real findings)."""
+    lcs = _low_cap(tmp_path, {
+        "enumerable_buyers_count": 50,  # below the 500 floor -> a real finding
+        "support_hazard": {"has_realtime_or_regulatory_hazard": True},  # a real finding
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs, "--gate")
+    assert proc.returncode == 0, proc.stdout  # never refuses on screen: findings
+    assert (portfolio / "bets" / "b1").exists()
+    screen_lines = [ln for ln in proc.stdout.splitlines() if "screen:" in ln]
+    assert screen_lines
+    for ln in screen_lines:
+        assert "[report-only]" in ln
+        assert "[gated]" not in ln
+
+
+def test_enumerable_buyers_pass_window(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"enumerable_buyers_count": 2500})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "enumerable buyers" not in proc.stdout
+
+
+def test_enumerable_buyers_below_floor_is_flagged(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"enumerable_buyers_count": 100})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: enumerable buyers count 100 is below 500" in proc.stdout
+
+
+def test_enumerable_buyers_above_ceiling_is_flagged(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"enumerable_buyers_count": 6000})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: enumerable buyers count 6000 exceeds 5000" in proc.stdout
+    assert "dead zone" in proc.stdout
+
+
+def test_support_hazard_flagged_when_true(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"support_hazard": {"has_realtime_or_regulatory_hazard": True}})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: support-obligation hazard —" in proc.stdout
+    assert "#260" in proc.stdout
+
+
+def test_support_hazard_clean_when_false(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"support_hazard": {"has_realtime_or_regulatory_hazard": False}})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "support-obligation hazard" not in proc.stdout
+
+
+def test_structural_retention_passes_via_years(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"structural_retention": {"retention_years": 7}})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "structural retention" not in proc.stdout
+
+
+def test_structural_retention_passes_via_weekly_workflow(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"structural_retention": {"weekly_recurring_workflow": True}})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "structural retention" not in proc.stdout
+
+
+def test_structural_retention_fails_when_neither(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {
+        "structural_retention": {"retention_years": 1, "weekly_recurring_workflow": False},
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: no structural retention" in proc.stdout
+    assert "satisfaction is not retention" in proc.stdout
+
+
+def test_channel_existence_passes_with_cheap_newsletter(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {
+        "channels": [{"type": "association_newsletter", "cost_usd": 200}],
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "channel existence" not in proc.stdout
+
+
+def test_channel_existence_passes_with_app_marketplace(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"channels": [{"type": "app_marketplace", "name": "Shopify"}]})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "channel existence" not in proc.stdout
+
+
+def test_channel_existence_fails_when_none_qualify(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {
+        "channels": [
+            {"type": "association_newsletter", "cost_usd": 5000},  # too expensive
+            {"type": "trade_show", "attendees": 20000},  # too big
+        ],
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: channel existence — none of 2 entered channel(s)" in proc.stdout
+
+
+def test_dark_matter_demand_passes_via_keyword_cluster(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {
+        "dark_matter_demand": {
+            "keyword_cluster_size": 15, "monthly_searches": 100, "nonzero_cpc": True,
+        },
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "dark-matter demand" not in proc.stdout
+
+
+def test_dark_matter_demand_passes_via_threads(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {"dark_matter_demand": {"so_threads_count": 4}})
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "dark-matter demand" not in proc.stdout
+
+
+def test_dark_matter_demand_fails_when_neither_branch_qualifies(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {
+        "dark_matter_demand": {
+            "keyword_cluster_size": 15, "monthly_searches": 100, "nonzero_cpc": False,
+            "so_threads_count": 1,
+        },
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: dark-matter demand — keyword/CPC/thread data present but below" in proc.stdout
+
+
+def test_opportunity_cost_unresolved_without_means_rate(portfolio, tmp_path):
+    lcs = _low_cap(tmp_path, {
+        "opportunity_cost": {"projected_mrr_usd": 2000, "projected_hours_per_week": 5},
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: opportunity-cost benchmark unresolved" in proc.stdout
+
+
+def test_opportunity_cost_passes_when_above_contracting_rate(portfolio, tmp_path):
+    _write_means(portfolio, contracting_rate_usd_per_hour=20)
+    lcs = _low_cap(tmp_path, {
+        # ~2000 / (5 * 4.345) ~= $92/hr, well above a $20/hr contracting rate
+        "opportunity_cost": {"projected_mrr_usd": 2000, "projected_hours_per_week": 5},
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "opportunity-cost benchmark —" not in proc.stdout
+
+
+def test_opportunity_cost_fails_when_below_contracting_rate(portfolio, tmp_path):
+    _write_means(portfolio, contracting_rate_usd_per_hour=150)
+    lcs = _low_cap(tmp_path, {
+        # ~2000 / (5 * 4.345) ~= $92/hr, below a $150/hr contracting rate
+        "opportunity_cost": {"projected_mrr_usd": 2000, "projected_hours_per_week": 5},
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert "screen: opportunity-cost benchmark — projected" in proc.stdout
+    assert "below the operator's $150.00/hr contracting rate" in proc.stdout
+
+
+def test_low_cap_screens_all_pass_produces_no_screen_findings(portfolio, tmp_path):
+    _write_means(portfolio, contracting_rate_usd_per_hour=20)
+    lcs = _low_cap(tmp_path, {
+        "enumerable_buyers_count": 1000,
+        "support_hazard": {"has_realtime_or_regulatory_hazard": False},
+        "structural_retention": {"retention_years": 5},
+        "channels": [{"type": "app_marketplace", "name": "WordPress"}],
+        "dark_matter_demand": {"so_threads_count": 3},
+        "opportunity_cost": {"projected_mrr_usd": 2000, "projected_hours_per_week": 5},
+    })
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", lcs)
+    assert proc.returncode == 0, proc.stdout
+    assert "screen:" not in proc.stdout
+
+
+def test_low_cap_screens_malformed_json_is_a_usage_error(portfolio, tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text("not json")
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens", str(p))
+    assert proc.returncode == 2
+    assert "cannot parse" in proc.stderr
+
+
+def test_low_cap_screens_missing_file_is_a_usage_error(portfolio, tmp_path):
+    proc = _create(portfolio, tmp_path, "b1", "--low-cap-screens",
+                    str(tmp_path / "nope.json"))
+    assert proc.returncode == 2
+    assert "not found" in proc.stderr
+
+
+def test_pivot_successor_tolerates_missing_low_cap_screens_flag(portfolio, tmp_path):
+    """Regression pin: cmd_transition's hand-built successor Namespace predates
+    --low-cap-screens; it must degrade to 'no data, all unresolved' rather than
+    AttributeError."""
+    _create(portfolio, tmp_path, "b1")
+    _retro(portfolio, "b1")
+    env_p, crit_p = _files(tmp_path)
+    proc = _run(portfolio, "transition", "b1", "killed",
+                "--successor", "b1-v2", "--envelope", env_p, "--criteria", crit_p,
+                "--successor-title", "fresh thesis", "--reason", "pivot")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert (portfolio / "bets" / "b1-v2").exists()

@@ -884,7 +884,21 @@ The US corpus is systematically wrong for this operator in ways worth encoding:
 #### 9.6.5 Screens and terminal states this adds
 
 Candidate additions to the §9.5 standing screens, in priority order. Consistent with
-`docs/gate-rollout.md` these ship report-only and are validated before blocking:
+`docs/gate-rollout.md` these ship report-only and are validated before blocking.
+
+**Resolved (chief-wiggum#275)**: screens 8–13 are now mechanized as `bet.json` lints
+(`scripts/bet.py`'s `low_cap_screen_findings` — `enumerable_buyers_findings`,
+`support_hazard_findings`, `structural_retention_findings`, `channel_existence_findings`,
+`dark_matter_demand_findings`, `opportunity_cost_findings`), read from a new optional
+`low_cap_screens` block (`templates/bet-schema.json`) passed at `bet.py create
+--low-cap-screens <file>`. All six are tagged `screen:` (`NEVER_GATES_PREFIXES`) and so
+never gate, even under `--gate`, until validated against a real candidate set — same
+posture as #274's `capacity:` checks. Screens 8, 11 and 12 need genuinely external data
+(a public-source buyer headcount, channel research, keyword/CPC or forum data) that CW
+cannot produce itself; an absent field for any of the six is UNRESOLVED (cannot run),
+never a silent pass. Screen 13's opportunity-cost benchmark reads the operator's
+contracting rate from a new `means.json` field, `contracting_rate_usd_per_hour` — the
+field the ledger lacked before this ticket.
 
 8. **Enumerable buyers.** Can a spreadsheet of ≥500 named prospects be produced from public
    sources in one afternoon? No list, no distribution, no business. Also an upper bound:

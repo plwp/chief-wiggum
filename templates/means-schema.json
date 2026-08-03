@@ -41,6 +41,11 @@
       "type": "number",
       "minimum": 0,
       "description": "Current zero-based slack, USD — the ability side of affordable loss. Envelopes justified by projected future revenue are the business analogue of building on an UNRESOLVED: fact."
+    },
+    "contracting_rate_usd_per_hour": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "The operator's contracting/day rate, expressed hourly, USD — the counterfactual for the opportunity-cost benchmark (chief-wiggum#275, docs/business-factory.md §9.6.5 screen 13): every low-cap bet is judged against this rate for the same hours, never against zero and never against venture outcomes. Absent → the benchmark is unresolved (report-only, never guessed)."
     }
   }
 }

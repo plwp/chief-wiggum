@@ -92,6 +92,69 @@
     "successor": {
       "type": ["string", "null"],
       "description": "Bet id opened when this bet was closed by a pivot, or null. Pivot is a transition, not an edit."
+    },
+    "low_cap_screens": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Operator-entered facts for the six low-cap distribution-divergence screens (chief-wiggum#275, docs/business-factory.md §9.6.5 screens 8-13 — candidate additions to the §9.5 standing screens). ALL report-only (docs/gate-rollout.md): findings are printed, never gate, until validated against a real candidate set. Every sub-field absent means that screen is UNRESOLVED (cannot run — a screen that cannot run must say so, never silently pass), not a pass.",
+      "properties": {
+        "enumerable_buyers_count": {
+          "type": ["integer", "null"], "minimum": 0,
+          "description": "Screen 8: named prospects producible from public sources in an afternoon. Pass window is 500-5,000 inclusive; below 500 is 'no list, no distribution, no business', above 5,000 is the dead zone too big for personal outbound and too small for paid."
+        },
+        "support_hazard": {
+          "type": "object", "additionalProperties": false,
+          "description": "Screen 9: support-obligation hazard. Reject real-time/critical-path/regulatory-deadline functionality — a solo operator cannot carry an on-call obligation. Reaches the same conclusion as #260's regulated-calculation-liability rabbitry kill from the attention direction rather than liability — the convergence is corroboration, not two overlapping checks.",
+          "properties": {
+            "has_realtime_or_regulatory_hazard": { "type": "boolean" }
+          }
+        },
+        "structural_retention": {
+          "type": "object", "additionalProperties": false,
+          "description": "Screen 10: structural retention. Passes if the product stores records the buyer must retain >=5 years, OR runs a weekly-recurring workflow. Satisfaction is not retention.",
+          "properties": {
+            "retention_years": { "type": ["number", "null"], "minimum": 0 },
+            "weekly_recurring_workflow": { "type": ["boolean", "null"] }
+          }
+        },
+        "channels": {
+          "type": "array",
+          "description": "Screen 11: channel existence. Passes if >=1 entry meets its type's bar: association_newsletter cost_usd < 500, trade_show attendees < 5000, member_group members > 2000, or app_marketplace (existence alone is the bar — a browsed marketplace).",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["association_newsletter", "app_marketplace", "trade_show", "member_group"]
+              },
+              "name": { "type": "string" },
+              "cost_usd": { "type": "number", "minimum": 0 },
+              "attendees": { "type": "integer", "minimum": 0 },
+              "members": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "dark_matter_demand": {
+          "type": "object", "additionalProperties": false,
+          "description": "Screen 12: dark-matter demand. Passes if 10-300 searches/mo across a 10-20 keyword cluster with nonzero CPC, OR >=3 findable 'what software do you use for X' threads. Supersedes the cruder 'reject if search volume is high' heuristic: volume alone is ambiguous, volume-with-commercial-intent is the signal.",
+          "properties": {
+            "keyword_cluster_size": { "type": ["integer", "null"], "minimum": 0 },
+            "monthly_searches": { "type": ["integer", "null"], "minimum": 0 },
+            "nonzero_cpc": { "type": ["boolean", "null"] },
+            "so_threads_count": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        "opportunity_cost": {
+          "type": "object", "additionalProperties": false,
+          "description": "Screen 13: opportunity-cost benchmark. The bet is judged against the operator's contracting rate for the same hours (means.json contracting_rate_usd_per_hour) — never against zero, never against venture outcomes. This is the counterfactual the startup corpus never forces; the ledger had no field for it before #275.",
+          "properties": {
+            "projected_mrr_usd": { "type": "number", "minimum": 0 },
+            "projected_hours_per_week": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
     }
   },
   "$defs": {

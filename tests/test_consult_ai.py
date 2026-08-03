@@ -776,7 +776,7 @@ def test_single_tool_consult_accepts_prompt_at_the_floor(tmp_path, monkeypatch):
 
     monkeypatch.setitem(
         consult_ai.TOOLS, "codex",
-        lambda prompt, model=None, cwd=None: ("ok response", consult_ai.Usage()),
+        lambda prompt, model=None, cwd=None, timeout=None: ("ok response", consult_ai.Usage()),
     )
     monkeypatch.setattr(sys, "argv", ["consult_ai.py", "codex", str(prompt)])
 
@@ -794,7 +794,7 @@ def test_short_prompt_with_substantive_context_is_accepted(tmp_path, monkeypatch
 
     sent = {}
 
-    def fake_tool(prompt, model=None, cwd=None):
+    def fake_tool(prompt, model=None, cwd=None, timeout=None):
         sent["prompt"] = prompt
         return "ok response", consult_ai.Usage()
 
@@ -818,7 +818,7 @@ def test_short_prompt_with_short_context_is_still_refused(tmp_path, monkeypatch)
     context.write_text("also tiny")
     called: list[str] = []
 
-    def never_called_tool(prompt, model=None, cwd=None):
+    def never_called_tool(prompt, model=None, cwd=None, timeout=None):
         called.append("codex")
         return "x", consult_ai.Usage()
 
@@ -844,7 +844,7 @@ def test_output_flag_creates_missing_parent_directories_on_success(tmp_path, mon
 
     monkeypatch.setitem(
         consult_ai.TOOLS, "codex",
-        lambda prompt, model=None, cwd=None: ("a substantive response", consult_ai.Usage()),
+        lambda prompt, model=None, cwd=None, timeout=None: ("a substantive response", consult_ai.Usage()),
     )
     monkeypatch.setattr(sys, "argv", ["consult_ai.py", "codex", str(prompt), "-o", str(out_path)])
 
@@ -862,7 +862,7 @@ def test_output_flag_creates_missing_parent_directories_on_provider_error(tmp_pa
     prompt.write_text(PROMPT_TEXT)
     out_path = tmp_path / "nested" / "response.md"
 
-    def failing_tool(prompt, model=None, cwd=None):
+    def failing_tool(prompt, model=None, cwd=None, timeout=None):
         raise subprocess.CalledProcessError(1, ["codex"], stderr="boom")
 
     monkeypatch.setitem(consult_ai.TOOLS, "codex", failing_tool)
@@ -884,7 +884,7 @@ def test_called_process_error_falls_back_to_stdout_when_stderr_is_empty(tmp_path
     prompt.write_text(PROMPT_TEXT)
     out_path = tmp_path / "response.md"
 
-    def failing_tool(prompt, model=None, cwd=None):
+    def failing_tool(prompt, model=None, cwd=None, timeout=None):
         raise subprocess.CalledProcessError(1, ["codex"], output="stdout-side error detail", stderr="")
 
     monkeypatch.setitem(consult_ai.TOOLS, "codex", failing_tool)
@@ -1269,7 +1269,7 @@ def test_single_tool_consult_emits_telemetry_and_threads_ticket(tmp_path, monkey
     prompt = tmp_path / "prompt.md"
     prompt.write_text(PROMPT_TEXT)
 
-    def fake_tool(prompt, model=None, cwd=None):
+    def fake_tool(prompt, model=None, cwd=None, timeout=None):
         return "response text", consult_ai.Usage(
             tokens_in=7, tokens_out=3, resolved_model="claude-sonnet-5", usage_status="provider-json",
         )
@@ -1499,3 +1499,265 @@ def test_openrouter_deadline_reraises_the_original_error(monkeypatch):
     monkeypatch.setattr(consult_ai.urllib.request, "urlopen", boom)
     with pytest.raises(RuntimeError, match="unreachable"):
         consult_ai.consult_openrouter("prompt", model="deepseek/deepseek-v4-pro")
+
+
+# ---- tool_timeout override chain (chief-wiggum#291) -------------------------
+#
+# TOOL_TIMEOUTS was hardcoded with no CLI/env lever: a large prompt against a
+# large repo legitimately exceeds the default, and /implement's own rule
+# forbids proceeding without a completed consult — retrying the identical call
+# against the identical timeout just times out again. tool_timeout() resolves
+# a single override chain: explicit override > CW_CONSULT_TIMEOUT_<TOOL> >
+# CW_CONSULT_TIMEOUT > the TOOL_TIMEOUTS table.
+
+
+def _clear_consult_timeout_env(monkeypatch):
+    for name in ("CW_CONSULT_TIMEOUT", "CW_CONSULT_TIMEOUT_CODEX",
+                 "CW_CONSULT_TIMEOUT_GEMINI_VERTEX", "CW_CONSULT_TIMEOUT_CLAUDE_INTERACTIVE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_tool_timeout_defaults_to_the_table(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    assert consult_ai.tool_timeout("codex") == consult_ai.TOOL_TIMEOUTS["codex"]
+
+
+def test_tool_timeout_unlisted_tool_falls_back_to_module_constant(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    assert consult_ai.tool_timeout("some-unlisted-tool") == consult_ai.TIMEOUT
+
+
+def test_tool_timeout_specific_env_var_overrides_table(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "999")
+    assert consult_ai.tool_timeout("codex") == 999
+
+
+def test_tool_timeout_general_env_var_applies_when_no_specific_override(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT", "111")
+    assert consult_ai.tool_timeout("codex") == 111
+    assert consult_ai.tool_timeout("gemini") == 111
+
+
+def test_tool_timeout_specific_env_var_wins_over_general(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT", "111")
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "222")
+    assert consult_ai.tool_timeout("codex") == 222
+    # a tool without its own specific var still falls through to the general one
+    assert consult_ai.tool_timeout("gemini") == 111
+
+
+def test_tool_timeout_explicit_override_wins_over_both_env_vars(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT", "111")
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "222")
+    assert consult_ai.tool_timeout("codex", override=333) == 333
+
+
+def test_tool_timeout_env_var_name_sanitizes_non_alphanumerics(monkeypatch):
+    """``gemini-vertex`` -> ``CW_CONSULT_TIMEOUT_GEMINI_VERTEX`` (hyphen -> underscore)."""
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_GEMINI_VERTEX", "444")
+    assert consult_ai.tool_timeout("gemini-vertex") == 444
+
+
+def test_tool_timeout_non_numeric_env_value_falls_through(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "not-a-number")
+    assert consult_ai.tool_timeout("codex") == consult_ai.TOOL_TIMEOUTS["codex"]
+
+
+def test_tool_timeout_non_positive_env_value_falls_through(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "0")
+    assert consult_ai.tool_timeout("codex") == consult_ai.TOOL_TIMEOUTS["codex"]
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "-5")
+    assert consult_ai.tool_timeout("codex") == consult_ai.TOOL_TIMEOUTS["codex"]
+
+
+def test_tool_timeout_specific_invalid_falls_through_to_general(monkeypatch):
+    """A malformed SPECIFIC var must fall through to the GENERAL var, not
+    straight to the table — the chain degrades one rung at a time."""
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "garbage")
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT", "77")
+    assert consult_ai.tool_timeout("codex") == 77
+
+
+def test_tool_timeout_invalid_override_falls_through_not_raises(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "555")
+    # A non-positive explicit override (e.g. a stray --timeout 0) must be
+    # ignored, not crash a consult mid-workflow.
+    assert consult_ai.tool_timeout("codex", override=0) == 555
+    assert consult_ai.tool_timeout("codex", override=-10) == 555
+
+
+def test_tool_timeout_string_override_is_validated_like_env(monkeypatch):
+    """``_timeout_arg``'s argparse-level parsing degrades a bad --timeout to
+    None before it ever reaches tool_timeout; this pins the same tolerance at
+    the tool_timeout() layer directly for a caller that passes one through."""
+    _clear_consult_timeout_env(monkeypatch)
+    assert consult_ai._timeout_arg("not-a-number") is None
+    assert consult_ai._timeout_arg("0") is None
+    assert consult_ai._timeout_arg("450") == 450
+
+
+def test_consult_codex_resolves_timeout_through_the_chain(monkeypatch):
+    """Integration: consult_codex's _run_capture call receives whatever
+    tool_timeout() resolves, not a hardcoded TOOL_TIMEOUTS read."""
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "123")
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["timeout"] = timeout
+        return "", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    consult_ai.consult_codex("prompt")
+    assert captured["timeout"] == 123
+
+
+def test_consult_codex_explicit_timeout_param_wins_over_env(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CODEX", "123")
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["timeout"] = timeout
+        return "", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    consult_ai.consult_codex("prompt", timeout=999)
+    assert captured["timeout"] == 999
+
+
+def test_claude_interactive_explicit_timeout_still_wins_over_env_override(tmp_path, monkeypatch):
+    """Composition with the role's optional-provider cap (chief-wiggum#188): the
+    role quorum threads its cap through consult_claude_interactive's existing
+    ``timeout`` parameter, which must remain the highest-precedence override
+    even when an env var is ALSO set — the env-var lever must never fight the
+    per-role cap."""
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CLAUDE_INTERACTIVE", "999")
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["timeout"] = timeout
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path), timeout=42)
+    assert captured["timeout"] == 72  # override (42) + 30s grace buffer
+
+
+def test_claude_interactive_env_var_applies_when_no_explicit_override(tmp_path, monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT_CLAUDE_INTERACTIVE", "555")
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["timeout"] = timeout
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+    assert captured["timeout"] == 585  # env (555) + 30s grace buffer
+
+
+def test_role_quorum_optional_capping_still_behaves_as_before(tmp_path, monkeypatch):
+    """AC4 regression pin: the --role optional-provider timeout cap
+    (chief-wiggum#188) must be unaffected by the new override chain, composing
+    with it rather than fighting it (per the issue's own note) — this is the
+    SAME scenario as the pre-existing
+    test_role_quorum_skips_hung_optional_delegate_fast_and_still_succeeds,
+    re-asserted here with a CW_CONSULT_TIMEOUT env var ALSO set.
+
+    A general env var legitimately applies to EVERY tool call (that's the
+    documented, intentional scope of CW_CONSULT_TIMEOUT — codex's required
+    call picks it up too, since it goes through the SAME tool_timeout()
+    resolution as everything else). What must NOT change is the optional
+    delegate's own cap: the role quorum threads its cap into
+    consult_claude_interactive as an explicit ``timeout`` override, which is
+    the highest-precedence rung of the chain — so it keeps winning over the
+    env var for that ONE provider, exactly as before #291.
+    """
+    _clear_consult_timeout_env(monkeypatch)
+    monkeypatch.setenv("CW_CONSULT_TIMEOUT", "50000")  # a value nothing else could produce by accident
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config_with_delegate(config)
+
+    captured_timeouts: dict[str, int] = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured_timeouts[tool] = timeout
+        if tool == "codex":
+            return "a substantive codex response, long enough to pass validation", ""
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["consult_ai.py", "--role", "reviewer", str(prompt), "--config", str(config),
+         "--output-dir", str(output_dir), "--min-bytes", "1"],
+    )
+
+    consult_ai.main()
+
+    manifest = json.loads((output_dir / "reviewer-manifest.json").read_text())
+    assert manifest["ok"] is True
+    # codex (required, tool-type) has no override threaded in from consult_provider
+    # (unchanged, #278 review) — it resolves the general env var like any direct call.
+    assert captured_timeouts["codex"] == 50000
+    # claude-interactive (optional, delegate-type) still gets the role's OWN cap
+    # (+30s grace) — the explicit override from optional_provider_timeout beats
+    # the env var, so the #188 fail-fast guarantee is untouched by #291.
+    assert captured_timeouts["claude-interactive"] == consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS + 30
+
+
+def test_cli_timeout_flag_overrides_the_table_for_single_tool_mode(tmp_path, monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["timeout"] = timeout
+        return "a substantive codex response", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(
+        sys, "argv", ["consult_ai.py", "codex", str(prompt), "--timeout", "1234"],
+    )
+    consult_ai.main()
+    assert captured["timeout"] == 1234
+
+
+def test_cli_timeout_flag_invalid_value_falls_through_not_raises(tmp_path, monkeypatch):
+    """A malformed --timeout must degrade to the next source (env/table),
+    never crash the CLI invocation (AC2)."""
+    _clear_consult_timeout_env(monkeypatch)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    captured = {}
+
+    def fake_run_capture(cmd, *, input_text, timeout, cwd, tool, check=True):
+        captured["timeout"] = timeout
+        return "a substantive codex response", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(
+        sys, "argv", ["consult_ai.py", "codex", str(prompt), "--timeout", "not-a-number"],
+    )
+    consult_ai.main()  # must not raise
+    assert captured["timeout"] == consult_ai.TOOL_TIMEOUTS["codex"]
