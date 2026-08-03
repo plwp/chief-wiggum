@@ -1212,9 +1212,32 @@ def cmd_record(args) -> int:
     sc = _read_scorecard(cfg)
     prev_hw = derive_highwater(records)
     new_pass = set(sc.get("pass_set", []))
-    if args.merged and not set(prev_hw["pass_set"]) <= new_pass:
+    # --retire-case drops a pass-set case from the high-water mark: the test was
+    # renamed, re-parametrised, or legitimately deleted. Validated against the
+    # high-water mark for the same reason as --retire-verifier — a pattern that
+    # matches nothing is a typo, and a silent no-op would leave the operator
+    # believing they had cleared a goalpost they had not.
+    #
+    # Parsed BEFORE the status calculation: this record's own retirements are
+    # part of the baseline it is judged against. Judging a rename record against
+    # the pre-retirement mark would journal the canonical
+    # `record --merged --retire-case old` as `violated` even though the derived
+    # high-water is clean.
+    # getattr, not args.retire_case: other entry points (adopt.py, the wave
+    # runner, tests) build their own record namespaces and predate this flag.
+    retired_cases = sorted(set(getattr(args, "retire_case", None) or []))
+    hw_pass = set(prev_hw.get("pass_set", []) or [])
+    for pat in retired_cases:
+        if not retire_case_matches(hw_pass, [pat]):
+            raise RatchetError(
+                f"--retire-case {pat}: matches no case in the current high-water "
+                "mark (nothing to retire — check the id; `*` is the only "
+                "wildcard, e.g. 'pytest::tests.test_x::test_p[*]')")
+    baseline_pass = hw_pass - retire_case_matches(hw_pass, retired_cases)
+
+    if args.merged and not baseline_pass <= new_pass:
         status = "violated"
-    elif new_pass - set(prev_hw["pass_set"]):
+    elif new_pass - baseline_pass:
         status = "advanced"
     else:
         status = "held"
@@ -1270,21 +1293,6 @@ def cmd_record(args) -> int:
             raise RatchetError(
                 f"--retire-verifier {ref}: not in the current high-water mark "
                 "(nothing to retire — check the ref, form is <relpath>::<function>)")
-    # --retire-case drops a pass-set case from the high-water mark: the test was
-    # renamed, re-parametrised, or legitimately deleted. Validated against the
-    # high-water mark for the same reason as --retire-verifier — a pattern that
-    # matches nothing is a typo, and a silent no-op would leave the operator
-    # believing they had cleared a goalpost they had not.
-    # getattr, not args.retire_case: other entry points (adopt.py, the wave
-    # runner, tests) build their own record namespaces and predate this flag.
-    retired_cases = sorted(set(getattr(args, "retire_case", None) or []))
-    hw_pass = set(prev_hw.get("pass_set", []) or [])
-    for pat in retired_cases:
-        if not retire_case_matches(hw_pass, [pat]):
-            raise RatchetError(
-                f"--retire-case {pat}: matches no case in the current high-water "
-                "mark (nothing to retire — check the id; `*` is the only "
-                "wildcard, e.g. 'pytest::tests.test_x::test_p[*]')")
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
         "event": args.event,

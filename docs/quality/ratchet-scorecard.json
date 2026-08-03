@@ -1868,7 +1868,9 @@
     "pytest::tests.test_quality_slop_gate::test_survival_handles_string_keys",
     "pytest::tests.test_quality_slop_gate::test_survival_skipped_passthrough",
     "pytest::tests.test_quality_slop_gate::test_survival_too_young_when_no_lines_old_enough",
+    "pytest::tests.test_ratchet::test_a_genuine_regression_is_still_journalled_as_violated",
     "pytest::tests.test_ratchet::test_a_journal_without_retired_cases_still_loads",
+    "pytest::tests.test_ratchet::test_a_merged_rename_record_is_not_journalled_as_violated",
     "pytest::tests.test_ratchet::test_a_renamed_test_pins_missing_tests_forever_without_retirement",
     "pytest::tests.test_ratchet::test_amend_and_retire_move_the_baseline",
     "pytest::tests.test_ratchet::test_append_authority_event_fails_closed_on_garbled_tail",
@@ -2333,12 +2335,12 @@
     "pytest::tests.test_workflow_context::test_ticket_tmp_is_per_issue",
     "pytest::tests.test_workflow_context::test_to_dict_and_shell_exports"
   ],
-  "passed": 2281,
+  "passed": 2283,
   "quality": {
     "note": "cyclomatic complexity requires lizard (pip install lizard)",
     "skipped": "lizard not found"
   },
-  "target_sha": "6319dbcb89bd6ba615b19612c5665f1779441b3f",
+  "target_sha": "4683cf67a60a2139e1cd55adf64fec929183abec",
   "test_files": {
     "pytest::tests.fixtures.code_query_repo.tests.test_checkout_order::test_confirm_order_rejects_already_confirmed": "tests/fixtures/code_query_repo/tests/test_checkout_order.py",
     "pytest::tests.fixtures.code_query_repo.tests.test_checkout_order::test_confirm_order_transitions_pending_to_confirmed": "tests/fixtures/code_query_repo/tests/test_checkout_order.py",
@@ -4157,7 +4159,9 @@
     "pytest::tests.test_quality_slop_gate::test_survival_handles_string_keys": "tests/test_quality_slop_gate.py",
     "pytest::tests.test_quality_slop_gate::test_survival_skipped_passthrough": "tests/test_quality_slop_gate.py",
     "pytest::tests.test_quality_slop_gate::test_survival_too_young_when_no_lines_old_enough": "tests/test_quality_slop_gate.py",
+    "pytest::tests.test_ratchet::test_a_genuine_regression_is_still_journalled_as_violated": "tests/test_ratchet.py",
     "pytest::tests.test_ratchet::test_a_journal_without_retired_cases_still_loads": "tests/test_ratchet.py",
+    "pytest::tests.test_ratchet::test_a_merged_rename_record_is_not_journalled_as_violated": "tests/test_ratchet.py",
     "pytest::tests.test_ratchet::test_a_renamed_test_pins_missing_tests_forever_without_retirement": "tests/test_ratchet.py",
     "pytest::tests.test_ratchet::test_amend_and_retire_move_the_baseline": "tests/test_ratchet.py",
     "pytest::tests.test_ratchet::test_append_authority_event_fails_closed_on_garbled_tail": "tests/test_ratchet.py",

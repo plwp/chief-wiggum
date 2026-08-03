@@ -1095,3 +1095,33 @@ def test_a_journal_without_retired_cases_still_loads(tmp_path):
     recs = ratchet.load_journal(cfg)
     assert "retired_cases" not in recs[0]
     assert ratchet.derive_highwater(recs)["pass_set"] == ["pytest::t::a"]
+
+
+def test_a_merged_rename_record_is_not_journalled_as_violated(tmp_path):
+    """Review finding (codex). `ratchet_status` was computed from the
+    PRE-retirement high-water, so the canonical rename record — `record --merged
+    --retire-case old` alongside the renamed test's new id — journalled as
+    `violated` even though the derived high-water is clean and `check` passes.
+    A record's own retirements are part of the baseline it is judged against."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::test_old", "pytest::t::keep"}))
+    renamed = scorecard_from(cfg, {"pytest::t::test_new", "pytest::t::keep"})
+    cfg.scorecard.write_text(json.dumps(renamed))
+    assert ratchet.cmd_record(_record_args(
+        cfg, merged=True, retire_case=["pytest::t::test_old"])) == 0
+    rec = ratchet.load_journal(cfg)[-1]
+    assert rec["ratchet_status"] == "advanced", rec["ratchet_status"]
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert set(hw["pass_set"]) == {"pytest::t::test_new", "pytest::t::keep"}
+    assert ratchet.violations(renamed, hw)["missing_tests"] == []
+
+
+def test_a_genuine_regression_is_still_journalled_as_violated(tmp_path):
+    """The fix must not blunt the real signal: a case that simply stopped
+    passing, with no retirement, is still a violation."""
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"pytest::t::a", "pytest::t::b"}))
+    regressed = scorecard_from(cfg, {"pytest::t::a"})
+    cfg.scorecard.write_text(json.dumps(regressed))
+    assert ratchet.cmd_record(_record_args(cfg, merged=True)) == 0
+    assert ratchet.load_journal(cfg)[-1]["ratchet_status"] == "violated"
