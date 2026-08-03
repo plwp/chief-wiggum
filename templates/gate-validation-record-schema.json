@@ -62,7 +62,8 @@
               "evasion-config-indirection",
               "evasion-sampling-gap",
               "evasion-concurrency",
-              "instrumentation-deleted"
+              "instrumentation-deleted",
+              "instrument-broken"
             ]
           },
           "seed_version": { "type": "string" },

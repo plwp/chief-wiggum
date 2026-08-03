@@ -122,6 +122,27 @@ already-shipped repo, run the gate, and record whether it fired. A seed's
   proves the gate visibly reports "no signal" rather than a false "clean."
   Gates with no telemetry dependency (static source/doc scanners) set
   `telemetry_dependent: false` and omit this seed.
+- **`instrument-broken`** — the **runtime analogue** of
+  `instrumentation-deleted`, for gates that parse an artifact rather than read
+  telemetry. The subject under test is left completely intact; only the gate's
+  ability to *see* it is destroyed (an artifact re-authored in a shape the
+  gate's grammar cannot parse, a scanner that covers 0 of N inputs, a helper
+  subprocess that dies). It proves the gate reports a loud failure rather than
+  the same green it prints when there is genuinely nothing wrong.
+
+  This is the seed class for the "failed to run = pass" defect family
+  (chief-wiggum#289). It is currently **permitted but not mandatory** — a
+  record may carry it, and `check_traceability` does (`tr-instrument-broken-01`,
+  added by #281 after the skill's own two-segment ID examples made the
+  traceability gate pass vacuously). Promoting it to mandatory across every
+  gate is tracked in #289, and should happen only once each gate has a
+  genuinely-passing trial, so the promotion does not retro-fail shipped
+  records.
+
+  When writing one, certify the **state**, not merely fired/not-fired: a
+  broken-instrument seed often trips an *existing* finding class as a side
+  effect (in #281's case, dangling annotations), so a fired/not-fired assertion
+  alone can pass even if the new detection was never implemented.
 
 **A seed's `expected` outcome is not always `fire`.** A seed that targets a
 scanner's *documented* scope boundary (e.g. vendor/ exclusion, an unscanned
