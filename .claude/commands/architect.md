@@ -245,17 +245,17 @@ Write `invariants.md` by extracting and consolidating all invariants from both `
 ## Epic Invariants
 
 ### Data Integrity
-1. **INV-001 — Single source of truth**: Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.
-2. **INV-002 — Customer linkage**: Every order with status >= "pending" has a non-null customer_id that references a valid customer document.
+1. **INV-order-001 — Single source of truth**: Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.
+2. **INV-order-002 — Customer linkage**: Every order with status >= "pending" has a non-null customer_id that references a valid customer document.
 
 ### Consistency
-3. **INV-005 — Screen agreement**: Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query/aggregation.
+3. **INV-order-005 — Screen agreement**: Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query/aggregation.
 
 ### Operational Safety
-4. **INV-007 — No false success**: If an operation depends on an external service, the success toast MUST NOT display unless the service call succeeded.
+4. **INV-order-007 — No false success**: If an operation depends on an external service, the success toast MUST NOT display unless the service call succeeded.
 ```
 
-Each invariant MUST have a unique ID (e.g., INV-001) that matches its ID in the JSON models. This enables traceability from prose → model → test → code.
+Each invariant MUST have a unique **three-segment stable ID** — `KIND-SLUG-NNN`, e.g. `INV-order-001` — that matches its ID in the JSON models. This enables traceability from prose → model → test → code. A two-segment `KIND-NNN` shape (missing the slug segment) does **not** match the scanner's `DEFINE_RE`: the traceability gate would see zero defined IDs and report `applicability: error` (chief-wiggum#281). The slug is the **epic's** short name (here `order`), not the category.
 
 **Fold in adopted-pattern clusters (do not re-derive).** For each adopted pattern this epic realizes (from Step 1's `--list-adopted`), add its invariant cluster under a dedicated subsection, **keeping the pattern's own stable ids verbatim** (`INV-<ABBR>-NNN` — e.g. `INV-FOWR-004`, `INV-EAS-003`). These are the pattern's contract; re-numbering them or paraphrasing away their meaning breaks the link back to the contract pack and the ratchet. Cite the source so the provenance is legible:
 

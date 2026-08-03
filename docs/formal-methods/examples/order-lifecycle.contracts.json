@@ -99,7 +99,7 @@
             { "status": 401, "condition": "no authentication" },
             { "status": 409, "condition": "capacity exceeded for requested dates" }
           ],
-          "invariants_touched": ["INV-001", "INV-003"],
+          "invariants_touched": ["INV-order-001", "INV-order-003"],
           "derived_from": [
             { "type": "ticket", "ref": "#43", "description": "Order API endpoints" }
           ]
@@ -149,7 +149,7 @@
             { "status": 422, "condition": "customer_id or item_ids missing" }
           ],
           "state_transition": "pending → confirmed",
-          "invariants_touched": ["INV-002", "INV-007"],
+          "invariants_touched": ["INV-order-002", "INV-order-007"],
           "derived_from": [
             { "type": "ticket", "ref": "#43", "description": "Order API endpoints" }
           ]

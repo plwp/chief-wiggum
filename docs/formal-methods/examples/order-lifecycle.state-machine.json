@@ -41,17 +41,17 @@
     "pending": {
       "description": "Submitted via intake, awaiting confirmation",
       "type": "normal",
-      "invariants": ["INV-002", "INV-003"]
+      "invariants": ["INV-order-002", "INV-order-003"]
     },
     "confirmed": {
       "description": "Approved, awaiting start",
       "type": "normal",
-      "invariants": ["INV-002", "INV-003"]
+      "invariants": ["INV-order-002", "INV-order-003"]
     },
     "in_progress": {
       "description": "Work in progress",
       "type": "normal",
-      "invariants": ["INV-002", "INV-003", "INV-004"]
+      "invariants": ["INV-order-002", "INV-order-003", "INV-order-004"]
     },
     "completed": {
       "description": "Order fulfilled",
@@ -149,31 +149,31 @@
   ],
   "invariants": [
     {
-      "id": "INV-001",
+      "id": "INV-order-001",
       "description": "Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time.",
       "expression": "not hasattr(order, 'item_names')",
       "scope": "global",
       "category": "data_integrity",
       "derived_from": [
-        { "type": "epic_invariant", "ref": "INV-001", "description": "Single source of truth for item data" }
+        { "type": "epic_invariant", "ref": "INV-order-001", "description": "Single source of truth for item data" }
       ]
     },
     {
-      "id": "INV-002",
+      "id": "INV-order-002",
       "description": "Every order with status >= pending has a non-null customer_id that references a valid customer.",
       "expression": "order.status in ('draft',) or order.customer_id is not None",
       "scope": "global",
       "category": "data_integrity"
     },
     {
-      "id": "INV-003",
+      "id": "INV-order-003",
       "description": "end_date > start_date on every order, enforced at write time.",
       "expression": "order.end_date > order.start_date",
       "scope": "global",
       "category": "data_integrity"
     },
     {
-      "id": "INV-004",
+      "id": "INV-order-004",
       "description": "An order in in_progress MUST have a resource_id assigned.",
       "expression": "order.resource_id is not None",
       "scope": "state-specific",
@@ -181,19 +181,19 @@
       "category": "data_integrity"
     },
     {
-      "id": "INV-005",
+      "id": "INV-order-005",
       "description": "Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query. No screen-specific counting logic.",
       "scope": "global",
       "category": "consistency"
     },
     {
-      "id": "INV-006",
+      "id": "INV-order-006",
       "description": "Capacity View and Summary View MUST use the same occupancy calculation. Define once, use everywhere.",
       "scope": "global",
       "category": "consistency"
     },
     {
-      "id": "INV-007",
+      "id": "INV-order-007",
       "description": "If an operation depends on an external service (email, payment), the success toast MUST NOT display unless the service call succeeded.",
       "scope": "global",
       "category": "operational_safety"

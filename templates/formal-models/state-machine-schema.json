@@ -216,7 +216,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Unique identifier (e.g., 'INV-001')"
+          "description": "Unique three-segment stable ID, KIND-SLUG-NNN (e.g., 'INV-order-001'). A two-segment KIND-NNN shape (no slug) is invisible to the traceability scanner (chief-wiggum#281)."
         },
         "description": {
           "type": "string",
@@ -270,7 +270,7 @@
         },
         "ref": {
           "type": "string",
-          "description": "Reference identifier (e.g., '#42', 'AC-3', 'INV-002', 'FACT-17')"
+          "description": "Reference identifier (e.g., '#42', 'AC-3', 'INV-order-002', 'FACT-17')"
         },
         "description": {
           "type": "string",

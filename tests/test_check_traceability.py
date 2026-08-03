@@ -926,10 +926,13 @@ def test_external_link_to_undefined_id_is_dangling(tmp_path):
 
 def test_empty_epic_and_source_is_inapplicable(tmp_path):
     """Zero defined IDs AND zero annotations = an empty graph: coverage_ok is
-    (vacuously) true, but the report says INAPPLICABLE, never a plain green."""
+    (vacuously) true, but the report says INAPPLICABLE, never a plain green.
+    Uses a non-ID-bearing filename (notes.md, not contracts.md) — an
+    ID-bearing artifact with content and zero parseable ids is the DISTINCT
+    #281 error case, covered separately below."""
     epic = tmp_path / "epic"
     epic.mkdir()
-    (epic / "contracts.md").write_text("# nothing declared here\n")
+    (epic / "notes.md").write_text("# nothing declared here\n")
     src = tmp_path / "src"
     src.mkdir()
     report = ct.check(epic, src, schema=SCHEMA)
@@ -952,10 +955,11 @@ def test_annotations_without_definitions_are_inapplicable_but_dangle(tmp_path):
     """F9: with ZERO contracts defined there is nothing for coverage to be
     true of — inapplicable REGARDLESS of annotations. The annotations
     themselves remain a soundness matter: they are all dangling, and soundness
-    still fails on them (exit codes unchanged)."""
+    still fails on them (exit codes unchanged). Non-ID-bearing filename
+    (notes.md) — an ID-bearing artifact here would be the #281 error case."""
     epic = tmp_path / "epic"
     epic.mkdir()
-    (epic / "contracts.md").write_text("# empty\n")
+    (epic / "notes.md").write_text("# empty\n")
     src = tmp_path / "src"
     src.mkdir()
     (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
@@ -972,7 +976,7 @@ def test_cli_gate_soundness_still_fails_on_dangling_when_inapplicable(tmp_path, 
     classified inapplicable."""
     epic = tmp_path / "epic"
     epic.mkdir()
-    (epic / "contracts.md").write_text("# empty\n")
+    (epic / "notes.md").write_text("# empty\n")
     src = tmp_path / "src"
     src.mkdir()
     (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
@@ -989,7 +993,7 @@ def test_cli_gate_coverage_annotations_without_definitions_banner(tmp_path, caps
     never a silent identical green."""
     epic = tmp_path / "epic"
     epic.mkdir()
-    (epic / "contracts.md").write_text("# empty\n")
+    (epic / "notes.md").write_text("# empty\n")
     src = tmp_path / "src"
     src.mkdir()
     (src / "svc.py").write_text("# @cw-trace guards CTR-order-001\n")
@@ -1007,7 +1011,7 @@ def test_cli_gate_coverage_inapplicable_exits_zero_with_banner(tmp_path, capsys)
     the JSON carries applicability explicitly."""
     epic = tmp_path / "epic"
     epic.mkdir()
-    (epic / "contracts.md").write_text("# nothing\n")
+    (epic / "notes.md").write_text("# nothing\n")
     src = tmp_path / "src"
     src.mkdir()
     rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
@@ -1021,7 +1025,7 @@ def test_cli_gate_coverage_inapplicable_exits_zero_with_banner(tmp_path, capsys)
 def test_cli_inapplicable_text_output_says_so(tmp_path, capsys):
     epic = tmp_path / "epic"
     epic.mkdir()
-    (epic / "contracts.md").write_text("# nothing\n")
+    (epic / "notes.md").write_text("# nothing\n")
     src = tmp_path / "src"
     src.mkdir()
     rc = ct.main([str(epic), "--source", str(src)])

@@ -4,6 +4,7 @@ Defined IDs: 4
 
 - Soundness (orphans/dangling/invalid): FINDINGS
 - Coverage (uncovered/untested): FINDINGS
+- Measured: 2 ID-bearing artifact(s), 4 stable ID(s) parsed
 
 ## Uncovered contracts (no code guard)
 

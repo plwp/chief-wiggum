@@ -55,6 +55,37 @@ TRACE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A token in a DECLARATION position that looks like a stable ID but is NOT
+# one — in practice the two-segment `INV-001` shape the /architect skill's
+# own worked example used to model (chief-wiggum#281). This is the
+# *complement* of the grammar, not a heuristic: it matches only in the same
+# declaration positions DEFINE_RE uses (markdown heading, bold, JSON "id"),
+# and near_miss_ids() then subtracts everything that IS a valid ID_RE match.
+# A foreign prefix glued onto a real kind (e.g. ENT-INV-001) is excluded
+# structurally: the declaration prefix must sit immediately before the KIND
+# alternation, and "ENT-" occupies that position instead of "**"/heading/
+# '"id": "'. Used by check_traceability to tell "artifacts present, nothing
+# parseable" (an ERROR) apart from "nothing to measure" (inapplicable).
+NEAR_MISS_DEFINE_RE = re.compile(
+    rf"(?:^#{{1,6}}\s+|\*\*\s*|[\"']id[\"']\s*:\s*[\"'])"
+    rf"((?:{_KINDS})-[A-Za-z0-9][A-Za-z0-9-]*)(?![A-Za-z0-9-])",
+    re.MULTILINE,
+)
+
+
+def near_miss_ids(text: str) -> list[str]:
+    """Declaration-position tokens that ALMOST match the stable-ID grammar.
+
+    Returns tokens in source order (duplicates kept — callers report
+    file:line per occurrence). A token that fullmatches ID_RE is a real
+    declaration, not a near miss, and is never returned.
+    """
+    return [
+        m.group(1)
+        for m in NEAR_MISS_DEFINE_RE.finditer(text)
+        if not ID_RE.fullmatch(m.group(1))
+    ]
+
 
 def canonical_id(node_id: str) -> str:
     """Canonical form: uppercase kind prefix, lowercase remainder.

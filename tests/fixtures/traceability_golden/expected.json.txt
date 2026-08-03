@@ -17,9 +17,16 @@
     "expired_justifications": 0,
     "invalid_justifications": 0,
     "grandfathered": 0,
-    "expired_grandfathers": 0
+    "expired_grandfathers": 0,
+    "malformed_ids": 0,
+    "unparsed_artifacts": 0
   },
   "applicability": "applicable",
+  "outcome": "findings",
+  "measured": {
+    "id_bearing_artifacts": 2,
+    "defined_ids": 4
+  },
   "soundness_ok": false,
   "coverage_ok": false,
   "orphan_business_rules": [],
@@ -51,6 +58,8 @@
       "reason": "verifies cannot originate from code"
     }
   ],
+  "malformed_ids": [],
+  "unparsed_artifacts": [],
   "suspect_links": [],
   "suspect_contracts": [],
   "justified_contracts": [],

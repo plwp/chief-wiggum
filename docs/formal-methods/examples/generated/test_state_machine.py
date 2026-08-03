@@ -54,25 +54,25 @@ class OrderStatusStateMachine(RuleBasedStateMachine):
         self.state = "completed"
 
     @invariant()
-    def check_inv_001(self):
+    def check_inv_order_001(self):
         """Item names are NEVER stored as strings on orders. Always reference item_ids and resolve at read time."""
         # TODO: implement check — expression: not hasattr(order, 'item_names')
         pass
 
     @invariant()
-    def check_inv_002(self):
+    def check_inv_order_002(self):
         """Every order with status >= pending has a non-null customer_id that references a valid customer."""
         # TODO: implement check — expression: order.status in ('draft',) or order.customer_id is not None
         pass
 
     @invariant()
-    def check_inv_003(self):
+    def check_inv_order_003(self):
         """end_date > start_date on every order, enforced at write time."""
         # TODO: implement check — expression: order.end_date > order.start_date
         pass
 
     @invariant()
-    def check_inv_004(self):
+    def check_inv_order_004(self):
         """An order in in_progress MUST have a resource_id assigned."""
         if self.state not in ['in_progress']:
             return
@@ -80,19 +80,19 @@ class OrderStatusStateMachine(RuleBasedStateMachine):
         pass
 
     @invariant()
-    def check_inv_005(self):
+    def check_inv_order_005(self):
         """Dashboard, List View, Calendar, and Detail View MUST derive record counts from the same query. No screen-specific counting logic."""
         # TODO: implement check — expression: N/A
         pass
 
     @invariant()
-    def check_inv_006(self):
+    def check_inv_order_006(self):
         """Capacity View and Summary View MUST use the same occupancy calculation. Define once, use everywhere."""
         # TODO: implement check — expression: N/A
         pass
 
     @invariant()
-    def check_inv_007(self):
+    def check_inv_order_007(self):
         """If an operation depends on an external service (email, payment), the success toast MUST NOT display unless the service call succeeded."""
         # TODO: implement check — expression: N/A
         pass
