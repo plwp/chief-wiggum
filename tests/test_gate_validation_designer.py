@@ -74,6 +74,13 @@ def _toy_record(**overrides):
                    expected="no-fire", result="not-fired",
                    injected="an unsanctioned defect placed inside the vendor/ subtree, "
                             "which SKIP_PARTS excludes by design"),
+            # instrument-broken is unconditionally mandatory (#289), so a
+            # "healthy" toy record must carry it or every audit reports it
+            # missing.
+            _trial("toy-instrument-broken-01", "instrument-broken",
+                   injected="the source tree the gate was pointed at is emptied of "
+                            "scannable files; the subject is untouched, only the "
+                            "gate's ability to see it is destroyed"),
         ],
         "clean_corpus_runs": [
             {"repo": "tests/fixtures/gate_validation/toy_clean", "sha": "sha256:0000",
@@ -96,7 +103,8 @@ def toy_dirs(tmp_path):
     tests_dir.mkdir()
     (tests_dir / "test_gate_validation_retroactive.py").write_text(
         'EXECUTORS = {"toy-direct-01": 1, "toy-omission-01": 2, '
-        '"toy-config-indirection-01": 3, "toy-sampling-gap-01": 4}\n')
+        '"toy-config-indirection-01": 3, "toy-sampling-gap-01": 4, '
+        '"toy-instrument-broken-01": 5}\n')
     return vdir, tests_dir
 
 
@@ -326,7 +334,7 @@ def test_extract_seeds_materializes_the_records_trials(toy_dirs, tmp_path):
     assert doc["gate"] == "toy_gate"
     assert [s["seed_id"] for s in doc["seeds"]] == [
         "toy-direct-01", "toy-omission-01", "toy-config-indirection-01",
-        "toy-sampling-gap-01"]
+        "toy-sampling-gap-01", "toy-instrument-broken-01"]
     seed = doc["seeds"][0]
     assert seed["seed_class"] == "direct"
     assert seed["seed_version"] == "1"

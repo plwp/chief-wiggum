@@ -143,18 +143,8 @@ the fail-open, worst first:
       registry ↔ `patterns/` bijection check. **Done — #289.**
 - [x] `code_query.py` — route file reads through `read_text_safe`; make
       `unscanned` a machine field, not a summary-string prefix. **Done — #289.**
-- [ ] Per-gate `instrument-broken` seeded trials in each gate's
-      `validation/<gate>.json` once the class becomes mandatory
-      (see [gate-validation.md](gate-validation.md)).
-
-## Rules for new gates
-
-1. Report the four states, in text and JSON.
-2. Print the denominator on every run, green or not.
-3. `error` exits non-zero under `--gate`; report-only prints the outcome loudly.
-4. Never swallow a subprocess's non-zero exit, OOM kill, or timeout into an
-   empty finding list — propagate it as `error`.
-5. Ship the broken-instrument test with the gate: artifacts present, scanner
-   sees nothing ⇒ `error`, not `pass`/`inapplicable`.
-6. A new blocking finding class needs a precision dry-run on real artifacts
-   before it blocks ([gate-rollout.md](gate-rollout.md)).
+- [x] Per-gate `instrument-broken` seeded trials — **done**. All seven
+      shipped records carry a genuinely-passing trial, and
+      `check_gate_validation.required_seed_classes` now requires the class
+      **unconditionally**, so a new gate cannot ship without proving it
+      fails closed when its instrument breaks.

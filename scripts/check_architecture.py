@@ -175,6 +175,14 @@ class ArchitectureReport:
     # be read/parsed — distinct from genuinely not being given at all (which
     # stays in `not_checked` only, honest absence).
     system_contracts_error: str | None = None
+    # instrument-broken class (docs/gate-validation.md, chief-wiggum#289's
+    # promotion ticket): set when the architecture_file itself EXISTS (unlike
+    # `model_present=False`, the missing-invocation case) but its content
+    # could not be parsed as JSON. The subject is intact — only the parser's
+    # ability to see it is destroyed — and this must read as a broken
+    # instrument (`applicability: "error"`), never as an ordinary "findings"
+    # schema violation that happens to also carry one Finding.
+    doc_parse_error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -200,6 +208,8 @@ class ArchitectureReport:
         `error` exits 1. Reporting `inapplicable` here while exiting 1 would
         make the same word mean different things in different gates."""
         if not self.model_present:
+            return "error"
+        if self.doc_parse_error is not None:
             return "error"
         if self.system_contracts_error is not None:
             return "error"
@@ -239,6 +249,7 @@ class ArchitectureReport:
             "nodes": self.nodes,
             "edges": self.edges,
             "system_contracts_error": self.system_contracts_error,
+            "doc_parse_error": self.doc_parse_error,
         }
 
     def to_dict(self) -> dict:
@@ -898,7 +909,16 @@ def main(argv: list[str] | None = None) -> int:
         # A malformed document is a FINDING (report-only 0 / --gate 1), never
         # a usage error — only bad CLI flags/paths are usage errors (2).
         # @cw-trace guards CTR-fh-020
-        report = ArchitectureReport()
+        #
+        # This is also the instrument-broken seed class (docs/gate-validation.md
+        # / chief-wiggum#289's promotion ticket): the file the caller pointed us
+        # at EXISTS — unlike the absent-model case above, which is `error` via
+        # `model_present=False` — but nothing about it could be parsed. Reusing
+        # the ordinary "findings" outcome here would make a genuinely-broken
+        # parse indistinguishable from a small-but-real model that happens to
+        # carry one schema complaint, so `doc_parse_error` drives
+        # `applicability`/`outcome` to `error` explicitly.
+        report = ArchitectureReport(doc_parse_error=str(exc))
         report.findings.append(Finding("schema", str(path), f"invalid JSON in {path}: {exc}"))
         _print(report, args.format)
         _emit(report)

@@ -735,16 +735,43 @@ def _ci_seed_sampling_gap(corpus: Path) -> None:
         "    steps:\n      - run: 'true'\n")
 
 
+def _ci_seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the intent (docs/gate-validation.md's
+    instrument-broken class, chief-wiggum#289's promotion ticket).
+
+    A workflow file exists at the exact conventional path/extension
+    `detect_ci` looks for, but its content cannot be parsed as YAML at all —
+    distinct from `ci-omission-01` (no `*.yml`/`*.yaml` file exists in
+    workflows/ whatsoever) and from `ci-sampling-gap-01` (a VALID, merely
+    no-op workflow). Before the #310 fix `detect_ci` was a pure filename
+    test — a file this shape defeated it outright, reporting `ci_present:
+    true` for a file GitHub Actions itself could never run. Expected: fire
+    (ci_present must read false, same as no CI at all).
+    """
+    (corpus / ".github" / "workflows" / "ci.yml").write_text("not: valid: yaml: [[[")
+
+
 CI_EXECUTORS = {
     "ci-direct-01": _ci_seed_direct,
     "ci-omission-01": _ci_seed_omission,
     "ci-config-indirection-01": _ci_seed_config_indirection,
     "ci-sampling-gap-01": _ci_seed_sampling_gap,
+    "ci-instrument-broken-01": _ci_seed_instrument_broken,
 }
 
 
 def _arch_outcome(corpus: Path) -> str:
-    return _arch_report(corpus)[0]
+    result, rep = _arch_report(corpus)
+    # applicability == "error" MUST count as fired (instrument-broken class,
+    # #289's promotion ticket) — see _sw_outcome/_tr_outcome/_rt_outcome. A
+    # harness that only sums findings happens to still catch check_architecture's
+    # instrument-broken seed today (the parse failure also appends a "schema"
+    # Finding), but checking applicability directly is the robust rule every
+    # other gate's outcome function follows, not an accident of this one
+    # seed's current shape.
+    if rep.get("applicability") == "error":
+        return "fired"
+    return result
 
 
 def _arch_report(corpus: Path) -> tuple[str, dict]:
@@ -779,6 +806,19 @@ def _node(doc: dict, nid: str) -> dict:
 
 def _edge(doc: dict, eid: str) -> dict:
     return next(e for e in doc["edges"] if e["id"] == eid)
+
+
+def _arch_seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the model (docs/gate-validation.md's
+    instrument-broken class, chief-wiggum#289's promotion ticket).
+
+    architecture.json still EXISTS at the path the caller names — unlike the
+    already-covered absent-model case — but its content cannot be parsed as
+    JSON at all. Nothing about the declared model changed; only the parser's
+    ability to see it is destroyed. Expected: fire (via `applicability ==
+    "error"`, not an ordinary schema Finding).
+    """
+    (corpus / "architecture.json").write_text("not valid json {{{")
 
 
 def _arch_seed_sampling_gap(corpus: Path) -> None:
@@ -833,6 +873,7 @@ ARCH_EXECUTORS = {
             telemetry_ref="nonexistent_binding_ms")),
         None),
     "arch-sampling-gap-01": (_arch_seed_sampling_gap, None),
+    "arch-instrument-broken-01": (_arch_seed_instrument_broken, None),
 }
 
 
@@ -922,12 +963,80 @@ def test_ci_scaffold_clean_corpus_run_is_backed_by_live_execution(tmp_path):
     assert run["coverage"] == live_coverage
 
 
+def test_ci_instrument_broken_seed_reports_absent_not_merely_fires(tmp_path):
+    """Certify the STATE, not merely fired/not-fired: prove the malformed
+    workflow file is excluded from the `workflows` list (the measured
+    denominator) — the same finding a coincidental filename-only omission
+    would also produce, so a bare `ci_present is False` assertion alone would
+    pass even if content-parsing (the #310 fix) had never shipped. The
+    malformed file staying present ON DISK is the point: the SUBJECT
+    (the repo's CI intent) is untouched, only the gate's read of it broke."""
+    corpus = _copy_clean("ci_scaffold_clean", tmp_path, "ci-instrument-broken-assert")
+    _ci_seed_instrument_broken(corpus)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ci_scaffold.py"),
+         "--repo", str(corpus), "--report", "--json"],
+        capture_output=True, text=True)
+    rep = json.loads(proc.stdout)
+
+    assert rep["ci_present"] is False, rep
+    assert rep["workflows"] == [], rep
+    assert (corpus / ".github" / "workflows" / "ci.yml").is_file()
+
+
+def test_ci_gate_exits_nonzero_on_the_instrument_broken_seed(tmp_path):
+    corpus = _copy_clean("ci_scaffold_clean", tmp_path, "ci-instrument-broken-exit")
+    _ci_seed_instrument_broken(corpus)
+    rc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ci_scaffold.py"), "--repo", str(corpus), "--gate"],
+        capture_output=True, text=True).returncode
+    assert rc != 0, "--gate exited 0 on a broken instrument"
+
+
 def test_check_architecture_record_trials_are_backed_by_live_executions(tmp_path):
     # @cw-trace verifies CTR-fh-043
     executors = {sid: fn for sid, (fn, _check) in ARCH_EXECUTORS.items()}
     _assert_record_backed_by_live_trials(
         "check_architecture", "check_architecture_clean", executors, _arch_outcome,
         "check_architecture.py", tmp_path)
+
+
+def test_arch_instrument_broken_seed_reports_error_not_merely_fires(tmp_path):
+    """The instrument-broken trial must be certified on the STATE, not just on
+    fired/not-fired (mirrors test_tr_instrument_broken_seed_reports_error_not_
+    merely_fires / test_rt_instrument_broken_seed_reports_measurement_error_
+    not_merely_fires).
+
+    Malformed JSON also happens to trip the ordinary "schema" Finding class as
+    a side effect, so a fired/not-fired assertion alone would pass even if
+    `doc_parse_error`/`applicability: "error"` had never been implemented —
+    the finding count would still be nonzero. Assert the distinguishing facts
+    directly: the outcome is `error` (not a green `applicable`/`findings`),
+    the parse-error reason is NAMED in the measured denominator, and nodes/edges
+    read zero because nothing parsed, never because the model is legitimately
+    tiny.
+    """
+    corpus = _copy_clean("check_architecture_clean", tmp_path, "arch-instrument-broken-assert")
+    _arch_seed_instrument_broken(corpus)
+    _, rep = _arch_report(corpus)
+
+    assert rep["applicability"] == "error", rep
+    assert rep["outcome"] == "error", rep
+    assert rep["measured"]["doc_parse_error"] is not None, rep["measured"]
+    assert rep["measured"]["nodes"] == 0 and rep["measured"]["edges"] == 0, rep["measured"]
+
+
+def test_arch_gate_exits_nonzero_on_the_instrument_broken_seed(tmp_path):
+    """`error` must fail --gate — the whole point of the instrument-broken
+    class is that a broken parser stops exiting 0 under --gate."""
+    corpus = _copy_clean("check_architecture_clean", tmp_path, "arch-instrument-broken-exit")
+    _arch_seed_instrument_broken(corpus)
+    rc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check_architecture.py"),
+         str(corpus / "architecture.json"),
+         "--system-contracts", str(corpus / "system-contracts.json"), "--gate"],
+        capture_output=True, text=True).returncode
+    assert rc != 0, "--gate exited 0 on a broken instrument"
 
 
 def test_check_architecture_clean_corpus_run_is_backed_by_live_execution(tmp_path):

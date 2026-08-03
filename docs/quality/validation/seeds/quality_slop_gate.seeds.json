@@ -4,11 +4,20 @@
   "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds quality_slop_gate` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
   "seeds": [
     {
+      "seed_id": "slop-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+      "corpus_digest": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
+      "injected": "crashed.json: both engines report status 'crashed'. The repo under test is untouched and healthy; only the measurement crashed. Before #289 this was byte-identical to the honest 'skipped' of a genuinely absent tool.",
+      "expected": "fire"
+    },
+    {
       "seed_id": "slop-direct-01",
       "seed_class": "direct",
       "seed_version": "1",
       "corpus": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "corpus_digest": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "corpus_digest": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "survival_past_ai.json re-cast to the engine-native INTEGER age keys ({14: ..., 30: ...} as scripts/quality/survival.py emits): survival_14d 90.0% < AI band 94.3% -> evaluate_survival band_14d 'past-ai' -> has_findings reports the elevated-2-week-churn finding",
       "expected": "fire"
     },
@@ -17,7 +26,7 @@
       "seed_class": "direct",
       "seed_version": "1",
       "corpus": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "corpus_digest": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "corpus_digest": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "duplication_past_ai.json: duplication_pct_lines 15.0% > AI band 12.3% -> evaluate_duplication band 'past-ai' -> has_findings reports the duplication finding (survival healthy so duplication is the sole finding)",
       "expected": "fire"
     },
@@ -26,7 +35,7 @@
       "seed_class": "evasion-config-indirection",
       "seed_version": "1",
       "corpus": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "corpus_digest": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "corpus_digest": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "survival_past_ai.json as-serialized with STRING age keys ('14'/'30' \u2014 the shape any recorded/JSON band file carries, an indirection from the engine's native integer keys). evaluate_survival's 'by_age.get(14) or by_age.get(\"14\")' fallback must still reach and classify it 'past-ai' -> fire. The serialized-key indirection does not dodge classification; verified equal to the int-key verdict.",
       "expected": "fire"
     },
@@ -35,7 +44,7 @@
       "seed_class": "evasion-omission",
       "seed_version": "1",
       "corpus": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "corpus_digest": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "corpus_digest": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "too_young.json: git-of-theseus ran but no commit has lived >= 14 days (lines_old_enough 0). evaluate_survival reports status 'too_young' (honest non-measurement); has_findings counts only 'measured' signals, so it produces NO finding rather than fabricating a clean 'measured' verdict from unmeasurable data. A certified honest-degrade boundary -> no-fire.",
       "expected": "no-fire"
     },
@@ -44,7 +53,7 @@
       "seed_class": "evasion-sampling-gap",
       "seed_version": "1",
       "corpus": "tests/fixtures/gate_validation/quality_slop_gate_clean",
-      "corpus_digest": "sha256:ecffa8731672aeaa338eda877d1b96e47dcb16820ee5bb7162d971ea05591d75",
+      "corpus_digest": "sha256:d249defaabc89f0a5d91499ff14fe96257797f3b04c9cd059bfa5799ddce3b5b",
       "injected": "both_skipped.json: git-of-theseus and jscpd both genuinely absent ({'skipped': ...} for each \u2014 the real state in chief-wiggum's CI). evaluate_survival/evaluate_duplication report status 'skipped'; has_findings produces NO finding for a skipped signal \u2014 a skip is neither a silent 'clean' masking a regression nor a false fire. A certified degrade path -> no-fire.",
       "expected": "no-fire"
     }

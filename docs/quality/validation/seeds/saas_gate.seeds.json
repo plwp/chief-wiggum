@@ -4,6 +4,15 @@
   "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds saas_gate` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
   "seeds": [
     {
+      "seed_id": "saas-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/saas_gate_clean",
+      "corpus_digest": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
+      "injected": "an explicitly-supplied --base-url that cannot be reached. The target's actual security posture is unknown, not good; before #289 the six-check header/CSRF battery collapsed into one SKIPPED, and SKIPPED can never fail --gate.",
+      "expected": "fire"
+    },
+    {
       "seed_id": "saas-direct-01",
       "seed_class": "direct",
       "seed_version": "1",
