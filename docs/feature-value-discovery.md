@@ -48,7 +48,7 @@ the value it delivers — a real **product ROI**, not "did tests pass."
 ### 3. Business-value / pricing — [chief-wiggum#122](https://github.com/plwp/chief-wiggum/issues/122)
 The `/business-consultant` skill: cost-of-features scaling, pricing models, unit
 economics — quantify what a feature is worth building and charging for. Already
-ticketed; grounded in `dogeared-coach/docs/pricing.md`.
+ticketed; grounded in the pricing docs from a shipped multi-provider video SaaS.
 - **Trigger:** a product approaching a monetization/packaging decision.
 
 ### 4. Reframe the improvement loop
@@ -70,7 +70,7 @@ feature-discovery lens that's noisy or mis-ranked on real products trains the
 operator to ignore it.
 
 The **defensive** cost/value telemetry is built and will start producing data from
-the first real factory runs (dogeared-coach). **That data may itself reveal which
+the first real factory runs (a shipped multi-provider video SaaS). **That data may itself reveal which
 generative direction matters first** — e.g. if the verdict shows a validation loop
 costing a lot to catch defects in a feature nobody uses, that's the signal to build
 #2. Revisit this doc when a trigger fires; don't pre-empt it.

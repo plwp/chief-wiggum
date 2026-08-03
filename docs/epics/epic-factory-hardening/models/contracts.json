@@ -298,7 +298,7 @@
             }
           ],
           "error_cases": [
-            { "status": 0, "condition": "file shares ONLY one common entity word (e.g. 'provider') with an operation path", "body": "NO inferred fact surfaced (the #185 negative case — the dogeared-coach auth-provider scenario that previously produced 30 facts)" },
+            { "status": 0, "condition": "file shares ONLY one common entity word (e.g. 'provider') with an operation path", "body": "NO inferred fact surfaced (the #185 negative case — the multi-provider video SaaS auth-provider scenario that previously produced 30 facts)" },
             { "status": 0, "condition": "file lexically resembles a hotspot path but is absent from hotspots.json", "body": "no measured fact (exact membership only — #185-regression guard for #187)" },
             { "status": 1, "condition": "an inferred or measured fact ranks above a direct fact for the same file", "body": "rank-key regression: the leading relation-tier element is missing or misordered (CTR-fh-052)" }
           ],

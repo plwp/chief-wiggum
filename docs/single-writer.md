@@ -178,7 +178,7 @@ again, labeled **EXPIRED grandfather**. See [adopt.md](adopt.md) and
 The single-writer idiom above inventories *code* writers of a field. Some
 invariants declare a single writer of *infrastructure* instead: "terraform owns
 env/secrets; CI only pushes images." That rule lived only in a memory file until
-the Dogeared deploy's `enable_cicd` footgun made the gap concrete — a CI run
+a multi-provider video SaaS deploy's `enable_cicd` footgun made the gap concrete — a CI run
 silently applied an infra change out-of-band, and nothing flagged it, because no
 check inventories *live* infra writers the way `check_single_writer.py`
 inventories code writers.

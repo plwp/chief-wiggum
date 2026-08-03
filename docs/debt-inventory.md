@@ -241,8 +241,8 @@ config-indirection, and sampling-gap evasion classes), clean-corpus runs with
 coverage evidence, an authority-boundary statement, and a journaled ratchet
 record — `/close-epic` refuses `--gate` to any checker without a passing
 record. Until then, findings feed remediation planning (#216), not gates. The
-validation corpus for the precision exercise is dogeared (CW-built, embedded)
-+ mcprelay (organic, legacy), with per-finding triage recorded on the issue.
+validation corpus for the precision exercise is a CW-built multi-provider video
+SaaS (embedded) + mcprelay (organic, legacy), with per-finding triage recorded on the issue.
 
 ## Consumption: remediation planning (#216)
 
