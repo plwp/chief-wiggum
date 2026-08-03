@@ -70,6 +70,72 @@ def test_cli_exit_zero_on_real_registry():
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+# --- #289: fail-closed — machine applicability/outcome/measured, and a real
+# registry<->patterns/ bijection check (an empty-but-"valid" registry is not
+# the same as a genuinely clean one; a manifest dir the registry doesn't know
+# about must not be invisible) ------------------------------------------------
+
+def test_real_registry_report_is_applicable_and_passes():
+    report = check_patterns.validate_report()
+    assert report.applicability == "applicable"
+    assert report.outcome == "pass"
+    assert report.measured["specified_patterns"] > 0
+    assert report.measured["pattern_dirs_scanned"] > 0
+
+
+def test_bijection_flags_pattern_dir_missing_from_registry(tmp_path):
+    """A directory with its own manifest.json that the registry doesn't
+    mention (neither `patterns[]` nor `candidates[]`) must be a visible
+    ERROR finding — before #289 an empty-but-valid registry printed
+    'registry OK' and never even looked at `patterns/`."""
+    reg = {"patterns": [], "candidates": []}
+    path = _write(tmp_path, reg, {"orphan": _manifest("orphan", cluster=[GOOD_INV])})
+    findings = check_patterns.validate(path)
+    errs = _errors(findings)
+    assert any("orphan" in e.where and "not listed in registry" in e.message for e in errs), errs
+    report = check_patterns.validate_report(path)
+    assert report.applicability == "applicable"
+    assert report.outcome == "findings"
+    assert report.measured["pattern_dirs_scanned"] == 1
+
+
+def test_empty_registry_and_no_pattern_dirs_report_inapplicable(tmp_path):
+    reg = {"patterns": [], "candidates": []}
+    path = _write(tmp_path, reg, {})
+    report = check_patterns.validate_report(path)
+    assert report.applicability == "inapplicable"
+    assert report.outcome == "inapplicable"
+    assert report.findings == []
+    assert report.measured == {
+        "specified_patterns": 0, "candidate_patterns": 0, "pattern_dirs_scanned": 0,
+    }
+
+
+def test_registry_bijection_holds_when_every_dir_is_registered(tmp_path):
+    reg = {"patterns": [_specified("foo")], "candidates": []}
+    path = _write(tmp_path, reg, {"foo": _manifest("foo", cluster=[GOOD_INV])})
+    report = check_patterns.validate_report(path)
+    assert _errors(report.findings) == []
+    assert report.applicability == "applicable"
+    assert report.outcome == "pass"
+    assert report.measured["pattern_dirs_scanned"] == 1
+
+
+def test_top_level_json_array_registry_is_error_not_a_crash(tmp_path):
+    """#289: a registry.json whose root is a JSON array (not an object) used
+    to raise an uncaught AttributeError on `reg.get(...)` — a swallowed
+    parse failure worse than silence. It must become a loud, structured
+    `error` outcome instead."""
+    pdir = tmp_path / "patterns"
+    pdir.mkdir()
+    reg_path = pdir / "registry.json"
+    reg_path.write_text(json.dumps(["not", "an", "object"]))
+    report = check_patterns.validate_report(reg_path)
+    assert report.applicability == "error"
+    assert report.outcome == "error"
+    assert _errors(report.findings), report.findings
+
+
 # --- the bar for `specified` ------------------------------------------------
 
 def test_specified_without_cluster_is_error(tmp_path):
