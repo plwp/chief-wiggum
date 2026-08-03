@@ -456,6 +456,133 @@ def capture_diff(
     return truncate_diff(result.stdout, max_bytes)
 
 
+@dataclass
+class ResolvedBase:
+    """Which ref a review diff was actually computed against (chief-wiggum#269).
+
+    A worktree created fresh from ``origin/main`` still carries a LOCAL
+    ``main`` ref that never advances on its own — the moment anything else
+    merges upstream, that local ref is stale. Diffing ``stale_main...HEAD``
+    (three-dot: merge-base(stale_main, HEAD)...HEAD) then pulls in every
+    commit merged into origin/main since the local ref last moved, rendered
+    as if it were part of THIS diff (confirmed live, #281: a 6-ahead/2-behind
+    local ``main`` produced a ~13,800-line diff where the true PR diff was
+    ~900 lines).
+
+    ``ref`` is what ``capture_diff`` should be pointed at instead of the raw
+    ``base`` the caller asked for. ``source`` is ``"remote-tracking"`` when a
+    remote's freshly-fetched ref was used, or ``"local-fallback"`` when there
+    was no usable remote — in which case ``fallback_reason`` is always set
+    (never a silent substitution).
+    """
+
+    ref: str
+    sha: str | None
+    source: str
+    fallback_reason: str | None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _merge_base_sha(worktree: str | Path, ref: str, runner: Runner) -> str | None:
+    result = _git(["merge-base", "HEAD", ref], worktree, runner)
+    sha = result.stdout.strip()
+    return sha if result.returncode == 0 and sha else None
+
+
+def resolve_review_base(
+    worktree: str | Path,
+    base: str,
+    *,
+    remote: str = "origin",
+    runner: Runner = subprocess.run,
+) -> ResolvedBase:
+    """Resolve ``base`` to the freshly-fetched remote-tracking ref when one
+    exists, falling back to the local ref name ONLY when there is no usable
+    remote — and always recording WHY (chief-wiggum#269).
+
+    Diffing three-dot against ``<remote>/<base>`` after a fetch is equivalent
+    to diffing against ``merge-base(HEAD, <remote>/<base>)`` directly (that is
+    what ``A...B`` means); ``sha`` is the resolved merge-base, reported for
+    the manifest even though ``capture_diff`` is handed the ref name.
+    """
+    remotes_result = _git(["remote"], worktree, runner)
+    remotes = [r.strip() for r in (remotes_result.stdout or "").splitlines() if r.strip()]
+    if remote not in remotes:
+        return ResolvedBase(
+            ref=base,
+            sha=_merge_base_sha(worktree, base, runner),
+            source="local-fallback",
+            fallback_reason=f"no '{remote}' remote configured — using local ref '{base}'",
+        )
+
+    fetch_result = _git(["fetch", remote, base], worktree, runner)
+    if fetch_result.returncode != 0:
+        return ResolvedBase(
+            ref=base,
+            sha=_merge_base_sha(worktree, base, runner),
+            source="local-fallback",
+            fallback_reason=(
+                f"git fetch {remote} {base} failed "
+                f"({(fetch_result.stderr or '').strip() or 'no output'}) — using local ref '{base}'"
+            ),
+        )
+
+    remote_ref = f"{remote}/{base}"
+    verify_result = _git(["rev-parse", "--verify", remote_ref], worktree, runner)
+    if verify_result.returncode != 0:
+        return ResolvedBase(
+            ref=base,
+            sha=_merge_base_sha(worktree, base, runner),
+            source="local-fallback",
+            fallback_reason=(
+                f"{remote_ref} does not resolve after fetch — using local ref '{base}'"
+            ),
+        )
+
+    return ResolvedBase(
+        ref=remote_ref,
+        sha=_merge_base_sha(worktree, remote_ref, runner),
+        source="remote-tracking",
+        fallback_reason=None,
+    )
+
+
+_SHORTSTAT_FILES_RE = re.compile(r"(\d+) files? changed")
+_SHORTSTAT_INSERTIONS_RE = re.compile(r"(\d+) insertions?\(\+\)")
+_SHORTSTAT_DELETIONS_RE = re.compile(r"(\d+) deletions?\(-\)")
+
+
+def parse_diff_shortstat(text: str) -> dict:
+    """Parse a ``git diff --shortstat`` line into files/insertions/deletions.
+
+    Missing components (e.g. a deletions-only or insertions-only diff, or an
+    empty diff) default to 0 rather than raising — this feeds a visibility
+    signal (chief-wiggum#269), not a hard gate."""
+    files_m = _SHORTSTAT_FILES_RE.search(text)
+    ins_m = _SHORTSTAT_INSERTIONS_RE.search(text)
+    del_m = _SHORTSTAT_DELETIONS_RE.search(text)
+    files_changed = int(files_m.group(1)) if files_m else 0
+    insertions = int(ins_m.group(1)) if ins_m else 0
+    deletions = int(del_m.group(1)) if del_m else 0
+    return {
+        "files_changed": files_changed,
+        "insertions": insertions,
+        "deletions": deletions,
+        "total_lines": insertions + deletions,
+    }
+
+
+def diff_shortstat(worktree: str | Path, base_ref: str, *, runner: Runner = subprocess.run) -> dict:
+    """``git diff --shortstat <base_ref>...HEAD``, parsed. Computed from the
+    UNTRUNCATED diff endpoints (not from ``capture_diff``'s possibly-truncated
+    text) — the whole point is to see the true size of an oversized diff
+    even once the captured text itself has been cut down (chief-wiggum#269)."""
+    result = _git(["diff", "--shortstat", f"{base_ref}...HEAD"], worktree, runner)
+    return parse_diff_shortstat(result.stdout or "")
+
+
 # --- run --------------------------------------------------------------------
 
 
@@ -469,6 +596,20 @@ class ReviewManifest:
     synthesis_prompt_path: str
     provider_manifest: dict
     response_paths: list[str] = field(default_factory=list)
+    # chief-wiggum#269: the base ACTUALLY diffed against (may differ from
+    # `base` above, which is the raw caller-supplied ref name), how it was
+    # resolved, and — when it fell back to the local ref — why. Never a
+    # silent substitution: a reviewer's verdict can be traced to the exact
+    # diff it saw.
+    resolved_base_ref: str = ""
+    resolved_base_sha: str | None = None
+    base_source: str = ""
+    base_fallback_reason: str | None = None
+    # The diff's true size (files/insertions/deletions), computed from the
+    # UNTRUNCATED diff so a wildly-oversized diff (#281: ~13,800 lines where
+    # the true PR diff was ~900) is visible even once `impl-diff.txt` itself
+    # has been truncated.
+    diff_stat: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -516,9 +657,14 @@ def run_review(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    diff = capture_diff(worktree, base, runner=runner, max_bytes=max_diff_bytes)
+    # chief-wiggum#269: resolve `base` against a freshly-fetched remote-tracking
+    # ref rather than trusting the local ref name, which a fresh worktree
+    # routinely leaves stale the moment anything else merges upstream.
+    resolved = resolve_review_base(worktree, base, runner=runner)
+    diff = capture_diff(worktree, resolved.ref, runner=runner, max_bytes=max_diff_bytes)
     diff_path = out / "impl-diff.txt"
     diff_path.write_text(diff)
+    diff_stat = diff_shortstat(worktree, resolved.ref, runner=runner)
 
     prompt = assemble_review_prompt(
         template, ticket, diff, checklist=checklist, epic_sections=epic_sections
@@ -578,6 +724,11 @@ def run_review(
         synthesis_prompt_path=str(synthesis_path),
         provider_manifest=quorum.to_dict(),
         response_paths=response_paths,
+        resolved_base_ref=resolved.ref,
+        resolved_base_sha=resolved.sha,
+        base_source=resolved.source,
+        base_fallback_reason=resolved.fallback_reason,
+        diff_stat=diff_stat,
     )
     (out / "review-manifest.json").write_text(json.dumps(manifest.to_dict(), indent=2))
     return manifest

@@ -73,7 +73,7 @@ def _rel(repo: str, name: str) -> str:
 
 
 def cluster(repo: str, duplicates: list[dict], path_filter=None,
-            boundary_out: list[dict] | None = None) -> list[dict]:
+            boundary_out: list[dict] | None = None, corpus_root: str | None = None) -> list[dict]:
     """Cluster jscpd duplicate PAIRS into clone classes keyed by normalized
     span content hash. Deterministic: classes sorted (size desc, hash asc);
     members sorted (file, start_line).
@@ -81,7 +81,15 @@ def cluster(repo: str, duplicates: list[dict], path_filter=None,
     When ``path_filter`` drops a class below 2 in-scope members despite >= 2
     TOTAL spans, the class (full pre-filter member list) is appended to
     ``boundary_out`` when provided — the caller's boundary-referral evidence
-    (chief-wiggum#216 C2), never an in-scope finding."""
+    (chief-wiggum#216 C2), never an in-scope finding.
+
+    ``corpus_root`` is the root jscpd's reported paths are actually relative
+    to/absolute under — ``repo`` for an ordinary scan, or the #279 scratch
+    corpus tree when the argv-over-budget path built one. Member file paths
+    are ALWAYS remapped to repo-relative (never left pointing at a scratch
+    tmp directory); source is still re-read from ``repo`` when a fragment is
+    missing, since the scratch tree may not exist by the time this runs."""
+    root = corpus_root if corpus_root is not None else repo
     classes: dict[str, dict] = {}
     for dup in duplicates:
         # jscpd may emit fragment as an EMPTY string (observed on real repos)
@@ -90,7 +98,7 @@ def cluster(repo: str, duplicates: list[dict], path_filter=None,
         members = []
         for side in ("firstFile", "secondFile"):
             f = dup.get(side) or {}
-            rel = _rel(repo, str(f.get("name", "")))
+            rel = _rel(root, str(f.get("name", "")))
             start = int(f.get("start", 0) or 0)
             end = int(f.get("end", 0) or 0)
             members.append((rel, start, end))
@@ -205,7 +213,7 @@ def analyze(repo: str, workdir: str, path_filter=None, name: str | None = None) 
     duplicates = data.get("duplicates") or []
     boundary: list[dict] = []
     classes = cluster(repo, duplicates, path_filter=path_filter,
-                      boundary_out=boundary)
+                      boundary_out=boundary, corpus_root=data.get("_corpus_root"))
     out = {
         **base,
         "status": "measured",

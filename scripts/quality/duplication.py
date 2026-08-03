@@ -102,6 +102,33 @@ def _jscpd_cmd() -> list[str] | None:
     return None
 
 
+def _build_scratch_corpus(repo: str, files: list[str], workdir: str) -> str:
+    """Mirror ``files`` (repo-relative) into a scratch tree under ``workdir``,
+    preserving relative paths, so ONE jscpd invocation can scan an
+    argv-over-budget corpus without widening to the repo root (#279).
+
+    Symlinked where possible (cheap, no copy of file contents); falls back to
+    a real copy PER FILE where the platform disallows symlinks, so a handful
+    of unsymlinkable files degrade gracefully rather than aborting the whole
+    build. Raises ``OSError`` if the scratch tree itself cannot be built (e.g.
+    the workdir is unwritable) — the caller treats that as the genuinely
+    unavoidable widening this ticket still allows.
+    """
+    scratch_root = os.path.join(workdir, "corpus")
+    if os.path.isdir(scratch_root):
+        shutil.rmtree(scratch_root)
+    os.makedirs(scratch_root, exist_ok=True)
+    for rel in files:
+        src = os.path.join(repo, rel)
+        dest = os.path.join(scratch_root, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            os.symlink(os.path.abspath(src), dest)
+        except OSError:
+            shutil.copy2(src, dest)
+    return scratch_root
+
+
 def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
               timeout_seconds: int | None = None,
               max_old_space_mb: int | None = None) -> tuple[dict | None, dict | None]:
@@ -135,23 +162,41 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
     heap_mb = max_old_space_mb or _env_int("CW_JSCPD_MAX_OLD_SPACE_MB", DEFAULT_MAX_OLD_SPACE_MB)
 
     fallback: str | None = None
+    corpus_root = repo
+    scratch_used = False
     if files is None:
         targets = [repo]
     elif sum(len(f) + 1 for f in files) > ARGV_BUDGET_BYTES:
-        # Degrade LOUDLY. A silent widening back to the repo root is exactly how
-        # #265 stayed invisible; the caller records `corpus_fallback`, and the
-        # timeout/heap ceilings above turn a subsequent death into `crashed`.
-        targets = [repo]
-        fallback = (f"argv budget exceeded ({len(files)} files) — scanned the repo "
-                    "root instead; clone findings are NOT scope-narrowed")
+        # #279: build a scratch tree mirroring just the in-scope files and
+        # scan THAT in a single invocation, instead of widening to the repo
+        # root. The repo-root widening is now reserved for the genuinely
+        # unavoidable case — the scratch build itself failing (e.g. an
+        # unwritable workdir) — and is still reported LOUDLY via
+        # `corpus_fallback`, same discipline as #265.
+        try:
+            scratch_root = _build_scratch_corpus(repo, files, workdir)
+        except OSError as exc:
+            targets = [repo]
+            fallback = (f"argv budget exceeded ({len(files)} files) and the scratch "
+                        f"corpus tree could not be built ({exc}) — scanned the repo "
+                        "root instead; clone findings are NOT scope-narrowed")
+        else:
+            targets = [scratch_root]
+            corpus_root = scratch_root
+            scratch_used = True
     else:
         targets = list(files)
 
-    # `cwd` ONLY for the explicit-corpus case, whose paths are repo-relative.
-    # Setting it for a whole-repo scan re-anchors a RELATIVE `repo` against
-    # itself ("src/app" -> "src/app/src/app"), which jscpd resolves to nothing
-    # and reports as 0 sources — a silent empty scan, not even a crash.
-    cwd = repo if (files is not None and not fallback) else None
+    # `cwd` ONLY for the explicit small-corpus case, whose paths are
+    # repo-relative. Setting it for a whole-repo (or scratch-tree) scan would
+    # re-anchor a RELATIVE target against itself ("src/app" ->
+    # "src/app/src/app"), which jscpd resolves to nothing and reports as 0
+    # sources — a silent empty scan, not even a crash. The scratch tree is
+    # handed to jscpd as an absolute path for exactly this reason (mirrors
+    # the whole-repo-scan convention below), and `clones.py` remaps the
+    # absolute scratch-relative paths jscpd reports back to repo-relative
+    # ones via `_corpus_root`.
+    cwd = repo if (files is not None and not fallback and not scratch_used) else None
 
     env = dict(os.environ)
     node_opts = f"{env.get('NODE_OPTIONS', '')} --max-old-space-size={heap_mb}".strip()
@@ -221,9 +266,15 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
             "exit_code": proc.returncode,
             "corpus_fallback": fallback,
         }
-    if fallback:
+    if fallback or scratch_used:
         data = dict(data)
-        data["_corpus_fallback"] = fallback
+        if fallback:
+            data["_corpus_fallback"] = fallback
+        if scratch_used:
+            # #279: tells clones.py what root jscpd's reported paths are
+            # relative to (or absolute under), so it can remap them back to
+            # repo-relative instead of leaving them pointed at this scratch dir.
+            data["_corpus_root"] = corpus_root
     return data, None
 
 
