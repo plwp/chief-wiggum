@@ -55,6 +55,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts as _meta_location  # noqa: E402 - meta-location resolver (#213)
 from chief_wiggum import github as gh_meta  # noqa: E402
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -359,10 +360,27 @@ def _split_comments(full_body: str) -> tuple[str, str | None]:
 
 
 class LocalBackend:
-    """One markdown file per issue, YAML frontmatter, under docs/issues/."""
+    """One markdown file per issue, YAML frontmatter, under docs/issues/.
+
+    Storage location is meta-location resolved, never assumed
+    (chief-wiggum#266): ``root`` is the TARGET repo checkout, but issues are
+    stored under ``<meta root>/issues`` — identical to
+    ``<target>/docs/issues`` in embedded mode (the status quo), but under the
+    sidecar meta root (``~/.chief-wiggum/meta/<owner>/<repo>/docs/issues``)
+    on a sidecar-elected target, so a local-backend target never has to
+    dirty its own tree to store issues.
+    """
 
     def __init__(self, root: Path | str):
-        self.root = Path(root).resolve()
+        target_repo = Path(root).resolve()
+        resolver = _meta_location.Resolver.resolve(target_repo)
+        # meta_root is "<base>/docs" in both modes (embedded: <target>/docs;
+        # sidecar: <sidecar dir>/docs) — its parent is the base that
+        # ISSUES_SUBDIR ("docs/issues") is relative to, so the SAME relative
+        # arithmetic below yields <target>/docs/issues in embedded mode
+        # (self.root == target_repo, unchanged) and the sidecar issues dir
+        # in sidecar mode, with no other code path to diverge.
+        self.root = resolver.meta_root.parent
         self.issues_dir = self.root / ISSUES_SUBDIR
 
     def _path_for_id(self, issue_id: int) -> Path:
@@ -480,11 +498,16 @@ DEFAULT_CW_CONFIG = Path.home() / ".chief-wiggum" / "config.json"
 def resolve_backend_name(repo_root: Path | str, *, cw_config: Path | None = None) -> str:
     """Resolve which backend a target repo uses.
 
-    1. ``<repo_root>/docs/cw/tracker.json``'s ``"backend"`` key.
+    1. ``<meta root>/cw/tracker.json``'s ``"backend"`` key — meta-location
+       resolved (chief-wiggum#266) via ``artifacts.Resolver``: identical to
+       ``<repo_root>/docs/cw/tracker.json`` in embedded mode (today's
+       behavior, unchanged), but the SIDECAR meta root on a sidecar-elected
+       target, where the target tree never carries a ``docs/`` at all.
     2. CW-side fallback: ``~/.chief-wiggum/config.json``'s ``tracker.backend``.
     3. Default: ``"github"`` (today's behavior).
     """
-    config_path = Path(repo_root) / "docs" / "cw" / "tracker.json"
+    resolver = _meta_location.Resolver.resolve(Path(repo_root))
+    config_path = resolver.meta_root / "cw" / "tracker.json"
     if config_path.is_file():
         try:
             data = json.loads(config_path.read_text())
