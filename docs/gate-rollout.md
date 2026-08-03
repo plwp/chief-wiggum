@@ -11,6 +11,12 @@ as a blocker and false-positived heavily on the first real polyglot repo (commen
 `:=`, in-memory assignments, TS interface fields — see the precision fix in the git
 history for `#93`). The lesson generalizes.
 
+The mirror-image failure — a gate that is *silent when it is most broken* — is
+governed by [fail-closed.md](fail-closed.md): the four-state
+`pass | findings | inapplicable | error` outcome, the measured denominator every
+gate prints, and the per-gate audit of which checkers still render "failed to
+run" as "passed" (chief-wiggum#289).
+
 ## The rule
 
 **Every new hard-fail gate ships report-only first, and is validated on a real,
@@ -57,7 +63,7 @@ output), and only switch it to `--gate` once step 2 is satisfied.
 | --- | --- | --- | --- |
 | Traceability | `check_traceability.py` | `--gate` | blocking (`/architect`, `/close-epic`); **gate-validation record: passed** (#168, retroactive); widened to a three-state `applicable\|inapplicable\|error` outcome by chief-wiggum#281/#289 — two new blocking soundness finding classes, `malformed_ids` (declaration-position near-miss stable IDs, e.g. the two-segment `INV-001` shape) and `unparsed_artifacts` (an ID-bearing artifact present with content but zero parseable IDs); `error` fails BOTH `--gate soundness` and `--gate coverage` and is never `--write-links`-eligible. Precision proven report-only across this repo's own real `docs/epics/*/`, `templates/formal-models/examples/`, and `patterns/*/` corpus (zero false positives) before folding into `soundness_ok` — see the dry-run evidence cited in the #281 PR |
 | Single-writer | `check_single_writer.py` | `--gate` | blocking (precision fix in #93); **gate-validation record: passed** (#168, retroactive) |
-| Unresolved markers | `check_unresolved.py` | `--gate` | blocking (`/implement-wave`) |
+| Unresolved markers | `check_unresolved.py` | (blocks by default) | blocking (`/implement-wave`); **no `--gate` flag exists** — the ledger claimed one until chief-wiggum#289 corrected it. A workflow runs this to decide whether dependent work may proceed, so a marker blocks wherever it is run. Widened to the four-state outcome by #289: an artifact present that the scanner could NOT read is `error` (exit 1), never the "OK: no unresolved markers found" it printed before |
 | Ratchet: pass-set + contract hashes | `ratchet.py check` | (blocks by default) | blocking (`/implement`, waves, `/close-epic`); **gate-validation record: passed** (#184, retroactive); a pass-set case may be quarantined out of the high-water via the journaled `record --retire-case` waiver (#278) — the quarantine LISTING is report-only, and an expired quarantine blocks through the existing `missing_tests` class, so no new blocking finding class was introduced and the record's eight trials still cover it |
 | **Ratchet: complexity + relative churn** | `ratchet.py check --gate-quality` | `--gate-quality` | **NEW — report-only** (#110); validate on a shipped repo before wiring as a blocker |
 | SaaS NFR | `saas_gate.py --gate` | `--gate` | blocking (`/saas-gate`); **gate-validation record: passed** (#184, fixture-served local-server target per CTR-fh-044) |
