@@ -531,12 +531,12 @@ def test_validation_experiment_patterns_are_specified_with_honest_grounding():
         assert entry["status"] == "specified"
         assert entry["category"] == "validation-experiment"
         assert entry["trust_class"] == "end-user-signal-driven"
-        assert entry["invariants"] == f"{prefix}-001..005"
+        assert entry["invariants"] == f"{prefix}-001..006"
 
         manifest = json.loads(
             (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
         cluster = check_patterns.cluster_entries(manifest["invariants"])
-        assert [e["id"] for e in cluster] == [f"{prefix}-00{i}" for i in range(1, 6)]
+        assert [e["id"] for e in cluster] == [f"{prefix}-00{i}" for i in range(1, 7)]
         assert manifest["success_metrics"]["metrics"], (
             f"{pid}: specified patterns must declare non-empty success_metrics.metrics")
         grounded = {e["id"] for e in cluster
@@ -549,6 +549,27 @@ def test_validation_experiment_patterns_are_specified_with_honest_grounding():
             else:
                 assert e.get("grounding") == "design-derived", (
                     f"{e['id']} must be honestly flagged design-derived")
+
+
+def test_validation_experiment_patterns_require_divergent_visual_design():
+    """chief-wiggum#249: taste surfaces are chosen, not converged — both
+    validation-experiment patterns carry an INV-*-006 invariant mandating >=6
+    divergent rendered variants + a recorded human pick, grounded in the
+    docs/design-taste.md current-craft reference (#250), and it stays
+    design-derived (a human checkpoint, never a lintable gate)."""
+    for pid, prefix in VALIDATION_EXPERIMENTS.items():
+        manifest = json.loads(
+            (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
+        cluster = check_patterns.cluster_entries(manifest["invariants"])
+        entry = next(e for e in cluster if e["id"] == f"{prefix}-006")
+        assert entry.get("grounding") == "design-derived"
+        stmt = entry["statement"]
+        assert ">=6" in stmt or "6 " in stmt
+        assert "design-taste.md" in stmt
+        assert "chosen" in stmt.lower() or "not converged" in stmt.lower()
+
+        pattern_md = (SCRIPTS.parent / "patterns" / pid / "pattern.md").read_text()
+        assert f"{prefix}-006" in pattern_md
 
 
 def test_validation_experiment_metrics_are_per_cohort_rates():

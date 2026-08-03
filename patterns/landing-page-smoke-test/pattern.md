@@ -49,6 +49,15 @@ evidence; graduating to strength 5 is the [`presale`](../presale) pattern's job.
 - **INV-LPS-005 — evidence honesty + PII floor.** A signup is strength-2 evidence
   and a stored contact is PII: minimal storage, product-follow-up use only,
   deletable. *(Design-derived.)*
+- **INV-LPS-006 — visual design is chosen, not converged.** The stamped scaffold
+  is a STRUCTURE only (form, beacon, honesty rules); the page's visual design
+  MUST be presented as ≥6 deliberately distinct rendered variants, grounded in
+  a current-craft reference no more than 90 days stale (`docs/design-taste.md`,
+  chief-wiggum#250), with a human pick recorded before the page ships. This
+  closes the failure the doctrine already named for `/design` ("designs are
+  chosen, not converged" — CLAUDE.md) but did not scope down to a first outward
+  probe page (chief-wiggum#249). *(Design-derived — a human checkpoint, not a
+  lintable property; no gate script exists or is planned for this invariant.)*
 
 ## Scaffold
 

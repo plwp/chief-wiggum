@@ -50,6 +50,14 @@ as wind-down cost in the harvest check (INV-PRE-005).
 - **INV-PRE-005 — refund-on-kill.** Kill/pivot before delivery refunds every
   pre-order per the stated policy; the obligation is a wind-down cost in the
   harvest check. *(Design-derived.)*
+- **INV-PRE-006 — visual design is chosen, not converged.** Same clause as
+  `landing-page-smoke-test` INV-LPS-006 — a presale page is equally
+  outward-facing: the stamped scaffold is a STRUCTURE only, the visual design
+  MUST be presented as ≥6 deliberately distinct rendered variants grounded in
+  a current-craft reference no more than 90 days stale (`docs/design-taste.md`,
+  chief-wiggum#250), with a human pick recorded before the page ships
+  (chief-wiggum#249). *(Design-derived — a human checkpoint, not a lintable
+  property; no gate script exists or is planned for this invariant.)*
 
 ## Scaffold
 

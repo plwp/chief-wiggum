@@ -22,6 +22,16 @@ evidence — and channel viability requires LTV above the channel's CAC floor. A
 points paid ads are frequently underwater; the channel-experiment **verdict must say so**
 rather than let spend drift.
 
+## Outward assets are chosen, not converged (chief-wiggum#249)
+
+Every CW-stamped M0 asset (launch checklists, copy scaffolds, Mom-Test scripts, prospect
+briefs, follow-up sequences) routes through divergent options + an operator pick, not a
+single generated default — the same discipline the channel-engine subsection of
+docs/business-factory.md states for probe pages and product names. Checkable facts (name
+availability, vendor existing-account status) arrive **pre-cleared**, so the operator's picks
+are never spent checking a candidate that was never viable. This is a human checkpoint, not
+a lintable property — no gate script enforces it.
+
 ## Tiers
 
 | Tier | Capability | Monthly nut |

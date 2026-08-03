@@ -453,6 +453,34 @@ sequences) is per-bet artifacts, not a pattern category. Marketing capability gr
 M0 founder+platforms → M1 focused-channel specialist → M2 agency/hire on the revenue-triggered
 formulas in `templates/marketing-tiers.md`; graduation is a journaled human decision.
 
+**Outward assets are chosen, not converged** (chief-wiggum#249): the failure the doctrine
+already names for `/design` ("designs are chosen, not converged" — CLAUDE.md) binds only on
+the once-per-product `/design` stage as written; it does not bind on the small, per-bet
+outward artifacts this track stamps — probe pages, product names, vendor/registrar choices —
+which is exactly how a first real bet shipped a single self-taste landing design, an
+uncollision-checked name shortlist, and an unchecked registrar in one pass. Same failure shape
+as the school-holidays #60 lesson: a step does not become optional because the artifact is
+small. A stamped `landing-page-smoke-test` or `presale` page ships ≥6 deliberately distinct
+rendered variants (INV-LPS-006/INV-PRE-006), grounded in a current-craft reference no more
+than 90 days stale (`docs/design-taste.md`, chief-wiggum#250), with the human pick recorded
+before the page ships; a launch checklist's copy/positioning candidates get the same
+treatment. **Checkable facts arrive pre-cleared**: a name shortlist ships with
+collision/domain checks already run per candidate — never presented for a pick and checked
+afterward — and a vendor/platform suggestion (registrar, ESP, CRM) ships with the operator's
+existing-account status already checked. This is docs/pattern-text only: a taste checkpoint
+is a human checkpoint, not a lintable property, and no gate script enforces it (the
+anti-theater rule cuts both ways).
+
+**Naming protocol**: entropy-injected candidate generation → an automated availability
+filter → collision research → the operator's pick, in that order (chief-wiggum#253 supplies
+the mechanical first two legs — `scripts/name_candidates.py` — so operator attention is never
+spent on a name that was never available). The shortlist that reaches the operator carries an
+elevator pitch plus every surviving candidate already collision-checked — domains resolving,
+same-sector companies, marketplace-app collisions, SERP noise — before a pick is spent on it.
+A bare-word search's top results are quoted **verbatim** into the shortlist, never summarised
+as a conclusion: a search relayed as "no collisions found" is exactly how a live direct twin
+(a same-name, same-product competitor) was missed on the first real bet.
+
 **Rep cadence + the *Traction* 50% rule** (ledger-side, surfaced in `bet.py evaluate`'s
 distribution block and `channel.py status`): while a bet is probing|validating, ≥N Mom-Test
 conversations per trailing week counted from the ledger's rep entries (default 3, per-bet
