@@ -132,13 +132,26 @@ def test_create_flags_regulated_thesis_without_screen_report_only(portfolio, tmp
     assert "regulated_calculation_screen" in r.stdout
 
 
-def test_create_blocks_under_gate_when_screen_missing(portfolio, tmp_path):
+def test_create_does_not_block_under_gate_when_screen_missing(portfolio, tmp_path):
+    """chief-wiggum#260 is explicit: "A bet failing 1-4 is not automatically
+    refused - regulated calculation is a real market - but the screen must be
+    answered in the bet record at create time, and an unanswered screen is a
+    REPORT-ONLY finding."
+
+    So the screen must surface under --gate and NOT block. This test previously
+    asserted the opposite (exit 1 + REFUSED), contradicting both the ticket and
+    regulated_calculation_findings' own docstring; it passed only because the
+    "screen:" prefix had not yet reached NEVER_GATES_PREFIXES on this branch.
+    Merging #275, which added that prefix, made the code correct and exposed
+    the test as wrong.
+    """
     env_p, crit_p = _files(tmp_path)
     r = _run(portfolio, "create", "b1", "--title", "t",
              "--thesis", "computes payroll entitlements from timesheets",
              "--envelope", env_p, "--criteria", crit_p, "--gate")
-    assert r.returncode == 1
-    assert "REFUSED" in r.stdout
+    assert r.returncode == 0, r.stdout
+    assert "REFUSED" not in r.stdout
+    assert "regulated_calculation_screen" in r.stdout
 
 
 def test_create_clean_when_screen_provided(portfolio, tmp_path):
