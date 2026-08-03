@@ -8,11 +8,19 @@ source for the value-vs-noise and token-cost questions.
 
 ## Opt-in by default
 
-Emitting is a **no-op** unless telemetry is enabled — so tests and CI have no side
-effects:
+Emitting is a **no-op** unless telemetry is enabled:
 
 - `CW_TELEMETRY=1` — enable, writing to the default log `~/.chief-wiggum/factory-log.jsonl`.
 - `CW_FACTORY_LOG=/path/to/log.jsonl` — enable *and* redirect the log.
+
+> **Tests must isolate the log.** "Off by default" protects a *clean* shell, not
+> the shell of an operator who set `CW_TELEMETRY=1` to measure a run — pytest in
+> that shell writes its fixture events to the real log. This is not hypothetical:
+> ~95% of the gate records in a real 32k-record log were pytest fixtures (`repo`
+> values like `epic`, `clean`, `dirty`, `test_cli_gate_exits_1_on_terra0`), and
+> every value/noise verdict was being computed over them. `tests/conftest.py`
+> carries an autouse fixture that points `CW_FACTORY_LOG` at each test's
+> `tmp_path`; keep it, and don't rely on the ambient default being unset.
 
 Enable it when you want to measure a factory run (an `/implement-wave`, an
 `/architect`, a batch of gates). `/reflect` then folds the aggregates into its
@@ -184,8 +192,46 @@ Then `aggregate`'s verdict joins `cost_by_loop[name]` (what it spent) with
 (`consult_ai` emits a `consult` event per provider call: provider · model · repo,
 with token/cost where a provider surfaces usage). But the biggest cost is the
 **Claude Code session itself** — the orchestrator plus every sub-agent it spawns.
-Claude Code emits that natively via OpenTelemetry, and CW folds it into the same
-log so `/reflect` reports one end-to-end number.
+CW folds that into the same log so `/reflect` reports one end-to-end number.
+
+There are two ways in. **Prefer the transcript ingest** — it needs no
+configuration and works retroactively.
+
+### Transcript ingest (default; retroactive, zero-config)
+
+Claude Code already writes per-turn token usage to
+`~/.claude/projects/<project>/<session>.jsonl` for every session it has ever run.
+Nothing needs to be enabled beforehand:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 30
+```
+
+Each assistant turn carries `message.model` + `message.usage` (input/output plus
+cache-read and cache-creation counts per TTL), `isSidechain` (orchestrator vs
+sub-agent), `requestId`, and `cwd`. The ingest:
+
+- **prices cache tokens at their own rates** via `cost_for_usage` — cache reads
+  at 0.1x the input rate, writes at 1.25x (5m TTL) / 2x (1h). On agent sessions
+  cache reads dwarf fresh input (billions vs millions of tokens in practice), so
+  charging them as fresh input would overstate cost by orders of magnitude. The
+  multipliers live in `config/model_pricing.json`, not in code.
+- **is idempotent** — dedup is by `requestId`, so re-running as sessions
+  accumulate adds only new turns. This is load-bearing, not just convenient: a
+  request's usage is repeated on *every* content-block line it produced
+  (thinking, text, tool_use), so summing lines would roughly double the cost.
+  All-zero usage lines are skipped, which makes dedup order-independent.
+- **attributes worktrees to their parent repo**, so a `<repo>/.claude/worktrees/<branch>`
+  cwd doesn't register as a separate project.
+
+Re-run it whenever you want the log current; `0 new` means up to date.
+
+### OTEL ingest (for an existing OTEL pipeline)
+
+`ingest-claude-code` remains for OTEL setups. It only captures a run you wrapped
+beforehand, and the console-exporter recipe below writes to stderr — which fights
+an interactive TUI session, so it suits headless `claude -p` runs.
 
 **Capture it with the console exporter (no collector needed):**
 
@@ -249,7 +295,36 @@ including how `bet.py portfolio`/`kill-brief` surface it.
 python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app   # per-gate value + consult cost
 ```
 
-`aggregate` marks each gate `earning` (caught > 0), `noise-candidate` (≥3 runs, 0
+### Two denominators the verdict will not fake
+
+**Value is DISTINCT findings, not the re-counted sum.** `caught` is a per-run
+finding *count*, so summing it counts the same unfixed finding once per run — a
+gate re-run 140 times over one repo's unchanged orphan list scored 75,517
+"catches". `aggregate` keeps `caught` (readers depend on it) but the verdict uses
+`caught_distinct`: the union of `finding_ids` when a gate emits them
+(`caught_basis: finding-ids`), otherwise the largest single run — a lower bound
+that re-runs cannot inflate. Gates should emit `finding_ids` to get an exact
+count.
+
+**Unattributed cost is `null`, never `0.0`.** Cost reaches a gate only via
+`cost_by_loop`; a gate with no such record has *unknown* cost, not zero cost.
+Defaulting it to `0.0` made every catching gate read `earning` at a confident
+`$0.000/catch` and made `demote-candidate` — the one verdict that says *switch
+this gate off* — unreachable, since it requires cost > 0. A fabricated
+denominator is worse than an absent one because it reads as a measurement. So
+the verdict distinguishes:
+
+| verdict | meaning |
+|---|---|
+| `earning` | caught > 0 |
+| `demote-candidate` | ≥3 runs, 0 caught, **measured** cost > 0 — you are paying for noise |
+| `noise-candidate` | ≥3 runs, 0 caught, **measured** cost 0 — noisy but cheap |
+| `unpriced` | ≥3 runs, 0 caught, **no cost attributed** — can't say cheap or expensive |
+| `unproven` | too few runs to judge |
+
+The text report prints `—` (not `$0.00`) for an unattributed cost.
+
+Also mark each gate `earning` (caught > 0), `noise-candidate` (≥3 runs, 0
 caught), or `unproven` (too few runs to judge) — the input to the gate-rollout
 question in `docs/gate-rollout.md`: a gate that never catches anything on real code
 is a candidate to demote or delete before it trains operators to `--force` past it.

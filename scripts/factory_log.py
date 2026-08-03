@@ -284,6 +284,55 @@ def cost_for(model: str, tokens_in: int, tokens_out: int, pricing: dict | None =
     return round((tokens_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
 
 
+def load_cache_multipliers() -> dict:
+    """Prompt-cache price multipliers from the grounded pricing table.
+
+    Empty dict when absent — callers then price cache tokens at the plain input
+    rate rather than inventing a discount.
+    """
+    try:
+        block = json.loads(PRICING_PATH.read_text()).get("cache_multipliers", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return block if isinstance(block, dict) else {}
+
+
+def cost_for_usage(model: str, tokens_in: int, tokens_out: int, *,
+                   cache_read: int = 0, cache_write_5m: int = 0, cache_write_1h: int = 0,
+                   pricing: dict | None = None, multipliers: dict | None = None) -> float | None:
+    """USD cost of a call whose usage separates cached from uncached input.
+
+    ``cost_for`` prices two buckets (in/out) because that is all a consult
+    provider reports. A Claude Code turn reports four: fresh input, cache reads
+    (~0.1x input), and cache writes at two TTLs (1.25x at 5m, 2x at 1h). Pricing
+    cached tokens at the full input rate would badly overstate an agent session,
+    where cache reads routinely dwarf fresh input — so they get their own
+    multipliers, read from config/model_pricing.json rather than hardcoded.
+
+    Returns None (not 0) for an unpriced model, exactly like ``cost_for``: an
+    unpriced call records its tokens without a fabricated dollar figure
+    (INV-fh-002 — cost is derived here or not at all).
+    """
+    table = pricing if pricing is not None else load_pricing()
+    row = table.get(model)
+    if not row:
+        return None
+    pin, pout = row.get("input_per_mtok"), row.get("output_per_mtok")
+    if pin is None or pout is None:
+        return None
+    m = multipliers if multipliers is not None else load_cache_multipliers()
+    # An absent multiplier means "price it like fresh input" (1.0) — never a
+    # silent discount we can't point at a vendor page for.
+    m_read = m.get("cache_read", 1.0)
+    m_w5 = m.get("cache_write_5m", 1.0)
+    m_w1 = m.get("cache_write_1h", 1.0)
+    billed_in = (tokens_in
+                 + cache_read * m_read
+                 + cache_write_5m * m_w5
+                 + cache_write_1h * m_w1)
+    return round((billed_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
+
+
 def _coerce_token(value) -> int | None:
     """Coerce an untrusted token count to ``int``; anything unusable (bool, junk
     string, list, non-integral float, ...) is ``None`` — a malformed count must
@@ -413,6 +462,196 @@ def _cc_field(event: dict, *names):
     return None
 
 
+DEFAULT_TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
+
+
+def _repo_from_cwd(cwd: str | None) -> str | None:
+    """Best-effort repo name for a transcript record's working directory.
+
+    A worktree cwd (``<repo>/.claude/worktrees/<branch>``) belongs to its parent
+    repo, not to a repo named after the branch — otherwise every worktree looks
+    like a separate project and per-repo aggregation fragments.
+    """
+    if not cwd:
+        return None
+    marker = "/.claude/worktrees/"
+    if marker in cwd:
+        cwd = cwd.split(marker, 1)[0]
+    name = Path(cwd).name
+    return name or None
+
+
+def _iter_transcript_files(root: Path):
+    """Every Claude Code transcript under ``root`` (``<project>/<session>.jsonl``)."""
+    if not root.is_dir():
+        return
+    yield from sorted(root.glob("*/*.jsonl"))
+
+
+def ingested_request_ids() -> set[str]:
+    """Request IDs already present as claude_code records in the log.
+
+    The ingest is re-run as sessions accumulate, and transcripts are append-only
+    files that keep their old turns — without this, every re-run would re-add
+    every previously-ingested turn and inflate cost without bound. Keyed on the
+    API request ID, which is unique per turn and stable across re-reads.
+    """
+    seen: set[str] = set()
+    path = log_path()
+    if not path.is_file():
+        return seen
+    try:
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("event") == CLAUDE_CODE and r.get("request_id"):
+                    seen.add(r["request_id"])
+    except OSError:
+        return seen
+    return seen
+
+
+def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
+                              since: float | None = None) -> int:
+    """Fold Claude Code's own per-turn token usage into the factory log.
+
+    This is the end-to-end cost half of the ledger. `factory_log` already records
+    what CW *runs* (gates) and what it *consults* (codex/gemini/...), but the
+    orchestrator plus every sub-agent it spawns is usually the largest line item,
+    and nothing was recording it: `aggregate`'s `claude_code_cost_usd` read
+    $0.00 not because the sessions were free but because no ingest had ever run.
+
+    Claude Code already writes everything needed, per assistant turn, to
+    ``~/.claude/projects/<project>/<session>.jsonl``:
+
+      * ``message.model`` + ``message.usage`` — input/output and, separately,
+        cache read and cache-creation tokens at each TTL (priced via
+        ``cost_for_usage``, so a cache-heavy agent session isn't billed as if
+        every cached token were fresh input)
+      * ``isSidechain`` — the orchestrator (``repl_main_thread``) vs sub-agent
+        (``subagent``) split, which is what makes "what did delegation cost"
+        answerable
+      * ``requestId`` — a stable per-turn key, so the ingest is idempotent and
+        can be re-run as sessions accumulate
+      * ``cwd`` — repo attribution, worktrees folded back to their parent repo
+
+    Reading these needs no configuration and works **retroactively** over
+    sessions that have already happened — unlike the OTEL console-exporter route
+    (``ingest_claude_code``), which only captures a run you remembered to wrap
+    beforehand and doesn't fit an interactive TUI session. That one stays for
+    OTEL pipelines; this is the path that works by default.
+
+    Explicit ingest — always writes (does not require CW_TELEMETRY). Returns the
+    number of NEW records written. See docs/factory-telemetry.md.
+    """
+    root = Path(root) if root is not None else DEFAULT_TRANSCRIPT_ROOT
+    pricing, multipliers = load_pricing(), load_cache_multipliers()
+    seen = ingested_request_ids()
+    n = 0
+    for f in _iter_transcript_files(root):
+        try:
+            lines = f.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("type") != "assistant":
+                continue
+            msg = e.get("message")
+            if not isinstance(msg, dict):
+                continue
+            usage = msg.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            req = e.get("requestId") or e.get("uuid")
+            if not req or req in seen:
+                continue
+
+            ts = _parse_iso_ts(e.get("timestamp"))
+            if since is not None and ts is not None and ts < since:
+                continue
+
+            tin = _coerce_token(usage.get("input_tokens")) or 0
+            tout = _coerce_token(usage.get("output_tokens")) or 0
+            cache_read = _coerce_token(usage.get("cache_read_input_tokens")) or 0
+            creation = usage.get("cache_creation")
+            creation = creation if isinstance(creation, dict) else {}
+            w5 = _coerce_token(creation.get("ephemeral_5m_input_tokens"))
+            w1 = _coerce_token(creation.get("ephemeral_1h_input_tokens"))
+            if w5 is None and w1 is None:
+                # Older/flatter shape: one undifferentiated cache-creation count.
+                # Price it at the 5m rate — the default TTL, and the cheaper of
+                # the two, so an unknown TTL can't silently overstate cost.
+                w5 = _coerce_token(usage.get("cache_creation_input_tokens")) or 0
+                w1 = 0
+            w5, w1 = w5 or 0, w1 or 0
+
+            model = msg.get("model")
+            # `<synthetic>` turns are harness-generated (e.g. cancellations) and
+            # were never billed — they carry no real model to price.
+            if not model or model == "<synthetic>":
+                continue
+
+            # An all-zero usage line is not a billable turn. It matters because a
+            # request's usage is repeated on EVERY content-block line it produced
+            # (thinking, text, tool_use), and dedup keeps the first line seen — so
+            # a stray zero line arriving first would shadow the real usage and
+            # undercount the request. Skipping zeros makes the dedup
+            # order-independent instead of relying on file ordering.
+            if (tin + tout + cache_read + w5 + w1) == 0:
+                continue
+
+            rec = {
+                "ts": ts or 0,
+                "event": CLAUDE_CODE,
+                "request_id": req,
+                "model": model,
+                "query_source": "subagent" if e.get("isSidechain") else "repl_main_thread",
+                "tokens_in": tin,
+                "tokens_out": tout,
+                "cache_read": cache_read,
+                "cache_creation": w5 + w1,
+                "source": "transcript",
+            }
+            if e.get("sessionId"):
+                rec["session_id"] = e["sessionId"]
+            attributed = repo or _repo_from_cwd(e.get("cwd"))
+            if attributed:
+                rec["repo"] = attributed
+            cost = cost_for_usage(model, tin, tout, cache_read=cache_read,
+                                  cache_write_5m=w5, cache_write_1h=w1,
+                                  pricing=pricing, multipliers=multipliers)
+            if cost is not None:
+                rec["cost_usd"] = cost
+            if _append(rec):
+                seen.add(req)
+                n += 1
+    return n
+
+
+def _parse_iso_ts(value) -> float | None:
+    """ISO-8601 timestamp -> epoch seconds; None if unparseable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def ingest_claude_code(path: Path, repo: str | None = None) -> int:
     """Fold a Claude Code OTEL export (console-exporter stderr capture, or OTLP file)
     into the factory log so /reflect sees end-to-end orchestrator+subagent token cost
@@ -493,12 +732,23 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
     for r in records:
         if r.get("event") == GATE and r.get("name"):
             g = gates.setdefault(r["name"], {"runs": 0, "passed": 0, "failed": 0,
-                                             "caught": 0, "total_ms": 0.0})
+                                             "caught": 0, "caught_max": 0,
+                                             "runs_with_findings": 0, "total_ms": 0.0})
             g["runs"] += 1
             g["passed"] += 1 if r.get("result") == "pass" else 0
             g["failed"] += 1 if r.get("result") in ("fail", "error") else 0
-            g["caught"] += r.get("caught") or 0
+            caught = r.get("caught") or 0
+            # `caught` is a per-run finding COUNT, so summing it counts the same
+            # unfixed finding once per run: a gate re-run 140 times over one
+            # repo's unchanged orphan list scored 75,517. Keep the sum (readers
+            # depend on it) but carry the two honest denominators alongside it.
+            g["caught"] += caught
+            g["caught_max"] = max(g["caught_max"], caught)
+            g["runs_with_findings"] += 1 if caught else 0
             g["total_ms"] += r.get("duration_ms") or 0.0
+            ids = r.get("finding_ids")
+            if isinstance(ids, list):
+                g.setdefault("_ids", set()).update(str(i) for i in ids)
         elif r.get("event") in (CONSULT, WORKER):
             key = r.get("provider") or r.get("name") or r.get("event")
             c = consults.setdefault(key, {"calls": 0, "tokens_in": 0,
@@ -511,10 +761,16 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         elif r.get("event") == CLAUDE_CODE:
             src = r.get("query_source") or "unknown"
             cc = claude_code.setdefault(src, {"calls": 0, "tokens_in": 0,
-                                              "tokens_out": 0, "cost_usd": 0.0})
+                                              "tokens_out": 0, "cache_read": 0,
+                                              "cache_creation": 0, "cost_usd": 0.0})
             cc["calls"] += 1
             cc["tokens_in"] += r.get("tokens_in") or 0
             cc["tokens_out"] += r.get("tokens_out") or 0
+            # Cache tokens are reported separately from fresh input because they
+            # are priced separately (see cost_for_usage) — folding them into
+            # tokens_in would make the token column disagree with the cost column.
+            cc["cache_read"] += r.get("cache_read") or 0
+            cc["cache_creation"] += r.get("cache_creation") or 0
             cc["cost_usd"] += r.get("cost_usd") or 0.0
             cc_cost += r.get("cost_usd") or 0.0
             if r.get("skill"):
@@ -538,9 +794,22 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
                 q["hits"] += 1
             else:
                 q["misses"] += 1
-    # value/noise hint: a gate with runs but zero caught is a noise candidate
+    # value/noise hint: a gate with runs but zero caught is a noise candidate.
+    # The value SIGNAL is distinct findings, not the re-counted sum — see the
+    # `caught` accumulation above.
     for g in gates.values():
-        g["value"] = "earning" if g["caught"] > 0 else ("noise-candidate" if g["runs"] >= 3 else "unproven")
+        ids = g.pop("_ids", None)
+        if ids is not None:
+            g["caught_distinct"] = len(ids)
+            g["caught_basis"] = "finding-ids"
+        else:
+            # No finding IDs emitted: the largest single run is the best
+            # available LOWER BOUND on distinct findings, and unlike the sum it
+            # cannot be inflated by re-running the gate on unchanged state.
+            g["caught_distinct"] = g["caught_max"]
+            g["caught_basis"] = "max-run (lower bound; gate emits no finding_ids)"
+        g["value"] = ("earning" if g["caught_distinct"] > 0
+                      else ("noise-candidate" if g["runs"] >= 3 else "unproven"))
     for cc in claude_code.values():
         cc["cost_usd"] = round(cc["cost_usd"], 6)
     for bl in by_loop.values():
@@ -567,13 +836,25 @@ def cost_value_verdict(gates: dict, by_loop: dict) -> dict:
     """Join cost (per loop/validation) with value (findings caught) into a keep/demote
     verdict per validation — the "every loop is costed and its value quantified" view.
 
-    A gate's value is its `caught` count; its cost is what its loop spent (LLM
-    validations via cost_by_loop; deterministic gates are ~$0). cost_per_catch is the
-    dollars spent per finding surfaced. The verdict:
-      - earning         — caught > 0 (deterministic gates: free value; LLM loops: paid but productive)
+    A gate's value is its DISTINCT findings (`caught_distinct`, not the re-counted
+    `caught` sum); its cost is what its loop spent. cost_per_catch is the dollars
+    spent per finding surfaced. The verdict:
+      - earning          — caught > 0 (deterministic gates: free value; LLM loops: paid but productive)
       - demote-candidate — spent real $ over >=3 runs and caught nothing (noise you're paying for)
-      - noise-candidate  — ran >=3 times, caught nothing, ~free (noisy but cheap)
+      - noise-candidate  — ran >=3 times, caught nothing, MEASURED ~free (noisy but cheap)
       - unproven         — too few runs to judge
+      - unpriced         — ran >=3 times, caught nothing, and no cost was attributed
+                           to it, so we cannot say whether it is cheap noise or
+                           expensive noise
+
+    **`cost_usd` is None, not 0.0, when nothing was attributed.** That distinction is
+    the whole point of this function. Cost reaches a gate only via `cost_by_loop`,
+    which is populated from Claude Code records carrying a loop/skill name; a gate
+    with no such record has UNKNOWN cost, not zero cost. Defaulting it to 0.0 (the
+    prior behaviour) made every gate that caught anything read `earning` at a
+    confident `$0.000/catch`, and made `demote-candidate` — the one verdict that
+    tells you to switch a gate off — unreachable, since it requires cost > 0. A
+    fabricated denominator is worse than an absent one: it reads as a measurement.
     """
     # Only validations get a verdict — a name must have emitted gate events. A loop
     # with cost but no gate events (e.g. `implement`, the build loop / orchestrator)
@@ -581,24 +862,31 @@ def cost_value_verdict(gates: dict, by_loop: dict) -> dict:
     out: dict[str, dict] = {}
     for name in gates:
         g, loop = gates.get(name, {}), by_loop.get(name, {})
-        cost = round(loop.get("cost_usd", 0.0), 6)
-        caught = g.get("caught", 0)
+        raw_cost = loop.get("cost_usd")
+        cost = round(raw_cost, 6) if raw_cost is not None else None
+        caught = g.get("caught_distinct", g.get("caught", 0))
         runs = g.get("runs", 0) or loop.get("calls", 0)
         if caught > 0:
             v = "earning"
-        elif runs >= 3 and cost > 0:
-            v = "demote-candidate"
-        elif runs >= 3:
-            v = "noise-candidate"
-        else:
+        elif runs < 3:
             v = "unproven"
+        elif cost is None:
+            v = "unpriced"
+        elif cost > 0:
+            v = "demote-candidate"
+        else:
+            v = "noise-candidate"
         out[name] = {"cost_usd": cost, "caught": caught, "runs": runs,
-                     "cost_per_catch": round(cost / caught, 6) if caught else None,
+                     "caught_total": g.get("caught", 0),
+                     "caught_basis": g.get("caught_basis"),
+                     "cost_per_catch": (round(cost / caught, 6)
+                                        if caught and cost is not None else None),
                      "verdict": v}
     return out
 
 
-_VERDICT_ORDER = {"demote-candidate": 0, "noise-candidate": 1, "unproven": 2, "earning": 3}
+_VERDICT_ORDER = {"demote-candidate": 0, "unpriced": 1, "noise-candidate": 2,
+                  "unproven": 3, "earning": 4}
 
 
 def render_report(agg: dict, repo: str | None = None) -> str:
@@ -625,11 +913,17 @@ def render_report(agg: dict, repo: str | None = None) -> str:
         L.append(f"    {'VALIDATION':<22}{'RUNS':>5}{'CAUGHT':>7}{'COST':>10}{'$/CATCH':>10}   VERDICT")
         L.append("    " + "─" * 70)
         rows = sorted(verdict.items(),
-                      key=lambda kv: (_VERDICT_ORDER.get(kv[1]["verdict"], 9), -kv[1]["cost_usd"]))
+                      key=lambda kv: (_VERDICT_ORDER.get(kv[1]["verdict"], 9),
+                                      -(kv[1]["cost_usd"] or 0.0)))
         for name, v in rows:
-            cost = f"${v['cost_usd']:.2f}"
+            # "—" for an unattributed cost, never "$0.00": no cost reached this
+            # gate, which is not the same as measuring that it was free.
+            cost = f"${v['cost_usd']:.2f}" if v["cost_usd"] is not None else "—"
             cpc = f"${v['cost_per_catch']:.3f}" if v["cost_per_catch"] is not None else "—"
             L.append(f"    {name:<22}{v['runs']:>5}{v['caught']:>7}{cost:>10}{cpc:>10}   {v['verdict']}")
+        L.append("    CAUGHT is distinct findings (max single run unless the gate emits "
+                 "finding_ids), not\n    the re-counted per-run sum. '—' cost = nothing "
+                 "attributed, not measured-free.")
 
     escapes = agg.get("escapes") or {}
     if escapes:
@@ -690,6 +984,14 @@ def main() -> int:
     ic.add_argument("otel_file", help="JSONL from `... 2>capture.jsonl` with the console OTEL exporter")
     ic.add_argument("--repo", help="Tag ingested records with this repo")
 
+    it = sub.add_parser("ingest-claude-transcripts",
+                        help="Fold Claude Code's own session transcripts (token cost) into the log")
+    it.add_argument("--root", default=str(DEFAULT_TRANSCRIPT_ROOT),
+                    help=f"Transcript root (default: {DEFAULT_TRANSCRIPT_ROOT})")
+    it.add_argument("--repo", help="Force this repo tag instead of deriving it from each record's cwd")
+    it.add_argument("--since-days", type=float,
+                    help="Only ingest turns newer than N days ago")
+
     sub.add_parser("path", help="Print the log path")
     args = parser.parse_args()
 
@@ -699,6 +1001,14 @@ def main() -> int:
     if args.cmd == "ingest-claude-code":
         n = ingest_claude_code(Path(args.otel_file), repo=args.repo)
         print(f"factory_log: ingested {n} api_request event(s) from {args.otel_file}")
+        return 0
+    if args.cmd == "ingest-claude-transcripts":
+        since = (time.time() - args.since_days * 86400) if args.since_days else None
+        n = ingest_claude_transcripts(Path(args.root), repo=args.repo, since=since)
+        # Re-running is expected and safe (dedup is by request id), so say
+        # explicitly that "0 new" means up-to-date rather than broken.
+        print(f"factory_log: ingested {n} new Claude Code turn(s) from {args.root}"
+              f"{' (already up to date)' if n == 0 else ''}")
         return 0
     if args.cmd == "emit":
         fields = {k: getattr(args, k) for k in
