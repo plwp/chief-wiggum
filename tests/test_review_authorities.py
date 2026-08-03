@@ -139,6 +139,23 @@ def test_malformed_documents_raise(tmp_path, doc, needle):
         ra.load(tmp_path / "docs")
 
 
+def test_a_dangling_symlink_is_malformed_not_absent(tmp_path):
+    """Review finding (codex P2). Operators symlink this at shared team
+    metadata. `Path.exists()` follows the link and reports False, so a broken
+    one would degrade into 'none recorded' — the exact confusion this binding
+    exists to prevent."""
+    link = _meta(tmp_path) / ra.AUTHORITIES_NAME
+    link.symlink_to(tmp_path / "gone" / "review-authorities.json")
+    with pytest.raises(ValueError, match="dangling symlink"):
+        ra.load(tmp_path / "docs")
+
+
+def test_undecodable_bytes_are_malformed_not_absent(tmp_path):
+    (_meta(tmp_path) / ra.AUTHORITIES_NAME).write_bytes(b"\xff\xfe\x00binary")
+    with pytest.raises(ValueError, match="unreadable|invalid JSON"):
+        ra.load(tmp_path / "docs")
+
+
 def test_comment_key_is_allowed(tmp_path):
     """Mirrors scope.json's $comment escape hatch for operator annotations."""
     _write(tmp_path, {"schema": "review-authorities/1", "target": "a/b",

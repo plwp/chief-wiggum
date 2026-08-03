@@ -430,7 +430,23 @@ The worker should:
      exit 2; }
    ```
 
-   Exit 2 = the binding exists but is unreadable; stop rather than review as if the target had no house rules. `present: false` = none recorded, proceed with CW's checklist alone. Otherwise load each listed skill and apply its conventions as target-specific authority **alongside** CW's checklist — never instead of it — and say so in the synthesized summary so a finding traceable to a house rule is attributable.
+   Exit 2 = the binding exists but is unreadable; stop rather than review as if the target had no house rules. `present: false` = none recorded, proceed with CW's checklist alone.
+
+   Otherwise **load each listed skill and render its conventions into a review-prompt section** — loading them into your own context is not enough, because the reviewer quorum runs as separate provider calls that see only the assembled prompt:
+
+   ```bash
+   # Write the loaded conventions (skill id, why it holds authority, and the
+   # concrete rules it imposes on a diff) as markdown:
+   #   $TICKET_TMP/review-authorities.md
+   ```
+
+   Then pass that file to `run_review.py` as an additional artifact in step 2 below, so **every** provider sees it in the identical shared prompt:
+
+   ```
+   --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md"
+   ```
+
+   These are target-specific authority applied **alongside** CW's checklist, never instead of it. Attribute any finding that comes from a house rule to its skill in the synthesized summary, so the operator can tell a CW-checklist finding from a target-convention one.
 
 2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass the `ticket.json` written in Step 2 — title/body/acceptance criteria plus the comment thread (`comments`, always an array — CTR-fh-002), which `run_review.py` renders as two labeled, authority-separated regions ("Accepted AC amendments" vs "Discussion/context" — CTR-fh-003/ADR-fh-02) so reviewers judge the diff against the CURRENT authoritative state, not a stale body-only baseline — and optionally epic artifacts:
    ```bash
@@ -439,8 +455,10 @@ The worker should:
      --worktree "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH" \
      --output-dir "$TICKET_TMP/reviews" \
      --epic-artifact "Contracts=$EPIC_DIR/contracts.md" \
-     --epic-artifact "Invariants=$EPIC_DIR/invariants.md"
+     --epic-artifact "Invariants=$EPIC_DIR/invariants.md" \
+     --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md"
    ```
+   (The last one is what actually puts the target's house rules in front of every provider — #264. `--epic-artifact` silently skips a path that doesn't exist, so it is safe to pass unconditionally when no authorities were recorded.)
    Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `synthesis-prompt.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
 3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:

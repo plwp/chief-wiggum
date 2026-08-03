@@ -170,6 +170,15 @@ one — that is exactly how a target quietly loses its house rules. Empty stdout
 with exit 0 is what a consumer reads as "no authorities", so the malformed case
 must never produce it.
 
+**Loading is not binding.** The reviewer quorum runs as separate provider calls
+that see only the assembled prompt, so a workflow that merely reads the
+authorities into its own context has changed nothing. `/implement` Step 7 renders
+the loaded conventions to `$TICKET_TMP/review-authorities.md` and passes it as
+`--epic-artifact "Target review authorities=..."` so every provider sees it in
+the identical shared prompt; `/close-epic` Step 9 renders them inline into
+`close-epic-review-prompt.md`. Attribute a finding that comes from a house rule
+to its skill, so it is distinguishable from a CW-checklist finding.
+
 **Authority boundary**: the file is written by the operator, never inferred.
 Which skills hold authority over a repo is a judgment about ownership; inferring
 it would be the same mistake as inferring contracts, which `/adopt` deliberately

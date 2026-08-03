@@ -897,18 +897,28 @@ def test_scanner_version_dep_list_is_complete(gate):
 # --- #264: the review-authorities module must stay off every gate's dep graph -
 
 def _local_module_index(scripts: Path) -> dict[str, Path]:
-    """Every importable local module name -> file, as gates would import it."""
+    """Every importable local module name -> file, as gates would import it.
+
+    Walks EVERY package under scripts/ rather than a hand-listed few: gates
+    import `emitters` as well as `chief_wiggum`/`quality`, and a package missing
+    from this index is a hole in the closure — its imports are never followed,
+    so anything it reaches looks unreachable.
+    """
     index: dict[str, Path] = {}
-    for py in scripts.glob("*.py"):
-        index[py.stem] = py
-    for pkg in ("chief_wiggum", "quality"):
-        for py in (scripts / pkg).glob("*.py"):
-            name = pkg if py.stem == "__init__" else f"{pkg}.{py.stem}"
-            index.setdefault(name, py)
+    for py in scripts.rglob("*.py"):
+        rel = py.relative_to(scripts)
+        parts = list(rel.parts[:-1])
+        if any(p.startswith(".") or p == "__pycache__" for p in parts):
+            continue
+        if py.stem == "__init__":
+            if parts:
+                index.setdefault(".".join(parts), py)
+            continue
+        index.setdefault(".".join([*parts, py.stem]), py)
     return index
 
 
-def _imports_of(path: Path, index: dict[str, Path]) -> set[str]:
+def _imports_of(path: Path, index: dict[str, Path], root: Path | None = None) -> set[str]:
     """Local modules `path` imports, top-level OR lazily inside a function.
 
     AST rather than regex: this must catch `import review_authorities` and
@@ -922,9 +932,9 @@ def _imports_of(path: Path, index: dict[str, Path]) -> set[str]:
             names = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             if node.level:  # relative: `from . import x` inside a package
-                pkg = path.parent.name
+                pkg = ".".join(path.relative_to(root or SCRIPTS).parts[:-1])
                 base = f"{pkg}.{node.module}" if node.module else pkg
-                names = [base] + [f"{pkg}.{a.name}" for a in node.names]
+                names = [base] + [f"{base}.{a.name}" for a in node.names]
             else:
                 base = node.module or ""
                 names = [base] + [f"{base}.{a.name}" for a in node.names if base]
@@ -957,7 +967,7 @@ def test_no_gate_scanner_can_reach_review_authorities(gate):
         if mod in seen:
             continue
         seen.add(mod)
-        for dep in sorted(_imports_of(index[mod], index)):
+        for dep in sorted(_imports_of(index[mod], index, scripts)):
             if dep not in path_to:
                 path_to[dep] = path_to[mod] + [dep]
             if dep not in seen:
@@ -978,5 +988,33 @@ def test_the_import_graph_walk_actually_detects_a_transitive_import(tmp_path):
     (tmp_path / "middle.py").write_text("from review_authorities import load\n")
     (tmp_path / "review_authorities.py").write_text("def load(): ...\n")
     index = _local_module_index(tmp_path)
-    assert _imports_of(tmp_path / "gatey.py", index) == {"middle"}
-    assert "review_authorities" in _imports_of(tmp_path / "middle.py", index)
+    assert _imports_of(tmp_path / "gatey.py", index, tmp_path) == {"middle"}
+    assert "review_authorities" in _imports_of(tmp_path / "middle.py", index, tmp_path)
+
+
+def test_the_module_index_covers_every_package_under_scripts():
+    """Review finding (codex P2). The index once listed chief_wiggum/quality by
+    hand, so `emitters` — which check_traceability and check_single_writer both
+    import — was absent, and anything reachable THROUGH it was invisible to the
+    closure. A package missing here is a hole in the guard, not a smaller guard.
+    """
+    index = _local_module_index(SCRIPTS)
+    for pkg_dir in SCRIPTS.iterdir():
+        if not pkg_dir.is_dir() or pkg_dir.name.startswith((".", "__")):
+            continue
+        if not (pkg_dir / "__init__.py").exists():
+            continue
+        assert pkg_dir.name in index, f"package {pkg_dir.name} missing from the index"
+    assert "emitters" in index
+
+
+def test_a_package_hop_is_followed(tmp_path):
+    """`gate -> emitters -> review_authorities` must be reachable."""
+    (tmp_path / "gatey.py").write_text("import pkg\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("from . import inner\n")
+    (tmp_path / "pkg" / "inner.py").write_text("import review_authorities\n")
+    (tmp_path / "review_authorities.py").write_text("def load(): ...\n")
+    index = _local_module_index(tmp_path)
+    assert index["pkg"] == tmp_path / "pkg" / "__init__.py"
+    assert "pkg.inner" in index

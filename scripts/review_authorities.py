@@ -128,10 +128,18 @@ def load(meta_root: Path | str) -> dict:
     empty = {"present": False, "path": str(path), "target": None,
              **{p: [] for p in PHASES}}
     if not path.exists():
+        # A DANGLING SYMLINK is not an absent binding: something was deliberately
+        # pointed here (operators do symlink this at shared team metadata) and
+        # the target is gone. `Path.exists()` follows the link and says False,
+        # which would silently degrade an unreadable binding into "none
+        # recorded" — the precise confusion this module exists to prevent.
+        if path.is_symlink():
+            raise _fail(path, "dangling symlink — the binding exists but its "
+                              f"target {os.readlink(path)!r} is missing")
         return empty
     try:
         text = path.read_text()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise _fail(path, f"unreadable: {exc}") from exc
     try:
         doc = json.loads(text)

@@ -550,6 +550,7 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
 - UX flow audit findings (Step 6)
 - Mutation testing results with surviving mutants (Step 7)
 - Invariant verification results (Step 8)
+- **The target's own review authorities (Step 1, #264)** — the conventions of each skill listed by `review_authorities.py show ... --phase review`, rendered inline. Loading them in Step 1 is not enough: the quorum runs as separate provider calls that see only this prompt, so an authority absent from it never reaches the reviewers and the epic closes against CW defaults alone.
 - Specific questions:
   1. Do the surviving mutants and integration test failures point to the same underlying weakness?
   2. Are there patterns in the stitch-audit findings that suggest a systemic issue rather than isolated gaps?
@@ -557,6 +558,7 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
   4. Do the UX flow audit findings indicate systemic navigation or information architecture issues, or isolated per-ticket gaps?
   5. What is the highest-risk area of this epic that needs the most attention before shipping?
   6. Are there any gaps the automated checks could not cover?
+  7. Does this epic violate any of the target's own recorded review authorities above? Attribute each such finding to the skill it comes from, so a house-rule finding is distinguishable from a CW-checklist one.
 
 Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
 
