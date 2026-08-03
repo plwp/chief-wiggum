@@ -99,6 +99,24 @@ def test_truncate_large_diff():
     assert len(out.encode()) < 5000
 
 
+# --- #269: diff --shortstat parsing (files/insertions/deletions/total) -----
+
+
+def test_parse_diff_shortstat_full_line():
+    stat = review.parse_diff_shortstat(" 25 files changed, 850 insertions(+), 50 deletions(-)\n")
+    assert stat == {"files_changed": 25, "insertions": 850, "deletions": 50, "total_lines": 900}
+
+
+def test_parse_diff_shortstat_insertions_only():
+    stat = review.parse_diff_shortstat(" 1 file changed, 3 insertions(+)\n")
+    assert stat == {"files_changed": 1, "insertions": 3, "deletions": 0, "total_lines": 3}
+
+
+def test_parse_diff_shortstat_empty_diff():
+    stat = review.parse_diff_shortstat("")
+    assert stat == {"files_changed": 0, "insertions": 0, "deletions": 0, "total_lines": 0}
+
+
 # --- ticket context parsing -------------------------------------------------
 
 
@@ -482,6 +500,156 @@ def test_capture_diff_returns_truncated(tmp_path):
     assert "diff truncated" in out
 
 
+# --- #269: base resolution against a remote-tracking ref (merge-base) ------
+#
+# `run_review.py --base main` used to trust the LOCAL `main` ref, which a
+# worktree created from `origin/main` routinely leaves stale (the worktree's
+# own history moves on; local `main` never gets fast-forwarded). Diffing
+# against that stale ref pulls in every commit merged into origin/main since
+# the local ref last moved — unrelated, already-merged epics rendered as if
+# they were part of THIS diff. Confirmed live on #281 (2026-08-03): a 6-ahead/
+# 2-behind local `main` produced a ~13,800-line diff where the true PR diff
+# was ~900 lines, and a reviewer flagged pre-existing content as a defect.
+
+
+def _cmd_runner(responses: dict[tuple, tuple]):
+    """Dispatch on the exact git argv (after the leading "git"), not a fuzzy
+    substring match — precise enough to tell `rev-parse --verify main` apart
+    from `rev-parse --verify origin/main`."""
+
+    def run(args, **kwargs):
+        key = tuple(args[1:])
+        if key in responses:
+            spec = responses[key]
+            rc, out = spec[0], spec[1]
+            err = spec[2] if len(spec) > 2 else ""
+            return subprocess.CompletedProcess(args, rc, stdout=out, stderr=err)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    return run
+
+
+def test_resolve_review_base_prefers_remote_tracking_ref_after_fetch(tmp_path):
+    responses = {
+        ("remote",): (0, "origin\n"),
+        ("fetch", "origin", "main"): (0, ""),
+        ("rev-parse", "--verify", "origin/main"): (0, "deadbeef\n"),
+        ("merge-base", "HEAD", "origin/main"): (0, "cafef00d\n"),
+    }
+    resolved = review.resolve_review_base(tmp_path, "main", runner=_cmd_runner(responses))
+    assert resolved.ref == "origin/main"
+    assert resolved.sha == "cafef00d"
+    assert resolved.source == "remote-tracking"
+    assert resolved.fallback_reason is None
+
+
+def test_resolve_review_base_falls_back_to_local_when_no_remote(tmp_path):
+    responses = {
+        ("remote",): (0, ""),
+        ("merge-base", "HEAD", "main"): (0, "localsha\n"),
+    }
+    resolved = review.resolve_review_base(tmp_path, "main", runner=_cmd_runner(responses))
+    assert resolved.ref == "main"
+    assert resolved.sha == "localsha"
+    assert resolved.source == "local-fallback"
+    assert resolved.fallback_reason is not None
+    assert "remote" in resolved.fallback_reason.lower()
+
+
+def test_resolve_review_base_falls_back_when_fetch_fails(tmp_path):
+    """Offline / unreachable remote: fall back rather than raise, and say why."""
+    responses = {
+        ("remote",): (0, "origin\n"),
+        ("fetch", "origin", "main"): (1, "", "could not resolve host"),
+        ("merge-base", "HEAD", "main"): (0, "localsha\n"),
+    }
+    resolved = review.resolve_review_base(tmp_path, "main", runner=_cmd_runner(responses))
+    assert resolved.ref == "main"
+    assert resolved.source == "local-fallback"
+    assert "fetch" in resolved.fallback_reason.lower()
+
+
+def test_resolve_review_base_falls_back_when_remote_ref_unresolvable_after_fetch(tmp_path):
+    """A remote exists and fetch succeeds, but `<base>` was never pushed there
+    (e.g. a local-only integration branch) — fall back, don't raise."""
+    responses = {
+        ("remote",): (0, "origin\n"),
+        ("fetch", "origin", "main"): (0, ""),
+        ("rev-parse", "--verify", "origin/main"): (1, ""),
+        ("merge-base", "HEAD", "main"): (0, "localsha\n"),
+    }
+    resolved = review.resolve_review_base(tmp_path, "main", runner=_cmd_runner(responses))
+    assert resolved.ref == "main"
+    assert resolved.source == "local-fallback"
+    assert resolved.fallback_reason is not None
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def test_capture_diff_against_stale_local_main_is_polluted_but_remote_tracking_is_not(tmp_path):
+    """Live repro (#269, #281 evidence): a worktree branched from a fresh
+    `origin/main` accumulates a stale LOCAL `main` ref as soon as anything else
+    merges upstream. Diffing against that stale local ref drags in unrelated,
+    already-merged commits; diffing against the freshly-fetched remote-tracking
+    ref does not. Built entirely under tmp_path — no real-repo git operations.
+    """
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "-q", str(seed)], check=True)
+    _git(seed, "config", "user.name", "Ada")
+    _git(seed, "config", "user.email", "ada@example.com")
+    (seed / "README.md").write_text("seed\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "seed")
+    _git(seed, "branch", "-M", "main")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-q", "origin", "main")
+
+    # `work`: clones origin at commit L (local main == origin/main == L for now).
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(bare), str(work)], check=True)
+    _git(work, "config", "user.name", "Ada")
+    _git(work, "config", "user.email", "ada@example.com")
+
+    # "someone else" merges an unrelated epic straight into origin/main, via a
+    # second, independent clone (work's local `main` never sees this).
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True)
+    _git(other, "config", "user.name", "Bea")
+    _git(other, "config", "user.email", "bea@example.com")
+    (other / "unrelated_epic.py").write_text("BUSINESS_FACTORY = True\n")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-q", "-m", "unrelated epic, already merged")
+    _git(other, "push", "-q", "origin", "main")
+
+    # `work` fetches (so `origin/main` now reflects the unrelated commit) but
+    # its LOCAL `main` ref is left exactly where it was — the fresh-worktree
+    # staleness the issue describes.
+    _git(work, "fetch", "-q", "origin")
+    _git(work, "checkout", "-q", "-b", "feature", "origin/main")
+    (work / "real_change.py").write_text("x = 1\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "the actual ticket diff")
+
+    local_main_sha = _git(work, "rev-parse", "main").stdout.strip()
+    origin_main_sha = _git(work, "rev-parse", "origin/main").stdout.strip()
+    assert local_main_sha != origin_main_sha, "fixture setup: local main must be stale"
+
+    polluted = review.capture_diff(work, "main", max_bytes=10_000_000)
+    resolved = review.resolve_review_base(work, "main")
+    fixed = review.capture_diff(work, resolved.ref, max_bytes=10_000_000)
+
+    assert resolved.source == "remote-tracking"
+    assert resolved.ref == "origin/main"
+    assert "unrelated_epic.py" in polluted
+    assert "unrelated_epic.py" not in fixed
+    assert "real_change.py" in fixed
+
+
 # --- synthesis prompt -------------------------------------------------------
 
 
@@ -551,6 +719,50 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     # The assembled prompt (with diff + AC) reached the provider.
     assert "added line" in captured["prompt"]
     assert "- AC one" in captured["prompt"]
+    # #269: no remote configured in this mocked runner -> honest local-fallback,
+    # recorded rather than silently used.
+    assert manifest.base_source == "local-fallback"
+    assert manifest.base_fallback_reason is not None
+    assert "review-manifest" in str(out / "review-manifest.json")
+
+
+def test_run_review_records_resolved_base_sha_and_diff_stat(tmp_path, monkeypatch):
+    """#269: a resolved remote-tracking base + its SHA + the diff's line count
+    must land in review-manifest.json — so a wildly-oversized diff (the #281
+    evidence: ~13,800 lines vs. a true ~900) is visible in the run output
+    instead of being silently reviewed."""
+    out = tmp_path / "reviews"
+    responses = {
+        ("rev-parse", "--show-toplevel"): (0, str(tmp_path)),
+        ("remote",): (0, "origin\n"),
+        ("fetch", "origin", "main"): (0, ""),
+        ("rev-parse", "--verify", "origin/main"): (0, "deadbeef\n"),
+        ("merge-base", "HEAD", "origin/main"): (0, "cafef00d\n"),
+        ("diff", "origin/main...HEAD"): (0, "diff --git a b\n+added line\n+another\n"),
+        ("diff", "--shortstat", "origin/main...HEAD"): (0, " 2 files changed, 2 insertions(+)\n"),
+    }
+    runner = _cmd_runner(responses)
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    def execute(provider, prompt, timeout_override=None):
+        return "A substantive review with findings to report here."
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", out,
+        template=TEMPLATE, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.base == "main"
+    assert manifest.resolved_base_ref == "origin/main"
+    assert manifest.resolved_base_sha == "cafef00d"
+    assert manifest.base_source == "remote-tracking"
+    assert manifest.base_fallback_reason is None
+    assert manifest.diff_stat["files_changed"] == 2
+    assert manifest.diff_stat["insertions"] == 2
+    assert manifest.diff_stat["total_lines"] == 2
+    written = json.loads((out / "review-manifest.json").read_text())
+    assert written["resolved_base_sha"] == "cafef00d"
+    assert written["diff_stat"]["files_changed"] == 2
 
 
 def test_run_review_applies_lens_charter_per_provider(tmp_path, monkeypatch):
