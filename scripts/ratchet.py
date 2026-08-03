@@ -12,7 +12,10 @@ Three ratcheted quantities, all project-agnostic:
 - **Test pass-set** — each configured suite (go test, pytest, jest, ...) emits
   per-case pass/fail via a pluggable parser; the union of passing case IDs from
   every *merged* record forms the high-water pass-set. A high-water case that
-  now fails is a regression and blocks the merge.
+  now fails is a regression and blocks the merge. A case may leave the
+  high-water mark only via a journaled ``record --retire-case`` carrying a
+  reason, owner, and expiry (flaky-case quarantine, #278); an expired
+  quarantine STOPS waiving and the case blocks again.
 - **Contract definition hashes** — every stable-ID'd block (``CTR-``/``INV-``/
   ``BR-``, see docs/traceability.md) in the epic docs is hashed. A high-water
   contract whose hash changed was *weakened* (or silently rewritten); one that
@@ -65,7 +68,9 @@ Subcommands:
     regressed   print JSON of current violations vs the high-water mark
     record      append a hash-chained record; (re)derive the high-water cache
                 (event=gate-validation records a gate-validation-protocol run —
-                see docs/gate-validation.md — --ref names the gate)
+                see docs/gate-validation.md — --ref names the gate;
+                --retire-case/--retire-case-file quarantine a flaky/
+                order-dependent pass-set case, #278)
     recent      print the last N records' notes (amnesia context for the fixer)
     highwater   print the derived high-water mark
     protected   exit 1 if a branch diff touches the protected pathset
@@ -82,6 +87,7 @@ Exit codes: 0 = ok, 1 = gate violation, 2 = usage/config error,
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import re
 import shlex
@@ -90,6 +96,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -108,6 +115,7 @@ import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 # exactly one contract-block hashing implementation, not a copy per module.
 # _hash_markdown_defs/_walk_json_ids are kept as thin aliases to that shared
 # home for callers/tests that reach into ratchet's (formerly private) internals.
+from chief_wiggum import grandfather  # noqa: E402
 from chief_wiggum.hashing import hash_epic_definitions, scanner_version, stable_hash  # noqa: E402
 from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
 from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
@@ -172,6 +180,11 @@ DEFAULT_PROTECTED = [
     # election keeps them outside the tree (unwritable by workers) entirely.
     "docs/adoption/*.json",
 ]
+
+# Quarantine default length. Mirrors adopt.DEFAULT_EXPIRY_DAYS' posture: an
+# expiry is mandatory, so it must have a default a human never has to think
+# about, and it must be short enough to force re-litigation.
+DEFAULT_QUARANTINE_DAYS = 90
 
 
 class RatchetError(Exception):
@@ -826,14 +839,35 @@ def derive_highwater(records: list[dict]) -> dict:
     carry raw-cased IDs (``CTR-BIL-001``), and without canonicalization here
     every such contract would falsely read as *removed* against a new
     canonical scorecard. The hash VALUES cover block content only, so they
-    compare identically across the change."""
+    compare identically across the change.
+
+    Pass-set CASE retirement (quarantine, #278): a record's ``retired_cases``
+    (a human-journaled ``record --retire-case`` waiver — see
+    ``_resolve_retire_cases``) removes each entry's case from ``pass_set`` and
+    adds it to ``quarantined`` (id -> entry). This is the fix for the
+    permanent-red bug: a flaky/order-dependent case excluded from the suite
+    would otherwise sit in ``pass_set`` forever and every `check` blocks. The
+    fold is deliberately DATE-FREE (see ``effective_pass_set`` for the
+    date-aware read): a case's OWN incoming merged pass_set is unioned in
+    first, then THIS record's retirements are applied — so a record that both
+    re-passes and retires the same id lands on retired (the explicit human
+    act wins inside its own record). Self-healing: a case that re-enters a
+    LATER merged record's pass_set is restored to ``pass_set`` and its stale
+    quarantine metadata is dropped (``quarantined.pop``) with no second human
+    act — a fixed flaky test must not show as quarantined forever."""
     pass_set: set[str] = set()
     contract_hashes: dict[str, str] = {}
     verifier_hashes: dict[str, str] = {}
+    quarantined: dict[str, dict] = {}
     for rec in records:
         if rec.get("merged"):
             sc = rec.get("scorecard", {}) or {}
-            pass_set.update(sc.get("pass_set", []) or [])
+            incoming = set(sc.get("pass_set", []) or [])
+            pass_set |= incoming
+            for cid in incoming:
+                # self-healing: a re-passing case un-quarantines, and its
+                # stale metadata is dropped at the same moment.
+                quarantined.pop(cid, None)
             for cid, h in (sc.get("contract_hashes", {}) or {}).items():
                 contract_hashes.setdefault(canonical_id(cid), h)
             # Verifier-test hashes (#206): same first-entry-wins semantics.
@@ -849,15 +883,33 @@ def derive_highwater(records: list[dict]) -> dict:
             verifier_hashes[ref] = h
         for ref in rec.get("retired_verifiers", []) or []:
             verifier_hashes.pop(ref, None)
+        for entry in rec.get("retired_cases") or []:
+            cid = entry.get("id")
+            if cid:
+                pass_set.discard(cid)
+                quarantined[cid] = entry  # last-wins == renewal
     return {
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
         "verifier_test_hashes": verifier_hashes,
         "quality": derive_quality_highwater(records),
+        "quarantined": quarantined,
     }
 
 
-def violations(scorecard: dict, highwater: dict) -> dict:
+def effective_pass_set(highwater: dict, today: date | None = None) -> set[str]:
+    """The high-water pass-set a run must still satisfy TODAY: the derived
+    ``pass_set`` plus every case whose quarantine has EXPIRED (expiry is
+    visible pressure, not amnesty). Kept out of ``derive_highwater`` so that
+    fold stays pure and date-free; shared by ``violations`` and ``cmd_record``
+    so the two verdicts never drift (#278)."""
+    q = highwater.get("quarantined") or {}
+    return set(highwater.get("pass_set") or []) | {
+        cid for cid, e in q.items() if grandfather.is_expired(e, today)
+    }
+
+
+def violations(scorecard: dict, highwater: dict, today: date | None = None) -> dict:
     cur_pass = set(scorecard.get("pass_set", []))
     # Canonicalize both sides of the join (see derive_highwater) so a scorecard
     # written by an older version cannot make canonical high-water keys look
@@ -882,12 +934,30 @@ def violations(scorecard: dict, highwater: dict) -> dict:
             vremoved.append(ref)
         elif cur_v[ref] != h:
             vweakened.append(ref)
+    # Pass-set case retirement (quarantine, #278): a NEW blocking finding
+    # class is NOT introduced (docs/gate-validation.md cost calculus) — an
+    # EXPIRED quarantine simply re-enters `missing_tests` (stops waiving; the
+    # case blocks again). `quarantined`/`expired_quarantines` are report-only
+    # labels explaining WHY. Tolerate a highwater dict that lacks the
+    # `quarantined` key entirely (old caches / hand-built dicts).
+    quarantined_hw = highwater.get("quarantined") or {}
+    q_live, q_expired = [], []
+    for cid, entry in sorted(quarantined_hw.items()):
+        if grandfather.is_expired(entry, today):
+            q_expired.append(entry)
+            if cid not in cur_pass:
+                missing.append(cid)  # EXPIRED does NOT waive — blocks again
+        else:
+            q_live.append(entry)
+    missing = sorted(set(missing))
     return {
         "missing_tests": missing,
         "weakened_contracts": weakened,
         "removed_contracts": removed,
         "weakened_verifier_tests": vweakened,
         "removed_verifier_tests": vremoved,
+        "quarantined": q_live,
+        "expired_quarantines": q_expired,
     }
 
 
@@ -899,6 +969,126 @@ def _read_scorecard(cfg: Config) -> dict:
         sys.stderr.write("ratchet: no scorecard — run `ratchet.py score` first.\n")
         sys.exit(3)
     return json.loads(cfg.scorecard.read_text())
+
+
+def _read_case_file(path: str) -> list[str]:
+    """Newline-separated case IDs/globs from ``--retire-case-file``: blank
+    lines and ``#``-comments are ignored. Raises ``RatchetError`` (V1) if the
+    file is unreadable, or if it yields zero patterns after filtering — an
+    operator-facing signal, never a silent no-op."""
+    p = Path(path)
+    if not p.is_file():
+        raise RatchetError(f"--retire-case-file {path}: not readable")
+    try:
+        text = p.read_text()
+    except OSError as e:
+        raise RatchetError(f"--retire-case-file {path}: not readable ({e})") from e
+    patterns = [
+        line for line in (raw.strip() for raw in text.splitlines())
+        if line and not line.startswith("#")
+    ]
+    if not patterns:
+        raise RatchetError(
+            f"--retire-case-file {path}: no case IDs/globs found "
+            "(blank lines and '#' comments are ignored)"
+        )
+    return patterns
+
+
+def _resolve_retire_cases(args, prev_hw: dict, sc: dict, today: date) -> list[dict]:
+    """Resolve ``--retire-case``/``--retire-case-file`` (plus companion
+    flags) into materialized, journal-ready ``retired_cases`` entries — V1-V8
+    (see docs/ratchet.md "Retiring a pass-set case"). Globs are expanded and
+    MATERIALIZED here: the journal stores only explicit case ids, never a
+    pattern (a quarantine must not silently widen to future tests, #278).
+    Returns ``[]`` when neither ``--retire-case`` nor ``--retire-case-file``
+    was given — the common, no-op-for-this-feature case.
+
+    Reads every new arg with ``getattr(..., default)`` (house precedent:
+    ``cmd_check``'s ``gate_verifier_tests`` read) so a hand-built
+    ``argparse.Namespace`` (``adopt.py``) that predates these flags degrades
+    gracefully instead of raising ``AttributeError``.
+    """
+    cases = list(getattr(args, "retire_case", None) or [])
+    case_file = getattr(args, "retire_case_file", None)
+    reason = (getattr(args, "retire_case_reason", "") or "").strip()
+    owner = getattr(args, "retire_case_owner", None) or "unassigned"
+    expiry = getattr(args, "retire_case_expiry", None)
+    expiry_days = getattr(args, "retire_case_expiry_days", DEFAULT_QUARANTINE_DAYS)
+
+    file_patterns = _read_case_file(case_file) if case_file else []
+    patterns = cases + file_patterns
+    if not patterns:
+        # V2: any companion flag given alone is a usage error, not a silent
+        # no-op — the human clearly meant to retire something.
+        companion_given = (
+            bool((getattr(args, "retire_case_reason", "") or "").strip())
+            or (getattr(args, "retire_case_owner", None) or "unassigned") != "unassigned"
+            or getattr(args, "retire_case_expiry", None) is not None
+            or getattr(args, "retire_case_expiry_days", DEFAULT_QUARANTINE_DAYS)
+            != DEFAULT_QUARANTINE_DAYS
+        )
+        if companion_given:
+            raise RatchetError(
+                "--retire-case-{reason,owner,expiry,expiry-days} requires "
+                "--retire-case or --retire-case-file"
+            )
+        return []
+
+    # V3 — a waiver without a reason is amnesty, not a journaled decision.
+    if not reason:
+        raise RatchetError(
+            "--retire-case requires --retire-case-reason: a waiver without a "
+            "reason is amnesty, not a journaled decision"
+        )
+
+    # V4/V5/V6 — mandatory expiry, never unparseable, never in the past.
+    if expiry is not None:
+        try:
+            expiry_date = date.fromisoformat(expiry)
+        except ValueError as e:
+            raise RatchetError(
+                f"--retire-case-expiry must be an ISO date (YYYY-MM-DD): {expiry}"
+            ) from e
+        if expiry_date < today:
+            raise RatchetError(
+                f"--retire-case-expiry {expiry} is in the past — a "
+                "pre-expired quarantine is invisible pressure; pick a future date"
+            )
+    else:
+        if expiry_days < 1:
+            raise RatchetError("--retire-case-expiry-days must be >= 1")
+        expiry = (today + timedelta(days=expiry_days)).isoformat()
+
+    # V7/V8 — deterministic, clock-free resolution.
+    hw_cases = set(prev_hw.get("pass_set") or [])
+    cur_pass = set(sc.get("pass_set", []) or [])
+    resolved: set[str] = set()
+    for pat in patterns:
+        hits = {c for c in hw_cases if fnmatch.fnmatchcase(c, pat)}
+        if not hits:
+            raise RatchetError(
+                f"--retire-case {pat}: matches no case in the current "
+                "high-water mark (nothing to retire — check the suite "
+                "prefix; case IDs are '<suite>::<case id>')"
+            )
+        resolved |= hits
+    still_passing = sorted(resolved & cur_pass)
+    if still_passing:
+        shown = still_passing[:10]
+        more = f" … and {len(still_passing) - 10} more" if len(still_passing) > 10 else ""
+        raise RatchetError(
+            "--retire-case: the case is PASSING in the current scorecard — "
+            "you may only quarantine a case the suite no longer produces "
+            "(re-run `score` if the exclusion is not yet reflected): "
+            + ", ".join(shown) + more
+        )
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    return [
+        {"id": cid, "reason": reason, "owner": owner, "expiry": expiry, "created_at": created_at}
+        for cid in sorted(resolved)
+    ]
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -1116,11 +1306,37 @@ def cmd_check(args) -> int:
     # docs/gate-rollout.md until validated, blocking only under the opt-in
     # --gate-verifier-tests flag (mirroring --gate-quality's rollout).
     vfind = {k: v[k] for k in ("weakened_verifier_tests", "removed_verifier_tests")}
+    # Pass-set case retirement (quarantine, #278): report-only labels, NOT a
+    # new blocking finding class — an EXPIRED quarantine simply re-enters
+    # `missing_tests` (already covered by `hard` above).
+    quarantined = v["quarantined"]
+    expired_q = v["expired_quarantines"]
     gate_verifier = getattr(args, "gate_verifier_tests", False)
     if args.format == "json":
         print(json.dumps(
-            {**hard, **vfind, "quality_regressions": qregs, "suspect_links": susp}, indent=2))
+            {**hard, **vfind, "quarantined": quarantined, "expired_quarantines": expired_q,
+             "quality_regressions": qregs, "suspect_links": susp}, indent=2))
     else:
+        if expired_q:
+            sys.stderr.write(
+                f"ratchet: {len(expired_q)} EXPIRED quarantine(s) — the expiry passed; "
+                "these cases block again (docs/ratchet.md):\n"
+            )
+            for e in expired_q:
+                sys.stderr.write(
+                    f"  {e.get('id')} (owner {e.get('owner')}, expired {e.get('expiry')}): "
+                    f"{e.get('reason')}\n"
+                )
+        if quarantined:
+            expiries = [e.get("expiry") for e in quarantined if e.get("expiry")]
+            nearest = min(expiries) if expiries else "?"
+            ids = [e.get("id", "?") for e in quarantined]
+            shown = ", ".join(ids[:5])
+            more = f" … and {len(ids) - 5} more" if len(ids) > 5 else ""
+            sys.stderr.write(
+                f"ratchet: {len(quarantined)} case(s) quarantined [report-only] — coverage "
+                f"is BELOW the high-water mark; nearest expiry {nearest}: {shown}{more}\n"
+            )
         if any(vfind.values()):
             tag = "VIOLATED (gated)" if gate_verifier else "report-only"
             sys.stderr.write(
@@ -1160,7 +1376,13 @@ def cmd_check(args) -> int:
     if args.gate_quality and qregs:
         return 1
     if args.format != "json":
-        print("ratchet: OK (pass-set and contract definitions hold the high-water mark)")
+        if quarantined:
+            print(
+                "ratchet: OK (pass-set and contract definitions hold the high-water mark; "
+                f"{len(quarantined)} case(s) quarantined)"
+            )
+        else:
+            print("ratchet: OK (pass-set and contract definitions hold the high-water mark)")
     return 0
 
 
@@ -1183,12 +1405,6 @@ def cmd_record(args) -> int:
     sc = _read_scorecard(cfg)
     prev_hw = derive_highwater(records)
     new_pass = set(sc.get("pass_set", []))
-    if args.merged and not set(prev_hw["pass_set"]) <= new_pass:
-        status = "violated"
-    elif new_pass - set(prev_hw["pass_set"]):
-        status = "advanced"
-    else:
-        status = "held"
     amended = {}
     for cid in args.amend or []:
         cid = canonical_id(cid)  # match hash_epic_definitions' canonical keys
@@ -1241,6 +1457,26 @@ def cmd_record(args) -> int:
             raise RatchetError(
                 f"--retire-verifier {ref}: not in the current high-water mark "
                 "(nothing to retire — check the ref, form is <relpath>::<function>)")
+
+    # Pass-set CASE retirement (quarantine, #278) — V1-V8, materialized here.
+    retired_cases = _resolve_retire_cases(args, prev_hw, sc, date.today())
+
+    # Verdict (D4): effective_pass_set folds in cases whose quarantine has
+    # EXPIRED, so an expired waiver still reads 'violated' rather than
+    # silently clean — cmd_record and violations() must never drift on this.
+    # Precedence: violated > quarantined > advanced > held. This record
+    # carrying retired_cases reads 'quarantined' even if it ALSO advances the
+    # pass-set, because `recent` is an event log of what the record DID.
+    hw_required = effective_pass_set(prev_hw)
+    if args.merged and not hw_required <= new_pass:
+        status = "violated"
+    elif retired_cases:
+        status = "quarantined"
+    elif new_pass - hw_required:
+        status = "advanced"
+    else:
+        status = "held"
+
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
         "event": args.event,
@@ -1252,6 +1488,7 @@ def cmd_record(args) -> int:
         "retired": sorted(canonical_id(c) for c in (args.retire or [])),
         "amended_verifiers": amended_verifiers,
         "retired_verifiers": retired_verifiers,
+        "retired_cases": retired_cases,
         "ratchet_status": status,
         "notes": args.notes,
     }
@@ -1264,6 +1501,7 @@ def cmd_record(args) -> int:
     print(
         f"ratchet: recorded {body['record_id']} event={args.event} ref={args.ref!r} "
         f"gate={args.gate} merged={bool(args.merged)} status={status}"
+        + (f" retired_cases={len(retired_cases)}" if retired_cases else "")
     )
     return 0
 
@@ -1286,7 +1524,15 @@ def cmd_recent(args) -> int:
 
 def cmd_highwater(args) -> int:
     cfg = load_config(repo_root(args.repo))
-    print(json.dumps(derive_highwater(load_journal(cfg)), indent=2))
+    hw = derive_highwater(load_journal(cfg))
+    # Live expiry overlay (#278): the fold itself stays date-free (D5), so
+    # "is this quarantine expired" is computed HERE, at print time, against
+    # today — never mutating the derived dict in place (copy each entry).
+    hw["quarantined"] = {
+        cid: {**e, "expired": grandfather.is_expired(e)}
+        for cid, e in (hw.get("quarantined") or {}).items()
+    }
+    print(json.dumps(hw, indent=2))
     return 0
 
 
@@ -1475,9 +1721,12 @@ def _scanner_version() -> str:
     stable_hash/hash_epic_definitions, trace_ids.py for the shared stable-ID
     grammar, trace_links.py for suspect-link propagation, verification.py for
     the .sln/.csproj probe that decides whether a .NET suite is autodetected
-    at all, and the lazily imported quality engines churn.py/complexity.py
-    that shape the quality_regressions findings ``check`` reports). No
-    hand-bumped constant to forget (INV-fh-005).
+    at all, grandfather.py for the pass-set case quarantine expiry posture
+    (#278 — ``violations``/``effective_pass_set`` call ``is_expired``, which
+    directly decides whether a quarantined case blocks), and the lazily
+    imported quality engines churn.py/complexity.py that shape the
+    quality_regressions findings ``check`` reports). No hand-bumped constant
+    to forget (INV-fh-005).
     @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
@@ -1485,6 +1734,7 @@ def _scanner_version() -> str:
     return scanner_version(
         here,
         here.parent / "artifacts.py",
+        cw_dir / "grandfather.py",
         cw_dir / "hashing.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",
@@ -1569,6 +1819,25 @@ def main() -> int:
                     help="accept ID's current definition hash as the new baseline (human-approved)")
     sp.add_argument("--retire", action="append", metavar="ID",
                     help="drop ID from the high-water mark (human-approved)")
+    sp.add_argument("--retire-case", action="append", metavar="CASE",
+                    help="retire a pass-set case from the high-water mark: an exact "
+                         "'<suite>::<case id>' or an fnmatch GLOB, expanded and MATERIALIZED "
+                         "at record time (human-approved quarantine; requires "
+                         "--retire-case-reason)")
+    sp.add_argument("--retire-case-file", metavar="PATH",
+                    help="file of newline-separated case IDs/globs to retire (blank lines and "
+                         "'#' comments ignored) — the 700-case flaky-class reality; feed it "
+                         "with `ratchet.py regressed | jq -r '.missing_tests[]'`")
+    sp.add_argument("--retire-case-reason", default="",
+                    help="REQUIRED with --retire-case: why these cases are quarantined")
+    sp.add_argument("--retire-case-owner", default="unassigned",
+                    help="who owns un-quarantining them (default: unassigned)")
+    sp.add_argument("--retire-case-expiry", default=None, metavar="YYYY-MM-DD",
+                    help=f"explicit quarantine expiry (default: today + "
+                         f"{DEFAULT_QUARANTINE_DAYS}d); an expired quarantine STOPS waiving")
+    sp.add_argument("--retire-case-expiry-days", type=int, default=DEFAULT_QUARANTINE_DAYS,
+                    help=f"quarantine length in days when --retire-case-expiry is omitted "
+                         f"(default {DEFAULT_QUARANTINE_DAYS})")
 
     sp = sub.add_parser("protected", help="flag branch diffs touching the protected pathset")
     common(sp)

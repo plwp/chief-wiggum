@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import artifacts  # noqa: E402
 import check_gate_validation as gate_validation  # noqa: E402
 import ratchet  # noqa: E402
+from chief_wiggum import grandfather  # noqa: E402
 
 RATCHET_CONFIG_NAME = ratchet.CONFIG_NAME
 SCORECARD_NAME = ratchet.SCORECARD_NAME
@@ -125,6 +126,49 @@ def ratchet_status(quality_dir: Path) -> dict:
         "contracts": len(sc.get("contract_hashes", {}) or {}),
         "verifier_hashes": len(sc.get("verifier_test_hashes", {}) or {}),
     }
+
+
+def ratchet_quarantines(quality_dir: Path) -> dict:
+    """Quarantined high-water cases (#278) from the TOLERANT verified journal
+    prefix — /status must describe a broken chain, never crash on one. Expiry
+    is computed LIVE here (renderer overlay), so a quarantine authored before
+    its expiry still reads EXPIRED after the date passes.
+
+    Reads the journal directly via ``ratchet.verified_prefix`` (not
+    ``ratchet.load_journal``, which raises ``TamperError`` and would crash a
+    read-only screen) — the same pattern ``gate_ledger`` already uses.
+    """
+    journal = quality_dir / JOURNAL_NAME
+    empty = {"count": 0, "entries": [], "expired": [], "nearest_expiry": None,
+             "chain_broken": False}
+    if not journal.is_file():
+        return empty
+    raw_lines = [ln for ln in journal.read_text().splitlines() if ln.strip()]
+    prefix = ratchet.verified_prefix(journal)
+    chain_broken = len(prefix) != len(raw_lines)
+    quarantined = ratchet.derive_highwater(prefix).get("quarantined") or {}
+    entries = sorted(quarantined.values(), key=lambda e: e.get("id", ""))
+    expired = [e for e in entries if grandfather.is_expired(e)]
+    expiries = sorted(e["expiry"] for e in entries if isinstance(e.get("expiry"), str))
+    return {
+        "count": len(entries),
+        "entries": entries,
+        "expired": expired,
+        "nearest_expiry": expiries[0] if expiries else None,
+        "chain_broken": chain_broken,
+    }
+
+
+def ratchet_quarantine_reason(q: dict) -> str | None:
+    """PARTIAL COVERAGE reason for a non-empty quarantine, or None (#278):
+    coverage is deliberately below the high-water mark while cases are
+    quarantined — reuses the existing PARTIAL COVERAGE channel rather than
+    inventing a new one (that channel exists precisely for "something WAS
+    measured but not everything was")."""
+    if not q["count"]:
+        return None
+    return (f"{q['count']} high-water case(s) quarantined — coverage is below the "
+            "high-water mark (docs/ratchet.md)")
 
 
 def ratchet_not_measured(quality_dir: Path, rt: dict) -> str | None:
@@ -292,6 +336,19 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
         stale = resolver.check_stale(sc if isinstance(sc, dict) else {})
         if stale:
             rt["stale"] = stale
+    # Pass-set case quarantine (#278): count/expiry pressure is surfaced on
+    # the ratchet dict, and the detail (entries, nearest expiry, chain
+    # health) is carried for render_text — but ONLY when there is something
+    # to say, so a target with zero quarantines renders byte-identically to
+    # pre-#278 /status.
+    q = ratchet_quarantines(quality_dir)
+    if q["count"] or q["chain_broken"]:
+        if q["count"]:
+            rt["quarantined"] = q["count"]
+            rt["quarantined_expired"] = len(q["expired"])
+        if q["chain_broken"]:
+            rt["quarantine_chain_broken"] = True
+        rt["quarantine_detail"] = q
     debt = debt_counts(quality_dir)
     # NOT MEASURED (#259): section -> reason, for every surface whose "clean"
     # rendering is indistinguishable from "measured nothing". A section absent
@@ -308,6 +365,7 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
         section: reason
         for section, reason in (
             ("debt", debt_partial_coverage(quality_dir, debt)),
+            ("ratchet", ratchet_quarantine_reason(q)),
         )
         if reason
     }
@@ -363,6 +421,35 @@ def render_text(status: dict) -> str:
         )
         if rt.get("stale"):
             lines.append(f"WARNING: scorecard {rt['stale']}")
+        # Pass-set case quarantine (#278) — AC #3: an expired quarantine must
+        # read as loudly as an expired grandfather (below).
+        if rt.get("quarantined") or rt.get("quarantine_chain_broken"):
+            detail = rt.get("quarantine_detail") or {}
+            if "ratchet" in partial_coverage:
+                lines.append(f"PARTIAL COVERAGE: {partial_coverage['ratchet']}")
+            if rt.get("quarantined"):
+                entries = detail.get("entries") or []
+                nearest = detail.get("nearest_expiry")
+                reason = ""
+                for e in entries:
+                    if e.get("expiry") == nearest:
+                        reason = e.get("reason", "")
+                        break
+                lines.append(
+                    f"quarantined: {rt['quarantined']} case(s), nearest expiry "
+                    f'{nearest or "?"} — "{reason}"'
+                )
+                expired = detail.get("expired") or []
+                if expired:
+                    ids = ", ".join(e.get("id", "?") for e in expired)
+                    lines.append(
+                        f"WARNING: {len(expired)} EXPIRED quarantine(s) — expiry passed; "
+                        f"the cases block again (docs/ratchet.md): {ids}"
+                    )
+            if rt.get("quarantine_chain_broken"):
+                lines.append(
+                    "WARNING: ratchet journal chain broken — quarantine list may be incomplete"
+                )
     lines += ["", "## Adopted patterns", ""]
     if not status["patterns"]:
         lines.append("(none adopted)")

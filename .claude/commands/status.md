@@ -43,6 +43,7 @@ Relay the screen as-is (it is already one screen). Flag anything actionable plai
 
 - A gate showing `failing` while `wired (blocking)` is a stale-while-blocking demotion candidate — point at `check_gate_validation.py <gate>` for the detail.
 - `no ratchet config` on a repo expected to be under the ratchet means `ratchet.py init` was never run.
+- `PARTIAL COVERAGE: N high-water case(s) quarantined` means coverage is deliberately below the high-water mark — check the nearest expiry. A `WARNING: … EXPIRED quarantine(s)` line means those cases are blocking again (#278; see `docs/ratchet.md`).
 - An unexpected `sidecar`/`embedded` mode means the election (`artifacts.py elect`) doesn't match expectations — surface it, don't change it.
 
 No pausing, no checkpoints — this is a read-only report.

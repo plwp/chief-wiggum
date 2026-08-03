@@ -761,7 +761,14 @@ def cmd_baseline(args) -> int:
     rc = ratchet.cmd_record(argparse.Namespace(
         repo=str(target), event="baseline", ref="adoption", gate="pass",
         merged=True, notes=notes,
-        amend=None, retire=None, amend_verifier=None, retire_verifier=None))
+        amend=None, retire=None, amend_verifier=None, retire_verifier=None,
+        # Pass-set case retirement (#278): a baseline record never quarantines
+        # anything, but cmd_record reads these via getattr with these SAME
+        # defaults anyway — set explicitly here (belt-and-braces; the house
+        # style for this hand-built Namespace).
+        retire_case=None, retire_case_file=None, retire_case_reason="",
+        retire_case_owner="unassigned", retire_case_expiry=None,
+        retire_case_expiry_days=ratchet.DEFAULT_QUARANTINE_DAYS))
     if rc != 0:
         raise AdoptError(f"ratchet record failed (exit {rc})")
     cfg = ratchet.load_config(target)
