@@ -65,6 +65,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum.hashing import scanner_version  # noqa: E402
+from chief_wiggum.trace_ids import kind_id_re  # noqa: E402
 
 DEFAULT_SCHEMA = (
     Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "architecture-schema.json"
@@ -104,7 +105,12 @@ DATA_CLASS_RANK = {"public": 0, "internal": 1, "pii": 2, "secret": 3, "official-
 TRUST_ZONE_CEILING = {"public": 0, "dmz": 2, "internal": 3, "restricted": 4}
 EVIDENCE_CHOICES = ("sla-doc", "live-probe", "justified")
 TIER_RANK = {"tier-1": 1, "tier-2": 2, "tier-3": 3}
-ASM_ID_RE = re.compile(r"^ASM-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$")
+# ASM_ID_RE used to be a hand-rolled THIRD copy of the three-segment grammar
+# (chief-wiggum#294: the ledger's two-segment ASM-NNN and trace_ids.ID_KINDS's
+# three-segment ASM were already two; this private regex was a third,
+# independently-authored opinion of the SAME three-segment shape). Built from
+# the single source of truth now — no more copies to drift.
+ASM_ID_RE = kind_id_re("ASM")
 CROSS_REF_ID_RE = re.compile(r"^(ARC|EDG)-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$")
 
 
@@ -709,11 +715,16 @@ def _scanner_version() -> str:
     """Hash-derived ``--scanner-version``: the source of this module plus its
     ``chief_wiggum`` dependencies. No hand-bumped constant to forget
     (INV-fh-005). Makes check_architecture the fifth #184 gate whose
-    validation record can be staleness-checked.
+    validation record can be staleness-checked. trace_ids.py (#294) is a hash
+    input now that ASM_ID_RE is built from ``kind_id_re`` — a change to the
+    shared ID_KINDS/ID_BODY grammar changes what counts as a valid ASM waiver
+    ref here too, so omitting it would reproduce the exact CTR-fh-041
+    silent-staleness class check_traceability.py's own scanner_version
+    already guards against.
     @cw-trace guards CTR-fh-026 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
-    return scanner_version(here, cw_dir / "hashing.py")
+    return scanner_version(here, cw_dir / "hashing.py", cw_dir / "trace_ids.py")
 
 
 def _emit(report: ArchitectureReport) -> None:

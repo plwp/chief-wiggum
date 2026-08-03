@@ -29,18 +29,27 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from chief_wiggum.trace_ids import kind_id_re  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PATTERNS_DIR = ROOT / "patterns"
 REGISTRY = PATTERNS_DIR / "registry.json"
 
-# Generic invariant id: INV-<ABBR>-<SEQ>, uppercase. SEQ allows a leading letter
-# (e.g. the sibling branch id INV-FOWR-M1) and digits.
-ID_RE = re.compile(r"^INV-[A-Z]+-[A-Z]?[0-9]+$")
+# Generic invariant id: the same three-segment KIND-SLUG-NNN grammar every
+# stable-ID consumer shares (chief_wiggum.trace_ids), restricted to INV.
+# Built from kind_id_re rather than hand-rolled so a pattern-manifest id can
+# never again go registry-valid-yet-scanner-invisible — the old
+# ``^INV-[A-Z]+-[A-Z]?[0-9]+$`` tolerated a letter-suffixed SEQ (e.g. the
+# sibling branch id INV-FOWR-M1) that chief_wiggum.trace_ids.ID_RE cannot
+# parse, so a pattern id could pass this linter yet be invisible to the
+# traceability scanner once copied verbatim into an epic (chief-wiggum#294).
+ID_RE = kind_id_re("INV")
 
 ERROR = "error"
 WARN = "warn"

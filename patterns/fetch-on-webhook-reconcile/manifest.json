@@ -38,9 +38,9 @@
       {"id": "INV-FOWR-008", "statement": "Terminal/deletion latch: late events ignored (not errored) once the record is latched terminal.", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "id": "INV-BIL-013", "code": "a deletion latch: once the record is latched terminal, late events return OK without writes"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"}
     ],
     "sibling_monotonic_branch": {
-      "$comment": "The FSM model for MONOTONIC state; captured so the selection criterion travels with the pattern.",
+      "$comment": "The FSM model for MONOTONIC state; captured so the selection criterion travels with the pattern. INV-FOWR-009 continues the main cluster's own numbering (it is a genuinely separate branch structurally, via this sibling_monotonic_branch key, not via a distinct id shape) rather than the old INV-FOWR-M1 letter-suffix, which the stable-ID scanner (chief_wiggum.trace_ids.ID_RE) cannot parse (chief-wiggum#294) yet /architect is instructed to copy pattern ids verbatim into an epic's invariants.md.",
       "cluster": [
-        {"id": "INV-FOWR-M1", "statement": "Terminal states never resurrect; advance-only FSM write, replay is a true no-op (target excluded from source set).", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "advance-only FSM write whose source set excludes the target state, so a replayed terminal event matches zero rows and is a true no-op"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"}
+        {"id": "INV-FOWR-009", "statement": "Terminal states never resurrect; advance-only FSM write, replay is a true no-op (target excluded from source set).", "realized_as": {"app": "a shipped production SaaS (private; path provenance held out of the public registry)", "code": "advance-only FSM write whose source set excludes the target state, so a replayed terminal event matches zero rows and is a true no-op"}, "grounding": "mined-anonymized (mechanism-described; private-repo path provenance withheld per the registry provenance policy)"}
       ]
     }
   },

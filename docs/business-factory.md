@@ -104,7 +104,11 @@ Osterwalder 2019) + Ries's leap-of-faith assumptions are one structure:
 - **Assumption ledger**: stable IDs (`ASM-001…`), status
   `{untested, testing, validated, falsified}`, generated from a premortem (Klein 2007 — the
   seeded-defect discipline applied to the plan itself) and from every cell of the financial
-  model.
+  model. This two-segment `ASM-NNN` shape is a deliberately separate namespace from
+  `chief_wiggum.trace_ids`'s three-segment `ASM` stable-ID kind (`ASM-slug-NNN`) used at the
+  epic/system layer — the two share the `ASM-` prefix but are structurally disjoint grammars,
+  scoped to different artifacts (`bets/<bet-id>/assumptions.json` vs `docs/epics/**`), and are
+  never resolved against each other (chief-wiggum#294).
 - **Hypothesis grammar**: Savoia's XYZ template — "at least X% of Y will Z" — makes
   un-falsifiable phrasing syntactically impossible. A falsifiability linter is a parser.
 - **Pre-registered test cards**: `{asm_id, method, metric, threshold, cost, evidence_strength,

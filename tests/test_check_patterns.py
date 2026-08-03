@@ -10,6 +10,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import check_patterns  # noqa: E402
+from chief_wiggum import trace_ids  # noqa: E402
 
 ERRORS = check_patterns.ERROR
 
@@ -211,6 +212,39 @@ def test_candidate_with_success_metrics_gets_no_warn(tmp_path):
          "success_metrics": {"metrics": [{"id": "m1", "goal": "down", "desc": "d"}]}}]}
     path = _write(tmp_path, reg, {})
     assert not any("success_metrics" in f.message for f in check_patterns.validate(path))
+
+
+# --- pattern-manifest ids must be copyable into an epic verbatim (#294) -----
+#
+# .claude/commands/architect.md:260 instructs /architect to fold an adopted
+# pattern's invariant cluster into invariants.md "keeping the pattern's own
+# stable ids verbatim". If a manifest id doesn't match the same three-segment
+# KIND-SLUG-NNN grammar the traceability scanner uses (chief_wiggum.trace_ids
+# .ID_RE), following that instruction produces an invariant the scanner can
+# never see — the same silent-invisibility shape as #281. Every SHIPPED
+# pattern's cluster ids (main cluster + any sibling branch) must be fully
+# stable-ID parseable so this can't happen again.
+
+
+def test_all_shipped_pattern_invariant_ids_are_stable_id_parseable():
+    reg = json.loads((SCRIPTS.parent / "patterns" / "registry.json").read_text())
+    unparseable = []
+    for entry in reg.get("patterns", []):
+        manifest_path = SCRIPTS.parent / entry["manifest"]
+        manifest = json.loads(manifest_path.read_text())
+        for e in check_patterns.cluster_entries(manifest.get("invariants")):
+            cid = e.get("id", "")
+            if not trace_ids.ID_RE.fullmatch(cid):
+                unparseable.append(f"{manifest['id']}: {cid!r}")
+    assert unparseable == [], "\n".join(unparseable)
+
+
+def test_check_patterns_id_re_is_derived_from_trace_ids():
+    # check_patterns.py's own ID_RE must not tolerate a shape trace_ids.ID_RE
+    # rejects (e.g. the old INV-FOWR-M1 letter-suffix shape) — that gap is
+    # exactly what let a pattern-manifest id go unparseable-yet-registry-valid.
+    assert not check_patterns.ID_RE.match("INV-FOWR-M1")
+    assert check_patterns.ID_RE.match("INV-FOWR-001")
 
 
 # --- referral-invite-loop promotion (#139) ----------------------------------
