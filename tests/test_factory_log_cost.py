@@ -267,3 +267,72 @@ def test_measured_free_still_reads_noise_candidate():
 def test_text_render_shows_dash_not_dollar_zero_for_unattributed():
     out = factory_log.render_report(factory_log.aggregate([_gate("g", 3)]))
     assert "$0.00" not in out
+
+
+# ---- session cost report (report-only) --------------------------------------
+
+def _cc(session, *, turns=1, model="claude-opus-5", cr=0, w5=0, w1=0, tout=0, cost=0.0):
+    return [{"event": "claude_code", "session_id": session, "model": model,
+             "request_id": f"{session}-{i}", "tokens_in": 0, "tokens_out": tout,
+             "cache_read": cr, "cache_creation": w5 + w1,
+             "cache_write_5m": w5, "cache_write_1h": w1, "cost_usd": cost}
+            for i in range(turns)]
+
+
+def test_cost_report_is_never_a_gate():
+    """Every finding is something CW cannot act on, so it must not gate."""
+    rep = factory_log.session_cost_report(_cc("s", turns=3))
+    assert rep["gate"] is False
+
+
+def test_cost_report_splits_composition():
+    rep = factory_log.session_cost_report(
+        _cc("s", turns=1, cr=1_000_000, tout=1_000_000, cost=1.0))
+    # 1M cache reads at 0.1x $5 = $0.50; 1M output at $25 = $25.00
+    assert rep["composition_usd"]["cache_read"] == pytest.approx(0.50)
+    assert rep["composition_usd"]["output"] == pytest.approx(25.0)
+
+
+def test_cost_report_flags_long_sessions_with_denominators():
+    records = _cc("long", turns=250, cost=1.0) + _cc("short", turns=5, cost=1.0)
+    rep = factory_log.session_cost_report(records)
+    f = next(x for x in rep["findings"] if x["code"] == "long-sessions")
+    assert "1 of 2 session(s)" in f["detail"]      # denominator, not a bare count
+    assert "$250.00" in f["detail"]
+
+
+def test_cost_report_computes_amplification_and_unit_cost():
+    rep = factory_log.session_cost_report(_cc("s", turns=10, cr=100_000, cost=1.0))
+    s = rep["top_sessions"][0]
+    assert s["amplification"] == 10.0          # 1M cache-read over a 100k window
+    assert s["mean_context"] == 100_000
+    # $1.00/turn carried over exactly 100k of context normalises to 1.0.
+    assert s["usd_per_turn_per_100k"] == pytest.approx(1.0)
+
+
+def test_cost_report_flags_1h_ttl_dominance_without_recommending_a_switch():
+    rep = factory_log.session_cost_report(_cc("s", turns=5, w1=1_000_000))
+    f = next(x for x in rep["findings"] if x["code"] == "cache-ttl-1h-dominant")
+    assert "NOT worth switching" in f["detail"]  # advisory, not a directive
+
+
+def test_cost_report_marks_legacy_ttl_records_as_a_lower_bound():
+    """Records predating the TTL split price at the cheaper 5m rate, so the
+    write figure understates — that must be disclosed, not hidden."""
+    legacy = [{"event": "claude_code", "session_id": "s", "model": "claude-opus-5",
+               "cache_creation": 1_000_000, "cache_read": 0,
+               "tokens_in": 0, "tokens_out": 0}]
+    rep = factory_log.session_cost_report(legacy)
+    assert rep["legacy_ttl_turns"] == 1
+    assert "LOWER BOUND" in factory_log.render_cost_report(rep)
+
+
+def test_cost_report_counts_unpriced_turns_rather_than_pricing_them_at_zero():
+    rep = factory_log.session_cost_report(_cc("s", turns=3, model="who-knows-9", cr=999))
+    assert rep["unpriced_turns"] == 3
+
+
+def test_cost_report_handles_an_empty_log():
+    rep = factory_log.session_cost_report([])
+    assert rep["turns"] == 0 and rep["findings"] == []
+    assert "ingest-claude-transcripts" in factory_log.render_cost_report(rep)

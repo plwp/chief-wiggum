@@ -275,6 +275,21 @@ def collect(repo: Path, commits_limit: int = 400, prs: list[dict] | None = None)
         findings.append(Finding("factory-logs", "info",
             f"telemetry: ${telemetry['cost_usd_total']} end-to-end logged AI cost "
             f"(Claude Code ${cc} + consults ${cons}) across {telemetry['records']} events"))
+    else:
+        findings.append(Finding("factory-logs", "info",
+            "telemetry: no AI cost logged — if this factory ran on Claude Code, its own token "
+            "cost (usually the largest line item) has not been ingested. Run: "
+            "factory_log.py ingest-claude-transcripts"))
+
+    # What that cost is MADE of. Report-only: every finding here is something the
+    # operator can act on and CW cannot (session shape, cache TTL, read width),
+    # so it never gates — see factory_log.session_cost_report.
+    cost_shape = factory_log.session_cost_report(factory_log.read_log())
+    for f in cost_shape["findings"]:
+        findings.append(Finding("factory-logs",
+                                "warn" if f["severity"] == "warn" else "info",
+                                f"session cost: {f['detail']}",
+                                f.get("evidence", [])[:5]))
 
     return {
         "repo": str(repo),

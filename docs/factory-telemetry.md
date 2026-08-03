@@ -295,6 +295,41 @@ including how `bet.py portfolio`/`kill-brief` surface it.
 python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app   # per-gate value + consult cost
 ```
 
+### What the cost is made of — `cost-report`
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" cost-report [--repo acme/app] [--top 10]
+```
+
+**Report-only, and deliberately never a gate.** Everything it finds is something
+the operator can act on and CW cannot — session shape, cache TTL, how wide a read
+was. A checker that can never block has no business holding `--gate`
+(`docs/gate-rollout.md`), so it always exits 0 and `session_cost_report()` returns
+`gate: False`.
+
+It answers *why* a factory run cost what it did:
+
+- **cost split by component** — cache reads / cache writes / output / fresh input.
+  On a real 65-session corpus this came out **~88% context handling, ~12%
+  generation**, which is the whole point: trimming tool output barely moves the
+  bill, and cache reads outweighed fresh input 3,032 : 1.
+- **per-session amplification** — `cache_read ÷ peak_context`, i.e. how many times
+  a session re-read its own context (observed: median 60×, worst ~520×).
+- **`usd_per_turn_per_100k`** — the normalised unit cost, and the only figure
+  comparable across sessions of different lengths.
+
+**Width beats length.** On that corpus, cost-per-turn correlated **+0.75 with mean
+context** but only **+0.40 with turn count**. So splitting a long session in two
+saves little if both halves stay wide; the intervention that works is pushing
+wide, noisy work (broad searches, log trawls, multi-file reads) into **sub-agents**,
+which carry their own context and return only findings. The report says this
+explicitly rather than leaving "session too long" as the takeaway.
+
+`/reflect` surfaces each finding as a `factory-logs` finding. When no Claude Code
+cost has been ingested at all, `/reflect` says so instead of reporting `$0.00` —
+a factory that ran on Claude Code and shows no Claude Code cost has an
+un-ingested log, not a free run.
+
 ### Two denominators the verdict will not fake
 
 **Value is DISTINCT findings, not the re-counted sum.** `caught` is a per-run

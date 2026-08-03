@@ -623,6 +623,11 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
                 "tokens_out": tout,
                 "cache_read": cache_read,
                 "cache_creation": w5 + w1,
+                # Split by TTL as well as totalled: a 5m write bills 1.25x and a
+                # 1h write 2x, so the mix is the difference between two very
+                # different bills for identical work (session_cost_report).
+                "cache_write_5m": w5,
+                "cache_write_1h": w1,
                 "source": "transcript",
             }
             if e.get("sessionId"):
@@ -889,6 +894,248 @@ _VERDICT_ORDER = {"demote-candidate": 0, "unpriced": 1, "noise-candidate": 2,
                   "unproven": 3, "earning": 4}
 
 
+# ---- session cost shape (report-only) ---------------------------------------
+# Thresholds for session_cost_report. Calibrated against a real 65-session /
+# 13k-turn corpus where sessions >=100 turns were 49% of sessions but 97% of
+# cache-read cost, so the bar sits above the point where amplification starts
+# dominating rather than at the median.
+LONG_SESSION_TURNS = 200
+HIGH_PEAK_CONTEXT = 500_000       # half the 1M window
+TTL_1H_DOMINANT_SHARE = 0.9
+
+
+def session_cost_report(records: list[dict], *, top: int = 10) -> dict:
+    """What a factory run's Claude Code cost is actually made of, and why.
+
+    **Report-only, and deliberately not a gate.** Everything it can find is
+    something CW cannot act on: it can't end a long session, set a cache TTL, or
+    turn a whole-file read into a grep — those are operator and harness
+    behaviours. A checker that can never block has no business holding
+    `--gate` (docs/gate-rollout.md), so this only ever prints.
+
+    The thing worth measuring is **amplification, not verbosity**. Tool output is
+    small in absolute terms; what makes it expensive is that a token placed in
+    context is re-read on every later turn of the session. So cost tracks
+    session length x context size, not how chatty any single tool was — and the
+    report is built to show that: cost split by component, per-session
+    amplification (cache reads / peak context), and concentration across
+    sessions.
+
+    Denominators are always printed alongside counts: a finding that says "3
+    long sessions" without "out of 65, carrying 64% of spend" is unactionable.
+    """
+    pricing, mult = load_pricing(), load_cache_multipliers()
+    m_read = mult.get("cache_read", 1.0)
+    m_w5 = mult.get("cache_write_5m", 1.0)
+    m_w1 = mult.get("cache_write_1h", 1.0)
+
+    comp = {"cache_read": 0.0, "cache_write": 0.0, "output": 0.0, "input": 0.0}
+    sessions: dict[str, dict] = {}
+    turns = 0
+    w5_tokens = w1_tokens = 0
+    unpriced_turns = 0
+    legacy_ttl_turns = 0
+
+    for r in records:
+        if r.get("event") != CLAUDE_CODE:
+            continue
+        turns += 1
+        tin = r.get("tokens_in") or 0
+        tout = r.get("tokens_out") or 0
+        cr = r.get("cache_read") or 0
+        # Fall back to the combined figure for records written before the
+        # per-TTL split existed; assume the cheaper 5m rather than overstate.
+        w5 = r.get("cache_write_5m")
+        w1 = r.get("cache_write_1h")
+        if w5 is None and w1 is None:
+            # Legacy record (pre-TTL-split ingest): the TTL mix is unknown, so
+            # price at the cheaper 5m rate and COUNT it, so the report can say
+            # the write figure is a lower bound rather than quietly understating.
+            w5, w1 = r.get("cache_creation") or 0, 0
+            legacy_ttl_turns += 1 if w5 else 0
+        w5, w1 = w5 or 0, w1 or 0
+        w5_tokens += w5
+        w1_tokens += w1
+
+        row = pricing.get(r.get("model")) or {}
+        pin, pout = row.get("input_per_mtok"), row.get("output_per_mtok")
+        if pin is None or pout is None:
+            unpriced_turns += 1
+            pin = pout = 0.0
+        comp["cache_read"] += cr / 1e6 * pin * m_read
+        comp["cache_write"] += (w5 * m_w5 + w1 * m_w1) / 1e6 * pin
+        comp["output"] += tout / 1e6 * pout
+        comp["input"] += tin / 1e6 * pin
+
+        sid = r.get("session_id") or "unknown"
+        s = sessions.setdefault(sid, {"session_id": sid, "turns": 0, "cache_read": 0,
+                                      "peak_context": 0, "context_sum": 0,
+                                      "cost_usd": 0.0, "repo": r.get("repo")})
+        s["turns"] += 1
+        s["cache_read"] += cr
+        s["cost_usd"] += r.get("cost_usd") or 0.0
+        ctx = cr + w5 + w1 + tin
+        s["peak_context"] = max(s["peak_context"], ctx)
+        s["context_sum"] += ctx
+
+    total = sum(comp.values())
+    for s in sessions.values():
+        s["cost_usd"] = round(s["cost_usd"], 4)
+        # How many times over the session re-read its own context. The honest
+        # denominator for "was this session too long".
+        s["amplification"] = (round(s["cache_read"] / s["peak_context"], 1)
+                              if s["peak_context"] else None)
+        s["mean_context"] = s["context_sum"] // s["turns"] if s["turns"] else 0
+        # The normalised unit cost, and the one number that is comparable across
+        # sessions of different lengths: dollars per turn per 100k of context
+        # carried. On a real corpus, cost-per-turn correlates +0.75 with mean
+        # context but only +0.40 with turn count — width is the driver, not
+        # length — so this is what to drive down.
+        s["usd_per_turn_per_100k"] = (
+            round((s["cost_usd"] / s["turns"]) / (s["mean_context"] / 100_000), 4)
+            if s["turns"] and s["mean_context"] else None)
+        s.pop("context_sum", None)
+
+    ranked = sorted(sessions.values(), key=lambda s: -s["cost_usd"])
+    cost_total = sum(s["cost_usd"] for s in ranked)
+    findings: list[dict] = []
+
+    def share(x: float) -> float:
+        return round(100 * x / cost_total, 1) if cost_total else 0.0
+
+    if total:
+        ctx_share = 100 * (comp["cache_read"] + comp["cache_write"]) / total
+        if ctx_share >= 50:
+            findings.append({
+                "code": "context-dominates-cost", "severity": "info",
+                "detail": (f"{ctx_share:.0f}% of Claude Code spend is context handling "
+                           f"(cache reads ${comp['cache_read']:,.2f} + writes "
+                           f"${comp['cache_write']:,.2f}), not generation "
+                           f"(output ${comp['output']:,.2f}). Shortening sessions moves "
+                           f"this number; trimming tool output barely does."),
+            })
+
+    long_sessions = [s for s in ranked if s["turns"] >= LONG_SESSION_TURNS]
+    if long_sessions:
+        cost = sum(s["cost_usd"] for s in long_sessions)
+        findings.append({
+            "code": "long-sessions", "severity": "warn",
+            "detail": (f"{len(long_sessions)} of {len(ranked)} session(s) ran >= "
+                       f"{LONG_SESSION_TURNS} turns and carry {share(cost)}% of Claude Code "
+                       f"cost (${cost:,.2f} of ${cost_total:,.2f}). Length is where the spend "
+                       f"sits, but see 'narrow-the-context-not-the-session' before acting: "
+                       f"turn count is the weaker of the two drivers."),
+            "evidence": [f"{s['turns']} turns, {s['peak_context']//1000}k peak context, "
+                         f"{s['amplification']}x re-read, ${s['cost_usd']:,.2f}"
+                         for s in long_sessions[:5]],
+        })
+
+    wide = [s for s in ranked if s["peak_context"] >= HIGH_PEAK_CONTEXT]
+    if wide:
+        findings.append({
+            "code": "high-peak-context", "severity": "warn",
+            "detail": (f"{len(wide)} of {len(ranked)} session(s) peaked above "
+                       f"{HIGH_PEAK_CONTEXT // 1000}k tokens of context. Every subsequent "
+                       f"turn re-reads that whole window, so anything loaded early is "
+                       f"paid for repeatedly."),
+            "evidence": [f"{s['peak_context']//1000}k peak, {s['turns']} turns, "
+                         f"${s['cost_usd']:,.2f}" for s in wide[:5]],
+        })
+
+    # Width, not length, is the lever — so say so, and name the one intervention
+    # that narrows context without dropping work: push wide exploration into
+    # sub-agents, which run their own context and return only findings.
+    wide_cost = sum(s["cost_usd"] for s in ranked if s["mean_context"] >= HIGH_PEAK_CONTEXT // 2)
+    if wide_cost and share(wide_cost) >= 25:
+        findings.append({
+            "code": "narrow-the-context-not-the-session", "severity": "info",
+            "detail": (f"${wide_cost:,.2f} ({share(wide_cost)}%) is spent in sessions averaging "
+                       f">= {HIGH_PEAK_CONTEXT // 2000}k context per turn. Cost per turn tracks "
+                       f"context WIDTH far more than session LENGTH, so splitting a session in "
+                       f"two saves little if both halves stay wide. Delegating wide, noisy work "
+                       f"(broad searches, log trawls, multi-file reads) to sub-agents does: they "
+                       f"carry their own context and return only findings."),
+        })
+
+    if ranked and len(ranked) > top:
+        head = sum(s["cost_usd"] for s in ranked[:top])
+        if share(head) >= 50:
+            findings.append({
+                "code": "cost-concentrated", "severity": "info",
+                "detail": (f"the {top} most expensive of {len(ranked)} sessions carry "
+                           f"{share(head)}% of Claude Code cost (${head:,.2f} of "
+                           f"${cost_total:,.2f}) — optimising the long tail is not worth it."),
+            })
+
+    writes = w5_tokens + w1_tokens
+    if writes and (w1_tokens / writes) >= TTL_1H_DOMINANT_SHARE:
+        # Advisory, NOT a recommendation to switch: the 1h TTL exists to survive
+        # idle gaps, and on bursty work 5m can cause more re-writes than it saves.
+        saving = (w1_tokens * (m_w1 - m_w5)) / 1e6 * 5.0
+        findings.append({
+            "code": "cache-ttl-1h-dominant", "severity": "info",
+            "detail": (f"{100 * w1_tokens / writes:.0f}% of cache-creation tokens "
+                       f"({w1_tokens:,} of {writes:,}) use the 1h TTL, which bills {m_w1}x "
+                       f"vs {m_w5}x for 5m — order ${saving:,.0f} at Opus input rates. "
+                       f"Worth checking against your turn cadence, NOT worth switching "
+                       f"blind: 1h exists to survive idle gaps, and on bursty work 5m can "
+                       f"trigger more re-writes than it saves."),
+        })
+
+    return {
+        "turns": turns,
+        "sessions": len(ranked),
+        "cost_usd": round(cost_total, 4),
+        "unpriced_turns": unpriced_turns,
+        "legacy_ttl_turns": legacy_ttl_turns,
+        "composition_usd": {k: round(v, 4) for k, v in comp.items()},
+        "composition_share": ({k: round(100 * v / total, 1) for k, v in comp.items()}
+                              if total else {}),
+        "top_sessions": ranked[:top],
+        "findings": findings,
+        "thresholds": {"long_session_turns": LONG_SESSION_TURNS,
+                       "high_peak_context": HIGH_PEAK_CONTEXT,
+                       "ttl_1h_dominant_share": TTL_1H_DOMINANT_SHARE},
+        "gate": False,  # report-only by construction — see the docstring
+    }
+
+
+def render_cost_report(rep: dict) -> str:
+    L = [f"Claude Code session cost — {rep['sessions']} session(s), {rep['turns']} turn(s), "
+         f"${rep['cost_usd']:,.2f}", ""]
+    if not rep["turns"]:
+        L.append("  No claude_code records. Run:")
+        L.append("    factory_log.py ingest-claude-transcripts")
+        return "\n".join(L)
+    if rep["unpriced_turns"]:
+        L.append(f"  NOTE: {rep['unpriced_turns']} of {rep['turns']} turn(s) ran on a model with "
+                 f"no price row — their tokens count, their cost does not.")
+        L.append("")
+    if rep.get("legacy_ttl_turns"):
+        L.append(f"  NOTE: {rep['legacy_ttl_turns']} turn(s) predate the cache-TTL split and are "
+                 f"priced at the cheaper 5m rate,\n        so cache_write below is a LOWER BOUND. "
+                 f"Re-run ingest-claude-transcripts on a fresh log to resolve.")
+        L.append("")
+    L.append("  Where the money goes:")
+    for k, v in sorted(rep["composition_usd"].items(), key=lambda kv: -kv[1]):
+        L.append(f"    {k:<14}${v:>10,.2f}   {rep['composition_share'].get(k, 0):>5.1f}%")
+    if rep["top_sessions"]:
+        L.append("\n  Most expensive sessions:")
+        L.append(f"    {'COST':>10}{'TURNS':>7}{'PEAK CTX':>10}{'RE-READ':>9}  SESSION")
+        L.append("    " + "-" * 56)
+        for s in rep["top_sessions"]:
+            L.append(f"    ${s['cost_usd']:>9,.2f}{s['turns']:>7}"
+                     f"{s['peak_context'] // 1000:>9}k{str(s['amplification']) + 'x':>9}  "
+                     f"{str(s['session_id'])[:8]}")
+    if rep["findings"]:
+        L.append("\n  Findings (report-only — CW cannot act on these, you can):")
+        for f in rep["findings"]:
+            L.append(f"    [{f['severity']}] {f['code']}: {f['detail']}")
+            for ev in f.get("evidence", [])[:5]:
+                L.append(f"        - {ev}")
+    return "\n".join(L)
+
+
 def render_report(agg: dict, repo: str | None = None) -> str:
     """Human-readable cost/value report from an aggregate() result."""
     L: list[str] = []
@@ -992,6 +1239,12 @@ def main() -> int:
     it.add_argument("--since-days", type=float,
                     help="Only ingest turns newer than N days ago")
 
+    cr_ = sub.add_parser("cost-report",
+                         help="What Claude Code session cost is made of (report-only, never a gate)")
+    cr_.add_argument("--repo")
+    cr_.add_argument("--top", type=int, default=10)
+    cr_.add_argument("--format", choices=["text", "json"], default="text")
+
     sub.add_parser("path", help="Print the log path")
     args = parser.parse_args()
 
@@ -1001,6 +1254,14 @@ def main() -> int:
     if args.cmd == "ingest-claude-code":
         n = ingest_claude_code(Path(args.otel_file), repo=args.repo)
         print(f"factory_log: ingested {n} api_request event(s) from {args.otel_file}")
+        return 0
+    if args.cmd == "cost-report":
+        records = read_log()
+        if args.repo:
+            records = [r for r in records if r.get("repo") == args.repo]
+        rep = session_cost_report(records, top=args.top)
+        # Always exit 0 — report-only by construction (see session_cost_report).
+        print(json.dumps(rep, indent=2) if args.format == "json" else render_cost_report(rep))
         return 0
     if args.cmd == "ingest-claude-transcripts":
         since = (time.time() - args.since_days * 86400) if args.since_days else None
