@@ -157,10 +157,14 @@ Two fixes, because either alone leaves the failure invisible:
    enforced when jscpd did its own walking) and passes it to
    `run_jscpd(..., files=[...])`. Scope narrowing now genuinely reduces work,
    and the engine reports `files_in_corpus` so the scanned count can be
-   asserted against the in-scope population. `duplication.analyze` still passes
-   `files=None` and walks the whole repo — its aggregate percentage is
-   calibrated against GitClear's repo-wide bands, so narrowing it would change
-   what that number means.
+   asserted against the in-scope population. With **no** scope filter there is
+   nothing to narrow, so the historical whole-repo walk is kept unchanged —
+   that keeps `prevention_signals` (which deliberately wants repo-wide clone
+   context to answer "does this diff copy EXISTING code?") exactly as it was,
+   and avoids warning about scope-narrowing an operator never asked for.
+   `duplication.analyze` likewise still passes `files=None` — its aggregate
+   percentage is calibrated against GitClear's repo-wide bands, so narrowing it
+   would change what that number means.
 2. **`crashed` is not `skipped`.** A tier that declares no support for a
    language is a known limitation; a tool that was expected to run and died is
    a defect. `run_jscpd` now returns `status: "crashed"` (plus `crashed`,
@@ -181,8 +185,12 @@ eating the heap alive.
 
 If the corpus exceeds `ARGV_BUDGET_BYTES` (256 KiB of argv, ~6k paths) the run
 falls back to scanning the repo root and records `corpus_fallback` on the
-engine result, which both `format_report` and the envelope surface. The
-fallback is allowed to be wide; it is never allowed to be silent.
+engine result, which both `format_report` and the envelope surface. Because
+that scan is repo-wide, the selected count is reported as
+`scope_candidate_files` and `files_in_corpus` is omitted — presenting a scoped
+number as the scanned count would let an AC-style assertion pass on a run that
+was never scoped. The fallback is allowed to be wide; it is never allowed to be
+silent.
 
 ## Authority boundary
 

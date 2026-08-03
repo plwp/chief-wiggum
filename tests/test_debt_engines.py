@@ -595,7 +595,7 @@ def test_clone_corpus_excludes_test_files(tmp_path, monkeypatch):
         "src/thing_test.go": "package src\n",
     })
     calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
-    clones.analyze(str(repo), str(tmp_path / "wd"))
+    clones.analyze(str(repo), str(tmp_path / "wd"), path_filter=lambda rel: True)
     cmd = calls[0]["cmd"]
     assert "app.py" in cmd
     assert "tests/test_app.py" not in cmd
@@ -712,13 +712,16 @@ def test_run_capture_kills_the_whole_process_group_on_timeout(monkeypatch):
 
 
 def test_whole_repo_corpus_still_supported_for_unscoped_callers(tmp_path, monkeypatch):
-    """prevention_signals asks for repo-wide clone context deliberately; the
-    narrowing must not amputate that — it narrows to the tracked population."""
+    """prevention_signals asks for repo-wide clone context deliberately (it
+    answers "does this diff copy EXISTING code?", so the existing side must stay
+    visible). An unscoped call keeps the historical whole-repo walk untouched."""
     repo = _make_repo(tmp_path, {"a.py": "x = 1\n", "b.py": "y = 2\n"})
     calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
     result = clones.analyze(str(repo), str(tmp_path / "wd"))
-    assert result["files_in_corpus"] == 2
-    assert "a.py" in calls[0]["cmd"] and "b.py" in calls[0]["cmd"]
+    assert result["status"] == "measured"
+    assert calls[0]["cmd"][1] == str(repo)
+    # no explicit corpus, so no scoped count is claimed
+    assert "files_in_corpus" not in result
 
 
 def test_boundary_detection_is_recorded_as_unobservable_when_narrowed(tmp_path, monkeypatch):
@@ -736,6 +739,48 @@ def test_boundary_detection_is_recorded_as_unobservable_when_narrowed(tmp_path, 
     assert "boundary_detection" not in whole
 
 
+def test_a_stale_report_never_masks_a_crash_as_measured(tmp_path, monkeypatch):
+    """Review finding (codex P1). `workdir` may be reused. If a previous run
+    left a jscpd-report.json behind, a jscpd that then OOMs would have its
+    predecessor's results parsed and returned as `measured` — reinstating the
+    exact silent-success failure #265 is about."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    (workdir / "jscpd-report.json").write_text(json.dumps(
+        {"statistics": {"total": {}}, "duplicates": FAKE_DUPLICATES}))
+    # jscpd now dies without writing anything.
+    _capture_jscpd(monkeypatch, proc=_FakeProc(returncode=134, stderr="heap out of memory"))
+    result = clones.analyze(str(repo), str(workdir))
+    assert result["status"] == "crashed"
+    assert "clone_classes" not in result
+
+
+def test_whole_repo_scan_does_not_reanchor_a_relative_repo_path(tmp_path, monkeypatch):
+    """Review finding (gemini P1). Setting cwd=repo while ALSO passing `repo` as
+    the scan target re-anchors a relative path against itself ("src/app" ->
+    "src/app/src/app"), which jscpd resolves to nothing and reports as 0
+    sources — a silently empty scan, not even a crash."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    clones.analyze(str(repo), str(tmp_path / "wd"))  # unscoped => whole-repo walk
+    assert calls[0]["cwd"] is None, "a whole-repo scan must not set cwd"
+    assert str(repo) in calls[0]["cmd"]
+
+
+def test_unscoped_analyze_does_not_build_an_explicit_corpus(tmp_path, monkeypatch):
+    """Review finding (gemini P3). With no scope there is nothing to narrow, so
+    a large repo must not cross the argv budget and warn the operator that
+    scope-narrowing failed for a scope they never set."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n", "b.py": "y = 2\n"})
+    monkeypatch.setattr(duplication, "ARGV_BUDGET_BYTES", 1)
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    result = clones.analyze(str(repo), str(tmp_path / "wd"))
+    assert "corpus_fallback" not in result
+    assert "boundary_detection" not in result
+    assert calls[0]["cmd"].count(str(repo)) == 1
+
+
 def test_oversized_corpus_falls_back_to_repo_root_and_records_it(tmp_path, monkeypatch):
     """argv is finite. The fallback is allowed to be a wide scan, but it may
     never be SILENT — a silent widening is how #265 stayed invisible."""
@@ -746,6 +791,11 @@ def test_oversized_corpus_falls_back_to_repo_root_and_records_it(tmp_path, monke
                             path_filter=lambda rel: rel.startswith("in/"))
     assert str(repo) in calls[0]["cmd"]
     assert "argv" in result["corpus_fallback"]
+    # the scan was repo-wide, so the SCOPED count must not be presented as the
+    # scanned count — an AC1-style assertion would otherwise read a scoped
+    # number off a run that was never scoped.
+    assert "files_in_corpus" not in result
+    assert result["scope_candidate_files"] == 2
 
 
 # --- scope doctrine: detection repo-wide, authority in-scope (F2) -------------

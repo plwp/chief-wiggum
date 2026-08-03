@@ -61,7 +61,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _run_capture(cmd: list[str], *, cwd: str, env: dict, timeout: int):
+def _run_capture(cmd: list[str], *, cwd: str | None, env: dict, timeout: int):
     """Run ``cmd`` capturing output, killing the whole PROCESS GROUP on timeout.
 
     ``subprocess.run(timeout=...)`` kills only the direct child. jscpd is often
@@ -76,8 +76,11 @@ def _run_capture(cmd: list[str], *, cwd: str, env: dict, timeout: int):
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
+            # AttributeError: killpg/getpgid are POSIX-only. Letting it escape
+            # would abort the whole run with a traceback on Windows instead of
+            # returning the structured `crashed` payload this change exists for.
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+        except (AttributeError, ProcessLookupError, PermissionError, OSError):
             proc.kill()
         proc.wait(timeout=10)
         raise
@@ -144,9 +147,25 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
     else:
         targets = list(files)
 
+    # `cwd` ONLY for the explicit-corpus case, whose paths are repo-relative.
+    # Setting it for a whole-repo scan re-anchors a RELATIVE `repo` against
+    # itself ("src/app" -> "src/app/src/app"), which jscpd resolves to nothing
+    # and reports as 0 sources — a silent empty scan, not even a crash.
+    cwd = repo if (files is not None and not fallback) else None
+
     env = dict(os.environ)
     node_opts = f"{env.get('NODE_OPTIONS', '')} --max-old-space-size={heap_mb}".strip()
     env["NODE_OPTIONS"] = node_opts
+
+    report = os.path.join(workdir, "jscpd-report.json")
+    # A run is proven by the report IT wrote. `workdir` may be reused, so a
+    # report left by an earlier successful run would let a crashed jscpd parse
+    # stale results and return `measured` — reinstating the exact silent-success
+    # failure this change exists to remove.
+    try:
+        os.unlink(report)
+    except FileNotFoundError:
+        pass
 
     try:
         proc = _run_capture(
@@ -159,7 +178,7 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
                 "--mode", "strict",
                 "--silent",
             ],
-            cwd=repo, env=env, timeout=timeout,
+            cwd=cwd, env=env, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return None, {
@@ -180,7 +199,6 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
             "exit_code": None,
             "corpus_fallback": fallback,
         }
-    report = os.path.join(workdir, "jscpd-report.json")
     if not os.path.exists(report):
         # The #265 shape: jscpd was present, was expected to run, and died —
         # historically indistinguishable from a language with no clone tier.
