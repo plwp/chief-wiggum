@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import code_query  # noqa: E402
 
-ENVELOPE_KEYS = {"summary", "facts", "omitted", "cursor", "warnings", "provenance"}
+ENVELOPE_KEYS = {"summary", "facts", "omitted", "cursor", "warnings", "provenance", "applicability"}
 
 
 def _envelope_shape_ok(env: dict) -> bool:
@@ -91,6 +91,10 @@ def test_orient_unscanned_for_nonexistent_path():
     assert env["facts"] == []
     assert env["summary"].startswith("unscanned:")
     assert any("unscanned" in w for w in env["warnings"])
+    # #289: "unscanned" must be a MACHINE field, not just a summary-string
+    # prefix a consumer has to parse. A nonexistent path is honest absence —
+    # the precondition for measurement (a file to scan) is not there.
+    assert env["applicability"] == "inapplicable"
 
 
 def test_orient_genuine_empty_is_not_unscanned():
@@ -105,8 +109,29 @@ def test_orient_genuine_empty_is_not_unscanned():
         assert env["facts"] == []
         assert env["summary"].startswith("orient: scanned")
         assert not any("unscanned" in w for w in env["warnings"])
+        assert env["applicability"] == "applicable"
     finally:
         plain.unlink()
+
+
+def test_orient_error_on_undecodable_file():
+    # #289 / #282: a file that EXISTS but cannot be decoded (non-UTF-8/UTF-16)
+    # must never crash the query with an uncaught UnicodeDecodeError, and must
+    # never look like the same clean `facts: []` a genuinely-scanned file
+    # gets — it's a broken-instrument `error`, not an honest `inapplicable`
+    # absence (the file is right there; the scanner just couldn't read it).
+    bad = FIXTURE / "src" / "bad_encoding.py"
+    # Continuation-byte-only content: invalid UTF-8, no NUL interleaving (so
+    # it isn't mistaken for BOM-less UTF-16 either) — read_text_safe's own
+    # last-resort branch (>30% replacement chars) reports this unreadable.
+    bad.write_bytes(bytes([0x80 + (i % 64) for i in range(300)]))
+    try:
+        env = code_query.cmd_orient(FIXTURE, "src/bad_encoding.py", "checkout")
+        assert env["facts"] == []
+        assert env["applicability"] == "error"
+        assert any("bad_encoding.py" in w for w in env["warnings"])
+    finally:
+        bad.unlink()
 
 
 # --- governs ----------------------------------------------------------------------
@@ -130,6 +155,18 @@ def test_governs_field_mode_returns_writers_and_field_contract():
 def test_governs_unscanned_for_path_like_missing_target():
     env = code_query.cmd_governs(FIXTURE, "src/missing.py", None)
     assert env["summary"].startswith("unscanned:")
+    assert env["applicability"] == "inapplicable"
+
+
+def test_governs_error_on_undecodable_file():
+    bad = FIXTURE / "src" / "bad_encoding_governs.py"
+    bad.write_bytes(bytes([0x80 + (i % 64) for i in range(300)]))
+    try:
+        env = code_query.cmd_governs(FIXTURE, "src/bad_encoding_governs.py", "checkout")
+        assert env["facts"] == []
+        assert env["applicability"] == "error"
+    finally:
+        bad.unlink()
 
 
 def test_governs_field_mode_genuine_empty_for_unknown_field():
@@ -275,6 +312,18 @@ def test_show_by_id_returns_declaration():
 def test_show_unscanned_for_missing_file_handle():
     env = code_query.cmd_show(FIXTURE, "src/missing.py:1", None)
     assert env["summary"].startswith("unscanned:")
+    assert env["applicability"] == "inapplicable"
+
+
+def test_show_error_on_undecodable_file_handle():
+    bad = FIXTURE / "src" / "bad_encoding_show.py"
+    bad.write_bytes(bytes([0x80 + (i % 64) for i in range(300)]))
+    try:
+        env = code_query.cmd_show(FIXTURE, "src/bad_encoding_show.py:1", None)
+        assert env["facts"] == []
+        assert env["applicability"] == "error"
+    finally:
+        bad.unlink()
 
 
 # --- pagination ---------------------------------------------------------------------
