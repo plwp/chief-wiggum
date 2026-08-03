@@ -35,6 +35,7 @@ detected, not absorbed.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import re
@@ -891,3 +892,129 @@ def test_scanner_version_dep_list_is_complete(gate):
         f"{gate}'s _scanner_version omits imported local module(s) "
         f"{missing} from its hash inputs — an edit there would never mark the "
         "validation record stale (CTR-fh-041)")
+
+
+# --- #264: the review-authorities module must stay off every gate's dep graph -
+
+def _local_module_index(scripts: Path) -> dict[str, Path]:
+    """Every importable local module name -> file, as gates would import it.
+
+    Walks EVERY package under scripts/ rather than a hand-listed few: gates
+    import `emitters` as well as `chief_wiggum`/`quality`, and a package missing
+    from this index is a hole in the closure — its imports are never followed,
+    so anything it reaches looks unreachable.
+    """
+    index: dict[str, Path] = {}
+    for py in scripts.rglob("*.py"):
+        rel = py.relative_to(scripts)
+        parts = list(rel.parts[:-1])
+        if any(p.startswith(".") or p == "__pycache__" for p in parts):
+            continue
+        if py.stem == "__init__":
+            if parts:
+                index.setdefault(".".join(parts), py)
+            continue
+        index.setdefault(".".join([*parts, py.stem]), py)
+    return index
+
+
+def _imports_of(path: Path, index: dict[str, Path], root: Path | None = None) -> set[str]:
+    """Local modules `path` imports, top-level OR lazily inside a function.
+
+    AST rather than regex: this must catch `import review_authorities` and
+    `from review_authorities import load` on a FLAT top-level module, which the
+    package-shaped _CW_IMPORT_RE / _QUALITY_IMPORT_RE do not match at all.
+    """
+    out: set[str] = set()
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # relative: `from . import x` inside a package
+                pkg = ".".join(path.relative_to(root or SCRIPTS).parts[:-1])
+                base = f"{pkg}.{node.module}" if node.module else pkg
+                names = [base] + [f"{base}.{a.name}" for a in node.names]
+            else:
+                base = node.module or ""
+                names = [base] + [f"{base}.{a.name}" for a in node.names if base]
+        else:
+            continue
+        out.update(n for n in names if n in index)
+    return out
+
+
+@pytest.mark.parametrize("gate", SCANNER_VERSION_GATES)
+def test_no_gate_scanner_can_reach_review_authorities(gate):
+    """#264: `review_authorities` must never enter a gate's dependency graph.
+
+    `scanner_version` hashes a gate's source PLUS its deps, so an import here —
+    direct, or transitive via `artifacts.py`, which every one of these gates
+    already imports — would stale that gate's validation record on every edit to
+    an operator-authored convention file that has nothing to do with scanning.
+    Walked transitively on purpose: checking only direct imports would miss the
+    single most likely regression, someone adding the feature to artifacts.py.
+    """
+    scripts = SCRIPTS
+    index = _local_module_index(scripts)
+    assert "review_authorities" in index, "module missing from scripts/"
+
+    seen: set[str] = set()
+    stack = [gate]
+    path_to: dict[str, list[str]] = {gate: [gate]}
+    while stack:
+        mod = stack.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        for dep in sorted(_imports_of(index[mod], index, scripts)):
+            if dep not in path_to:
+                path_to[dep] = path_to[mod] + [dep]
+            if dep not in seen:
+                stack.append(dep)
+
+    assert "review_authorities" not in seen, (
+        f"{gate} reaches review_authorities via "
+        f"{' -> '.join(path_to.get('review_authorities', []))} — that puts an "
+        "operator-authored convention file into the gate's scanner_version hash "
+        "inputs, staling its validation record for changes unrelated to scanning "
+        "(chief-wiggum#264)")
+
+
+def test_the_import_graph_walk_actually_detects_a_transitive_import(tmp_path):
+    """The guard above is only worth having if it can fail. Prove the walk sees
+    a dependency two hops away, not just a direct import."""
+    (tmp_path / "gatey.py").write_text("import middle\n")
+    (tmp_path / "middle.py").write_text("from review_authorities import load\n")
+    (tmp_path / "review_authorities.py").write_text("def load(): ...\n")
+    index = _local_module_index(tmp_path)
+    assert _imports_of(tmp_path / "gatey.py", index, tmp_path) == {"middle"}
+    assert "review_authorities" in _imports_of(tmp_path / "middle.py", index, tmp_path)
+
+
+def test_the_module_index_covers_every_package_under_scripts():
+    """Review finding (codex P2). The index once listed chief_wiggum/quality by
+    hand, so `emitters` — which check_traceability and check_single_writer both
+    import — was absent, and anything reachable THROUGH it was invisible to the
+    closure. A package missing here is a hole in the guard, not a smaller guard.
+    """
+    index = _local_module_index(SCRIPTS)
+    for pkg_dir in SCRIPTS.iterdir():
+        if not pkg_dir.is_dir() or pkg_dir.name.startswith((".", "__")):
+            continue
+        if not (pkg_dir / "__init__.py").exists():
+            continue
+        assert pkg_dir.name in index, f"package {pkg_dir.name} missing from the index"
+    assert "emitters" in index
+
+
+def test_a_package_hop_is_followed(tmp_path):
+    """`gate -> emitters -> review_authorities` must be reachable."""
+    (tmp_path / "gatey.py").write_text("import pkg\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("from . import inner\n")
+    (tmp_path / "pkg" / "inner.py").write_text("import review_authorities\n")
+    (tmp_path / "review_authorities.py").write_text("def load(): ...\n")
+    index = _local_module_index(tmp_path)
+    assert index["pkg"] == tmp_path / "pkg" / "__init__.py"
+    assert "pkg.inner" in index

@@ -118,6 +118,84 @@ Consumers:
 - **`/status`** shows the Adoption section: brownfield flag, grandfather
   counts, nearest expiry, and prominent EXPIRED warnings.
 
+## Review-authorities schema (`review-authorities/1`)
+
+`/adopt` measures a repo's **shape**. It has nowhere to record its
+**authorities** — and a repo CW didn't build usually already has house rules:
+naming conventions, test standards, a tech lead's standing objections,
+framework-specific patterns. On a mature codebase those are often packaged as
+harness skills. CW's generic review checklist knows nothing about them, and the
+multi-AI review quorum cannot infer them from a diff, so a brownfield ticket
+gets reviewed against CW's defaults while the conventions that would actually
+block it in human review are never consulted.
+
+`<meta root>/adoption/review-authorities.json`:
+
+```json
+{
+  "schema": "review-authorities/1",
+  "target": "owner/repo",
+  "authoring":  [{"skill": "plugin:lang-developer", "reason": "house naming + test layout"}],
+  "review":     [{"skill": "plugin:lang-reviewer",  "reason": "the tech lead's standing objections"}],
+  "operations": [{"skill": "plugin:ci-tool",        "reason": "deploy + rollback runbook"}]
+}
+```
+
+Three phases, keyed to **when** a skill has something to say:
+
+| Phase | Consulted at | For |
+| --- | --- | --- |
+| `authoring` | `/implement` Step 6 | conventions binding while code is being written |
+| `review` | `/implement` Step 7, `/close-epic` Step 1 | what a house reviewer would block |
+| `operations` | steps touching deploy, observability, or the tracker | runbooks and operational conventions |
+
+`reason` is optional; `$comment` is allowed at the top level, as in `scope.json`.
+
+Resolve it through the CLI rather than reading the file, so a workflow never
+needs to know its layout or location:
+
+```bash
+python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" --phase review
+python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" --format json
+```
+
+**Failure modes mirror `scope.json`.** A **missing** file means no authorities —
+the greenfield default, where CW's own checklist is the only authority. That is
+*not* a claim the target has no conventions, only that none were recorded; the
+CLI exits 0 and prints nothing (`present: false` in json mode). A file that
+**exists but is malformed** exits **2** and prints nothing to stdout: an unknown
+phase key names itself rather than silently dropping every skill beneath it,
+because a binding that is unreadable must never render identically to an absent
+one — that is exactly how a target quietly loses its house rules. Empty stdout
+with exit 0 is what a consumer reads as "no authorities", so the malformed case
+must never produce it.
+
+**Loading is not binding.** The reviewer quorum runs as separate provider calls
+that see only the assembled prompt, so a workflow that merely reads the
+authorities into its own context has changed nothing. `/implement` Step 7 renders
+the loaded conventions to `$TICKET_TMP/review-authorities.md` and passes it as
+`--epic-artifact "Target review authorities=..."` so every provider sees it in
+the identical shared prompt; `/close-epic` Step 9 renders them inline into
+`close-epic-review-prompt.md`. Attribute a finding that comes from a house rule
+to its skill, so it is distinguishable from a CW-checklist finding.
+
+**Authority boundary**: the file is written by the operator, never inferred.
+Which skills hold authority over a repo is a judgment about ownership; inferring
+it would be the same mistake as inferring contracts, which `/adopt` deliberately
+defers (see *Contract inference is deferred* below).
+
+**Why this lives outside `artifacts.py`** — non-obvious, and load-bearing, so it
+is not "simplified" back later. `chief_wiggum.hashing.scanner_version` hashes a
+gate scanner's source **plus its dependencies**, and four gates
+(`check_traceability`, `check_single_writer`, `quality_slop_gate`, `ratchet`)
+depend on the meta-location resolver. Putting this feature in `artifacts.py`
+would stale all four gate-validation records and demand re-authored
+seeded-defect trials — for a change with nothing to do with scanning. A separate
+module that merely *imports* the resolver has no such effect.
+`tests/test_gate_validation_retroactive.py::test_no_gate_scanner_can_reach_review_authorities`
+walks each gate's import closure **transitively** and pins the separation, so a
+later refactor cannot quietly undo it.
+
 ## Not measured is not measured clean (#263)
 
 An honest report of "nothing measurable" and a real report of "everything

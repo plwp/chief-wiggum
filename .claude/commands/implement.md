@@ -354,6 +354,17 @@ The worker should:
 
 ### Step 6: Implement
 
+**Load the target's own authoring authorities first (#264).** A repo CW didn't build usually already has house rules — naming conventions, test standards, framework-specific patterns — and on a mature codebase they are often packaged as harness skills. CW's generic checklist knows nothing about them, and a worker cannot infer them from a diff:
+
+```bash
+python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
+  --phase authoring > "$TICKET_TMP/authoring-authorities.txt" || {
+  echo "review-authorities binding is malformed — refusing to build against CW defaults while the target's own conventions are unreadable" >&2
+  exit 2; }
+```
+
+Exit 2 means the binding EXISTS but is unreadable — stop and fix it; do NOT proceed as if the target had no conventions (that is the silent loss this binding exists to prevent). Empty output means none are recorded, which is the normal greenfield case — proceed. For each skill id printed, load that skill and fold its conventions into the worker's prompt as binding constraints, alongside the epic contracts.
+
 Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) in the **same isolated checkout** from Step 5. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it the **full implementation plan** from `$TICKET_TMP/implementation-plan.md` plus any user feedback, plus the fact that failing tests already exist on the branch.
 
 **HARD RULES for worker**:
@@ -413,6 +424,33 @@ The worker should:
    git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
    ```
 
+1b. **Load the target's own review authorities (#264).** The multi-AI quorum reviews against CW's checklist; a brownfield repo's standing objections are invisible to it unless they are supplied:
+
+   ```bash
+   python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
+     --phase review --format json > "$TICKET_TMP/review-authorities.json" || {
+     echo "review-authorities binding is malformed — refusing to review against CW defaults alone" >&2
+     exit 2; }
+   ```
+
+   Exit 2 = the binding exists but is unreadable; stop rather than review as if the target had no house rules. `present: false` = none recorded, proceed with CW's checklist alone.
+
+   Otherwise **load each listed skill and render its conventions into a review-prompt section** — loading them into your own context is not enough, because the reviewer quorum runs as separate provider calls that see only the assembled prompt:
+
+   ```bash
+   # Write the loaded conventions (skill id, why it holds authority, and the
+   # concrete rules it imposes on a diff) as markdown:
+   #   $TICKET_TMP/review-authorities.md
+   ```
+
+   Then pass that file to `run_review.py` as an additional artifact in step 2 below, so **every** provider sees it in the identical shared prompt:
+
+   ```
+   --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md"
+   ```
+
+   These are target-specific authority applied **alongside** CW's checklist, never instead of it. Attribute any finding that comes from a house rule to its skill in the synthesized summary, so the operator can tell a CW-checklist finding from a target-convention one.
+
 2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass the `ticket.json` written in Step 2 — title/body/acceptance criteria plus the comment thread (`comments`, always an array — CTR-fh-002), which `run_review.py` renders as two labeled, authority-separated regions ("Accepted AC amendments" vs "Discussion/context" — CTR-fh-003/ADR-fh-02) so reviewers judge the diff against the CURRENT authoritative state, not a stale body-only baseline — and optionally epic artifacts:
    ```bash
    python3 "$CW_HOME/scripts/run_review.py" \
@@ -420,8 +458,10 @@ The worker should:
      --worktree "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH" \
      --output-dir "$TICKET_TMP/reviews" \
      --epic-artifact "Contracts=$EPIC_DIR/contracts.md" \
-     --epic-artifact "Invariants=$EPIC_DIR/invariants.md"
+     --epic-artifact "Invariants=$EPIC_DIR/invariants.md" \
+     --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md"
    ```
+   (The last one is what actually puts the target's house rules in front of every provider — #264. `--epic-artifact` silently skips a path that doesn't exist, so it is safe to pass unconditionally when no authorities were recorded.)
    Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `synthesis-prompt.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
 3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:
