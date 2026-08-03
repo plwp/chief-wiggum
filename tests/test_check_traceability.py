@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import date
 
 import check_traceability as ct
+import pytest
 from chief_wiggum.hashing import hash_epic_definitions
 from chief_wiggum.trace_links import SIDECAR_RELPATH, build_sidecar, load_sidecar, write_sidecar
 
@@ -222,6 +225,73 @@ def test_scan_source_routes_language_files_through_emitter_registry(tmp_path, mo
     kinds = {(a.file, a.source_kind) for a in anns}
     assert ("order.py", "code") in kinds
     assert ("policy.rego", "policy") in kinds  # direct path still scanned
+
+
+# --- non-UTF-8 source files (#282) ------------------------------------------
+
+
+def test_scan_source_utf16_file_scans_to_completion_and_is_detected(tmp_path):
+    """A bare path.read_text() at :549 crashes with UnicodeDecodeError on a
+    UTF-16 file, and the surrounding `except OSError` does not catch it
+    (UnicodeDecodeError is not an OSError). BOM-sniffing must decode it
+    properly (not just avoid crashing) so its annotation is still found."""
+    (tmp_path / "order.py").write_bytes(
+        "# @cw-trace guards CTR-order-001\n".encode("utf-16")
+    )
+    anns = ct.scan_source(tmp_path)  # must not raise UnicodeDecodeError
+    assert ("guards", "CTR-order-001") == (anns[0].verb, anns[0].target)
+
+
+def test_undecodable_file_is_reported_as_unscanned_with_path(tmp_path):
+    """A file the scanner genuinely cannot read (OS-level failure — the only
+    case that survives BOM-sniff + errors='replace', which never raises on
+    content alone) must be recorded as unscanned WITH its path — the existing
+    `except OSError: continue` at :549/:550 silently drops it today."""
+    if sys.platform.startswith("win") or os.geteuid() == 0:
+        pytest.skip("permission bits are not enforceable as root or on Windows")
+    epic = _write_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "order.py").write_text("# @cw-trace guards CTR-order-001\n")
+    (src / "test_order.py").write_text("# @cw-trace verifies CTR-order-001\n")
+    noaccess = src / "noaccess.py"
+    noaccess.write_text("# nothing\n")
+    os.chmod(noaccess, 0o000)
+    try:
+        report = ct.check(epic, src)  # must not raise
+    finally:
+        os.chmod(noaccess, 0o644)
+
+    assert report.unscanned, "unreadable file must be recorded, not silently skipped"
+    paths = [u["file"] for u in report.unscanned]
+    assert any("noaccess.py" in p for p in paths)
+    assert all(u.get("reason") for u in report.unscanned)
+    # Report-only: an unscanned file never flips soundness/coverage on its own.
+    assert report.soundness_ok is True
+
+
+def test_normal_utf8_repo_has_no_unscanned_noise(tmp_path):
+    """Regression: an ordinary UTF-8 repo must not gain new unscanned entries
+    or warnings from this change."""
+    epic = _write_epic(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "order.py").write_text("# @cw-trace guards CTR-order-001\n")
+    (src / "test_order.py").write_text("# @cw-trace verifies CTR-order-001\n")
+    report = ct.check(epic, src)
+    assert report.unscanned == []
+
+
+def test_scan_source_still_returns_a_plain_annotation_list(tmp_path):
+    """Public API stability: scan_source keeps returning list[Annotation] —
+    code_query.py and many existing tests depend on this — even though it now
+    tracks unscanned files internally for check()."""
+    (tmp_path / "order.py").write_bytes(
+        "# @cw-trace guards CTR-order-001\n".encode("utf-16")
+    )
+    anns = ct.scan_source(tmp_path)
+    assert isinstance(anns, list)
+    assert anns and anns[0].target == "CTR-order-001"
 
 
 def test_changed_since_scoped_scan_still_warns_on_unsupported_extension(tmp_path, capsys):

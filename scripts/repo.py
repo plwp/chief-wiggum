@@ -15,10 +15,15 @@ As a CLI:
     python3 repo.py clean acme/app           # remove a cached clone
 """
 
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 
 CACHE_DIR = Path.home() / ".chief-wiggum" / "repos"
@@ -28,6 +33,88 @@ CW_HOME = Path(__file__).resolve().parent.parent
 
 # Strict pattern: alphanumeric, hyphens, underscores, dots (GitHub rules)
 _OWNER_REPO_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+# Seconds of NO output before a clone is treated as stalled (chief-wiggum#268).
+# Progress, not elapsed wall-clock time, is the right signal for a clone — a
+# large repo legitimately runs long past any fixed ceiling (a 776MB/12,500-file
+# repo took several minutes against the old fixed 120s limit).
+CLONE_INACTIVITY_TIMEOUT = 300
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """SIGTERM then SIGKILL the child's whole process group, so a stalled
+    `git` (and anything it spawned) cannot keep running — and keep writing to
+    the cache path — after the caller has been told the clone failed
+    (chief-wiggum#268). Mirrors ``consult_ai._kill_group``: a plain
+    ``subprocess.run(timeout=)`` only kills the Python-side wait; the child
+    keeps running to completion in the background, which is exactly the
+    "orphaned git" bug this guards against."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue  # escalate to SIGKILL
+
+
+def _clone_with_inactivity_timeout(
+    cmd: list[str], *, inactivity_timeout: float = CLONE_INACTIVITY_TIMEOUT,
+) -> None:
+    """Run a clone command with NO fixed wall-clock ceiling (chief-wiggum#268
+    AC1): a large repo legitimately takes longer than any fixed timeout.
+    Progress, not elapsed time, is the right signal — the process is killed
+    only after `inactivity_timeout` seconds pass with ZERO output.
+
+    Runs in its own process group (``start_new_session``) so a stall can be
+    reaped in FULL: on timeout, `_kill_group` kills the whole group and waits
+    for it to actually exit, guaranteeing no orphaned `git` survives this call
+    (AC3) — never a bare ``subprocess.run(timeout=)``, which kills only the
+    Python-side wait and lets the child keep running (and writing) in the
+    background.
+
+    Raises ``subprocess.TimeoutExpired`` on a genuine stall, or
+    ``subprocess.CalledProcessError`` on a clean nonzero exit. In both cases
+    the process group is guaranteed dead before this returns.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True, bufsize=1,
+    )
+    last_activity = time.monotonic()
+    lock = threading.Lock()
+
+    def _reader() -> None:
+        nonlocal last_activity
+        assert proc.stdout is not None
+        for _ in iter(proc.stdout.readline, ""):
+            with lock:
+                last_activity = time.monotonic()
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    try:
+        while True:
+            try:
+                proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired as exc:
+                with lock:
+                    idle = time.monotonic() - last_activity
+                if idle > inactivity_timeout:
+                    _kill_group(proc)
+                    raise subprocess.TimeoutExpired(cmd, inactivity_timeout) from exc
+    finally:
+        reader.join(timeout=5)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 def _validate_name(name: str, label: str) -> None:
@@ -82,13 +169,23 @@ def resolve_repo(owner_repo: str) -> Path:
         )
         return cached
 
-    # Clone via gh
+    # Clone via gh — into a TEMP path, renamed to the final cache path only on
+    # success. A killed/interrupted clone can then never leave a directory at
+    # `cached` that a later resolve's cache-hit check (above) would treat as
+    # valid (chief-wiggum#268 AC2).
     cached.parent.mkdir(parents=True, exist_ok=True)
     print(f"Cloning {owner_repo}...", file=sys.stderr)
-    subprocess.run(
-        ["gh", "repo", "clone", owner_repo, str(cached)],
-        check=True, timeout=120,
-    )
+    # mkdtemp's empty dir is a valid `git clone` target as-is (git clones INTO
+    # an existing empty directory without complaint).
+    tmp_target = Path(tempfile.mkdtemp(prefix=f".{repo}-clone-", dir=str(cached.parent)))
+    try:
+        _clone_with_inactivity_timeout(["gh", "repo", "clone", owner_repo, str(tmp_target)])
+    except BaseException:
+        shutil.rmtree(tmp_target, ignore_errors=True)
+        raise
+    if cached.exists():
+        shutil.rmtree(cached, ignore_errors=True)
+    os.replace(tmp_target, cached)
     return cached
 
 

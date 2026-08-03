@@ -5,7 +5,8 @@
     "violations": 2,
     "boundary": 0,
     "grandfathered": 0,
-    "malformed": 0
+    "malformed": 0,
+    "unscanned": 0
   },
   "applicability": "applicable",
   "soundness_ok": true,
@@ -160,5 +161,6 @@
   "boundary": [],
   "grandfathered": [],
   "malformed": [],
+  "unscanned": [],
   "warnings": []
 }

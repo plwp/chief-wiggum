@@ -666,6 +666,14 @@ def _retarget_suite_reports(cfg_path: Path, workdir: Path) -> None:
     the suite cmd are re-pointed — a hand-authored suite is never
     second-guessed.
 
+    A repo-relative `report` that does NOT appear in `cmd` can never produce a
+    correct baseline (the runner writes wherever `cmd` directs; the scorer
+    reads `report`) — this is a malformed suite config, not a case to
+    silently skip. It fails HERE, naming both values, rather than letting the
+    suite cmd run (writing into the target tree, the exact violation this
+    function exists to prevent) and surfacing later as a misattributed
+    downstream "no results written" error (chief-wiggum#271).
+
     Authority boundary: this re-points the RESULT artifacts only. `dotnet
     test` still builds into per-project ``bin/``/``obj/`` inside the tree —
     unavoidable without overriding MSBuild output paths, and covered by the
@@ -674,6 +682,15 @@ def _retarget_suite_reports(cfg_path: Path, workdir: Path) -> None:
     changed = False
     for suite in cfg.get("suites", []):
         report = suite.get("report")
+        cmd = suite.get("cmd", "")
+        name = suite.get("name", "<unnamed>")
+        if (suite.get("parser") in ("junit-xml", "trx") and report
+                and not os.path.isabs(report) and report not in cmd):
+            raise AdoptError(
+                f"suite {name!r}: report {report!r} is repo-relative but does not "
+                f"appear in cmd {cmd!r} — a baseline run would write results wherever "
+                f"cmd directs while being scored from {report!r}; these must match "
+                f"(fix the suite's `cmd`/`report` in ratchet config)")
         if (suite.get("parser") == "junit-xml" and report
                 and not os.path.isabs(report) and report in suite.get("cmd", "")):
             new = str(workdir / f"{suite.get('name', 'suite')}-junit.xml")

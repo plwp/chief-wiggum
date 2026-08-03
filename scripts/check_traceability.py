@@ -88,6 +88,13 @@ from chief_wiggum import languages as cw_languages  # noqa: E402
 from chief_wiggum.hashing import hash_epic_definitions, scanner_version  # noqa: E402
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 
+# Decode-defensive bulk-source read (#282): a bare path.read_text() crashes
+# scan_source with UnicodeDecodeError on a UTF-16 (or otherwise non-UTF-8)
+# file — the surrounding `except OSError` at the read site does NOT catch it
+# (UnicodeDecodeError is not an OSError). Shared with check_single_writer.py
+# so the two scanners can't drift on decode policy. See chief_wiggum/textio.py.
+from chief_wiggum.textio import read_text_safe  # noqa: E402
+
 # The @cw-trace annotation emission family (Annotation, classify_source_kind,
 # canonical_id, kind_of, parse_annotations, emit_source_annotations) moved to
 # chief_wiggum.trace_emission (#162) so scripts/emitters/*.py can sit BEHIND
@@ -186,6 +193,14 @@ class TraceReport:
     # and is additionally listed here so the report can label it.
     grandfathered_contracts: list[dict] = field(default_factory=list)
     expired_grandfathers: list[dict] = field(default_factory=list)
+    # Source files that could not be READ at all during scan_source
+    # (chief-wiggum#282) — permissions, a race where the file vanished
+    # mid-walk, a broken symlink, ... A UTF-16/non-UTF-8 file is NOT here:
+    # read_text_safe BOM-sniffs and falls back to a lossy decode rather than
+    # skipping, so it stays fully scanned. Report-only by design: an unscanned
+    # file is visible (with its path) but never flips soundness_ok/coverage_ok
+    # by itself — a repo full of binary-ish files must not become unusable.
+    unscanned: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     # #281: a declaration that ALMOST matches the grammar (two-segment
     # `INV-001`). The scanner cannot see it, so it silently shrinks the
@@ -241,13 +256,16 @@ class TraceReport:
             "expired_grandfathers": len(self.expired_grandfathers),
             "malformed_ids": len(self.malformed_ids),
             "unparsed_artifacts": len(self.unparsed_artifacts),
+            "unscanned": len(self.unscanned),
         }
 
     @property
     def soundness_ok(self) -> bool:
         # #281: a broken measurement is a soundness failure, not a pass. An
         # epic whose declarations the scanner cannot see has an EMPTY graph
-        # by breakage, not by cleanliness.
+        # by breakage, not by cleanliness. `unscanned` (#282) deliberately does
+        # NOT participate: report-only by binding decision — a repo full of
+        # binary-ish files must not become unusable under --gate.
         return not (self.orphan_business_rules or self.dangling or self.invalid_links
                     or self.malformed_ids or self.unparsed_artifacts)
 
@@ -274,6 +292,7 @@ class TraceReport:
             "invalid_links": self.invalid_links,
             "malformed_ids": self.malformed_ids,
             "unparsed_artifacts": self.unparsed_artifacts,
+            "unscanned": self.unscanned,
             "suspect_links": self.suspect_links,
             "suspect_contracts": self.suspect_contracts,
             "justified_contracts": self.justified_contracts,
@@ -523,18 +542,39 @@ def unsupported_extension_counts(
 
 def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> list[Annotation]:
     """Walk source/test/verification files, emitting ``@cw-trace`` annotations
-    per file. Language files route through the per-language emitter registry
+    per file. Public, backward-compatible entry point (code_query.py and many
+    existing tests call this expecting a plain ``list[Annotation]``) — a thin
+    wrapper over ``_scan_source_and_unscanned``, which additionally tracks
+    files that could not be READ at all (chief-wiggum#282); ``check()`` calls
+    that directly so it can surface them, never silently."""
+    annotations, _unscanned = _scan_source_and_unscanned(source_root, only_files=only_files)
+    return annotations
+
+
+def _scan_source_and_unscanned(
+    source_root: str | Path, only_files: set[str] | None = None
+) -> tuple[list[Annotation], list[dict]]:
+    """Language files route through the per-language emitter registry
     (``scripts/emitters`` — the gate consumes the SAME dispatch path the
     emitters expose, so a per-language emitter can never drift from what the
     gate actually scans); verification artifacts (``.rego``/``.yaml``/``.yml``
     — not a programming language in the matrix) keep the direct
     ``emit_source_annotations`` path. ``only_files`` (repo-relative paths),
     when given, restricts the walk to that set instead of the whole tree —
-    used by ``--changed-since``."""
+    used by ``--changed-since``.
+
+    Returns ``(annotations, unscanned)``: ``unscanned`` lists
+    ``{"file", "reason"}`` for every candidate that could not be READ at all
+    (chief-wiggum#282) — decode failures alone can no longer land here
+    (``read_text_safe`` BOM-sniffs and falls back to a lossy decode rather
+    than skipping), so this is genuinely "could not open this file", never a
+    silent drop.
+    """
     root = Path(source_root)
     annotations: list[Annotation] = []
+    unscanned: list[dict] = []
     if not root.exists():
-        return annotations
+        return annotations, unscanned
     if only_files is not None:
         candidates = sorted(only_files)
     else:
@@ -545,16 +585,16 @@ def scan_source(source_root: str | Path, only_files: set[str] | None = None) -> 
         if not _file_predicate(rel):
             continue
         path = root / rel
-        try:
-            text = path.read_text()
-        except OSError:
+        text, skip_reason = read_text_safe(path)
+        if skip_reason is not None:
+            unscanned.append({"file": rel, "reason": skip_reason})
             continue
         if path.suffix in VERIFICATION_EXTS:
             annotations.extend(emit_source_annotations(rel, text, path.suffix))
         else:
             facts, _tier = emitters.emit(rel, text)
             annotations.extend(emitters.facts_of_kind(facts, "trace_annotation"))
-    return annotations
+    return annotations, unscanned
 
 
 def _scanner_version() -> str:
@@ -580,6 +620,10 @@ def _scanner_version() -> str:
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "languages.py",
+        # Decode-defensive bulk-source read (#282) — finding-affecting: a
+        # decode-policy change here changes what a file's annotations look
+        # like once read, or whether it lands in `unscanned` at all.
+        cw_dir / "textio.py",
         # The DATA the loader reads, not just the loader (#259): moving an
         # extension between generic_tier / unsupported_extensions changes
         # exactly which files this scanner walks, with no code change at
@@ -803,6 +847,7 @@ def check(
     # Contract->BR realizes links live in the epic docs; code/test links in source.
     annotations = scan_epic_annotations(epic_dir)
     unsupported: dict[str, int] = {}
+    unscanned: list[dict] = []
     if source_root:
         only_files = None
         if changed_since:
@@ -812,7 +857,8 @@ def check(
             # .php/.cpp still triggers the coverage warning (scan_source
             # filters back down through _file_predicate itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
-        annotations += scan_source(source_root, only_files=only_files)
+        source_annotations, unscanned = _scan_source_and_unscanned(source_root, only_files=only_files)
+        annotations += source_annotations
         unsupported = unsupported_extension_counts(source_root, only_files=only_files)
     external = None
     if external_links_path is not None:
@@ -835,6 +881,15 @@ def check(
         defined, annotations, schema, coverage_requirements=coverage_requirements,
         id_bearing_artifacts=id_bearing, malformed_ids=malformed,
     )
+    report.unscanned = unscanned
+    if unscanned:
+        # Never silent (#282): a file the scanner could not even read is
+        # visible with its path, same treatment as the unsupported-extension
+        # warning below — report-only, does not affect soundness_ok/coverage_ok.
+        report.warnings.append(
+            f"{len(unscanned)} file(s) could not be read during the scan (unscanned) — "
+            "see the Unscanned files section"
+        )
     if unsupported:
         # Coverage metadata (#162): a recognized-but-unsupported-language file is
         # NEVER silently dropped — surfaced as an explicit warning, same as any
@@ -961,6 +1016,13 @@ def render_markdown(report: TraceReport) -> str:
     if report.unparsed_artifacts:
         lines += ["", "## Unparsed artifacts (present, zero stable IDs)", ""]
         lines += [f"- {u['file']}: {u['reason']}" for u in report.unparsed_artifacts]
+    if report.unscanned:
+        lines += [
+            "",
+            "## Unscanned files (could not be read — never blocking on their own)",
+            "",
+        ]
+        lines += [f"- {u['file']}: {u['reason']}" for u in report.unscanned]
     if report.malformed_ids:
         lines += ["", "## Malformed stable IDs (near-miss declarations)", ""]
         lines += [f"- {m['file']}:{m['line']} {m['token']} → expected {m['expected']}"

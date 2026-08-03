@@ -254,6 +254,127 @@ def test_baseline_real_test_run_and_journal(user_dir, tmp_path):
     assert rc == 0
 
 
+# --- _retarget_suite_reports: report/cmd mismatch must not silently no-op (#271) --
+
+
+def test_retarget_raises_when_relative_report_absent_from_cmd(tmp_path):
+    """A repo-relative `report` that does NOT appear in `cmd` can never produce a
+    correct baseline: the runner writes results wherever `cmd` directs while the
+    scorer looks at `report`. This must fail loudly, AT RETARGET TIME, naming both
+    values — not silently no-op and surface later as a misleading downstream
+    "no results written" error (#271)."""
+    cfg_path = tmp_path / "ratchet.json"
+    cfg_path.write_text(json.dumps({
+        "suites": [{
+            "name": "dotnet",
+            "cmd": "dotnet test",  # no results-directory token at all
+            "cwd": ".",
+            "parser": "trx",
+            "report": "stale-results-dir",  # left over from a previous cmd
+        }]
+    }))
+    with pytest.raises(adopt.AdoptError) as exc_info:
+        adopt._retarget_suite_reports(cfg_path, tmp_path / "wd")
+    msg = str(exc_info.value)
+    assert "dotnet" in msg
+    assert "stale-results-dir" in msg
+    assert "dotnet test" in msg
+    # must not have rewritten the config on disk when it raised
+    assert json.loads(cfg_path.read_text())["suites"][0]["report"] == "stale-results-dir"
+
+
+def test_retarget_still_rewrites_when_report_matches_cmd(tmp_path):
+    """Regression: the normal case — report token verbatim in cmd — still gets
+    re-pointed outside the target tree exactly as before."""
+    cfg_path = tmp_path / "ratchet.json"
+    cfg_path.write_text(json.dumps({
+        "suites": [{
+            "name": "js",
+            "cmd": "npm test -- --reporter junit --outputFile junit.xml",
+            "cwd": ".",
+            "parser": "junit-xml",
+            "report": "junit.xml",
+        }]
+    }))
+    workdir = tmp_path / "wd"
+    adopt._retarget_suite_reports(cfg_path, workdir)
+    cfg = json.loads(cfg_path.read_text())
+    suite = cfg["suites"][0]
+    assert suite["report"] == str(workdir / "js-junit.xml")
+    # the stale bare token is gone; the new quoted absolute path took its place
+    # (note: not an exact-string compare — pytest's own tmp_path fixture path
+    # contains the substring "pytest", which legitimately triggers the
+    # unrelated `-p no:cacheprovider` suffix branch below)
+    assert "--outputFile junit.xml" not in suite["cmd"]
+    assert f'"{workdir / "js-junit.xml"}"' in suite["cmd"]
+
+
+def test_retarget_never_second_guesses_absolute_report(tmp_path):
+    """A deliberately-absolute report path is never rewritten or flagged, even
+    when it does not appear in cmd — the existing intent (a hand-authored suite
+    is trusted) must hold (#271 AC)."""
+    abs_report = str(tmp_path / "elsewhere" / "results.trx")
+    cfg_path = tmp_path / "ratchet.json"
+    cfg_path.write_text(json.dumps({
+        "suites": [{
+            "name": "dotnet",
+            "cmd": "dotnet test",
+            "cwd": ".",
+            "parser": "trx",
+            "report": abs_report,
+        }]
+    }))
+    adopt._retarget_suite_reports(cfg_path, tmp_path / "wd")  # must not raise
+    cfg = json.loads(cfg_path.read_text())
+    assert cfg["suites"][0]["report"] == abs_report
+    assert cfg["suites"][0]["cmd"] == "dotnet test"
+
+
+def test_baseline_raises_and_leaves_target_tree_clean_on_report_cmd_mismatch(
+    user_dir, tmp_path, monkeypatch, capsys,
+):
+    """Integration-level AC: a malformed suite config (report/cmd drifted apart)
+    must fail the baseline before any suite ever runs, leaving the target tree
+    byte-clean — not writing test-runner output into the tree being adopted
+    (the violation sidecar mode exists to prevent) (#271 AC3). The suite's cmd
+    genuinely writes into a repo-relative results dir when run (mirroring the
+    real `dotnet test --results-directory` shape) — the malformed `report`
+    field disagrees with it, so without the fix the cmd would actually run and
+    dirty the tree before the downstream parser ever notices."""
+    target = make_target(tmp_path / "t")
+    artifacts.elect(target, "sidecar", backing="local")
+    resolver = artifacts.Resolver.resolve(target)
+
+    def fake_init(args):
+        cfg_path = resolver.quality_dir() / ratchet.CONFIG_NAME
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps({
+            "suites": [{
+                "name": "dotnet",
+                # writes for real into a repo-relative dir if it ever runs —
+                # this is NOT the same token as `report` below.
+                "cmd": "mkdir -p testresults && date > testresults/out.trx",
+                "cwd": ".",
+                "parser": "trx",
+                "report": "stale-results-dir",  # left over from a previous cmd
+            }]
+        }, indent=2))
+        return 0
+
+    monkeypatch.setattr(adopt.ratchet, "cmd_init", fake_init)
+
+    rc = adopt.main(["baseline", "--repo", str(target), "--workdir", str(tmp_path / "wd")])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "dotnet" in err
+    assert "stale-results-dir" in err
+    assert "testresults" in err
+    # the suite cmd never ran: no results dir materialized in the target tree
+    assert not (target / "testresults").exists()
+    assert_no_cw_meta(target)
+    assert _tracked_clean(target)
+
+
 # --- grandfather -----------------------------------------------------------------
 
 
