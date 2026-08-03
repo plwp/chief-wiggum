@@ -243,6 +243,37 @@ def debt_partial_coverage(quality_dir: Path, counts: dict | None) -> str | None:
             + ", ".join(f"{k}: {n} file(s)" for k, n in top))
 
 
+def debt_engines_crashed(quality_dir: Path) -> dict[str, str]:
+    """Debt engines that DIED, engine -> reason (#265).
+
+    Deliberately NOT gated on the item count, unlike
+    :func:`debt_not_measured` / :func:`debt_partial_coverage`. Those answer "is
+    this zero-item inventory vacuous?", so an empty count is their precondition.
+    A crash is a different claim: the clone engine dying says nothing about
+    whether the OTHER three engines found things, and an inventory with 40
+    markers findings and a dead clone engine is still missing a whole dimension.
+    Gating on emptiness would have hidden exactly the case #265 reported.
+
+    Fires only on an explicit crash signal — never on ``skipped`` (an absent
+    tool is a declared limitation) and never on an unsupported language tier.
+    Over-claiming a gap trains the operator to ignore the marker."""
+    doc = _load_json(quality_dir / DEBT_NAME)
+    if not isinstance(doc, dict):
+        return {}
+    out: dict[str, str] = {}
+    for name, res in sorted((doc.get("engines") or {}).items()):
+        if not isinstance(res, dict):
+            continue
+        if res.get("status") != "crashed" and not res.get("crashed"):
+            continue
+        reason = res.get("crashed") or res.get("skipped") or "engine crashed"
+        note = (res.get("note") or "").strip().splitlines()
+        if note:
+            reason = f"{reason} — {note[0][:120]}"
+        out[name] = reason
+    return out
+
+
 def adopted_patterns(patterns_dir: Path) -> list[dict]:
     doc = _load_json(patterns_dir / ADOPTED_NAME)
     if not isinstance(doc, dict):
@@ -377,6 +408,9 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
         "debt": debt,
         "not_measured": not_measured,
         "partial_coverage": partial_coverage,
+        # engine -> reason for engines that DIED (#265). Independent of the
+        # item count: a dead dimension is news whatever the others found.
+        "crashed_engines": debt_engines_crashed(quality_dir),
         "adoption": adoption_status(resolver.meta_root),
     }
 
@@ -458,6 +492,11 @@ def render_text(status: dict) -> str:
         lines.append(f"- {p['id']}{ver} (applied {p.get('applied_at') or '?'})")
     lines += ["", "## Debt", ""]
     debt = status["debt"]
+    # Before the counts, and never gated on them: an engine that died means a
+    # whole detection dimension is missing, however many items the rest found.
+    for engine, reason in (status.get("crashed_engines") or {}).items():
+        lines.append(f"CRASHED: debt engine {engine} — {reason}")
+        lines.append("that dimension was NOT measured; this is a defect, not an unsupported tier")
     if debt is None:
         lines.append("no inventory (docs/quality/debt.json absent)")
     elif not debt:
