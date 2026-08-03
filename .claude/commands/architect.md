@@ -436,9 +436,17 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 # the contract/invariant graph (see docs/traceability.md). Code/test coverage is
 # checked later by /close-epic; at architect time this validates the doc-level
 # graph. Assign stable BR-/CTR-/INV- IDs and `@cw-trace realizes` links so this
-# passes; it degrades gracefully when no IDs exist yet. (Suspect-link propagation
-# and `--write-links` are a /close-epic concern — no code/test links exist to
-# record yet at this stage.)
+# passes. IDs are three-segment `KIND-SLUG-NNN` (e.g. INV-order-001) — a
+# two-segment `KIND-NNN` shape (no slug) does not match the scanner's DEFINE_RE.
+#
+# This does NOT degrade gracefully once artifacts exist (chief-wiggum#281): an
+# epic dir with NO id-bearing artifacts (or only empty ones) is `inapplicable`
+# and exits 0, but an artifact that carries CONTENT and yields zero parseable
+# IDs reports `error` and FAILS the gate — that state used to exit 0 with a
+# warning, which let a whole epic proceed with no traceable contracts at all.
+# Author the IDs before running this, don't run it against stub/TBD prose.
+# (Suspect-link propagation and `--write-links` are a /close-epic concern — no
+# code/test links exist to record yet at this stage.)
 python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
 
 # Single-writer soundness gate — validates that "single write path"/"single source
