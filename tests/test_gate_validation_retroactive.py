@@ -182,19 +182,50 @@ def _tr_seed_sampling_gap(corpus: Path) -> None:
            "# @cw-trace verifies CTR-order-001 INV-order-003\n(decoy — unscanned extension)\n")
 
 
+def _tr_seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the code under test (chief-wiggum#281).
+
+    The epic is re-authored with the two-segment `INV-001` shape the /architect
+    skill's own worked example used to model. Every ID becomes unparseable, so
+    the scanner finds zero definitions and zero annotation targets — and before
+    #281 that reported a green `inapplicable` pass, because "nothing measured"
+    and "nothing wrong" were the same output.
+
+    This is the runtime analogue of the instrumentation-deleted evasion class:
+    nothing about the source tree changed, only the gate's ability to SEE it.
+    Expected: fire.
+    """
+    _write(corpus / "epic" / "contracts.md", (
+        "### CTR-001 — valid date range\n"
+        "<!-- @cw-trace realizes BR-001 -->\n\n"
+        "REQUIRES: start_date <= end_date\n"
+        "ENSURES: order.total > 0\n"
+    ))
+    _write(corpus / "epic" / "invariants.md", (
+        "- **BR-001**: orders must have a positive total\n"
+        "- **INV-003**: order status never regresses\n"
+    ))
+
+
 TR_EXECUTORS = {
     "tr-direct-01": _tr_seed_direct,
     "tr-omission-01": _tr_seed_omission,
     "tr-config-indirection-01": _tr_seed_config_indirection,
     "tr-sampling-gap-01": _tr_seed_sampling_gap,
+    "tr-instrument-broken-01": _tr_seed_instrument_broken,
 }
 
 
 def _tr_outcome(corpus: Path) -> str:
     report = _run("check_traceability.py", corpus / "epic", corpus / "src")
     c = report["counts"]
+    # malformed_ids/unparsed_artifacts MUST be in this sum. They are the #281
+    # finding classes, and a trial harness that omits them reports "not-fired"
+    # while the gate is firing correctly — reproducing the very bug the gate
+    # now catches, one layer up, inside the machinery that certifies it.
     findings = (c["orphan_business_rules"] + c["uncovered_contracts"]
-                + c["untested_contracts"] + c["dangling"] + c["invalid_links"])
+                + c["untested_contracts"] + c["dangling"] + c["invalid_links"]
+                + c["malformed_ids"] + c["unparsed_artifacts"])
     return "fired" if findings > 0 else "not-fired"
 
 
@@ -271,11 +302,58 @@ def test_tr_record_trials_are_backed_by_live_executions(tmp_path):
         "check_traceability.py", tmp_path)
 
 
+def test_tr_instrument_broken_seed_reports_error_not_merely_fires(tmp_path):
+    """The instrument-broken trial must be certified on the STATE, not just on
+    fired/not-fired (chief-wiggum#281).
+
+    This seed also produces dangling annotations (the source still points at
+    ids the scanner can no longer resolve), so it would report "fired" even
+    under the pre-#281 finding sum. A trial that only checks fired/not-fired
+    therefore does NOT prove the new finding class works — it would pass just
+    as happily if malformed_ids were never implemented.
+
+    So assert the distinguishing facts directly: the outcome is `error` (not a
+    green `inapplicable`), the malformed tokens are NAMED rather than merely
+    counted, and the measured denominator makes the zero visible.
+    """
+    corpus = _copy_clean("traceability_clean", tmp_path, "tr-instrument-broken-assert")
+    _tr_seed_instrument_broken(corpus)
+    report = _run("check_traceability.py", corpus / "epic", corpus / "src")
+
+    assert report["applicability"] == "error", report
+    assert report["outcome"] == "error", report
+    # artifacts were present and non-empty, but nothing parsed out of them
+    assert report["measured"]["id_bearing_artifacts"] == 2, report["measured"]
+    assert report["measured"]["defined_ids"] == 0, report["measured"]
+    assert report["counts"]["unparsed_artifacts"] == 2, report["counts"]
+
+    tokens = {m["token"] for m in report["malformed_ids"]}
+    assert tokens == {"CTR-001", "BR-001", "INV-003"}, report["malformed_ids"]
+    for m in report["malformed_ids"]:
+        assert m["file"] and m["line"], m
+
+
+def test_tr_gate_exits_nonzero_on_the_instrument_broken_seed(tmp_path):
+    """`error` must fail BOTH gates — the whole point of #281 is that this
+    state stops exiting 0."""
+    corpus = _copy_clean("traceability_clean", tmp_path, "tr-instrument-broken-exit")
+    _tr_seed_instrument_broken(corpus)
+    for gate in ("soundness", "coverage"):
+        rc = subprocess.run(
+            [sys.executable, str(SCRIPTS / "check_traceability.py"), str(corpus / "epic"),
+             "--source", str(corpus / "src"), "--gate", gate],
+            capture_output=True, text=True).returncode
+        assert rc != 0, f"--gate {gate} exited 0 on a broken instrument"
+
+
 def test_tr_clean_corpus_run_is_backed_by_live_execution(tmp_path):
     def findings_of(r):
         c = r["counts"]
+        # Same rule as _tr_outcome: the #281 finding classes belong in the sum,
+        # or a clean-corpus run could report 0 findings while the gate fires.
         return (c["orphan_business_rules"] + c["uncovered_contracts"]
-                + c["untested_contracts"] + c["dangling"] + c["invalid_links"])
+                + c["untested_contracts"] + c["dangling"] + c["invalid_links"]
+                + c["malformed_ids"] + c["unparsed_artifacts"])
 
     def coverage_of(r):
         # The JSON report doesn't expose an annotation count, so derive it with
