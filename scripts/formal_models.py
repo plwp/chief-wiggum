@@ -31,6 +31,10 @@ from typing import Any
 
 import jsonschema
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from chief_wiggum.trace_ids import near_miss_ids  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Schema paths — resolved relative to this file's parent (scripts/) → repo root
 # ---------------------------------------------------------------------------
@@ -91,6 +95,21 @@ def validate(data: dict, schema_type: str | None = None) -> list[str]:
     schema = _load_schema(schema_type)
     validator = jsonschema.Draft202012Validator(schema)
     return [e.message for e in validator.iter_errors(data)]
+
+
+# find_malformed_ids IS chief_wiggum.trace_ids.near_miss_ids (chief-wiggum#293):
+# a malformed stable id in a formal model (INV-001 instead of INV-order-001)
+# is schema-VALID today — neither state-machine-schema.json's $defs.invariant
+# .id nor contracts-schema.json's $defs.condition.id carries a `pattern` — yet
+# invisible to check_traceability.py's DEFINE_RE/ID_RE once folded into an
+# epic (chief-wiggum#281). Reusing near_miss_ids() over the model's raw JSON
+# TEXT (not a bare extracted id string — near_miss_ids only matches in the
+# same declaration positions DEFINE_RE uses: a JSON `"id": "..."` field, a
+# markdown heading, or a bold label) means this is the SAME detector
+# check_traceability.py uses, not a second regex. Deliberately NOT
+# `DEFINE_RE.search(bare_id)`: DEFINE_RE requires a declaration prefix and
+# never matches a bare id string on its own.
+find_malformed_ids = near_miss_ids
 
 
 # ---------------------------------------------------------------------------
@@ -555,14 +574,34 @@ def generate_guards_go(contracts: dict) -> str:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    data = _load_json(Path(args.model))
+    raw_text = Path(args.model).read_text()
+    data = json.loads(raw_text)
     schema_type = args.type or detect_schema_type(data)
     errors = validate(data, schema_type)
+    # chief-wiggum#293: report-only by default (docs/gate-rollout.md) — a
+    # malformed id never hard-fails `validate` unless --strict-ids is passed,
+    # so an adopted brownfield repo's pre-existing two-segment models are not
+    # broken on arrival.
+    malformed = find_malformed_ids(raw_text)
+
     if errors:
         print(f"INVALID ({schema_type}): {len(errors)} error(s)")
         for e in errors:
             print(f"  - {e}")
+
+    if malformed:
+        severity = "ERROR" if args.strict_ids else "WARNING"
+        note = "" if args.strict_ids else " (report-only; pass --strict-ids to block)"
+        print(
+            f"{severity}: malformed stable id(s){note} — two-segment KIND-NNN "
+            f"(missing the slug segment) is invisible to the traceability "
+            f"scanner (chief-wiggum#281): {', '.join(malformed)}"
+        )
+
+    if errors:
         return 1
+    if malformed:
+        return 1 if args.strict_ids else 0
     print(f"VALID ({schema_type})")
     return 0
 
@@ -631,6 +670,12 @@ def main() -> int:
     p_validate = sub.add_parser("validate", help="Validate a model against its schema")
     p_validate.add_argument("model", help="Path to model JSON file")
     p_validate.add_argument("--type", choices=list(SCHEMAS.keys()), help="Schema type (auto-detected if omitted)")
+    p_validate.add_argument(
+        "--strict-ids", action="store_true",
+        help="Fail (exit 1) on malformed stable ids (two-segment KIND-NNN, e.g. INV-001) "
+        "invisible to check_traceability.py's scanner (chief-wiggum#293). Report-only by "
+        "default (docs/gate-rollout.md): findings print but do not fail an adopted repo's "
+        "pre-existing two-segment models on arrival. Opt in for newly authored models.")
 
     p_graph = sub.add_parser("graph", help="Analyze state machine graph properties")
     p_graph.add_argument("model", help="Path to state machine JSON file")

@@ -216,7 +216,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Unique three-segment stable ID, KIND-SLUG-NNN (e.g., 'INV-order-001'). A two-segment KIND-NNN shape (no slug) is invisible to the traceability scanner (chief-wiggum#281)."
+          "description": "Unique three-segment stable ID, KIND-SLUG-NNN (e.g., 'INV-order-001'). A two-segment KIND-NNN shape (no slug) is invisible to the traceability scanner (chief-wiggum#281). `formal_models.py validate` surfaces a malformed shape as a report-only warning by default, `--strict-ids` to block (chief-wiggum#293)."
         },
         "description": {
           "type": "string",
