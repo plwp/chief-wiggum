@@ -573,10 +573,11 @@ def build_inventory(repo: str, workdir: str, out_path: Path,
         "boundary": boundary_items,
         "boundary_note": (
             "boundary captures wholly-out-of-scope evidence only where an "
-            "engine sees it cheaply: clone classes dropped for out-of-scope "
-            "members (>= 2 total spans). markers/dead_code/test_health corpora "
-            "are scope-narrowed at the source, so their out-of-scope findings "
-            "are never observed — absence from this section is NOT evidence "
+            "engine sees it cheaply. Since #265 the clone corpus is ALSO "
+            "scope-narrowed at the source (it had to be — an unnarrowed corpus "
+            "exhausted the heap and reported zero findings), so clones now join "
+            "markers/dead_code/test_health: out-of-scope findings are never "
+            "observed by any engine. Absence from this section is NOT evidence "
             "the out-of-scope code is clean."
         ),
         "items": items,
@@ -626,8 +627,18 @@ def format_report(envelope: dict) -> str:
         parts = ", ".join(f"{sevs[s]} {s}" for s in ("high", "medium", "low") if s in sevs)
         lines.append(f"- {engine}: {parts}")
     for name, res in envelope["engines"].items():
-        if res.get("skipped"):
+        # A CRASHED engine is a defect, not a declared gap (#265). Rendering it
+        # as "skipped" is what let a whole detection dimension die silently.
+        if res.get("status") == "crashed" or res.get("crashed"):
+            reason = res.get("crashed") or res.get("skipped")
+            lines.append(f"- {name}: CRASHED — {reason} (dimension NOT measured)")
+            note = (res.get("note") or "").strip().splitlines()
+            if note:
+                lines.append(f"  {note[0][:200]}")
+        elif res.get("skipped"):
             lines.append(f"- {name}: skipped — {res['skipped']}")
+        if res.get("corpus_fallback"):
+            lines.append(f"- {name}: {res['corpus_fallback']}")
     if envelope["unscanned_languages"]:
         uns = ", ".join(f"{k}: {v} file(s)" for k, v in sorted(envelope["unscanned_languages"].items()))
         lines.append(f"- unscanned languages (dead_code): {uns}")

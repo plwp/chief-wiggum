@@ -224,7 +224,8 @@ def test_cli_json_format(user_dir, tmp_path, capsys):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert set(data) == {"resolver", "gates", "ratchet", "patterns", "debt",
-                         "not_measured", "partial_coverage", "adoption"}
+                         "not_measured", "partial_coverage", "crashed_engines",
+                         "adoption"}
 
 
 def test_cli_missing_target_is_usage_error(user_dir, tmp_path, capsys):

@@ -9,6 +9,7 @@ tests/test_hotspots.py (CI has none of the tools; local runs do).
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -442,15 +443,24 @@ def test_cluster_scope_dropped_classes_land_in_boundary_out():
     assert [m["file"] for m in boundary[0]["members"]] == ["src/d.py", "src/e.py"]
 
 
+def _clone_repo(tmp_path: Path) -> Path:
+    """A real repo whose tracked population is exactly FAKE_DUPLICATES' files."""
+    return _make_repo(tmp_path, {
+        f"src/{n}.py": f"# {n}\nx = 1\n" for n in ("a", "b", "c", "d", "e")
+    })
+
+
 def test_analyze_returns_boundary_classes(tmp_path, monkeypatch):
+    repo = _clone_repo(tmp_path)
     fake_report = {"statistics": {}, "duplicates": FAKE_DUPLICATES}
-    monkeypatch.setattr(duplication, "run_jscpd", lambda repo, workdir: (fake_report, None))
-    result = clones.analyze("/repo", str(tmp_path),
+    monkeypatch.setattr(duplication, "run_jscpd",
+                        lambda repo, workdir, **kw: (fake_report, None))
+    result = clones.analyze(str(repo), str(tmp_path / "wd"),
                             path_filter=lambda rel: rel != "src/e.py")
     assert [c["size"] for c in result["clone_classes"]] == [3]
     assert [c["size"] for c in result["boundary_classes"]] == [2]
     # unfiltered: nothing is boundary
-    result_all = clones.analyze("/repo", str(tmp_path))
+    result_all = clones.analyze(str(repo), str(tmp_path / "wd2"))
     assert result_all["boundary_classes"] == []
 
 
@@ -509,12 +519,13 @@ def test_duplication_analyze_still_reports_aggregate_via_shared_runner(tmp_path,
         }},
         "duplicates": FAKE_DUPLICATES,
     }
-    monkeypatch.setattr(duplication, "run_jscpd", lambda repo, workdir: (fake_report, None))
+    monkeypatch.setattr(duplication, "run_jscpd",
+                        lambda repo, workdir, **kw: (fake_report, None))
     result = duplication.analyze("/repo", workdir=str(tmp_path))
     assert result["duplication_pct_lines"] == 10.0
     assert result["clones"] == 1
     assert "baselines" in result
-    clone_result = clones.analyze("/repo", str(tmp_path))
+    clone_result = clones.analyze(str(_clone_repo(tmp_path)), str(tmp_path / "wd"))
     assert clone_result["clone_classes"][0]["size"] == 3
     assert clone_result["clone_pairs_reported"] == 3
 
@@ -524,6 +535,217 @@ def test_duplication_skip_shape_unchanged(monkeypatch, tmp_path):
     result = duplication.analyze(str(tmp_path), workdir=str(tmp_path / "wd"))
     assert result["skipped"] == "jscpd/node not found"
     assert "note" in result
+
+
+# --- #265: scope-narrow the clone corpus; crash != unsupported tier -----------
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def _capture_jscpd(monkeypatch, *, report=None, proc=None, raises=None):
+    """Monkeypatch the jscpd subprocess; return the list argv/kwargs land in."""
+    calls: list[dict] = []
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), **kw})
+        if raises is not None:
+            raise raises
+        workdir = cmd[cmd.index("--output") + 1]
+        if report is not None:
+            Path(workdir).mkdir(parents=True, exist_ok=True)
+            (Path(workdir) / "jscpd-report.json").write_text(json.dumps(report))
+        return proc if proc is not None else _FakeProc()
+
+    monkeypatch.setattr(duplication, "_jscpd_cmd", lambda: ["jscpd"])
+    monkeypatch.setattr(duplication, "_run_capture", fake_run)
+    return calls
+
+
+EMPTY_REPORT = {"statistics": {"total": {}}, "duplicates": []}
+
+
+def test_clone_corpus_is_scope_narrowed_before_jscpd_runs(tmp_path, monkeypatch):
+    """AC3 (#265): the corpus is narrowed BEFORE the external tool is invoked —
+    not filtered afterwards. jscpd must never be handed the repo root."""
+    repo = _make_repo(tmp_path, {
+        "in/a.py": "x = 1\n", "in/b.py": "y = 2\n",
+        "out/c.py": "z = 3\n", "out/d.py": "w = 4\n",
+    })
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    clones.analyze(str(repo), str(tmp_path / "wd"),
+                   path_filter=lambda rel: rel.startswith("in/"))
+    assert len(calls) == 1
+    cmd = calls[0]["cmd"]
+    assert "in/a.py" in cmd and "in/b.py" in cmd
+    # the out-of-scope half never reaches the tool...
+    assert "out/c.py" not in cmd and "out/d.py" not in cmd
+    # ...and neither does the repo root, which is what OOMed in #265.
+    assert str(repo) not in cmd
+
+
+def test_clone_corpus_excludes_test_files(tmp_path, monkeypatch):
+    """jscpd's IGNORE globs kept tests out of the corpus; an explicit file list
+    must preserve that production-only contract rather than silently widen it."""
+    repo = _make_repo(tmp_path, {
+        "app.py": "x = 1\n",
+        "tests/test_app.py": "def test_x(): pass\n",
+        "src/thing_test.go": "package src\n",
+    })
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    clones.analyze(str(repo), str(tmp_path / "wd"))
+    cmd = calls[0]["cmd"]
+    assert "app.py" in cmd
+    assert "tests/test_app.py" not in cmd
+    assert "src/thing_test.go" not in cmd
+
+
+def test_files_in_corpus_matches_the_in_scope_population(tmp_path, monkeypatch):
+    """AC1 (#265): the engine reports a scanned-file count, and it equals the
+    in-scope production population — the assertion the ticket asks for."""
+    repo = _make_repo(tmp_path, {
+        "in/a.py": "x = 1\n", "in/b.py": "y = 2\n", "out/c.py": "z = 3\n",
+    })
+    _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+
+    def pf(rel):
+        return rel.startswith("in/")
+
+    result = clones.analyze(str(repo), str(tmp_path / "wd"), path_filter=pf)
+    expected = [f for f in population.tracked_source(str(repo), path_filter=pf)
+                if not population.is_test_file(f)]
+    assert result["files_in_corpus"] == len(expected) == 2
+
+
+def test_empty_scoped_corpus_is_measured_not_skipped(tmp_path, monkeypatch):
+    """A scope that selects nothing is a MEASURED empty result — jscpd is never
+    invoked, and the engine must not claim it was skipped or that it crashed."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    result = clones.analyze(str(repo), str(tmp_path / "wd"),
+                            path_filter=lambda rel: False)
+    assert calls == []
+    assert result["files_in_corpus"] == 0
+    assert "skipped" not in result and "crashed" not in result
+    assert result["clone_classes"] == []
+
+
+def test_jscpd_producing_no_report_is_crashed_not_skipped(tmp_path, monkeypatch):
+    """AC2 (#265): the OOM shape. A tool that was expected to run and died is a
+    DEFECT, and must not wear the same key as a tier that declares no support."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    _capture_jscpd(monkeypatch, proc=_FakeProc(
+        returncode=134, stderr="<--- Last few GCs --->\nallocation failure; heap out of memory"))
+    result = clones.analyze(str(repo), str(tmp_path / "wd"))
+    assert result["status"] == "crashed"
+    assert "crashed" in result
+    assert result["exit_code"] == 134
+    assert "heap out of memory" in result["note"]
+
+
+def test_jscpd_timeout_is_crashed(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    _capture_jscpd(monkeypatch, raises=subprocess.TimeoutExpired("jscpd", 600))
+    result = clones.analyze(str(repo), str(tmp_path / "wd"))
+    assert result["status"] == "crashed"
+    assert "timed out" in result["crashed"]
+
+
+def test_missing_tool_is_skipped_never_crashed(tmp_path, monkeypatch):
+    """The marker must not over-claim: an absent tool is a known limitation."""
+    monkeypatch.setattr(duplication, "_jscpd_cmd", lambda: None)
+    result = clones.analyze(str(_make_repo(tmp_path, {"a.py": "x=1\n"})), str(tmp_path / "wd"))
+    assert result["status"] == "skipped"
+    assert "crashed" not in result
+
+
+def test_crash_keeps_the_legacy_skipped_key_for_consumers(tmp_path, monkeypatch):
+    """quality_slop_gate / prevention_signals / report.py branch on `skipped`.
+    A crash still yields no data, so the key stays — `status` carries the news."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    _capture_jscpd(monkeypatch, proc=_FakeProc(returncode=1, stderr="boom"))
+    result = clones.analyze(str(repo), str(tmp_path / "wd"))
+    assert result["skipped"]
+    assert result["status"] == "crashed"
+
+
+def test_jscpd_child_gets_heap_and_timeout_guards(tmp_path, monkeypatch):
+    """#265 ran 177s to an OOM with no ceiling on either axis."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    clones.analyze(str(repo), str(tmp_path / "wd"))
+    kw = calls[0]
+    assert kw["timeout"] == duplication.DEFAULT_TIMEOUT_SECONDS
+    assert f"--max-old-space-size={duplication.DEFAULT_MAX_OLD_SPACE_MB}" \
+        in kw["env"]["NODE_OPTIONS"]
+
+
+def test_run_capture_kills_the_whole_process_group_on_timeout(monkeypatch):
+    """npx spawns node as a GRANDCHILD. `subprocess.run(timeout=...)` kills only
+    the direct child, orphaning the process that is actually eating the heap —
+    so the runner must lead its own session and kill the group."""
+    killed: list[tuple[int, int]] = []
+
+    class _P:
+        pid = 4242
+
+        def __init__(self, *a, **kw):
+            self.kwargs = kw
+            _P.seen = kw
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired("jscpd", timeout or 0)
+
+        def wait(self, timeout=None):
+            return -9
+
+    monkeypatch.setattr(duplication.subprocess, "Popen", _P)
+    monkeypatch.setattr(duplication.os, "killpg",
+                        lambda pgid, sig: killed.append((pgid, sig)))
+    monkeypatch.setattr(duplication.os, "getpgid", lambda pid: pid)
+    with pytest.raises(subprocess.TimeoutExpired):
+        duplication._run_capture(["jscpd"], cwd=".", env={}, timeout=1)
+    assert _P.seen["start_new_session"] is True
+    assert killed and killed[0][0] == 4242
+
+
+def test_whole_repo_corpus_still_supported_for_unscoped_callers(tmp_path, monkeypatch):
+    """prevention_signals asks for repo-wide clone context deliberately; the
+    narrowing must not amputate that — it narrows to the tracked population."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n", "b.py": "y = 2\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    result = clones.analyze(str(repo), str(tmp_path / "wd"))
+    assert result["files_in_corpus"] == 2
+    assert "a.py" in calls[0]["cmd"] and "b.py" in calls[0]["cmd"]
+
+
+def test_boundary_detection_is_recorded_as_unobservable_when_narrowed(tmp_path, monkeypatch):
+    """Narrowing the corpus means an out-of-scope clone partner is never
+    scanned, so #216's boundary referrals go quiet. Absence of boundary items
+    must be RECORDED as unobservable, never read as 'out-of-scope code is
+    clean' — the same honesty the other three engines already carry."""
+    repo = _make_repo(tmp_path, {"in/a.py": "x = 1\n", "out/b.py": "y = 2\n"})
+    _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    narrowed = clones.analyze(str(repo), str(tmp_path / "wd"),
+                              path_filter=lambda rel: rel.startswith("in/"))
+    assert "boundary_detection" in narrowed
+    assert "unobservable" in narrowed["boundary_detection"]
+    whole = clones.analyze(str(repo), str(tmp_path / "wd2"))
+    assert "boundary_detection" not in whole
+
+
+def test_oversized_corpus_falls_back_to_repo_root_and_records_it(tmp_path, monkeypatch):
+    """argv is finite. The fallback is allowed to be a wide scan, but it may
+    never be SILENT — a silent widening is how #265 stayed invisible."""
+    repo = _make_repo(tmp_path, {"in/a.py": "x = 1\n", "in/b.py": "y = 2\n"})
+    monkeypatch.setattr(duplication, "ARGV_BUDGET_BYTES", 8)
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    result = clones.analyze(str(repo), str(tmp_path / "wd"),
+                            path_filter=lambda rel: rel.startswith("in/"))
+    assert str(repo) in calls[0]["cmd"]
+    assert "argv" in result["corpus_fallback"]
 
 
 # --- scope doctrine: detection repo-wide, authority in-scope (F2) -------------
