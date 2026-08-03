@@ -563,6 +563,25 @@ pre-registration/vanity-lint invariants are grounded in `assumption.py`; the pag
 invariants are design-derived until first grounded use, flagged per the #139 allowance.
 Fake-door and concierge are named follow-ups, not shipped.
 
+**De-AI the copy** (chief-wiggum#255): generated marketing copy sits in the modal region
+of "SaaS landing page voice" and is now instantly recognisable as machine-written —
+em-dash triplets, antithesis ("not X — Y"), tricolons of three-word fragments, abstract
+virtue nouns as headers, zero specific numbers, zero named humans. The fix is not
+"write less like an AI"; it is to source voice from real customer language. Both stamped
+experiment patterns require a **voice-corpus** for the bet (verbatim customer quotes —
+feature-request threads, review streams, interview transcripts, inbound emails — stored
+with citations in the bet's directory) as mandatory drafting input, not inspiration; copy
+reuses the corpus's own nouns rather than marketing abstractions (INV-LPS-007/INV-PRE-007).
+`scripts/check_copy_voice.py` (report-only, per `docs/gate-rollout.md`) flags the
+measurable tells — em-dash density, antithesis patterns, tricolons, abstract-virtue
+headers, and a **specificity floor** (the share of substantive claims carrying a number, a
+named artifact, or a customer quote) — as candidates for the operator's **read-aloud
+test**: if the operator wouldn't say the sentence out loud to a customer, it doesn't ship.
+Multi-model + entropy applies the same way #253/#254 do (draft variants across the
+`consult_ai` quorum, discard the convergent phrasings via `scripts/divergence.py`, keep
+the odd ones) — but source material outranks sampling tricks: real quotes beat clever
+generation.
+
 ### Kill-review quorum (Track D, `bet.py kill-brief` / `kill-review`, #237)
 
 The disinterested killer of §2.4 mechanized (Boulding et al. 1997: clearer negative data

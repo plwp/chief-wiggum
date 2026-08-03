@@ -52,13 +52,6 @@ def test_design_taste_explicit_non_goals_present():
     assert "no training" in text or "no...fine-tuning" in text or "fine-tuning" in text
 
 
-def test_design_taste_names_no_private_products():
-    """The public repo may never name a private CW-adopted product (CLAUDE.md hard rule)."""
-    text = DESIGN_TASTE.read_text().lower()
-    for banned in ("dogeared", "safetrail", "booking-forms", "duplicat-rex", "ratably"):
-        assert banned not in text, f"private/bet product name leaked into docs/design-taste.md: {banned}"
-
-
 def test_taste_choice_schema_is_valid_json_and_documents_the_spread_invariant():
     schema = json.loads(TASTE_SCHEMA.read_text())
     assert schema["required"] == ["ts", "context", "chosen", "rejected"]

@@ -58,6 +58,17 @@ evidence; graduating to strength 5 is the [`presale`](../presale) pattern's job.
   chosen, not converged" — CLAUDE.md) but did not scope down to a first outward
   probe page (chief-wiggum#249). *(Design-derived — a human checkpoint, not a
   lintable property; no gate script exists or is planned for this invariant.)*
+- **INV-LPS-007 — voice sourced from a real customer, not a generated default.**
+  Outward copy is drafted against a `voice-corpus` for the bet — verbatim
+  customer quotes (feature-request threads, review streams, interview
+  transcripts, inbound emails) stored with citations in the bet's directory —
+  and reuses the corpus's own nouns rather than marketing abstractions. Every
+  substantive claim carries a number, a named artifact, or a customer quote
+  (the specificity floor); `scripts/check_copy_voice.py` (report-only,
+  chief-wiggum#255) surfaces the measurable AI-default tells (em-dash density,
+  antithesis, tricolons, abstract-virtue headers) as candidates for the
+  operator's read-aloud check — voice stays human-judged, never gated.
+  *(Design-derived — a human checkpoint; the lint only surfaces candidates.)*
 
 ## Scaffold
 

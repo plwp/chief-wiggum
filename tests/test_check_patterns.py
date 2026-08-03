@@ -531,12 +531,12 @@ def test_validation_experiment_patterns_are_specified_with_honest_grounding():
         assert entry["status"] == "specified"
         assert entry["category"] == "validation-experiment"
         assert entry["trust_class"] == "end-user-signal-driven"
-        assert entry["invariants"] == f"{prefix}-001..006"
+        assert entry["invariants"] == f"{prefix}-001..007"
 
         manifest = json.loads(
             (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
         cluster = check_patterns.cluster_entries(manifest["invariants"])
-        assert [e["id"] for e in cluster] == [f"{prefix}-00{i}" for i in range(1, 7)]
+        assert [e["id"] for e in cluster] == [f"{prefix}-00{i}" for i in range(1, 8)]
         assert manifest["success_metrics"]["metrics"], (
             f"{pid}: specified patterns must declare non-empty success_metrics.metrics")
         grounded = {e["id"] for e in cluster
@@ -570,6 +570,25 @@ def test_validation_experiment_patterns_require_divergent_visual_design():
 
         pattern_md = (SCRIPTS.parent / "patterns" / pid / "pattern.md").read_text()
         assert f"{prefix}-006" in pattern_md
+
+
+def test_validation_experiment_patterns_require_voice_corpus_sourced_copy():
+    """chief-wiggum#255: de-AI the copy — both validation-experiment patterns
+    carry an INV-*-007 invariant requiring outward copy to be drafted against a
+    real customer voice-corpus, citing the report-only check_copy_voice.py lint,
+    and it stays design-derived (voice is human-judged, never gated)."""
+    for pid, prefix in VALIDATION_EXPERIMENTS.items():
+        manifest = json.loads(
+            (SCRIPTS.parent / "patterns" / pid / "manifest.json").read_text())
+        cluster = check_patterns.cluster_entries(manifest["invariants"])
+        entry = next(e for e in cluster if e["id"] == f"{prefix}-007")
+        assert entry.get("grounding") == "design-derived"
+        stmt = entry["statement"].lower()
+        assert "voice-corpus" in stmt
+        assert "check_copy_voice.py" in stmt
+
+        pattern_md = (SCRIPTS.parent / "patterns" / pid / "pattern.md").read_text()
+        assert f"{prefix}-007" in pattern_md
 
 
 def test_validation_experiment_metrics_are_per_cohort_rates():

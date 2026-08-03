@@ -58,6 +58,14 @@ as wind-down cost in the harvest check (INV-PRE-005).
   chief-wiggum#250), with a human pick recorded before the page ships
   (chief-wiggum#249). *(Design-derived — a human checkpoint, not a lintable
   property; no gate script exists or is planned for this invariant.)*
+- **INV-PRE-007 — voice sourced from a real customer, not a generated default.**
+  Same clause as `landing-page-smoke-test` INV-LPS-007 — the checkout page's
+  copy is drafted against a `voice-corpus` (verbatim customer quotes, cited in
+  the bet's directory), reuses the corpus's own nouns, and every substantive
+  claim carries a number, a named artifact, or a customer quote.
+  `scripts/check_copy_voice.py` (report-only, chief-wiggum#255) surfaces
+  candidates for the operator's read-aloud check. *(Design-derived — a human
+  checkpoint; the lint only surfaces candidates.)*
 
 ## Scaffold
 

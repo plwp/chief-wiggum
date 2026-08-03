@@ -59,6 +59,11 @@
         "id": "INV-LPS-006",
         "statement": "Visual design is chosen, not converged: the scaffold is a structure only (form, beacon, honesty rules); the page's visual design must be presented as >=6 deliberately distinct rendered variants, grounded in a current-craft reference <=90 days stale (docs/design-taste.md, chief-wiggum#250), with a human pick recorded before the page ships. A taste checkpoint is a human checkpoint, not a lintable property (chief-wiggum#249) — no gate script realizes this invariant.",
         "grounding": "design-derived"
+      },
+      {
+        "id": "INV-LPS-007",
+        "statement": "Voice sourced from a real customer, not a generated default: outward copy is drafted against a voice-corpus for the bet (verbatim customer quotes stored with citations in the bet's directory) and reuses its own nouns rather than marketing abstractions; every substantive claim carries a number, a named artifact, or a customer quote. scripts/check_copy_voice.py (report-only, chief-wiggum#255) surfaces measurable AI-default tells as candidates for a human read-aloud check — voice stays human-judged, never gated.",
+        "grounding": "design-derived"
       }
     ]
   },
