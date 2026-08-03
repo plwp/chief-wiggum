@@ -24,7 +24,6 @@ sys.path.insert(0, str(SCRIPTS))
 
 import name_candidates as nc  # noqa: E402
 
-
 # --- quorum intersection-discard (decision 2) ---------------------------------
 
 def test_intersection_discard_removes_names_proposed_by_two_or_more_providers():
