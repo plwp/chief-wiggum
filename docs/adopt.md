@@ -52,7 +52,8 @@ Mechanics live in `scripts/adopt.py`; the `/adopt` command is a thin adapter
    (`tests_run: false`), prints `no test suites ran — pass-set baseline EMPTY
    (recorded as not-run)`, cross-checks the survey's no-runner verdict, and
    the journal note says exactly that — an empty pass-set is never journaled
-   as a real test run.
+   as a real test run. Recording it honestly is not enough on its own, though:
+   see **Not measured is not measured clean** below.
 4. **Debt inventory baseline** — the #214 inventory
    (`debt_inventory.build_inventory`) written to the resolver quality dir's
    `debt.json`: the adoption debt baseline.
@@ -116,6 +117,45 @@ Consumers:
   ticket; the mechanics live in #216 — this record is the switch.
 - **`/status`** shows the Adoption section: brownfield flag, grandfather
   counts, nearest expiry, and prominent EXPIRED warnings.
+
+## Not measured is not measured clean (#259)
+
+An honest report of "nothing measurable" and a real report of "everything
+measured, all clean" used to render **identically** on every surface a human
+reads. Adopting a 12,551-file .NET monolith produced `pass-set: 0 case(s)`,
+`inventory present, zero items`, `grandfathered: none` — all technically
+truthful, all indistinguishable from a healthy repo. The ratchet's guarantee
+was intact and meaningless: a high-water mark of zero can never slide.
+
+`/status` now carries a `not_measured` map (section → reason) and prints a
+`NOT MEASURED:` line above the affected section:
+
+```
+## Ratchet high-water
+
+NOT MEASURED: no test runner detected — ratchet.json configures 0 suite(s), so
+the high-water mark is zero and can never slide
+pass-set: 0 case(s) | contracts: 0 | verifier hashes: 0
+
+## Debt
+
+NOT MEASURED: no known-language source files in the scan population: the
+engines had nothing to scan — unscanned: unknown-language (.cs): 8316, ...
+inventory present, zero items — absence of findings is NOT health
+```
+
+The marker is **proved, never inferred** — which is what keeps it from crying
+wolf:
+
+- The ratchet reason distinguishes three states: no suite configured at all,
+  suites configured but the score recorded `tests_run: false`, and suites that
+  genuinely ran and produced zero passing cases.
+- The debt reason fires only when the inventory's own
+  `engines.dead_code.files_in_population` is **0**. Zero findings over a real
+  population is health, and is never marked; an older inventory that predates
+  that field claims nothing rather than asserting a gap it cannot demonstrate.
+
+Counts still print underneath the marker — it adds context, never hides data.
 
 ## Grandfathering semantics
 

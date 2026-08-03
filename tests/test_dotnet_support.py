@@ -260,8 +260,9 @@ def test_plans_dotnet_commands_per_profile(tmp_path):
     _csproj(tmp_path, "src/App/App.csproj")
     det = v.detect_project(tmp_path)
     plans = {s.profile: s.command for s in v.plan_steps(tmp_path, ["test", "build", "lint"], det)}
-    assert plans["test"] == ["dotnet", "test"]
-    assert plans["build"] == ["dotnet", "build"]
+    target = "src/App/App.csproj"
+    assert plans["test"] == ["dotnet", "test", target]
+    assert plans["build"] == ["dotnet", "build", target]
     assert plans["lint"][:2] == ["dotnet", "format"]
 
 
@@ -277,14 +278,75 @@ def test_multiple_solutions_are_each_named_explicitly(tmp_path):
     assert cmds == [["dotnet", "test", "Api.sln"], ["dotnet", "test", "Legacy.sln"]]
 
 
-def test_single_solution_is_named_and_projects_only_repo_is_bare(tmp_path):
+def test_single_solution_is_named(tmp_path):
     _csproj(tmp_path, "src/App/App.csproj")
-    bare = v.plan_steps(tmp_path, ["test"], v.detect_project(tmp_path))
-    assert [s.command for s in bare] == [["dotnet", "test"]]
-
     (tmp_path / "App.sln").write_text("solution")
     named = v.plan_steps(tmp_path, ["test"], v.detect_project(tmp_path))
     assert [s.command for s in named] == [["dotnet", "test", "App.sln"]]
+
+
+def test_projects_only_repo_targets_the_project_not_the_root(tmp_path):
+    """`dotnet test` does NOT discover projects recursively: run bare at a root
+    whose projects live under `src/`, it fails with MSB1003 and writes no
+    results at all — an empty pass-set that reads like a clean one."""
+    _csproj(tmp_path, "src/App.Tests/App.Tests.csproj")
+    steps = v.plan_steps(tmp_path, ["test"], v.detect_project(tmp_path))
+    assert [s.command for s in steps] == [
+        ["dotnet", "test", "src/App.Tests/App.Tests.csproj"]]
+
+
+def test_test_projects_are_preferred_over_library_projects(tmp_path):
+    """A non-test project exits 0 writing NO results, so pointing a suite at
+    one turns a library into a hard suite failure. With no solution to run,
+    only test-named projects are targeted."""
+    _csproj(tmp_path, "src/App/App.csproj")
+    _csproj(tmp_path, "src/App.Core/App.Core.csproj")
+    _csproj(tmp_path, "test/App.Tests/App.Tests.csproj")
+    det = v.detect_project(tmp_path)
+    assert [s.command[-1] for s in v.plan_steps(tmp_path, ["test"], det)] == [
+        "test/App.Tests/App.Tests.csproj"]
+    # build/lint are not test-runners: they cover every project.
+    assert len(v.plan_steps(tmp_path, ["build"], det)) == 3
+
+
+def test_no_runnable_test_target_plans_nothing_rather_than_a_failing_command(tmp_path):
+    """Several library projects, no solution, nothing test-named: there is no
+    command that would work. Planning one anyway would manufacture exactly the
+    empty-but-clean-looking pass-set this ticket is about."""
+    _csproj(tmp_path, "src/App/App.csproj")
+    _csproj(tmp_path, "src/App.Core/App.Core.csproj")
+    det = v.detect_project(tmp_path)
+    assert det.has_dotnet
+    assert v.dotnet_test_targets(det.dotnet_solutions, det.dotnet_projects) == ()
+    assert v.plan_steps(tmp_path, ["test"], det) == []
+    assert ratchet.detect_suites(tmp_path) == []
+
+
+def test_repo_controlled_filenames_cannot_inject_shell_commands(tmp_path):
+    """`run_suite` executes a suite's `cmd` through a shell, and adoption runs
+    against third-party repos — so a solution filename is untrusted input."""
+    hostile = 'bad"; touch pwned; #.sln'
+    (tmp_path / hostile).write_text("solution")
+    (tmp_path / "Safe.sln").write_text("solution")
+
+    suites = ratchet.detect_suites(tmp_path)
+    assert suites
+    import subprocess
+    for suite in suites:
+        # `dotnet` may be absent; what matters is that the shell treats the
+        # filename as ONE argument and runs no extra command.
+        subprocess.run(suite["cmd"], shell=True, cwd=tmp_path,
+                       capture_output=True, text=True)
+    assert not (tmp_path / "pwned").exists(), "shell injection via a repo filename"
+
+
+def test_results_directories_are_filesystem_safe(tmp_path):
+    for name in ('we"ird one.sln', "Other.sln"):
+        (tmp_path / name).write_text("solution")
+    reports = [s["report"] for s in ratchet.detect_suites(tmp_path)]
+    assert len(set(reports)) == len(reports)
+    for report in reports:
+        assert not (set(report) & set('"\'; |&$<>()')), report
 
 
 def test_multiple_solutions_get_one_suite_each_with_separate_results_dirs(tmp_path):
@@ -295,9 +357,11 @@ def test_multiple_solutions_get_one_suite_each_with_separate_results_dirs(tmp_pa
     suites = ratchet.detect_suites(tmp_path)
     assert [s["name"] for s in suites] == ["dotnet-Api", "dotnet-Legacy"]
     assert len({s["report"] for s in suites}) == 2
+    import shlex
     for s in suites:
-        assert s["report"] in s["cmd"]
-        assert Path(s["cmd"].split('"')[1]).suffix == ".sln"
+        argv = shlex.split(s["cmd"])
+        assert Path(argv[2]).suffix == ".sln"
+        assert argv[argv.index("--results-directory") + 1] == s["report"]
 
 
 def test_makefile_target_still_wins_over_dotnet(tmp_path):
@@ -399,6 +463,91 @@ def test_csharp_is_in_clone_detection_formats():
     from quality import duplication
 
     assert "csharp" in duplication.FORMATS.split(",")
+
+
+# --- C# enclosing-symbol resolution (func_regex) ------------------------------------
+
+CS_SOURCE = """public class OrderService
+{
+    private readonly IDb _db;
+    private string _status;
+
+    public async Task<Order> UpdatePlan(Guid id, string plan)
+    {
+        order.PlanCode = plan;
+        return order;
+    }
+
+    protected internal static IReadOnlyList<Order> Archive(Guid id)
+    {
+        _db.Update(id, new { status = "archived" });
+    }
+
+    public string Status
+    {
+        set { _status = value; }
+    }
+
+    // never write PlanCode = here
+    public void Noop() { }
+}
+"""
+
+
+def _symbols(source: str = CS_SOURCE, path: str = "src/OrderService.cs") -> dict[int, str | None]:
+    from chief_wiggum.write_emission import emit_write_sites
+
+    return {s.line: s.symbol for s in emit_write_sites(path, source)}
+
+
+def test_csharp_write_sites_resolve_their_enclosing_method():
+    """Without this, a `.cs` write has no enclosing symbol and the single-writer
+    checker cannot tell a sanctioned writer from an unsanctioned one."""
+    symbols = _symbols()
+
+    def line_of(fragment: str) -> int:
+        return next(i for i, ln in enumerate(CS_SOURCE.splitlines(), 1) if fragment in ln)
+
+    assert symbols[line_of("order.PlanCode = plan")] == "UpdatePlan"
+    # modifiers + generic return type
+    assert symbols[line_of('status = "archived"')] == "Archive"
+    # property setter whose brace sits on the following line
+    assert symbols[line_of("_status = value")] == "Status"
+
+
+def test_csharp_comments_are_stripped_before_write_detection():
+    """`.cs` had no comment marker registered, so a field named in a `//`
+    comment would have read as a write the moment C# entered the scan."""
+    comment_line = next(
+        i for i, ln in enumerate(CS_SOURCE.splitlines(), 1) if ln.strip().startswith("//"))
+    assert comment_line not in _symbols()
+
+
+def test_csharp_field_declaration_is_not_mistaken_for_a_method():
+    source = "public class C\n{\n    private readonly IDb _db;\n    public void Go()\n    {\n        x.Plan = 1;\n    }\n}\n"
+    assert _symbols(source, "src/C.cs")[6] == "Go"
+
+
+def test_csharp_call_is_not_mistaken_for_a_declaration():
+    """A bare call has no modifier or return type; treating it as a
+    declaration would attribute the write to the wrong symbol — worse than
+    reporting none."""
+    source = "public class C\n{\n    public void Go()\n    {\n        Save(order);\n        x.Plan = 1;\n    }\n}\n"
+    assert _symbols(source, "src/C.cs")[6] == "Go"
+
+
+def test_csharp_regex_does_not_leak_into_other_languages():
+    """The C# member pattern is permissive about return types on purpose; it
+    must only be consulted for `.cs`."""
+    from chief_wiggum.write_emission import _enclosing_symbol
+
+    lines = ["public class C {", "    public void Go() {", "        x.Plan = 1;"]
+    assert _enclosing_symbol(lines, 2, ".cs") == "Go"
+    assert _enclosing_symbol(lines, 2, ".go") is None
+
+
+def test_csharp_declares_func_regex_support():
+    assert cw_languages.languages()["csharp"].func_regex is True
 
 
 # --- the declared support matrix --------------------------------------------------
@@ -590,6 +739,52 @@ def test_older_inventory_without_a_population_count_does_not_claim(tmp_path):
     q = _quality_dir(tmp_path)
     (q / "debt.json").write_text(json.dumps({"items": []}))
     assert status.debt_not_measured(q, status.debt_counts(q)) is None
+
+
+def test_language_in_the_population_with_no_dead_code_tier_is_reported_unscanned(tmp_path):
+    """C# enters the population but no dead-code tier handles it. Counted in
+    `files_in_population`, absent from `languages` AND absent from `unscanned`,
+    it would produce a zero-finding inventory over a non-zero population — a
+    clean-looking result that also defeats the NOT MEASURED marker (#259's own
+    failure mode, one layer down)."""
+    import subprocess
+
+    from quality import dead_code
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "OrderService.cs").write_text("public class OrderService {}")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+
+    result = dead_code.analyze(str(tmp_path))
+    assert result["files_in_population"] == 1
+    assert result["unscanned"].get("csharp") == 1
+    assert "no dead-code tier" in result["languages"]["csharp"]["skipped"]
+
+
+def test_zero_items_over_a_partly_unscanned_population_is_flagged_partial(tmp_path):
+    q = _quality_dir(tmp_path)
+    (q / "debt.json").write_text(json.dumps({
+        "items": [],
+        "engines": {"dead_code": {"files_in_population": 8316}},
+        "unscanned_languages": {"csharp": 8316},
+    }))
+    counts = status.debt_counts(q)
+    # Something WAS scanned, so this is not "not measured"...
+    assert status.debt_not_measured(q, counts) is None
+    # ...but it is not a clean bill of health either.
+    partial = status.debt_partial_coverage(q, counts)
+    assert partial and "csharp" in partial
+
+
+def test_fully_scanned_empty_inventory_is_not_flagged_partial(tmp_path):
+    q = _quality_dir(tmp_path)
+    (q / "debt.json").write_text(json.dumps({
+        "items": [],
+        "engines": {"dead_code": {"files_in_population": 400}},
+        "unscanned_languages": {},
+    }))
+    assert status.debt_partial_coverage(q, status.debt_counts(q)) is None
 
 
 def test_rendered_status_shows_the_marker(tmp_path, monkeypatch):

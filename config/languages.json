@@ -5,9 +5,14 @@
     "go": {
       "tier": 1,
       "status": "supported",
-      "extensions": [".go"],
+      "extensions": [
+        ".go"
+      ],
       "lsp": "gopls",
-      "emitters": ["writer", "trace"],
+      "emitters": [
+        "writer",
+        "trace"
+      ],
       "test_parser": "go test -json / gotestsum JUnit XML (scripts/ratchet.py)",
       "extractor": "go_mongo (scripts/extractors/go_mongo.py, stitch-audit)",
       "func_regex": true,
@@ -16,9 +21,14 @@
     "python": {
       "tier": 1,
       "status": "supported",
-      "extensions": [".py"],
+      "extensions": [
+        ".py"
+      ],
       "lsp": "pyright",
-      "emitters": ["writer", "trace"],
+      "emitters": [
+        "writer",
+        "trace"
+      ],
       "test_parser": "pytest --junitxml (JUnit XML, scripts/ratchet.py)",
       "extractor": null,
       "func_regex": true,
@@ -27,9 +37,17 @@
     "typescript": {
       "tier": 1,
       "status": "supported",
-      "extensions": [".ts", ".tsx", ".js", ".jsx"],
+      "extensions": [
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx"
+      ],
       "lsp": null,
-      "emitters": ["writer", "trace"],
+      "emitters": [
+        "writer",
+        "trace"
+      ],
       "test_parser": "jest/vitest JUnit reporter",
       "extractor": "typescript (scripts/extractors/typescript.py, stitch-audit)",
       "func_regex": true,
@@ -38,26 +56,31 @@
     "csharp": {
       "tier": 2,
       "status": "partial: scanned + measured, no dedicated emitter/LSP",
-      "extensions": [".cs"],
+      "extensions": [
+        ".cs"
+      ],
       "lsp": null,
-      "emitters": ["generic"],
+      "emitters": [
+        "generic"
+      ],
       "test_parser": "dotnet test --logger trx (TRX results dir, scripts/ratchet.py `trx` parser) + .sln/.csproj autodetect",
       "extractor": null,
-      "func_regex": false,
+      "func_regex": true,
       "dep_profile": "dotnet",
       "trigger": "first .NET target repo adopted (#259)",
       "requires": [
         "a C#/Roslyn LSP entry in scripts/chief_wiggum/lsp.py SERVERS (csharp-ls or Microsoft.CodeAnalysis.LanguageServer)",
-        "a method regex for enclosing-symbol resolution (scripts/chief_wiggum/write_emission.py _enclosing_symbol)",
         "a C#-specific write-site emitter under scripts/emitters/ (property setters, object initializers, EF Core / Dapper write calls)",
         "cognitive-complexity tooling for C# in scripts/quality/complexity.py (lizard already supplies cyclomatic)"
       ],
-      "note": "Tier 2 means MEASURED, not fully emitted: .cs enters the quality/debt population (scripts/quality/complexity.py EXT_LANG), jscpd clone detection, and the ratchet pass-set via the TRX parser — but write-site/trace facts come from the generic regex tier, with no C# method regex behind them. Added because a 12,551-file .NET monolith adopted with an EMPTY ratchet baseline and a 0-item debt inventory that both rendered as passes (#259)."
+      "note": "Tier 2 means MEASURED, not fully emitted: .cs enters the quality/debt population (scripts/quality/complexity.py EXT_LANG), jscpd clone detection, the ratchet pass-set via the TRX parser, and write-site/trace facts via the generic regex tier with a real C# method regex behind enclosing-symbol resolution (CS_FUNC_RE). What tier 1 would add is a dedicated emitter module (C#-aware write shapes), an LSP, and a dead-code tier. Added because a 12,551-file .NET monolith adopted with an EMPTY ratchet baseline and a 0-item debt inventory that both rendered as passes (#259)."
     },
     "rust": {
       "tier": "designed",
       "status": "designed, unbuilt",
-      "extensions": [".rs"],
+      "extensions": [
+        ".rs"
+      ],
       "lsp": "rust-analyzer",
       "emitters": [],
       "test_parser": "cargo nextest (JUnit XML) + Cargo.toml autodetect",
@@ -71,19 +94,45 @@
         "fn regex for enclosing-symbol resolution (scripts/chief_wiggum/write_emission.py _enclosing_symbol)",
         "writer patterns for struct literals + sqlx macros (a Rust-specific write-site emitter under scripts/emitters/)"
       ],
-      "note": "The .rs extension is already scanned today by the generic regex tier (see generic_tier below) — write-site/trace-annotation facts ARE emitted for Rust files, just without a dedicated func_regex for enclosing-symbol resolution. 'designed, unbuilt' means the TIER-1 emitter (rust-analyzer + cargo nextest + fn regex + sqlx-aware writer patterns) is not built, not that Rust is unscanned."
+      "note": "The .rs extension is already scanned today by the generic regex tier (see generic_tier below) \u2014 write-site/trace-annotation facts ARE emitted for Rust files, just without a dedicated func_regex for enclosing-symbol resolution. 'designed, unbuilt' means the TIER-1 emitter (rust-analyzer + cargo nextest + fn regex + sqlx-aware writer patterns) is not built, not that Rust is unscanned."
     }
   },
   "generic_tier": {
-    "description": "Extensions with NO dedicated per-language emitter module, scanned by the generic (language-agnostic) regex tier — scripts/emitters/generic.py — which is exactly the pre-#162 SOURCE_EXTS behavior of check_single_writer.py / check_traceability.py.",
-    "extensions": [".java", ".rb", ".rs", ".cs"]
+    "description": "Extensions with NO dedicated per-language emitter module, scanned by the generic (language-agnostic) regex tier \u2014 scripts/emitters/generic.py \u2014 which is exactly the pre-#162 SOURCE_EXTS behavior of check_single_writer.py / check_traceability.py.",
+    "extensions": [
+      ".java",
+      ".rb",
+      ".rs",
+      ".cs"
+    ]
   },
   "unsupported_extensions": {
-    "description": "Recognized programming-language extensions with NO emitter coverage at all (neither a tier-1 module nor the generic tier). A file with one of these extensions is NEVER silently skipped: check_single_writer.py / check_traceability.py surface an explicit coverage warning in both --gate and plain (query) output instead. This list is curated, not exhaustive — extend it as new unsupported languages show up in a target repo.",
+    "description": "Recognized programming-language extensions with NO emitter coverage at all (neither a tier-1 module nor the generic tier). A file with one of these extensions is NEVER silently skipped: check_single_writer.py / check_traceability.py surface an explicit coverage warning in both --gate and plain (query) output instead. This list is curated, not exhaustive \u2014 extend it as new unsupported languages show up in a target repo.",
     "extensions": [
-      ".c", ".h", ".cpp", ".cc", ".hpp", ".php", ".kt", ".kts",
-      ".swift", ".scala", ".m", ".mm", ".clj", ".cljs", ".ex", ".exs",
-      ".erl", ".hs", ".lua", ".dart", ".groovy", ".jl", ".pl", ".r"
+      ".c",
+      ".h",
+      ".cpp",
+      ".cc",
+      ".hpp",
+      ".php",
+      ".kt",
+      ".kts",
+      ".swift",
+      ".scala",
+      ".m",
+      ".mm",
+      ".clj",
+      ".cljs",
+      ".ex",
+      ".exs",
+      ".erl",
+      ".hs",
+      ".lua",
+      ".dart",
+      ".groovy",
+      ".jl",
+      ".pl",
+      ".r"
     ]
   }
 }

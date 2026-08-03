@@ -86,7 +86,8 @@ def unknown_language_files(repo: str, path_filter=None) -> dict[str, int]:
                   # .NET build manifests — config, not source (#259). Razor
                   # (.cshtml) and .sql are NOT here: they are real, genuinely
                   # unscanned source and must stay visible as such.
-                  ".csproj", ".sln", ".props", ".targets", ".nuspec", ".ruleset"}
+                  ".csproj", ".sln", ".slnx", ".fsproj", ".vbproj", ".props",
+                  ".targets", ".nuspec", ".ruleset"}
     counts: dict[str, int] = {}
     for f in complexity.tracked_files(repo):
         if GENERATED_RE.search(f):

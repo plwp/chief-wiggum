@@ -11,7 +11,7 @@ Consumed by `check_deps.py` (`--list-languages`, the `language-tier-1` dependenc
 | go | 1 | supported | `.go` | gopls | writer, trace | go test -json / gotestsum JUnit XML (scripts/ratchet.py) | go_mongo (scripts/extractors/go_mongo.py, stitch-audit) | yes |
 | python | 1 | supported | `.py` | pyright | writer, trace | pytest --junitxml (JUnit XML, scripts/ratchet.py) | — | yes |
 | typescript | 1 | supported | `.ts`, `.tsx`, `.js`, `.jsx` | — | writer, trace | jest/vitest JUnit reporter | typescript (scripts/extractors/typescript.py, stitch-audit) | yes |
-| csharp | 2 | partial: scanned + measured, no dedicated emitter/LSP | `.cs` | — | generic | dotnet test --logger trx (TRX results dir, scripts/ratchet.py `trx` parser) + .sln/.csproj autodetect | — | no |
+| csharp | 2 | partial: scanned + measured, no dedicated emitter/LSP | `.cs` | — | generic | dotnet test --logger trx (TRX results dir, scripts/ratchet.py `trx` parser) + .sln/.csproj autodetect | — | yes |
 | rust | designed | designed, unbuilt | `.rs` | rust-analyzer | — | cargo nextest (JUnit XML) + Cargo.toml autodetect | — | no |
 
 ## Generic regex tier
@@ -37,11 +37,10 @@ Trigger: first .NET target repo adopted (#259)
 Missing for tier 1:
 
 - a C#/Roslyn LSP entry in scripts/chief_wiggum/lsp.py SERVERS (csharp-ls or Microsoft.CodeAnalysis.LanguageServer)
-- a method regex for enclosing-symbol resolution (scripts/chief_wiggum/write_emission.py _enclosing_symbol)
 - a C#-specific write-site emitter under scripts/emitters/ (property setters, object initializers, EF Core / Dapper write calls)
 - cognitive-complexity tooling for C# in scripts/quality/complexity.py (lizard already supplies cyclomatic)
 
-Tier 2 means MEASURED, not fully emitted: .cs enters the quality/debt population (scripts/quality/complexity.py EXT_LANG), jscpd clone detection, and the ratchet pass-set via the TRX parser — but write-site/trace facts come from the generic regex tier, with no C# method regex behind them. Added because a 12,551-file .NET monolith adopted with an EMPTY ratchet baseline and a 0-item debt inventory that both rendered as passes (#259).
+Tier 2 means MEASURED, not fully emitted: .cs enters the quality/debt population (scripts/quality/complexity.py EXT_LANG), jscpd clone detection, the ratchet pass-set via the TRX parser, and write-site/trace facts via the generic regex tier with a real C# method regex behind enclosing-symbol resolution (CS_FUNC_RE). What tier 1 would add is a dedicated emitter module (C#-aware write shapes), an LSP, and a dead-code tier. Added because a 12,551-file .NET monolith adopted with an EMPTY ratchet baseline and a 0-item debt inventory that both rendered as passes (#259).
 
 
 ## Designed, unbuilt slots
