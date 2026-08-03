@@ -42,7 +42,16 @@ TEST_FILE_RES = {
     "go": re.compile(r"_test\.go$"),
     "typescript": re.compile(r"\.(test|spec)\.tsx?$"),
     "javascript": re.compile(r"\.(test|spec)\.jsx?$"),
+    # C# (#259): case-SENSITIVE camel-case `Test`/`Tests` suffix, so
+    # `Latest.cs` is production code, not a test.
+    "csharp": re.compile(r"(^|/|[A-Za-z0-9_])Tests?\.cs$"),
 }
+
+# Directory conventions that mark a test file in ANY language: the lowercase
+# tests/__tests__/e2e dirs, plus C#'s camel-case project dirs
+# (`Roller.API.Tests/`, `UnitTests/`) which are case-sensitive on purpose.
+_TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__|e2e)/", re.IGNORECASE)
+_CAMEL_TEST_DIR_RE = re.compile(r"(^|/)[^/]*Tests?/")
 
 
 def lang_of(path: str) -> str | None:
@@ -57,10 +66,11 @@ def is_test_file(path: str) -> bool:
     lang = lang_of(path)
     if lang is None:
         return False
-    if TEST_FILE_RES[lang].search(path):
+    rx = TEST_FILE_RES.get(lang)
+    if rx is not None and rx.search(path):
         return True
-    # Directory conventions (tests/, __tests__/, e2e/) count for any language.
-    return bool(re.search(r"(^|/)(tests?|__tests__|e2e)/", path))
+    # Directory conventions count for any language.
+    return bool(_TEST_DIR_RE.search(path) or _CAMEL_TEST_DIR_RE.search(path))
 
 
 def unknown_language_files(repo: str, path_filter=None) -> dict[str, int]:
@@ -72,7 +82,12 @@ def unknown_language_files(repo: str, path_filter=None) -> dict[str, int]:
     NON_SOURCE = {".md", ".rst", ".txt", ".json", ".yaml", ".yml", ".toml",
                   ".ini", ".cfg", ".lock", ".svg", ".png", ".jpg", ".gif",
                   ".ico", ".css", ".scss", ".html", ".xml", ".csv", ".sum",
-                  ".mod", ".work", ".example", ".sample", ".gitignore", ""}
+                  ".mod", ".work", ".example", ".sample", ".gitignore", "",
+                  # .NET build manifests — config, not source (#259). Razor
+                  # (.cshtml) and .sql are NOT here: they are real, genuinely
+                  # unscanned source and must stay visible as such.
+                  ".csproj", ".sln", ".slnx", ".fsproj", ".vbproj", ".props",
+                  ".targets", ".nuspec", ".ruleset"}
     counts: dict[str, int] = {}
     for f in complexity.tracked_files(repo):
         if GENERATED_RE.search(f):

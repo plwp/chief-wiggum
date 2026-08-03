@@ -78,7 +78,7 @@ FILTER_OPERATOR_RE = re.compile(
 # so a field name mentioned in a comment (e.g. `// Free plan: …`) is not read as a write.
 _COMMENT_MARKERS = {
     ".go": ("//",), ".ts": ("//",), ".tsx": ("//",), ".js": ("//",), ".jsx": ("//",),
-    ".java": ("//",), ".rs": ("//",), ".py": ("#",), ".rb": ("#",),
+    ".java": ("//",), ".rs": ("//",), ".cs": ("//",), ".py": ("#",), ".rb": ("#",),
 }
 
 
@@ -117,15 +117,53 @@ GO_FUNC_RE = re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)")
 PY_FUNC_RE = re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)")
 TS_FUNC_RE = re.compile(r"(?:function\s+([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s*)?\()")
 
+# C# method/property declarations (#259). A C# member is
+# `<modifiers> <return type> Name(<params>)`, where the return type may be
+# generic (`Task<Order>`), nullable (`Order?`), qualified (`System.Guid`), or
+# an array — so the type is skipped rather than enumerated, and the LAST
+# identifier before the parameter list is the member name.
+#
+# An explicit modifier or return type IS required: without one, any call
+# (`Save(order);`) would read as a declaration and silently attribute a write
+# to the wrong symbol, which is worse than reporting none. Property setters
+# (`public Status Status { set { ... } }`) resolve to the property name.
+_CS_MODIFIER = (
+    r"(?:public|private|protected|internal|static|virtual|override|sealed|"
+    r"abstract|async|extern|unsafe|partial|new|readonly|required)"
+)
+_CS_TYPE = r"[A-Za-z_][\w.]*(?:\s*<[^;{}()]*>)?(?:\s*\[\s*\])?\??"
+CS_FUNC_RE = re.compile(
+    # A member with modifiers: modifiers, optional return type, then Name(
+    rf"^\s*(?:{_CS_MODIFIER}\s+)+(?:{_CS_TYPE}\s+)?([A-Za-z_]\w*)\s*(?:<[^<>()]*>\s*)?\("
+    # ...or a modifier-led property/indexer: `public Status Status {`, `=> x`,
+    # or nothing at all (C# convention puts the brace on the following line).
+    # A trailing `;`/`,`/`)` marks a field or parameter, never a member.
+    rf"|^\s*(?:{_CS_MODIFIER}\s+)+(?:{_CS_TYPE}\s+)([A-Za-z_]\w*)\s*(?:=>|\{{|$)"
+)
 
-def _enclosing_symbol(lines: list[str], idx: int) -> str | None:
-    """Nearest function/method name declared at or above line index ``idx``."""
+_CS_SUFFIXES = frozenset({".cs"})
+
+
+def _enclosing_symbol(lines: list[str], idx: int, suffix: str | None = None) -> str | None:
+    """Nearest function/method name declared at or above line index ``idx``.
+
+    ``suffix`` selects the language regex where one language's shape would
+    misread another's: C# is only consulted for ``.cs`` (its member pattern is
+    deliberately permissive about return types and would otherwise match
+    unrelated constructs in other languages).
+    """
+    cs_enabled = suffix in _CS_SUFFIXES
     for j in range(idx, -1, -1):
         line = lines[j]
         for pat in (GO_FUNC_RE, PY_FUNC_RE):
             m = pat.match(line)
             if m:
                 return m.group(1)
+        if cs_enabled:
+            m = CS_FUNC_RE.match(line)
+            if m:
+                return m.group(1) or m.group(2)
+            continue  # don't let the TS shape claim a C# line
         m = TS_FUNC_RE.search(line)
         if m:
             return m.group(1) or m.group(2)
@@ -192,7 +230,7 @@ def emit_write_sites(path: str, text: str) -> list[WriteSite]:
                 candidates.append((KIND_SQL, fm.group(1)))
         if not candidates:
             continue
-        symbol = _enclosing_symbol(code_lines, i)
+        symbol = _enclosing_symbol(code_lines, i, suffix)
         snippet = raw_lines[i].strip()[:200]
         for kind, token in candidates:
             sites.append(WriteSite(

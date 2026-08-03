@@ -36,7 +36,10 @@ IGNORE = ",".join([
     "**/*_test.go", "**/*.test.*", "**/*.spec.*",
     "**/test_*.py", "**/*_test.py", "**/tests/**", "**/__tests__/**", "**/e2e/**",
 ])
-FORMATS = "python,go,typescript,tsx,javascript,jsx"
+# Kept in step with quality.complexity.EXT_LANG / config/languages.json —
+# a format missing here means those files are invisible to clone detection
+# (#259: 8,316 .cs files contributed 0 clone classes).
+FORMATS = "python,go,typescript,tsx,javascript,jsx,csharp"
 
 
 def _round(v: float | None, ndigits: int = 2) -> float | None:

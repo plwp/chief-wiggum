@@ -42,13 +42,21 @@ import sys
 import tempfile
 from collections import defaultdict
 
+# Extension -> language for the quality/debt population. Kept in step with
+# config/languages.json (a language absent here is invisible to every debt
+# engine — the #259 failure mode: 8,316 .cs files scanned as 0).
 EXT_LANG = {
     ".py": "python", ".go": "go", ".ts": "typescript", ".tsx": "typescript",
-    ".js": "javascript", ".jsx": "javascript",
+    ".js": "javascript", ".jsx": "javascript", ".cs": "csharp",
 }
 TEST_RE = re.compile(
     r"(^|/)(tests?|__tests__|e2e)/|(_test\.go$)|"
-    r"(\.(test|spec)\.[tj]sx?$)|(^|/)test_[^/]+\.py$|_test\.py$",
+    r"(\.(test|spec)\.[tj]sx?$)|(^|/)test_[^/]+\.py$|_test\.py$|"
+    # C# (#259): xunit/nunit/mstest conventions — FooTests.cs, and the
+    # Roller.API.Tests/ | UnitTests/ project-directory convention. Matched
+    # CASE-SENSITIVELY (`(?-i:...)` inside this IGNORECASE pattern) so a
+    # camel-case "Test" is required: `Latest.cs` / `latest/` are not tests.
+    r"(?-i:(^|/|[A-Za-z0-9_])Tests?\.cs$)|(?-i:(^|/)[^/]*Tests?/)",
     re.IGNORECASE,
 )
 # non-product source: docs/DSL, infra models, migrations autogen, node stuff

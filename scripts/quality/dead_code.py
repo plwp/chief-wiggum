@@ -381,6 +381,21 @@ def analyze(repo: str, path_filter=None) -> dict:
                 languages["javascript"]["findings"] = len(ts_findings)
             findings.extend(ts_findings)
 
+    # Languages that ARE in the population but have no dead-code tier here
+    # (C# today). Without this they would be counted in files_in_population,
+    # absent from `languages`, AND absent from `unscanned` — a zero-finding
+    # inventory over a non-zero population, which reads as health and defeats
+    # /status's NOT MEASURED marker. That is #259's own failure mode one layer
+    # down, so it is stated rather than inferred (codex review, #259).
+    for lang, lang_files in sorted(by_lang.items()):
+        if lang is None or lang in languages:
+            continue
+        languages[lang] = {
+            "skipped": f"no dead-code tier for {lang}",
+            "files": len(lang_files),
+        }
+        unscanned[lang] = len(lang_files)
+
     # Files whose extension maps to no known language never entered the
     # population at all — surface them so an unsupported language is a
     # visible gap, not a silent omission (codex review, #214).

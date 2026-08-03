@@ -117,6 +117,14 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": set(),
         "secrets": set(),
     },
+    # C# is tier 2 (#259): the SDK gives `dotnet test --logger trx` (the
+    # ratchet's pass-set) and `dotnet build`/`format`. No LSP here — a C#
+    # language server is listed under the csharp entry's `requires`.
+    "dotnet": {
+        "cmds": {"dotnet"},
+        "pkgs": set(),
+        "secrets": set(),
+    },
 }
 
 # A profile per BUILT language tier (#162), derived from config/languages.json's

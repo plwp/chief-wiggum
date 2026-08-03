@@ -281,6 +281,16 @@ def _parse_test_counts(tool: str, output: str) -> tuple[int | None, int | None, 
         if ok or fail:
             return ok, fail, "package-level counts (go test without -json)"
         return None, None, "pass/fail counts unparsed from go test output — see log tail"
+    if tool == "dotnet":
+        # `dotnet test` prints one summary line PER test project:
+        #   Failed!  - Failed: 1, Passed: 4, Skipped: 1, Total: 6, Duration: ...
+        # Summing them (not taking the first) is the difference between
+        # counting one project and counting the solution (#259).
+        rows = re.findall(r"Failed:\s+(\d+),\s+Passed:\s+(\d+)", output)
+        if rows:
+            return (sum(int(p) for _, p in rows), sum(int(f) for f, _ in rows),
+                    f"summed across {len(rows)} test project(s)")
+        return None, None, "pass/fail counts unparsed from dotnet test output — see log tail"
     return None, None, f"pass/fail counts not parseable for tool {tool!r} — see log tail"
 
 
@@ -650,10 +660,16 @@ def cmd_elect(args) -> int:
 
 
 def _retarget_suite_reports(cfg_path: Path, workdir: Path) -> None:
-    """Point autodetected junit reports OUTSIDE the target tree (the baseline
-    run must not write the tree being adopted), and suppress pytest's cache
-    dir. Only repo-relative report paths whose token appears verbatim in the
-    suite cmd are re-pointed — a hand-authored suite is never second-guessed."""
+    """Point autodetected junit/TRX reports OUTSIDE the target tree (the
+    baseline run must not write the tree being adopted), and suppress pytest's
+    cache dir. Only repo-relative report paths whose token appears verbatim in
+    the suite cmd are re-pointed — a hand-authored suite is never
+    second-guessed.
+
+    Authority boundary: this re-points the RESULT artifacts only. `dotnet
+    test` still builds into per-project ``bin/``/``obj/`` inside the tree —
+    unavoidable without overriding MSBuild output paths, and covered by the
+    standard .NET .gitignore."""
     cfg = json.loads(cfg_path.read_text())
     changed = False
     for suite in cfg.get("suites", []):
@@ -661,6 +677,15 @@ def _retarget_suite_reports(cfg_path: Path, workdir: Path) -> None:
         if (suite.get("parser") == "junit-xml" and report
                 and not os.path.isabs(report) and report in suite.get("cmd", "")):
             new = str(workdir / f"{suite.get('name', 'suite')}-junit.xml")
+            suite["cmd"] = suite["cmd"].replace(report, f'"{new}"')
+            suite["report"] = new
+            changed = True
+        if (suite.get("parser") == "trx" and report
+                and not os.path.isabs(report) and report in suite.get("cmd", "")):
+            # A results DIRECTORY, not a file: `dotnet test` writes one
+            # uniquely-named .trx per test project into it.
+            new = str(workdir / f"{suite.get('name', 'suite')}-trx")
+            Path(new).mkdir(parents=True, exist_ok=True)
             suite["cmd"] = suite["cmd"].replace(report, f'"{new}"')
             suite["report"] = new
             changed = True

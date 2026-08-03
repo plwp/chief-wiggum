@@ -644,6 +644,11 @@ def _scanner_version() -> str:
         cw_dir / "hashing.py",
         cw_dir / "write_emission.py",
         cw_dir / "languages.py",
+        # The DATA the loader reads, not just the loader (#259): moving an
+        # extension between generic_tier / unsupported_extensions changes
+        # exactly which files this scanner walks, with no code change at
+        # all — the CTR-fh-041 silent-staleness class, one layer out.
+        here.parent.parent / "config" / "languages.json",
     )
 
 

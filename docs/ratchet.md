@@ -137,10 +137,45 @@ agentic pilot both tampering workers modified a high-water test file and both
 honest workers did not — the cue flags exactly the branch that slipped every
 gate. A missing scorecard or broken journal chain degrades **visibly**
 ("cue unavailable"), never silently. File/dir resolution is implemented for
-the `junit-xml` and `go-test-json` parsers only; a `pass-fail-lines` suite
+the `junit-xml`, `go-test-json`, and `trx` parsers; a `pass-fail-lines` suite
 resolves no files (every case lands in `test_files_unresolved`), so the cue
 does not cover it — an accepted gap, since the blocking answer to a test-body
-rewrite is the verifier-hash dimension above, not this cue.
+rewrite is the verifier-hash dimension above, not this cue. TRX records the
+test DLL and never the source file, so its resolution goes through the class
+name and only lands when exactly one tracked `<ClassName>.cs` exists under the
+suite cwd — ambiguous or absent matches stay unresolved, never guessed.
+
+### The `trx` parser (.NET, #259)
+
+`dotnet test --logger trx` is the built-in VSTest logger: it needs no NuGet
+package added to the target, unlike a JUnit logger — which matters because
+adoption must not mutate the repo it is only surveying. Three properties are
+load-bearing, and each one is the difference between a real pass-set and a
+vacuously empty one:
+
+- **`report` names a DIRECTORY, not a file.** A solution runs one logger per
+  test project, so a fixed `LogFileName` makes each project overwrite the
+  last (VSTest even says `WARNING: Overwriting results file`) and silently
+  drops every project but one. Every `*.trx` under the directory is parsed.
+- **The directory is cleared before each run.** It accumulates across runs, so
+  a stale file would keep a since-deleted test in the high-water mark forever.
+- **Only `outcome="Passed"` counts.** TRX has ~10 outcomes; `NotExecuted` is a
+  skip and `Failed`/`Error`/`Timeout`/`Aborted`/`Inconclusive`/
+  `PassedButRunAborted` are not passes. A case seen both passed and failed
+  (a flaky retry) is not passing, matching the other parsers.
+
+Case IDs are `ClassName::LocalName`, resolved through `<TestDefinitions>`, and
+keep xunit `[Theory]` data rows distinct (`ParameterisedPasses(n: 2)`) so
+losing one data row reads as the regression it is. A run that writes no TRX at
+all raises rather than returning an empty pass-set — "the runner produced
+nothing" must never render as "nothing was wrong".
+
+Autodetection names each solution explicitly (`dotnet test "Api.sln"`): a bare
+`dotnet test` in a root holding more than one solution fails outright with
+MSB1011, and real .NET monoliths routinely ship several. Note `dotnet test`
+builds into per-project `bin/`/`obj/` inside the tree, which a standard .NET
+`.gitignore` covers; only the TRX output is re-pointed outside the tree during
+`/adopt`.
 
 ## Trust boundary: what the chain does and does not prove (#209)
 
@@ -191,14 +226,16 @@ docs/quality/
 ```
 
 `ratchet.json` declares the test suites project-agnostically — a command plus a
-parser (`go-test-json`, `junit-xml`, or `pass-fail-lines`):
+parser (`go-test-json`, `junit-xml`, `trx`, or `pass-fail-lines`):
 
 ```json
 {
   "suites": [
     {"name": "go", "cmd": "go test -json -count=1 ./...", "cwd": "backend", "parser": "go-test-json"},
     {"name": "web", "cmd": "npx vitest run --reporter=junit --outputFile=junit.xml",
-     "cwd": "web", "parser": "junit-xml", "report": "web/junit.xml"}
+     "cwd": "web", "parser": "junit-xml", "report": "web/junit.xml"},
+    {"name": "dotnet", "cmd": "dotnet test \"Api.sln\" --logger trx --results-directory .ratchet-trx",
+     "cwd": ".", "parser": "trx", "report": ".ratchet-trx"}
   ],
   "epic_docs": "docs/epics",
   "protected_paths": ["docs/epics/*/contracts.md", "docs/quality/**", "..."],
@@ -209,7 +246,7 @@ parser (`go-test-json`, `junit-xml`, or `pass-fail-lines`):
 ## CLI
 
 ```bash
-python3 scripts/ratchet.py init --repo <target>        # starter config (autodetects go/pytest)
+python3 scripts/ratchet.py init --repo <target>        # starter config (autodetects go/pytest/dotnet)
 python3 scripts/ratchet.py score                       # run suites + hash contracts + complexity/churn → scorecard
 python3 scripts/ratchet.py score --no-tests            # contract hashes only (cheap baseline)
 python3 scripts/ratchet.py score --no-quality          # skip the complexity/churn snapshot (no lizard)

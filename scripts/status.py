@@ -17,6 +17,15 @@ Sections (text) / keys (json):
 - **ratchet** — high-water state from ``<quality_dir>/ratchet-scorecard.json``:
   pass-set size, contract-definition count, verifier-test-hash count.
   ``no ratchet config`` when the target has none.
+- **partial_coverage** — section -> reason where something WAS measured but
+  not everything was (an engine with no tier for a language in the
+  population). Weaker than ``not_measured`` on purpose: over-claiming a gap
+  trains the operator to ignore the marker.
+- **not_measured** — section -> reason for every surface that measured
+  NOTHING (#259). A zero-case pass-set and a zero-item debt inventory render
+  identically to healthy ones, so "CW has no opinion here" reads as "CW
+  approves"; a ``NOT MEASURED`` marker carrying the reason (no runner
+  detected / no known-language sources) is the difference.
 - **patterns** — adopted registry patterns (``<patterns_dir>/adopted.json``).
 - **debt** — counts by severity from ``<quality_dir>/debt.json`` when the
   debt inventory exists (#214), else ``no inventory``.
@@ -118,6 +127,78 @@ def ratchet_status(quality_dir: Path) -> dict:
     }
 
 
+def ratchet_not_measured(quality_dir: Path, rt: dict) -> str | None:
+    """Why the ratchet's pass-set measured NOTHING, or None when it measured
+    something (#259).
+
+    A zero-case pass-set is a technically-intact, practically-meaningless
+    high-water mark: it can never slide backwards because there is nothing to
+    slide. Rendered identically to a healthy pass-set, "honest zero" reads as
+    "everything measured, all clean" — so the reason is carried here and shown
+    where humans look."""
+    if not rt.get("scorecard") or rt.get("pass_set"):
+        return None
+    sc = _load_json(quality_dir / SCORECARD_NAME)
+    sc = sc if isinstance(sc, dict) else {}
+    cfg = _load_json(quality_dir / RATCHET_CONFIG_NAME)
+    suites = (cfg.get("suites") or []) if isinstance(cfg, dict) else []
+    if not suites:
+        return ("no test runner detected — ratchet.json configures 0 suite(s), so the "
+                "high-water mark is zero and can never slide")
+    names = ", ".join(str(s.get("name", "?")) for s in suites if isinstance(s, dict))
+    if sc.get("tests_run") is False:
+        return (f"tests not run (tests_run: false) — {len(suites)} suite(s) configured "
+                f"({names}) but the pass-set was recorded as not-run")
+    return (f"{len(suites)} suite(s) configured ({names}) produced 0 passing case(s) — "
+            "a runner that reports nothing is not a clean run")
+
+
+def debt_not_measured(quality_dir: Path, counts: dict | None) -> str | None:
+    """Why the debt inventory scanned NOTHING, or None when it scanned files
+    (#259). Proven from the inventory's own population count — never inferred
+    from an empty item list, which is also what a genuinely clean repo has."""
+    if counts is None or counts:
+        return None
+    doc = _load_json(quality_dir / DEBT_NAME)
+    if not isinstance(doc, dict):
+        return None
+    population = ((doc.get("engines") or {}).get("dead_code") or {}).get("files_in_population")
+    if not isinstance(population, int) or population > 0:
+        return None
+    unscanned = doc.get("unscanned_languages")
+    detail = ""
+    if isinstance(unscanned, dict) and unscanned:
+        top = sorted(unscanned.items(), key=lambda kv: -kv[1])[:4]
+        detail = " — unscanned: " + ", ".join(f"{k}: {n}" for k, n in top)
+    return ("no known-language source files in the scan population: the engines had "
+            f"nothing to scan{detail}")
+
+
+def debt_partial_coverage(quality_dir: Path, counts: dict | None) -> str | None:
+    """Why a zero-item inventory over a NON-empty population is still not a
+    clean bill of health (#259).
+
+    Distinct from :func:`debt_not_measured`: something was scanned, so the
+    result is not vacuous — but an engine that has no tier for a language in
+    the population contributes no findings for it, and "zero items" would read
+    as if it had. Reported as partial coverage, not as unmeasured, because
+    over-claiming a gap trains the operator to ignore the marker."""
+    if counts is None or counts:
+        return None
+    doc = _load_json(quality_dir / DEBT_NAME)
+    if not isinstance(doc, dict):
+        return None
+    population = ((doc.get("engines") or {}).get("dead_code") or {}).get("files_in_population")
+    if not isinstance(population, int) or population <= 0:
+        return None  # zero population is the NOT MEASURED case, not this one
+    unscanned = doc.get("unscanned_languages")
+    if not isinstance(unscanned, dict) or not unscanned:
+        return None
+    top = sorted(unscanned.items(), key=lambda kv: -kv[1])[:4]
+    return ("some of the population was not scanned by every engine — "
+            + ", ".join(f"{k}: {n} file(s)" for k, n in top))
+
+
 def adopted_patterns(patterns_dir: Path) -> list[dict]:
     doc = _load_json(patterns_dir / ADOPTED_NAME)
     if not isinstance(doc, dict):
@@ -211,12 +292,33 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
         stale = resolver.check_stale(sc if isinstance(sc, dict) else {})
         if stale:
             rt["stale"] = stale
+    debt = debt_counts(quality_dir)
+    # NOT MEASURED (#259): section -> reason, for every surface whose "clean"
+    # rendering is indistinguishable from "measured nothing". A section absent
+    # from this map WAS measured.
+    not_measured = {
+        section: reason
+        for section, reason in (
+            ("ratchet", ratchet_not_measured(quality_dir, rt)),
+            ("debt", debt_not_measured(quality_dir, debt)),
+        )
+        if reason
+    }
+    partial_coverage = {
+        section: reason
+        for section, reason in (
+            ("debt", debt_partial_coverage(quality_dir, debt)),
+        )
+        if reason
+    }
     return {
         "resolver": resolver.to_dict(),
         "gates": gate_ledger(quality_dir),
         "ratchet": rt,
         "patterns": adopted_patterns(resolver.patterns_dir()),
-        "debt": debt_counts(quality_dir),
+        "debt": debt,
+        "not_measured": not_measured,
+        "partial_coverage": partial_coverage,
         "adoption": adoption_status(resolver.meta_root),
     }
 
@@ -226,6 +328,8 @@ def gather(target: str | Path, cw_home: Path | str | None = None) -> dict:
 
 def render_text(status: dict) -> str:
     r = status["resolver"]
+    not_measured = status.get("not_measured") or {}
+    partial_coverage = status.get("partial_coverage") or {}
     lines = [
         f"# Chief Wiggum status — {r['target_id']}",
         "",
@@ -251,6 +355,8 @@ def render_text(status: dict) -> str:
     elif not rt.get("scorecard"):
         lines.append("configured, but no scorecard (run `ratchet.py score`)")
     else:
+        if "ratchet" in not_measured:
+            lines.append(f"NOT MEASURED: {not_measured['ratchet']}")
         lines.append(
             f"pass-set: {rt['pass_set']} case(s) | contracts: {rt['contracts']} | "
             f"verifier hashes: {rt['verifier_hashes']}"
@@ -268,7 +374,14 @@ def render_text(status: dict) -> str:
     if debt is None:
         lines.append("no inventory (docs/quality/debt.json absent)")
     elif not debt:
-        lines.append("inventory present, zero items")
+        if "debt" in not_measured:
+            lines.append(f"NOT MEASURED: {not_measured['debt']}")
+            lines.append("inventory present, zero items — absence of findings is NOT health")
+        elif "debt" in partial_coverage:
+            lines.append(f"PARTIAL COVERAGE: {partial_coverage['debt']}")
+            lines.append("inventory present, zero items")
+        else:
+            lines.append("inventory present, zero items")
     else:
         lines.append("  ".join(f"{sev}: {n}" for sev, n in sorted(debt.items())))
     lines += ["", "## Adoption", ""]
