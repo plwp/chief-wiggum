@@ -27,7 +27,16 @@
       "items": { "type": "string" },
       "description": "Audiences already owned (lists, followings, communities) — the bet-selection lint accepts a plan that draws on one."
     },
-    "hours_per_week": { "type": "number", "minimum": 0 },
+    "hours_per_week": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total operator hours/week available — the numerator in the capacity-based cap (chief-wiggum#274, §9.6.3): remaining capacity = hours_per_week − Σ(measured ongoing load of every live/lifestyle bet) − reserve_hours_per_week."
+    },
+    "reserve_hours_per_week": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Hours/week held back from the capacity-based cap's arithmetic for factory ops, marketing on the current bet, or anything else not itself a bet (chief-wiggum#274). Absent → 0."
+    },
     "cash_available": {
       "type": "number",
       "minimum": 0,

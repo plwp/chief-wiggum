@@ -95,6 +95,20 @@ Per-bet typed loss caps, human-set, script-enforced, raisable only by a journale
   a bet in `probe` state may not incur exercise-scale costs.
 - The ratchet idiom applies verbatim: workers never touch the envelope; raises are journaled
   in the hash chain.
+- **`liability_exposure` addendum (chief-wiggum#277)**: Dew et al.'s field list has no
+  liability/exposure dimension, so an uncapped contractual indemnity records identically to
+  no exposure at all. Added as an enumerated field —
+  `capped_at(<amount>) | insured(<policy>, responds=yes|unverified|no) | uncapped_entity |
+  uncapped_personal` — never free text. Its total absence is a lintable finding; a STATED
+  value, including an uncapped one, is never itself a finding: the operator takes uncapped
+  risk deliberately as a competitive edge (§9.4 addendum, "terms as an attack surface"), and
+  the point of this field is to make that choice explicit, sized and counted, never to block
+  it. Insurability is a separate fact from insurance: `responds` defaults to `unverified` and
+  only a human answer moves it (a common PI-policy exclusion is contractually-assumed
+  liability, so holding a policy does not establish that it responds). The portfolio-level
+  concurrency count over every non-exited bet is the check that actually matters — one
+  uncapped exposure is a considered bet, several concurrently is a portfolio that cannot
+  survive one bad event.
 
 ### 2.2 The assumptions graph (traceability transplanted to business objects)
 
@@ -704,6 +718,15 @@ Ranked transferable mechanisms:
    equivalent.
 8. **Capital structure as strategy**: a solo operator can hold price points a VC-backed
    competitor structurally can't (they must raise prices into their valuation; you don't).
+9. **Terms as an attack surface** (chief-wiggum#277 addendum): risk appetite, liability
+   acceptance and indemnity posture can be undercut on exactly like price. A mid-size
+   competitor's legal function vetoes an uncapped indemnity as a matter of policy; a solo
+   operator can accept it deliberately and win work the incumbent is structurally unable to
+   bid — judo with **terms** rather than price as the lever. Sizing caveat: this is a real
+   mechanism, not a free one — an edge you can only play once (because one bad event ends
+   the portfolio) is a bet, not an edge, and it must be sized, recorded and counted like any
+   other (the affordable-loss envelope's `liability_exposure` field and the portfolio-level
+   uncapped-concurrency count exist for exactly this — never as a blocker on taking the risk).
 
 **Multi-host neutrality** (from the steer): integrating with several competing hosts defeats
 both the landlord (can't be evicted from rivals) and the bundle (no host can bundle across
@@ -893,10 +916,11 @@ resolution rather than left implicit.
 **Terminal states.** The Mandarin run surfaced a terminal the ledger does not model: a small
 vertical vendor's normal ending is not a sale but **hold, extract cash, then shut down or hand
 the product to a loyal customer** — routine among Japanese and Chinese sub-10-person vertical
-vendors, and erased by the Silicon-Valley exit narrative. `bet.py`'s terminals are
-`killed | parked | lifestyle | sold`; `lifestyle` currently absorbs this case but says nothing
-about the wind-down. Worth a distinct terminal so a planned graceful shutdown is not recorded
-as the same event as a kill.
+vendors, and erased by the Silicon-Valley exit narrative. `bet.py`'s terminals were
+`killed | parked | lifestyle | sold`; `lifestyle` absorbed this case but said nothing about the
+wind-down. **Resolved (chief-wiggum#274)**: `wound_down` is now a distinct terminal, reachable
+like every other terminal and carrying none of `killed`'s retrospective/harvest-check
+discipline — a planned graceful shutdown is not the same event as a kill.
 
 **Ledger gap found while checking this** (verified in code, not model-asserted):
 `bet.py`'s `IN_FLIGHT` is `{probing, validating, building}` and `TERMINALS` includes
@@ -905,7 +929,18 @@ while consuming operator hours forever — so a fleet of five lifestyle products
 reporting "room for two more bets" with 100% of the attention budget already spent. The
 `--max-in-flight` cap counts *bets being worked*, but §9.6.3 says the binding resource is
 *total attention including live products*. That is the exact arithmetic behind the zombie-fleet
-failure mode, and the ledger cannot currently see it.
+failure mode, and the ledger could not see it.
+
+**Resolved (chief-wiggum#274)**: `bet.py` now MEASURES `ongoing_load_hours_per_week` per
+`lifestyle` bet from the ledger's trailing hours entries (never a typed-in guess) and computes
+remaining capacity as `means.hours_per_week − Σ(ongoing_load of every lifestyle bet) −
+reserve_hours_per_week` — a second, independent bound alongside `--max-in-flight` (whichever
+binds first is visible), plus an addition rule (only start product *n+1* once the most
+recently added live product has run below its target load for two consecutive weekly
+periods) and an attention kill criterion (load above 2h/wk while MRR is under $2k flags a
+kill-or-redesign candidate). All three are new reinterpretations of the existing cap and so
+report-only-forever until validated against a real portfolio, never wired to `--gate`
+(docs/gate-rollout.md).
 
 ---
 
