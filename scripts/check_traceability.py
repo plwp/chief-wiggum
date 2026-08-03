@@ -85,7 +85,11 @@ from chief_wiggum import languages as cw_languages  # noqa: E402
 # agree on the file universe (the manifest never surfaces submodule blobs).
 # hash_epic_definitions (#169) is the same contract-block hashing ratchet.py
 # uses for weakening detection — one implementation, not a parallel copy.
-from chief_wiggum.hashing import hash_epic_definitions, scanner_version  # noqa: E402
+from chief_wiggum.hashing import (  # noqa: E402
+    ID_BEARING_ARTIFACTS,
+    hash_epic_definitions,
+    scanner_version,
+)
 from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
 
 # Decode-defensive bulk-source read (#282): a bare path.read_text() crashes
@@ -156,12 +160,8 @@ SOURCE_EXTS = cw_languages.all_known_extensions() | VERIFICATION_EXTS
 # nothing parseable" (error — a broken instrument, #281/#289). adr.md,
 # integration-tests.md, traceability.md and retrospective.md are deliberately
 # NOT here: they legitimately carry no declarations.
-ID_BEARING_ARTIFACTS = frozenset({
-    "contracts.md", "contracts.json",
-    "invariants.md",
-    "state-machines.md", "state-machines.json",
-    "architecture.json",
-})
+# Homed in chief_wiggum.hashing (#295) so ratchet.py's own vacuous-contract-hash
+# detection uses the SAME set — imported above alongside hash_epic_definitions.
 
 
 @dataclass
