@@ -965,7 +965,7 @@ def test_orphan_findings_never_emitted_for_out_of_scope_tests(tmp_path):
 
 
 def test_go_helper_delegated_test_not_flagged_assertion_free(tmp_path):
-    """The dgrd FP class: a test whose only 'assertion' is a local helper
+    """A real mined FP class: a test whose only 'assertion' is a local helper
     receiving t (the helper calls require.* inside) is NOT assertion-free —
     it lands in the helper_delegated bucket, stated as unverified."""
     repo = _make_repo(tmp_path, {

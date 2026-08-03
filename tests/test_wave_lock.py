@@ -4,7 +4,7 @@ Concurrent `/implement-wave` orchestrators against the SAME target repo share
 one cached checkout (`~/.chief-wiggum/repos/<owner>/<repo>`) for the
 merge/staging/promote phase — worker isolation (each ticket in its own
 worktree) does not cover this phase, which `cd`s into the shared checkout
-directly. Confirmed live (2026-08-02, dogeared-coach): a second wave's
+directly. Confirmed live (2026-08-02, a multi-tenant video SaaS): a second wave's
 staging merge hit `assert-main-pristine` mid-conflict from a FIRST wave's
 in-flight staging merge on the same checkout.
 

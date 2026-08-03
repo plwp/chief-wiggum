@@ -7,7 +7,7 @@ one cached checkout (`~/.chief-wiggum/repos/<owner>/<repo>`, resolved by
 its own worktree) already prevents collisions during implementation; nothing
 previously prevented two orchestrators from both `cd`-ing into that ONE
 shared checkout and merging/promoting at the same time — confirmed live
-2026-08-02 (dogeared-coach): a second wave's staging merge hit
+2026-08-02 (a multi-tenant video SaaS): a second wave's staging merge hit
 `assert-main-pristine` mid-conflict from a first wave's in-flight staging
 merge on the same checkout.
 

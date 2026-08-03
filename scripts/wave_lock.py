@@ -6,7 +6,8 @@ cache checkout (`~/.chief-wiggum/repos/<owner>/<repo>`). Two concurrent
 `/implement-wave` orchestrators against the same repo used to be able to
 merge/promote into that ONE checkout at the same time with no signal beyond
 whatever guard happened to catch the collision after the fact
-(`assert-main-pristine` mid-merge — confirmed live, 2026-08-02, dogeared-coach).
+(`assert-main-pristine` mid-merge — confirmed live, 2026-08-02, on a
+multi-tenant video SaaS).
 
 Acquire before Step 4d (create the staging branch), release after Step 4g
 (promote to main). A second concurrent run's `acquire` fails LOUDLY, naming
