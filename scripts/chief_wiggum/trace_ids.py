@@ -72,6 +72,10 @@ NEAR_MISS_DEFINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# A valid ID *prefix* — the same body, anchored at the token start but with no
+# end-lookahead, so it still matches when a suffix follows.
+_ID_PREFIX_RE = re.compile(rf"^{ID_BODY}")
+
 
 def near_miss_ids(text: str) -> list[str]:
     """Declaration-position tokens that ALMOST match the stable-ID grammar.
@@ -79,12 +83,31 @@ def near_miss_ids(text: str) -> list[str]:
     Returns tokens in source order (duplicates kept — callers report
     file:line per occurrence). A token that fullmatches ID_RE is a real
     declaration, not a near miss, and is never returned.
+
+    A token that merely *starts* with a valid ID and continues with a
+    hyphenated suffix is a local sub-id, not a malformed stable ID —
+    ``CTR-order-confirm-001-pre1`` names the ``pre1`` precondition OF the
+    real contract ``CTR-order-confirm-001``. Flagging those was a false
+    positive caught by the #281 precision dry-run against
+    ``tests/fixtures/code_query_repo``; the whole point of this detector is
+    to be a grammar complement, so it must not invent violations the grammar
+    does not have.
+
+    The suffix must begin with a hyphen for the exemption to apply, which
+    keeps a genuine typo flagged: ``INV-order-0011`` has a valid prefix
+    ``INV-order-001`` followed by ``1`` (not ``-``), so it is still a near
+    miss.
     """
-    return [
-        m.group(1)
-        for m in NEAR_MISS_DEFINE_RE.finditer(text)
-        if not ID_RE.fullmatch(m.group(1))
-    ]
+    out = []
+    for m in NEAR_MISS_DEFINE_RE.finditer(text):
+        token = m.group(1)
+        if ID_RE.fullmatch(token):
+            continue
+        prefix = _ID_PREFIX_RE.match(token)
+        if prefix and token[prefix.end():prefix.end() + 1] == "-":
+            continue
+        out.append(token)
+    return out
 
 
 def canonical_id(node_id: str) -> str:

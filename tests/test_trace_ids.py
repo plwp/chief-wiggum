@@ -223,3 +223,20 @@ def test_near_miss_ids_matches_json_id_position():
 
 def test_near_miss_ids_matches_heading_position():
     assert trace_ids.near_miss_ids("### INV-001 — x") == ["INV-001"]
+
+
+def test_near_miss_ids_ignores_local_sub_ids():
+    # A precondition/postcondition sub-id hangs a local suffix off a REAL
+    # contract id. It is not a malformed stable ID, and flagging it was a
+    # false positive caught by the #281 precision dry-run against
+    # tests/fixtures/code_query_repo. The detector is a grammar complement:
+    # it must not invent violations the grammar does not have.
+    assert trace_ids.near_miss_ids('"id": "CTR-order-confirm-001-pre1"') == []
+    assert trace_ids.near_miss_ids('"id": "CTR-order-confirm-001-post1"') == []
+
+
+def test_near_miss_ids_still_flags_a_digit_typo():
+    # The sub-id exemption requires the suffix to start with a hyphen, so a
+    # fat-fingered 4th digit is NOT exempted — INV-order-0011 has the valid
+    # prefix INV-order-001 followed by "1", not "-1".
+    assert trace_ids.near_miss_ids('"id": "INV-order-0011"') == ["INV-order-0011"]
