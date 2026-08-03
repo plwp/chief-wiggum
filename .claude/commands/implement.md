@@ -102,15 +102,21 @@ Also check for **formal model artifacts** in `$EPIC_DIR/models/`:
 - `test_state_machine.py` — Hypothesis RuleBasedStateMachine skeleton
 - `transition-map.json` — transition ↔ ticket mapping (updated by `/implement`)
 
-Build the artifact inventory once with the tested helper, then read its flags (it discovers prose/model/design artifacts, validates model JSON, and runs the unresolved-marker scan in one pass):
+Build the artifact inventory once with the tested helper, then read its flags (it discovers prose/model/design artifacts, validates model JSON, and runs the unresolved-marker scan in one pass — sidecar-aware: it resolves the epic/design location itself, but `$EPIC_DIR` is already resolved above, so pass it through rather than paying to re-derive it):
 ```bash
-python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "${EPIC_SLUG:-}" --issue "$issue_number" > "$TICKET_TMP/inventory.json"
+python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "${EPIC_SLUG:-}" \
+  ${EPIC_DIR:+--epic-dir "$EPIC_DIR"} --issue "$issue_number" > "$TICKET_TMP/inventory.json"
+EPIC_STATUS=$(jq -r '.epic_status' "$TICKET_TMP/inventory.json")
+if [ "$EPIC_STATUS" = "missing" ]; then
+  echo "This ticket's milestone ($MILESTONE) names an epic, but its artifacts were not found at $EPIC_DIR. That is always a defect — a moved epic, a wrong election, or a never-installed architecture — never a standalone ticket. STOP: do not proceed as if there were no epic context; fix the location (or run /architect) first." >&2
+  exit 1
+fi
 HAS_FORMAL_MODELS=$(jq -r '.flags.HAS_FORMAL_MODELS' "$TICKET_TMP/inventory.json")
 HAS_UI_SPEC=$(jq -r '.flags.HAS_UI_SPEC' "$TICKET_TMP/inventory.json")
 HAS_TRANSITION_MAP=$(jq -r '.flags.HAS_TRANSITION_MAP' "$TICKET_TMP/inventory.json")
 [ "$HAS_FORMAL_MODELS" = "true" ] && MODELS_DIR="$EPIC_DIR/models"
 ```
-The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) feed the unresolved-unknowns gate below.
+The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) feed the unresolved-unknowns gate below. `epic_status` is three-state (`none`/`present`/`missing`, chief-wiggum#286) precisely so a resolver that can't find a NAMED epic is never confused with a ticket that legitimately has none — the `flags.HAS_EPIC` boolean alone can't tell those apart, and conflating them is how a sidecar target used to silently drop every contract, invariant, and state machine the epic produced while `/implement` reported normal standalone operation.
 
 These artifacts are **hard constraints** on the implementation. The coding worker MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
@@ -125,7 +131,7 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json
 ```
 If any finding's `tickets` list includes this ticket (or the finding sits on an entity/operation this ticket implements), do NOT implement on the guessed value. Resolve the unknown first — introspect the real source, read the upstream repo, or ask the user — update the artifact with a citation, then proceed. Building a query layer against `TBD:` schema names produces code that compiles, passes mocked tests, and fails on first contact with reality.
 
-If no epic context exists, proceed without it — the skill works standalone too.
+If `$EPIC_STATUS` is `none` (this ticket was never on a milestone), proceed without epic context — the skill works standalone too. That is the ONLY case that silently proceeds; `missing` already stopped above.
 
 All subsequent steps should work within `$TARGET_REPO`. Use `$CW_HOME` for chief-wiggum scripts/templates. Use `$CW_TMP` for temporary files (not `/tmp/`). Use `$DEFAULT_BRANCH` instead of hardcoding `main`.
 

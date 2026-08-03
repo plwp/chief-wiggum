@@ -49,12 +49,13 @@ python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
 
 Exit 2 means the binding exists but is unreadable — stop and fix it rather than closing an epic as if the target had no conventions. Empty output means none are recorded (the greenfield default). Otherwise load each listed skill and apply its conventions throughout the epic-level review, alongside CW's own gates.
 
-Fetch the epic's tickets:
+Fetch the epic's tickets via `tracker.py` instead of calling `gh issue` directly — this is what makes the skill usable against non-github tracker backends, including a repo whose upstream has issues disabled entirely (see `docs/tracker.md`):
 ```bash
-gh issue list --repo "$owner_repo" --milestone "$epic_name" --state all --limit 100 --json number,title,state,labels
+python3 "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" members "$owner_repo" "$epic_name"
 ```
+This returns every ticket currently grouped into the epic — `ref`, `title`, `state`, `labels`, ... — for ANY backend.
 
-Verify all tickets are closed. If any are still open, report which ones and ask the user whether to proceed with a partial close or wait.
+Verify all tickets are closed (`state == "closed"` for every returned ticket). If any are still open, report which ones and ask the user whether to proceed with a partial close or wait.
 
 ### Step 1b: Run the deterministic audit
 

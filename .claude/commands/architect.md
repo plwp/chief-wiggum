@@ -33,10 +33,11 @@ CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$e
 eval "$CW_CTX"
 ```
 
-Fetch all issues in the epic milestone:
+Fetch all issues in the epic via `tracker.py` instead of calling `gh issue` directly — this is what makes the skill usable against non-github tracker backends, including a repo whose upstream has issues disabled entirely (see `docs/tracker.md`):
 ```bash
-gh issue list --repo "$owner_repo" --milestone "$epic_name" --state open --limit 100 --json number,title,body,labels
+python3 "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" members "$owner_repo" "$epic_name"
 ```
+This returns every ticket currently grouped into the epic — `ref`, `title`, `body`, `state`, `labels`, `assignee`, `epic`, `url_or_path` — for ANY backend (`gh:owner/repo#N` refs for `github`, `local:docs/issues/NNNN.md` for `local`). Filter client-side to `state == "open"` (matching the previous open-only behavior) unless you deliberately want closed tickets in view too. Keep each ticket's `ref` — Step 8 needs it to post the architecture comment.
 
 Read each issue's full body to extract acceptance criteria, technical notes, and cross-references.
 
@@ -598,11 +599,11 @@ If the user later revises a contract (a legitimate re-architecture, not a workar
 
 ### Step 8: Update issue descriptions
 
-For each ticket in the epic, append a reference to the architectural artifacts. `install_epic_artifacts.py` (Step 7) already emits a ready-to-post `issue_comment` body in its JSON output — reuse it (it links every artifact, including the UI spec when present) rather than hand-writing the body:
+For each ticket in the epic (using the `ref` values from Step 1's `tracker.py members` call), append a reference to the architectural artifacts via `tracker.py comment` — never `gh` directly, or this step is unusable against a non-github backend. `install_epic_artifacts.py` (Step 7) already emits a ready-to-post `issue_comment` body in its JSON output — reuse it (it links every artifact, including the UI spec when present) rather than hand-writing the body:
 
 ```bash
 # Reuse the installer's issue_comment, or post the equivalent below:
-gh issue comment $issue_number --repo "$owner_repo" --body "## Epic Architecture
+python3 "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" comment "$ref" "## Epic Architecture
 
 This ticket is part of **[Epic Name]**. Before implementing, read:
 - [Contracts](../docs/epics/$EPIC_SLUG/contracts.md) — REQUIRES/ENSURES for APIs and entities
