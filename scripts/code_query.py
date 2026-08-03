@@ -75,7 +75,9 @@ import check_single_writer  # noqa: E402
 import check_traceability  # noqa: E402
 from chief_wiggum import external_links  # noqa: E402 — sidecar link store (#213 Phase C)
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from chief_wiggum.textio import read_text_safe  # noqa: E402 — decode-defensive bulk-scan reads (#282/#289)
+from chief_wiggum.textio import (
+    read_text_safe,  # noqa: E402 — decode-defensive bulk-scan reads (#282/#289)
+)
 from chief_wiggum.trace_ids import DEFINE_RE, ID_KINDS  # noqa: E402
 
 DEFAULT_LIMIT = 40
