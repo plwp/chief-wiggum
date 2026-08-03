@@ -93,6 +93,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -116,7 +117,13 @@ import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 # _hash_markdown_defs/_walk_json_ids are kept as thin aliases to that shared
 # home for callers/tests that reach into ratchet's (formerly private) internals.
 from chief_wiggum import grandfather  # noqa: E402
-from chief_wiggum.hashing import hash_epic_definitions, scanner_version, stable_hash  # noqa: E402
+from chief_wiggum.hashing import (  # noqa: E402
+    find_id_bearing_artifacts,
+    hash_epic_definitions,
+    scan_malformed_ids,
+    scanner_version,
+    stable_hash,
+)
 from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
 from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
 from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
@@ -185,6 +192,13 @@ DEFAULT_PROTECTED = [
 # expiry is mandatory, so it must have a default a human never has to think
 # about, and it must be short enough to force re-litigation.
 DEFAULT_QUARANTINE_DAYS = 90
+
+# --reuse-report freshness window (#284): generous enough for a real suite +
+# static-analysis + review pass to complete between the verification run and
+# the `score` call that reuses its report, short enough that a report left
+# over from an earlier, unrelated ticket reads as stale rather than silently
+# scored against.
+DEFAULT_REUSE_REPORT_MAX_AGE = 1800
 
 
 class RatchetError(Exception):
@@ -281,6 +295,61 @@ def load_contract_hashes(cfg: Config) -> dict[str, str]:
     right-hand side, so the join below is correct in both modes.
     """
     return hash_epic_definitions(cfg.repo / cfg.epic_docs)
+
+
+# Vacuous-pass fix (chief-wiggum#295, direct instance of #289 — one layer up
+# from #281): "contracts cannot be weakened" is checked by comparing
+# `contract_hashes` against the high-water mark. hash_epic_definitions walks
+# the SAME three-segment grammar #281 showed the /architect skill's own
+# examples fail (two-segment `INV-001`) — for such an epic it silently
+# returns {}, so the weakening/removal check holds vacuously (over an empty
+# set): a contract can be freely rewritten or gutted and NOTHING flags it,
+# while the journal's hash chain stays perfectly intact. `contract_measurement`
+# tells "nothing to measure" (inapplicable) apart from "artifacts exist with
+# content and the scanner parsed ZERO ids out of them" (error — a broken
+# instrument, never a clean pass), the same three-state vocabulary #281 landed
+# for check_traceability.py. `find_id_bearing_artifacts`/`scan_malformed_ids`
+# (chief_wiggum.hashing) are shared with check_traceability.py; malformed_ids
+# reuses `near_miss_ids` (chief_wiggum.trace_ids) — NOT a second detector.
+CONTRACT_STATUS_APPLICABLE = "applicable"
+CONTRACT_STATUS_INAPPLICABLE = "inapplicable"
+CONTRACT_STATUS_ERROR = "error"
+
+
+def contract_measurement(cfg: Config, contract_hashes: dict[str, str]) -> dict:
+    """The measurement diagnostics alongside ``contract_hashes`` itself: how
+    many ID-bearing artifacts were scanned, which declaration-position tokens
+    were malformed near-misses, and the derived status (see module note
+    above). Pure/read-only given an already-computed ``contract_hashes``."""
+    root = cfg.repo / cfg.epic_docs
+    id_bearing = find_id_bearing_artifacts(root)
+    malformed = scan_malformed_ids(root)
+    if contract_hashes:
+        status = CONTRACT_STATUS_APPLICABLE
+        unparsed: list[dict] = []
+    elif id_bearing:
+        status = CONTRACT_STATUS_ERROR
+        # Always non-empty in this branch (id_bearing is non-empty) — the
+        # error state must be visible even when there happens to be no
+        # near-miss TOKEN at all (prose-only content is just as broken a
+        # measurement as a two-segment near-miss; mirrors
+        # check_traceability's unparsed_artifacts).
+        unparsed = [
+            {"file": f,
+             "reason": "ID-bearing artifact present with content but ZERO parseable "
+                       "stable IDs (expected KIND-SLUG-NNN, e.g. INV-order-001)"}
+            for f in id_bearing
+        ]
+    else:
+        status = CONTRACT_STATUS_INAPPLICABLE
+        unparsed = []
+    return {
+        "status": status,
+        "id_bearing_artifacts": len(id_bearing),
+        "defined_ids": len(contract_hashes),
+        "malformed_ids": malformed,
+        "unparsed_artifacts": unparsed,
+    }
 
 
 # ---- suite parsers (pluggable, per target repo) --------------------------------
@@ -562,6 +631,95 @@ def run_suite(cfg: Config, suite: Suite) -> tuple[set[str], dict[str, str]]:
         )
     ids = {f"{suite.name}::{cid}" for cid in passed}
     return ids, {cid: f for cid, f in files.items() if cid in ids}
+
+
+# ---- reuse an already-written report (#284) -------------------------------------
+#
+# /implement Step 8 already runs the full suite once via run_verification.py;
+# `score` re-running the same `cmd` moments later pays for it twice. `--reuse-
+# report SUITE=PATH` parses an EXISTING on-disk report instead — but only when
+# it looks like it actually describes the CURRENT tree: missing or stale (older
+# than --reuse-report-max-age) both fail loudly, never silently. A silently
+# stale report would keep a since-deleted case in the pass-set forever — the
+# same failure mode the trx parser's pre-run clearing (above) already guards
+# against for the run-fresh path.
+
+
+def _report_mtime(report_path: Path) -> float:
+    """Newest mtime backing ``report_path`` — the file itself, or (TRX) the
+    newest ``*.trx`` inside it when it names a directory. Raises RatchetError
+    when there is nothing there to be fresh OR stale about."""
+    if report_path.is_dir():
+        times = [p.stat().st_mtime for p in report_path.rglob("*.trx")]
+        if not times:
+            raise RatchetError(f"--reuse-report {report_path}: directory has no .trx files")
+        return max(times)
+    if report_path.is_file():
+        return report_path.stat().st_mtime
+    raise RatchetError(
+        f"--reuse-report {report_path}: not found — run the suite (or drop "
+        "--reuse-report) before scoring"
+    )
+
+
+def reuse_suite_report(
+    cfg: Config, suite: Suite, report_path: Path, max_age_seconds: float
+) -> tuple[set[str], dict[str, str]]:
+    """Parse an ALREADY-WRITTEN report instead of re-running ``suite.cmd``.
+
+    Mirrors ``run_suite``'s return shape exactly so callers can't tell the
+    difference except in cost. Fails loudly (``RatchetError``) on a missing,
+    stale, or parser-unsupported report — see module note above.
+    """
+    report_path = Path(report_path)
+    mtime = _report_mtime(report_path)  # raises if missing
+    age = time.time() - mtime
+    if age > max_age_seconds:
+        raise RatchetError(
+            f"suite {suite.name!r}: --reuse-report {report_path} is "
+            f"{int(age)}s old (max {int(max_age_seconds)}s) — treated as "
+            "STALE, not reused (a silently stale report would keep "
+            "since-deleted cases in the pass-set); re-run the suite fresh "
+            "or drop --reuse-report"
+        )
+    if suite.parser == "junit-xml":
+        text = report_path.read_text()
+        passed = parse_junit_xml(text)
+        files = junit_case_files(cfg, suite, text)
+    elif suite.parser == "trx":
+        docs = _trx_documents(report_path)
+        if not docs:
+            raise RatchetError(f"suite {suite.name!r}: no .trx found at reused report {report_path}")
+        passed = parse_trx(docs)
+        files = trx_case_files(cfg, suite, docs)
+    else:
+        raise RatchetError(
+            f"suite {suite.name!r}: --reuse-report is not supported for parser "
+            f"{suite.parser!r} (no on-disk report to reuse — only junit-xml/trx)"
+        )
+    ids = {f"{suite.name}::{cid}" for cid in passed}
+    return ids, {cid: f for cid, f in files.items() if cid in ids}
+
+
+def _parse_reuse_report(items: list[str] | None, suite_names: set[str]) -> dict[str, Path]:
+    """``["pytest=/tmp/x.xml"]`` -> ``{"pytest": Path("/tmp/x.xml")}``. Raises
+    RatchetError on a malformed entry or a name naming no configured suite —
+    a typo must be surfaced, never silently do nothing (house doctrine, see
+    ``_resolve_retire_cases``)."""
+    out: dict[str, Path] = {}
+    for item in items or []:
+        name, sep, path = item.partition("=")
+        name, path = name.strip(), path.strip()
+        if not sep or not name or not path:
+            raise RatchetError(f"--reuse-report must be SUITE=PATH, got {item!r}")
+        out[name] = Path(path)
+    unknown = sorted(set(out) - suite_names)
+    if unknown:
+        raise RatchetError(
+            f"--reuse-report names unknown suite(s): {', '.join(unknown)} "
+            f"(configured: {', '.join(sorted(suite_names)) or '(none)'})"
+        )
+    return out
 
 
 # ---- complexity + churn snapshot (report-only dimension) -----------------------
@@ -950,6 +1108,20 @@ def violations(scorecard: dict, highwater: dict, today: date | None = None) -> d
         else:
             q_live.append(entry)
     missing = sorted(set(missing))
+    # Vacuous contract-hash gate (#295): an "error" measurement status means
+    # the epic has ID-bearing artifacts with content but the scanner parsed
+    # ZERO stable IDs out of them — "contracts cannot be weakened" would
+    # otherwise hold vacuously. This is a HARD finding (like missing_tests/
+    # weakened_contracts/removed_contracts above): the contract-hash dimension
+    # has always been unconditionally blocking, never opt-in via a --gate
+    # flag, so a broken instrument for it must block the same way. A
+    # scorecard predating this dimension carries no `contract_measurement`
+    # key; tolerated as empty (never "error").
+    cmeas = scorecard.get("contract_measurement") or {}
+    contract_measurement_error = (
+        list(cmeas.get("unparsed_artifacts") or []) if cmeas.get("status") == CONTRACT_STATUS_ERROR
+        else []
+    )
     return {
         "missing_tests": missing,
         "weakened_contracts": weakened,
@@ -958,6 +1130,7 @@ def violations(scorecard: dict, highwater: dict, today: date | None = None) -> d
         "removed_verifier_tests": vremoved,
         "quarantined": q_live,
         "expired_quarantines": q_expired,
+        "contract_measurement_error": contract_measurement_error,
     }
 
 
@@ -1225,12 +1398,22 @@ def cmd_init(args) -> int:
 def cmd_score(args) -> int:
     cfg = load_config(repo_root(args.repo))
     contract_hashes = load_contract_hashes(cfg)
+    # --reuse-report (#284): read with getattr defaults so a hand-built
+    # argparse.Namespace predating this flag (house precedent, see
+    # _resolve_retire_cases) degrades gracefully instead of AttributeError.
+    reuse_map = _parse_reuse_report(
+        getattr(args, "reuse_report", None), {s.name for s in cfg.suites}
+    )
+    reuse_max_age = getattr(args, "reuse_report_max_age", DEFAULT_REUSE_REPORT_MAX_AGE)
     pass_set: set[str] = set()
     test_files: dict[str, str] = {}
     for suite in cfg.suites:
         if args.no_tests:
             break
-        ids, files = run_suite(cfg, suite)
+        if suite.name in reuse_map:
+            ids, files = reuse_suite_report(cfg, suite, reuse_map[suite.name], reuse_max_age)
+        else:
+            ids, files = run_suite(cfg, suite)
         pass_set |= ids
         test_files.update(files)
     quality = {"skipped": "quality metrics disabled (--no-quality)"}
@@ -1240,10 +1423,14 @@ def cmd_score(args) -> int:
     # are goalposts — their bodies are hashed and ratcheted like contract
     # definitions. Files the extractor cannot hash are SURFACED, not dropped.
     vscan = scan_verifier_hashes(cfg.repo)
+    cmeas = contract_measurement(cfg, contract_hashes)
     sc = {
         "passed": len(pass_set),
         "pass_set": sorted(pass_set),
         "contract_hashes": contract_hashes,
+        # #295: alongside the hashes themselves, whether hashing actually
+        # MEASURED anything — see contract_measurement()'s docstring.
+        "contract_measurement": cmeas,
         "verifier_test_hashes": vscan.hashes,
         "verifier_targets": vscan.targets,
         "test_files": test_files,
@@ -1274,9 +1461,18 @@ def cmd_score(args) -> int:
         )
     print(
         f"ratchet: scored — {len(pass_set)} passing case(s), "
-        f"{len(contract_hashes)} contract definition(s), "
+        f"contracts tracked: {cmeas['defined_ids']} of "
+        f"{cmeas['id_bearing_artifacts']} artifact(s) scanned, "
         f"{len(vscan.hashes)} verifier test hash(es); {qmsg}"
     )
+    if cmeas["status"] == CONTRACT_STATUS_ERROR:
+        sys.stderr.write(
+            "ratchet: ERROR — epic artifact(s) present with content but ZERO "
+            "stable IDs parsed out of them; the contract-hash weakening gate "
+            "is measuring NOTHING, not passing cleanly (chief-wiggum#295):\n"
+        )
+        for m in cmeas["malformed_ids"]:
+            sys.stderr.write(f"  {m['file']}:{m['line']}: {m['token']!r} (expected {m['expected']})\n")
     return 0
 
 
@@ -1313,7 +1509,17 @@ def cmd_check(args) -> int:
         sc.get("quality", {}) or {}, hw.get("quality", {}) or {}, cfg.quality_tolerance
     )
     susp = suspect_links_for(cfg, sc)
-    hard = {k: v[k] for k in ("missing_tests", "weakened_contracts", "removed_contracts")}
+    # contract_measurement_error (#295) is a HARD finding, same tier as
+    # missing_tests/weakened_contracts/removed_contracts: the contract-hash
+    # dimension has always been unconditionally blocking, so a broken
+    # instrument for it (artifacts present, ZERO ids parsed) must block the
+    # same way — never an opt-in --gate flag, and never a clean pass.
+    hard = {
+        k: v[k] for k in (
+            "missing_tests", "weakened_contracts", "removed_contracts",
+            "contract_measurement_error",
+        )
+    }
     # Verifier-test findings (#206) are a NEW dimension: report-only per
     # docs/gate-rollout.md until validated, blocking only under the opt-in
     # --gate-verifier-tests flag (mirroring --gate-quality's rollout).
@@ -1329,6 +1535,17 @@ def cmd_check(args) -> int:
             {**hard, **vfind, "quarantined": quarantined, "expired_quarantines": expired_q,
              "quality_regressions": qregs, "suspect_links": susp}, indent=2))
     else:
+        if hard["contract_measurement_error"]:
+            sys.stderr.write(
+                "ratchet: ERROR — epic artifact(s) present with content but ZERO stable IDs "
+                "parsed out of them; the contract-hash weakening gate measures NOTHING here, "
+                "not a clean pass (chief-wiggum#295):\n"
+            )
+            for u in hard["contract_measurement_error"]:
+                if "file" in u:
+                    sys.stderr.write(f"  {u['file']}: {u.get('reason', '')}\n")
+                else:
+                    sys.stderr.write(f"  {u}\n")
         if expired_q:
             sys.stderr.write(
                 f"ratchet: {len(expired_q)} EXPIRED quarantine(s) — the expiry passed; "
@@ -1380,7 +1597,8 @@ def cmd_check(args) -> int:
                 "ratchet: VIOLATED —"
                 f" missing_tests={hard['missing_tests']}"
                 f" weakened_contracts={hard['weakened_contracts']}"
-                f" removed_contracts={hard['removed_contracts']}\n"
+                f" removed_contracts={hard['removed_contracts']}"
+                f" contract_measurement_error={bool(hard['contract_measurement_error'])}\n"
             )
         return 1
     if gate_verifier and any(vfind.values()):
@@ -1799,6 +2017,19 @@ def main() -> int:
                     help="skip the complexity/churn snapshot (skip if lizard is unavailable)")
     sp.add_argument("--venv", default=None, help="virtualenv with lizard/radon for the quality snapshot")
     sp.add_argument("--gobin", default=None, help="dir containing gocognit for the quality snapshot")
+    sp.add_argument(
+        "--reuse-report", action="append", metavar="SUITE=PATH",
+        help="parse an ALREADY-WRITTEN report instead of re-running that suite's `cmd` "
+             "(#284 — reuse /implement Step 8's verification run instead of paying for "
+             "the suite twice); repeatable, one per suite name. Fails loudly if the "
+             "report is missing or older than --reuse-report-max-age.",
+    )
+    sp.add_argument(
+        "--reuse-report-max-age", type=int, default=DEFAULT_REUSE_REPORT_MAX_AGE,
+        metavar="SECONDS",
+        help=f"max age of a --reuse-report file before it is treated as STALE "
+             f"(default {DEFAULT_REUSE_REPORT_MAX_AGE}s)",
+    )
 
     for name in ("check", "regressed", "highwater", "recent"):
         sp = sub.add_parser(name)

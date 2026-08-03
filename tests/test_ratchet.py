@@ -142,6 +142,111 @@ def test_reformatting_does_not_change_hash_but_rewording_does(tmp_path):
     assert after["INV-order-002"] == before["INV-order-002"]
 
 
+# ---- #295: vacuous contract-hash gate for an epic the grammar can't parse ------
+#
+# hash_epic_definitions returns {} for an epic whose ids are two-segment
+# (INV-001, the /architect skill's own #281 worked example) — "contracts
+# cannot be weakened" then holds vacuously (over an empty set), and no
+# weakened_contracts/removed_contracts finding is ever raised. Direct instance
+# of chief-wiggum#289 ("something that failed to run renders as a pass"), one
+# layer up from #281 (which fixed the SAME shape for check_traceability.py).
+# near_miss_ids (landed by #281 in chief_wiggum.trace_ids) is reused here —
+# not a second detector.
+
+
+def _score_ns(tmp_path, **overrides):
+    base = dict(repo=str(tmp_path), no_tests=True, no_quality=True, venv=None, gobin=None)
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _check_ns(tmp_path, **overrides):
+    base = dict(repo=str(tmp_path), format="text", gate_verifier_tests=False, gate_quality=False)
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _two_segment_epic_repo(tmp_path):
+    """The #281/#295 case itself: invariants.md is present, has content, and
+    declares ONLY the two-segment INV-001 shape the grammar cannot see."""
+    epic = tmp_path / "docs" / "epics" / "order-lifecycle"
+    epic.mkdir(parents=True)
+    (epic / "invariants.md").write_text("## Epic Invariants\n\n1. **INV-001 — X**: y\n")
+    state = tmp_path / "docs" / "quality"
+    state.mkdir(parents=True)
+    (state / "ratchet.json").write_text(json.dumps({
+        "suites": [], "epic_docs": "docs/epics", "protected_paths": ratchet.DEFAULT_PROTECTED,
+    }))
+    return ratchet.load_config(tmp_path)
+
+
+def test_two_segment_epic_hashes_zero_contracts(tmp_path):
+    """Pins the bug's premise: hash_epic_definitions sees nothing."""
+    cfg = _two_segment_epic_repo(tmp_path)
+    assert ratchet.load_contract_hashes(cfg) == {}
+
+
+def test_two_segment_epic_scores_as_error_not_clean(tmp_path):
+    """AC1/AC2/AC3: artifacts present + zero hashed => 'error' status, the
+    malformed id is NAMED (not just counted), and the scorecard shows the
+    tracked/scanned denominator."""
+    _two_segment_epic_repo(tmp_path)
+    assert ratchet.cmd_score(_score_ns(tmp_path)) == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    cm = sc["contract_measurement"]
+    assert cm["status"] == "error"
+    assert cm["defined_ids"] == 0
+    assert cm["id_bearing_artifacts"] == 1
+    assert cm["malformed_ids"], "the malformed id must be NAMED, not just counted"
+    assert cm["malformed_ids"][0]["token"] == "INV-001"
+    assert cm["malformed_ids"][0]["file"] == "order-lifecycle/invariants.md"
+
+
+def test_two_segment_epic_is_never_a_clean_ratchet_check(tmp_path):
+    """AC4/AC5: the regression itself — an epic the grammar can't parse must
+    NOT produce a clean ratchet scorecard; `check` fails closed."""
+    _two_segment_epic_repo(tmp_path)
+    assert ratchet.cmd_score(_score_ns(tmp_path)) == 0
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 1
+
+
+def test_violations_reports_contract_measurement_error(tmp_path):
+    _two_segment_epic_repo(tmp_path)
+    ratchet.cmd_score(_score_ns(tmp_path))
+    cfg = ratchet.load_config(tmp_path)
+    sc = json.loads(cfg.scorecard.read_text())
+    v = ratchet.violations(sc, ratchet.derive_highwater(ratchet.load_journal(cfg)))
+    assert v["contract_measurement_error"]
+
+
+def test_healthy_epic_stays_applicable_and_passes_check(tmp_path):
+    """Regression: a normal, well-formed epic (three-segment ids) must NOT
+    trip the new error state."""
+    make_repo(tmp_path)
+    assert ratchet.cmd_score(_score_ns(tmp_path)) == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert sc["contract_measurement"]["status"] == "applicable"
+    assert sc["contract_measurement"]["malformed_ids"] == []
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
+
+
+def test_no_epic_at_all_stays_inapplicable_not_error(tmp_path):
+    """Nothing to measure (no docs/epics tree at all) must stay
+    'inapplicable', never 'error' — only artifacts WITH content that yield
+    zero ids are a broken instrument."""
+    state = tmp_path / "docs" / "quality"
+    state.mkdir(parents=True)
+    (state / "ratchet.json").write_text(json.dumps({
+        "suites": [], "epic_docs": "docs/epics", "protected_paths": ratchet.DEFAULT_PROTECTED,
+    }))
+    assert ratchet.cmd_score(_score_ns(tmp_path)) == 0
+    sc = json.loads((state / ratchet.SCORECARD_NAME).read_text())
+    assert sc["contract_measurement"]["status"] == "inapplicable"
+    v = ratchet.violations(sc, ratchet.derive_highwater([]))
+    assert v["contract_measurement_error"] == []
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
+
+
 # ---- high-water derivation + violations ----------------------------------------
 
 
@@ -776,6 +881,125 @@ def test_score_stamps_target_sha(tmp_path):
     sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
     assert "target_sha" in sc
     assert sc["target_sha"] is None  # tmp_path is not a git repo — recorded as None
+
+
+# ---- #284: score --reuse-report (skip a second full suite run) -----------------
+
+
+def _score_args(tmp_path, **overrides):
+    base = dict(
+        repo=str(tmp_path), no_tests=False, no_quality=True, venv=None, gobin=None,
+        reuse_report=None, reuse_report_max_age=1800,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _write_junit(path, cases):
+    """Minimal junit-xml with the given (classname, name) PASSING cases."""
+    body = "".join(f'<testcase classname="{c}" name="{n}"/>' for c, n in cases)
+    Path(path).write_text(f"<testsuite>{body}</testsuite>")
+
+
+def test_score_reuse_report_skips_running_cmd(tmp_path):
+    """AC1/proof: a suite whose `cmd` would DESTROY the report if it ran is
+    configured; --reuse-report must leave the pre-written report untouched
+    and parse IT, never invoking cmd at all."""
+    report = tmp_path / ".ratchet-junit.xml"
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "pytest", "cmd": f"rm -f {report}", "cwd": ".", "parser": "junit-xml",
+         "report": ".ratchet-junit.xml"},
+    ])
+    _write_junit(report, [("a.b", "t1"), ("a.b", "t2")])
+    rc = ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"pytest={report}"]))
+    assert rc == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert set(sc["pass_set"]) == {"pytest::a.b::t1", "pytest::a.b::t2"}
+    assert report.is_file()  # cmd (which would have deleted it) never ran
+
+
+def _idempotent_junit_suite(tmp_path, name="pytest", report_name=".ratchet-junit.xml"):
+    """A suite whose `cmd`, if actually run, SUCCEEDS and writes a valid
+    report — so a test asserting --reuse-report validation fails for the
+    RIGHT reason pre-implementation (rc==0, cmd silently ran) rather than
+    coincidentally via run_suite's own missing-report check."""
+    script = tmp_path / f"write_{name}.py"
+    script.write_text(
+        f"open('{report_name}', 'w').write("
+        "'<testsuite><testcase classname=\"a.b\" name=\"t1\"/></testsuite>')\n"
+    )
+    return {"name": name, "cmd": f"python3 {script}", "cwd": ".",
+            "parser": "junit-xml", "report": report_name}
+
+
+def test_score_reuse_report_missing_file_errors(tmp_path):
+    cfg = make_repo(tmp_path, suites=[_idempotent_junit_suite(tmp_path)])
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"pytest={tmp_path / 'nope.xml'}"]))
+
+
+def test_score_reuse_report_stale_mtime_errors(tmp_path):
+    """A report older than --reuse-report-max-age must fail loudly, never
+    silently score against leftover state from an earlier ticket (the exact
+    failure mode the trx pre-run clearing already guards against)."""
+    import os
+    import time
+
+    report = tmp_path / ".ratchet-junit.xml"
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "pytest", "cmd": "true", "cwd": ".", "parser": "junit-xml",
+         "report": ".ratchet-junit.xml"},
+    ])
+    _write_junit(report, [("a.b", "t1")])
+    old = time.time() - 10_000
+    os.utime(report, (old, old))
+    with pytest.raises(ratchet.RatchetError, match="stale|old"):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"pytest={report}"], reuse_report_max_age=60))
+
+
+def test_score_reuse_report_unknown_suite_name_errors(tmp_path):
+    cfg = make_repo(tmp_path, suites=[_idempotent_junit_suite(tmp_path)])
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"nosuchsuite={tmp_path / '.ratchet-junit.xml'}"]))
+
+
+def test_score_reuse_report_matches_a_fresh_run(tmp_path):
+    """AC3: reuse and a fresh run must produce the SAME pass-set."""
+    write_script = tmp_path / "write_report.py"
+    write_script.write_text(
+        "open('.ratchet-junit.xml', 'w').write("
+        "'<testsuite><testcase classname=\"a.b\" name=\"t1\"/>"
+        "<testcase classname=\"a.b\" name=\"t2\"/></testsuite>')\n"
+    )
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "pytest", "cmd": f"python3 {write_script}", "cwd": ".",
+         "parser": "junit-xml", "report": ".ratchet-junit.xml"},
+    ])
+    # Fresh run: cmd actually executes and writes the report.
+    assert ratchet.cmd_score(_score_args(tmp_path)) == 0
+    sc_fresh = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    # Reuse run: same report file, cmd is NOT re-executed (cmd here is
+    # idempotent, so this only proves parity of the parsed result, not
+    # non-execution — that's covered by test_score_reuse_report_skips_running_cmd).
+    report = tmp_path / ".ratchet-junit.xml"
+    assert ratchet.cmd_score(_score_args(
+        tmp_path, reuse_report=[f"pytest={report}"])) == 0
+    sc_reused = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    assert sc_fresh["pass_set"] == sc_reused["pass_set"]
+
+
+def test_score_reuse_report_absent_namespace_attrs_degrade_gracefully(tmp_path):
+    """A hand-built argparse.Namespace predating #284 (no reuse_report attrs)
+    must not crash — house precedent (see _resolve_retire_cases)."""
+    make_repo(tmp_path, suites=[])
+    ns = argparse.Namespace(repo=str(tmp_path), no_tests=True, no_quality=True,
+                             venv=None, gobin=None)
+    assert ratchet.cmd_score(ns) == 0
 
 
 # ---- sanctioned pathset (chief-wiggum#213) -----------------------------------------

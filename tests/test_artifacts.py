@@ -386,6 +386,67 @@ def test_check_stale_without_target_sha_warns(tmp_path):
     assert r.check_stale({"no": "sha"}) is not None
 
 
+# ---- #287: staleness must not fire on an artifacts-only commit ----------------
+#
+# `ratchet score` stamps target_sha=HEAD, and the artifacts it writes are then
+# COMMITTED (per /implement Step 13) — that commit moves HEAD, so an exact-HEAD
+# comparison makes the artifact it just recorded immediately stale. The fix
+# distinguishes "only the ratchet's own state changed" (still fresh) from "a
+# scanned source file changed" (genuinely stale) by walking the diff between
+# the recorded sha and HEAD, provided the recorded sha is an ancestor of HEAD.
+
+
+def test_check_stale_artifact_only_commit_is_not_stale(tmp_path):
+    """AC1: a scorecard committed by an artifacts-only commit (only files under
+    the ratchet's own state dir, docs/quality, changed) is not reported stale —
+    even though target_sha no longer equals current HEAD."""
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    stamped = r.stamp({})  # target_sha = HEAD at commit "init"
+
+    q = repo / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet-scorecard.json").write_text('{"pass_set": []}\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "chore(ratchet): commit scorecard")
+
+    # HEAD has moved, but ONLY docs/quality changed — must read as fresh.
+    assert r.check_stale(stamped) is None
+
+
+def test_check_stale_still_stale_when_source_changes_alongside_state(tmp_path):
+    """AC2: a genuinely stale artifact stays stale — a scanned source file
+    changing after the artifact was recorded must still warn, even when a
+    state-dir file changes in the SAME commit."""
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    stamped = r.stamp({})
+
+    q = repo / "docs" / "quality"
+    q.mkdir(parents=True)
+    (q / "ratchet-scorecard.json").write_text('{"pass_set": []}\n')
+    (repo / "app.py").write_text("print('changed')\n")  # real source change
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "feat: change app + commit scorecard")
+
+    warning = r.check_stale(stamped)
+    assert warning is not None
+    assert stamped["target_sha"] in warning
+
+
+def test_check_stale_indeterminate_missing_object_warns(tmp_path):
+    """AC3: a recorded target_sha the repo cannot resolve (e.g. a shallow
+    clone missing the object) must warn — never silently read as fresh."""
+    repo = make_git_repo(tmp_path / "r")
+    r = artifacts.Resolver.resolve(repo)
+    # A syntactically valid but nonexistent sha — same failure shape as a
+    # shallow clone that never fetched the commit's object.
+    bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    warning = r.check_stale({"target_sha": bogus})
+    assert warning is not None
+    assert "indeterminate" in warning.lower() or "cannot determine" in warning.lower()
+
+
 # ---- CLI ----------------------------------------------------------------------
 
 

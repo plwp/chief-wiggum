@@ -531,16 +531,24 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    - TypeScript/JavaScript: `npx eslint --no-warn-ignored` or `npx biome check`
    - Python: `ruff check` or `flake8`
    - Feed violations back to the code — fix them before proceeding. Gate on zero high-severity findings.
-4. **Run the full test suite** from the repo root. The verification runner detects the project type and emits structured evidence (command, exit code, duration, log tail) for the PR body — it prefers a `make` target named for the profile when present:
+4. **Run the full test suite** from the repo root. The verification runner detects the project type and emits structured evidence (command, exit code, duration, log tail, and — for a pytest-based `test` step, chief-wiggum#284 — the junit-xml report path it wrote via `PYTEST_ADDOPTS`) for the PR body — it prefers a `make` target named for the profile when present. Capture **JSON**, run once (Step 4b reuses this same run's report instead of re-running the suite — build the PR-body evidence section from this JSON rather than invoking `--markdown` a second time):
    ```bash
-   python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --markdown
+   python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --json > "$TICKET_TMP/verify.json"
    ```
-   It exits non-zero if any step fails. ALL tests must pass. Zero tolerance.
-4b. **Ratchet check** (see `docs/ratchet.md`) — resolve the target's quality dir via the meta-location resolver (`QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$(git rev-parse --show-toplevel)" --format json | jq -r .quality_dir)`; embedded targets resolve to `<repo>/docs/quality`, sidecar targets to the external meta root); if `$QUALITY_DIR/ratchet.json` exists, verify this ticket doesn't slide quality backward:
+   It exits non-zero if any step fails (`jq .ok "$TICKET_TMP/verify.json"`). ALL tests must pass. Zero tolerance.
+4b. **Ratchet check** (see `docs/ratchet.md`) — resolve the target's quality dir via the meta-location resolver (`QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$(git rev-parse --show-toplevel)" --format json | jq -r .quality_dir)`; embedded targets resolve to `<repo>/docs/quality`, sidecar targets to the external meta root); if `$QUALITY_DIR/ratchet.json` exists, verify this ticket doesn't slide quality backward. **Reuse Step 4's run instead of paying for the suite twice** (chief-wiggum#284): when Step 4's JSON names a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
    ```bash
-   python3 "$CW_HOME/scripts/ratchet.py" score --repo "$(git rev-parse --show-toplevel)"
-   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$(git rev-parse --show-toplevel)" --gate-verifier-tests
+   REPORT=$(python3 -c "import json; d=json.load(open('$TICKET_TMP/verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
+   SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
+   REPO_ROOT="$(git rev-parse --show-toplevel)"
+   if [ -n "$REPORT" ] && [ -n "$SUITE" ] && [ -f "$REPO_ROOT/$REPORT" ]; then
+     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$REPO_ROOT" --reuse-report "$SUITE=$REPO_ROOT/$REPORT"
+   else
+     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$REPO_ROOT"
+   fi
+   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$REPO_ROOT" --gate-verifier-tests
    ```
+   `score --reuse-report` fails loudly (never silently) if the report is missing or older than `--reuse-report-max-age` (default 1800s) — that's the signal to drop back to a plain `score` re-run, not to `--force` past it.
    Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (it normally does — the record ships with chief-wiggum); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings report-only, per `docs/gate-rollout.md`. A violation is a hard blocker, same as a failing test: a `missing_tests` entry means a previously-passing case regressed; `weakened_contracts`/`removed_contracts` means the branch edited a contract definition to make the implementation pass; `weakened_verifier_tests`/`removed_verifier_tests` (#206, channel C1c) means a `@cw-trace verifies`-annotated test body was rewritten or dropped behind its still-green test ID. Fix the code — never the contract or its verifier test. If a contract (or a verifier test) genuinely needs revising, that is a human decision: surface it to the user and journal it with `record --amend`/`--retire` (contracts) or `record --amend-verifier`/`--retire-verifier` (verifier tests), don't edit around the gate. A `missing_tests` entry caused by a genuinely flaky/order-dependent case (not a real regression) is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead. Skip this item only when the repo has no ratchet config (not yet adopted).
 4c. **Single-writer / traceability quick check** (report-only, ticket-scoped) — if `$EPIC_DIR` exists, run both checkers scoped to just this ticket's changed files with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`). This is a fast early signal, NOT the authoritative gate — `--changed-since` scans only what this branch touched, so it cannot see a stale writer/annotation elsewhere in the repo. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic:
    ```bash
