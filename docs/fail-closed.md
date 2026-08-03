@@ -67,7 +67,7 @@ Status is as of chief-wiggum#289. "Fixed" cites the PR that closed it.
 | `check_gate_validation.py` | `--gate` | absent record → `passing: false`, exit 1 | n/a | **`_live_scanner_version` returns `None` when the gate script is absent, raises, or exits non-zero — the staleness check then silently does not run.** Byte-identical to a clean pass, and locked in by a test | `jsonschema` unimportable → `_schema_errors` returns `[]`; a corrupt record is misreported as "no record found" | **Partly sound.** Staleness itself IS caught and blocks (see below); the *probe* for it fails open. **Open** |
 | `check_architecture.py` | `--gate` | **model file absent → `ok: true`, exit 0 even under `--gate`** (deliberate, `test_cli_absent_model_exits_zero_even_under_gate`) | 1 node / 0 edges: six of eight checks measure nothing, `ok: true` | `--system-contracts` unloadable → a `not_checked` entry, `ok` untouched, exit 0 | n/a | **Open** |
 | `check_patterns.py` | blocks by default | missing/unparseable registry → exit 1 (loud) | **an empty-but-valid registry (`{}`) prints "registry OK" and exits 0**; never walks `patterns/`, so a manifest dir absent from the registry is invisible | n/a | top-level JSON array → `AttributeError` traceback | **Open** (lint-tier risk) |
-| `ux_gate.py` | blocks by default | `--changed-files /dev/null` → `blocked: false`, exit 0 | **a nonexistent/typo'd `--ui-spec` path silently becomes "no design contract", which is the only thing that can set `blocked`** — the gate is disarmed by the absence of the artifact it exists to check | `--have-playwright`/`--have-browser-use` are operator-asserted, never probed | malformed ui-spec → exit 1 (good) | **Open — highest remaining severity** |
+| `ux_gate.py` | blocks by default | non-frontend ticket → `inapplicable`, exit 0 | **`error`, exit 1** — a named `--ui-spec` that is not there on a FRONTEND ticket, or a `--design-dir` that is not a directory while the ui-spec declares a design contract. Scoped to frontend tickets deliberately: `/implement` passes both flags unconditionally and a backend-only epic legitimately has neither | absent `--changed-files` → exit 2 (was an uncaught traceback that, under `/implement`'s `>` redirect, left an EMPTY manifest reading as "nothing to do") | malformed ui-spec → exit 1 | **Fixed** — #289. `--have-playwright`/`--have-browser-use` remain operator-asserted booleans, never probed — a known limitation, not a fail-open of the scan itself |
 | `saas_gate.py` | `--gate` | empty/nonexistent `--repo` → 5 SKIPPED, 0 PASS, `ok: true`, exit 0 | `--repo` is never validated; `stack` is decorative — no check depends on it | **network failure → the whole header/CSRF battery becomes one `SKIPPED`, and `SKIPPED` can never fail the gate**; only the health check turns unreachability into `FAIL` | typo'd `--log-sample` → "no log sample provided" | **Open** |
 | `ci_scaffold.py` | `--gate` | absence IS the finding: `ci_present: false`, exit 1 (correct) | **`detect_ci` is a filename test — `touch .github/workflows/ci.yml` defeats the gate**; a 0-byte or non-YAML workflow reports `ci_present: true` | n/a | n/a | **Open** |
 | `quality_slop_gate.py` | `--gate` | **a repo with zero source files reports "0.0% duplication (beats the pre-AI human baseline)" — the healthiest band available** | same mechanism for a wrong ignore glob or an unparsed language | **an engine crash is rendered as "skipped"**: `duplication.py` builds `status: "crashed"`, the gate branches only on the legacy `"skipped"` key. `survival.py` never checks `returncode` and never clears a stale `survival.json`, so a crashed rerun parses the previous run's numbers as fresh | `except … return None` (report-only by design) | **Open** |
@@ -113,11 +113,9 @@ for (2) is a policy decision about `/close-epic`'s posture, not a bug fix.
 
 ## Remaining work
 
-Tracked under chief-wiggum#289 until each is closed:
+Tracked under chief-wiggum#289 until each is closed. Ordered by severity of
+the fail-open, worst first:
 
-- [ ] `ux_gate.py` — a nonexistent `--ui-spec`/`--design-dir` must be `error`,
-      not a pass. Highest remaining severity: the missing artifact disarms the
-      only blocker.
 - [ ] `quality_slop_gate.py` — branch on `status: "crashed"` (not the legacy
       `"skipped"` key); check `returncode` and clear stale `survival.json`
       in `survival.py`; a zero-source corpus must be `inapplicable`/`error`,

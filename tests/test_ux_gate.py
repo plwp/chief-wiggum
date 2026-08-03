@@ -245,6 +245,29 @@ def test_cli_no_ui_spec_argument_at_all_is_not_an_error(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["outcome"] != "error"
 
 
+def test_cli_backend_ticket_with_missing_ui_spec_is_not_an_error(tmp_path, capsys):
+    """/implement passes --ui-spec and --design-dir unconditionally, and a
+    backend-only epic legitimately has neither. Erroring there would be pure
+    noise — the disarming only matters when the gate would otherwise run."""
+    rc = ux_gate.main(["--changed", "server/api.go", "--label", "backend",
+                       "--ui-spec", str(tmp_path / "nope.json"),
+                       "--design-dir", str(tmp_path / "no-design"), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "inapplicable"
+
+
+def test_cli_frontend_without_design_contract_tolerates_missing_design_dir(tmp_path, capsys):
+    """No design section means no reference-screenshot baseline was ever
+    promised — an absent docs/design/ is honest absence, not a broken scan."""
+    spec = tmp_path / "ui-spec.json"
+    spec.write_text(json.dumps({"pages": []}))
+    rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
+                       "--ui-spec", str(spec),
+                       "--design-dir", str(tmp_path / "no-design"), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "pass"
+
+
 def test_markdown_output_shows_the_outcome(tmp_path, capsys):
     rc = ux_gate.main(["--changed", "ui/App.tsx", "--label", "frontend",
                        "--ui-spec", str(tmp_path / "nope.json"), "--markdown"])
