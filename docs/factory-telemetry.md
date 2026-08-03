@@ -221,6 +221,28 @@ python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app
 and reports `cost_usd_total = consult_cost + claude_code_cost` — the nominal cost
 of a factory run end to end. `/reflect` surfaces it as a factory-log finding.
 
+## Bet attribution (`scripts/build_cost.py`, chief-wiggum#257)
+
+This telemetry answers "what did a gate/consult cost"; `build_cost.py` answers "what
+did a **bet** cost" by attributing the same `factory_log.cost_for` pricing to a bet id
+(or the literal `factory`/`unattributed` buckets) and journaling the record into the
+portfolio's hash chain rather than the factory-log JSONL:
+
+```bash
+python3 scripts/build_cost.py record --attribute-to <bet-id|factory|unattributed> \
+    --model <model-id> --tokens-in N --tokens-out N [--plan-share-pct X]
+python3 scripts/build_cost.py portfolio                        # every bucket, sum-preserving
+```
+
+Two numbers, never conflated: `nominal_usd` (tokens × `config/model_pricing.json`,
+omitted — never zeroed — for an unpriced model, same INV-fh-002 honesty rule this
+module already enforces for gates) and `plan_share_pct` (share of the billing period's
+plan capacity consumed — supplied by the caller or recorded `{unresolved}`, since no
+harness API is assumed to expose true plan consumption). The `unattributed` bucket is
+always reported on its own, never dropped or spread pro-rata across bets. See
+`docs/business-factory.md`'s "Build-cost tracking" subsection for the full picture,
+including how `bet.py portfolio`/`kill-brief` surface it.
+
 ## Reading
 
 ```bash

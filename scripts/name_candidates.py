@@ -35,6 +35,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import divergence  # noqa: E402  (shared quorum classifier — chief-wiggum#253/#254)
+
 WORDLIST = Path("/usr/share/dict/words")
 
 # Modifiers carry TWO tags: a register (how the name sounds) and a convergence risk
@@ -96,10 +100,10 @@ def infringing(name: str) -> str | None:
     return next((t for t in BRAND_TOKENS if t in name), None)
 
 
-def load_pool(min_len: int = 4, max_len: int = 9) -> list[str]:
-    if not WORDLIST.exists():
-        sys.exit(f"name_candidates: no word list at {WORDLIST} — supply one with --wordlist")
-    words = (w.strip().lower() for w in WORDLIST.read_text(errors="ignore").splitlines())
+def load_pool(min_len: int = 4, max_len: int = 9, wordlist: Path = WORDLIST) -> list[str]:
+    if not wordlist.exists():
+        sys.exit(f"name_candidates: no word list at {wordlist} — supply one with --wordlist")
+    words = (w.strip().lower() for w in wordlist.read_text(errors="ignore").splitlines())
     return [
         w for w in words
         if min_len <= len(w) <= max_len and re.fullmatch(r"[a-z]+", w)
@@ -187,6 +191,38 @@ def generate(pool: list[str], rng: random.Random, registers: list[str], count: i
     return list(out.values())
 
 
+def quorum_classify(by_provider: dict[str, list[str]]) -> tuple[list[dict], list[dict]]:
+    """Multi-model divergence with INTERSECTION-DISCARD (chief-wiggum#253 decision 2).
+
+    Run name generation independently across the `consult_ai` quorum (codex, gemini,
+    opus, claude-interactive) and pass each provider's raw output list here, keyed by
+    provider name. A name proposed independently by >=2 providers is CONVERGENT — it
+    identifies the high-prior region every competitor's model shares, which is exactly
+    where collisions live — and is DISCARDED here, not merely flagged or averaged in.
+    This inverts the usual quorum semantics (agreement usually raises confidence; here
+    agreement is the failure signal) and that inversion is the point.
+
+    Returns ``(survivors, discarded)``. Each survivor carries provenance (the single
+    provider that proposed it) so a shortlist can prove it wasn't just resampled
+    priors; each discarded entry carries every provider that converged on it. Matching
+    is case/whitespace-normalized so "Wanderoo" and "wanderoo " count as the same name.
+    Contrast chief-wiggum#254's strategy-option variant, which LABELS convergent
+    options rather than discarding them — a name has no value once it collides, but an
+    obvious strategy can still be the right one. Both share one classifier primitive,
+    ``scripts/divergence.py`` — this function is the name-specific (discard) wrapper.
+    """
+    entries = divergence.classify(by_provider)
+    survivors_raw, discarded_raw = divergence.discard_convergent(entries)
+    survivors = [{
+        "name": e["name"], "strategy": "quorum",
+        "seed_words": f"proposed-by:{e['sources'][0]}",
+        "register": "quorum", "converged": False,
+        "sources": e["sources"],
+    } for e in survivors_raw]
+    discarded = [{"name": e["name"], "sources": e["sources"]} for e in discarded_raw]
+    return survivors, discarded
+
+
 def rdap_available(domain: str, timeout: int = 12) -> bool | None:
     """True=available, False=registered, None=unresolved. rdap.org 302s to the
     authoritative registry, so redirects MUST be followed; a non-200/404 is never
@@ -210,21 +246,40 @@ def main() -> int:
                     help="comma-separated modifier registers, or 'all'. Choices: "
                          + ", ".join(PREFIXES) + ". Default excludes the converged sets "
                          "(conventional, ai-era) — pass them explicitly if you want them.")
+    ap.add_argument("--wordlist", type=Path, default=WORDLIST,
+                    help=f"corpus word list (default {WORDLIST})")
+    ap.add_argument("--quorum-file", type=Path, default=None, metavar="JSON",
+                    help="run the multi-model intersection-discard path instead of corpus "
+                         "generation (chief-wiggum#253 decision 2): a JSON object "
+                         "{provider: [name, ...]} with each consult_ai quorum provider's "
+                         "raw name proposals; names proposed by >=2 providers are "
+                         "discarded as convergent (see quorum_classify())")
     ap.add_argument("--check", action="store_true", help="RDAP-filter to available names only")
     ap.add_argument("--tlds", default="com", help="comma-separated, checked with --check")
     ap.add_argument("--format", choices=["text", "json"], default="text")
     args = ap.parse_args()
 
-    registers = list(PREFIXES) if args.register == "all" else \
-        [r.strip() for r in args.register.split(",") if r.strip()]
-    unknown = [r for r in registers if r not in PREFIXES]
-    if unknown:
-        sys.exit(f"name_candidates: unknown register(s) {unknown}; choose from {list(PREFIXES)}")
-
-    seed = args.seed if args.seed is not None else secrets.randbits(32)
-    rng = random.Random(seed)
-    pool = load_pool()
-    cands = generate(pool, rng, registers, args.count)
+    discarded: list[dict] = []
+    if args.quorum_file is not None:
+        try:
+            by_provider = json.loads(args.quorum_file.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            sys.exit(f"name_candidates: cannot read --quorum-file {args.quorum_file}: {e}")
+        if not isinstance(by_provider, dict):
+            sys.exit("name_candidates: --quorum-file must contain a JSON object {provider: [names]}")
+        cands, discarded = quorum_classify(by_provider)
+        cands = [c for c in cands if not infringing(c["name"])]
+        seed, pool, registers = None, [], ["quorum"]
+    else:
+        registers = list(PREFIXES) if args.register == "all" else \
+            [r.strip() for r in args.register.split(",") if r.strip()]
+        unknown = [r for r in registers if r not in PREFIXES]
+        if unknown:
+            sys.exit(f"name_candidates: unknown register(s) {unknown}; choose from {list(PREFIXES)}")
+        seed = args.seed if args.seed is not None else secrets.randbits(32)
+        rng = random.Random(seed)
+        pool = load_pool(wordlist=args.wordlist)
+        cands = generate(pool, rng, registers, args.count)
 
     tlds = [t.strip().lstrip(".") for t in args.tlds.split(",") if t.strip()]
     if args.check:
@@ -239,11 +294,18 @@ def main() -> int:
         cands = kept
 
     if args.format == "json":
-        print(json.dumps({"seed": seed, "corpus": str(WORDLIST), "pool_size": len(pool),
-                          "registers": registers, "candidates": cands}, indent=2))
+        print(json.dumps({
+            "seed": seed, "corpus": str(args.wordlist) if args.quorum_file is None else None,
+            "quorum_file": str(args.quorum_file) if args.quorum_file else None,
+            "pool_size": len(pool), "registers": registers, "candidates": cands,
+            "discarded_convergent": discarded,
+        }, indent=2))
         return 0
 
-    print(f"seed={seed}  corpus={WORDLIST} ({len(pool)} words)  registers={','.join(registers)}")
+    if args.quorum_file is not None:
+        print(f"quorum-file={args.quorum_file}  providers={sorted({p for d in discarded for p in d['sources']} | {s for c in cands for s in c['sources']})}")
+    else:
+        print(f"seed={seed}  corpus={args.wordlist} ({len(pool)} words)  registers={','.join(registers)}")
     print(f"{len(cands)} candidate(s)" + ("  [available only]" if args.check else "") + "\n")
     for c in cands:
         flag = " ⚠converged" if c["converged"] else ""
@@ -256,6 +318,12 @@ def main() -> int:
         print(f"\n  ⚠ {n_conv} candidate(s) use a CONVERGED modifier set "
               "(conventional/ai-era) — the shape every competitor's generator is also "
               "emitting right now. Prefer the unflagged ones (chief-wiggum#254).")
+    if discarded:
+        print(f"\n  {len(discarded)} name(s) DISCARDED as quorum-convergent (proposed by "
+              ">=2 providers independently) — agreement identifies the high-prior region "
+              "where collisions live (chief-wiggum#253):")
+        for d in discarded:
+            print(f"    {d['name']:<16} proposed by {', '.join(d['sources'])}")
     if not args.check:
         print("\n  (no availability check — rerun with --check before showing a human)")
     return 0

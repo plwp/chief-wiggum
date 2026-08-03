@@ -4,7 +4,9 @@
 - **Trust class:** end-user-signal-driven — the page and its measured conversion are the signal; nothing here is asserted, only measured
 - **Status:** specified (with a stampable `scaffold/`)
 - **Depends on:** nothing
-- **Feeds:** [`presale`](../presale) — smoke-test signups are the audience a presale converts
+- **Feeds:** [`presale`](../presale) — smoke-test signups are the audience a presale converts.
+  **Narrow-use instrument as of chief-wiggum#256** — see the degradation note below;
+  [`open-beta-probe`](../open-beta-probe) is now usually the better first probe.
 
 ## What it is
 
@@ -24,12 +26,33 @@ leaves an email") but can never *validate* willingness to pay. The evidence-stre
 floor on `bet.py transition <id> building` will not accept it as commitment-class
 evidence; graduating to strength 5 is the [`presale`](../presale) pattern's job.
 
-## When to apply
+**Degradation note (chief-wiggum#256, logged 2026-08-03): this is no longer the
+default first probe.** Two things changed the calculus that made a smoke test
+canonical: build cost for software this size has largely collapsed (the cost
+argument for a fake door over a real one has mostly evaporated), and the signal
+itself degraded (when a landing page + waitlist costs an afternoon and everyone
+has one, a signup means materially less than it used to — the base rate of
+"real product behind the page" has fallen, and prospects increasingly know it).
+So this pattern now buys weak (strength-2) evidence at a cost that no longer
+clearly justifies the weakness, while stronger rungs
+([`open-beta-probe`](../open-beta-probe), [`presale`](../presale)) became
+affordable too. **Open beta is the new waitlist** — see
+[`open-beta-probe`](../open-beta-probe) for the usually-better first instrument.
 
-- A bet is `probing|validating` and its demand assumption has nothing behind it
-  but opinions (strength 1).
-- You want the cheapest test that produces a real, pre-registered per-cohort rate.
-- The signup audience will seed the follow-up experiment (presale, interviews).
+## When to apply (narrowed, chief-wiggum#256)
+
+This pattern is now a **narrow-use instrument**, not the default first probe:
+
+- The product genuinely **cannot** be built cheaply enough to open-beta instead
+  (rare, but real — e.g. it needs an integration or dataset that takes real time
+  regardless of AI-assisted build speed).
+- The test is of **positioning/message**, not demand — you already have working
+  product and community, and want to A/B a value proposition before a push.
+- A **Tier-C-signal sanity check** (chief-wiggum#254): a cheap, disposable probe
+  before spending real effort chasing a contested public signal.
+
+If none of these apply and a working, scoped beta is buildable, prefer
+[`open-beta-probe`](../open-beta-probe).
 
 ## Mechanism — invariant cluster
 
@@ -49,6 +72,26 @@ evidence; graduating to strength 5 is the [`presale`](../presale) pattern's job.
 - **INV-LPS-005 — evidence honesty + PII floor.** A signup is strength-2 evidence
   and a stored contact is PII: minimal storage, product-follow-up use only,
   deletable. *(Design-derived.)*
+- **INV-LPS-006 — visual design is chosen, not converged.** The stamped scaffold
+  is a STRUCTURE only (form, beacon, honesty rules); the page's visual design
+  MUST be presented as ≥6 deliberately distinct rendered variants, grounded in
+  a current-craft reference no more than 90 days stale (`docs/design-taste.md`,
+  chief-wiggum#250), with a human pick recorded before the page ships. This
+  closes the failure the doctrine already named for `/design` ("designs are
+  chosen, not converged" — CLAUDE.md) but did not scope down to a first outward
+  probe page (chief-wiggum#249). *(Design-derived — a human checkpoint, not a
+  lintable property; no gate script exists or is planned for this invariant.)*
+- **INV-LPS-007 — voice sourced from a real customer, not a generated default.**
+  Outward copy is drafted against a `voice-corpus` for the bet — verbatim
+  customer quotes (feature-request threads, review streams, interview
+  transcripts, inbound emails) stored with citations in the bet's directory —
+  and reuses the corpus's own nouns rather than marketing abstractions. Every
+  substantive claim carries a number, a named artifact, or a customer quote
+  (the specificity floor); `scripts/check_copy_voice.py` (report-only,
+  chief-wiggum#255) surfaces the measurable AI-default tells (em-dash density,
+  antithesis, tricolons, abstract-virtue headers) as candidates for the
+  operator's read-aloud check — voice stays human-judged, never gated.
+  *(Design-derived — a human checkpoint; the lint only surfaces candidates.)*
 
 ## Scaffold
 

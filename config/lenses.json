@@ -26,7 +26,7 @@
       ]
     },
     "evidence-sufficiency": {
-      "goal": "Your goal is to decide whether the measured evidence in this kill brief is sufficient to justify CONTINUING the bet: does any measured value genuinely clear its pre-registered bar, and is the strongest supporting evidence commitment-class (scheduled time, staked reputation, paid money) rather than opinion or clicks? Treat every UNRESOLVED value as absent evidence — never as implied success or implied failure. If the evidence is insufficient to continue, say so plainly.",
+      "goal": "Your goal is to decide whether the measured evidence in this kill brief is sufficient to justify CONTINUING the bet: does any measured value genuinely clear its pre-registered bar, and is the strongest supporting evidence commitment-class (scheduled time, staked reputation, paid money) rather than opinion or clicks? Treat every UNRESOLVED value as absent evidence — never as implied success or implied failure. If the evidence is insufficient to continue, say so plainly. Check the brief's stated convening trigger FIRST: if it is `premise-change` (a material external finding, not a fired criterion), the question is whether that finding still lets the premise support continuing to spend — 'insufficient evidence gathered yet' is NOT, by itself, grounds for `hold` under this trigger, because the review was convened by a fact, not by an evidence shortfall.",
       "exclusions": [
         "Do NOT argue the case for killing the bet — another evaluator carries that charter.",
         "Do NOT propose pivots or reframes — another evaluator carries that charter.",

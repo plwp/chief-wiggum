@@ -76,6 +76,21 @@ For tiered models, record the base (≤200k-context) rate. Leave a row `null` + 
 python3 "$CW_HOME/scripts/render_languages_doc.py"
 ```
 
+### Step 3.7: Refresh the design-taste brief (`docs/design-taste.md`)
+
+`docs/design-taste.md` (chief-wiggum#250) is the external grounding source every
+divergent-design flow reads (`/design` Step 1, the `landing-page-smoke-test`/`presale`
+patterns' INV-LPS-006/INV-PRE-006, Track H stamped assets) — a model's own priors date
+badly and converge on AI-default aesthetics. Refresh it the same way models.md is
+refreshed: research agents over the **pinned source roster** (§6 of the doc — curated
+galleries, type-foundry showcases, design writing, a rotating "small products with
+taste" list), never a scraper or a training pass (explicit non-goal). Regenerate §1–§4
+(current-craft moves, anti-patterns, typography/palette/layout notes, per-genre direction
+briefs), bump `as_of`, and note what changed since the last refresh. This step is
+independent of the model/pricing refresh above — run it even if models.md needed no
+changes, and skip it only if `as_of` is already within the 90-day staleness window and no
+material shift in current design practice is known.
+
 ### Step 4: Review changes
 
 Show the user a diff of what changed in `models.md`, `config/model_pricing.json`, and (if regenerated) `docs/languages.md`:
@@ -84,13 +99,14 @@ Show the user a diff of what changed in `models.md`, `config/model_pricing.json`
 - Highlight version bumps
 - Highlight price changes
 - Highlight any language-matrix changes
+- Highlight design-taste brief changes (if refreshed)
 - Ask if the changes look correct
 
 ### Step 5: Commit and push
 
 ```bash
 cd "$CW_HOME"
-git add models.md config/model_pricing.json docs/languages.md
+git add models.md config/model_pricing.json docs/languages.md docs/design-taste.md
 git commit -m "docs: update models, pricing, and library versions — $(date +%Y-%m-%d)"
 git push
 ```

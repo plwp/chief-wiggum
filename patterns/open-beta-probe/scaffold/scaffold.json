@@ -1,0 +1,25 @@
+{
+  "$comment": "Scaffold manifest for open-beta-probe (chief-wiggum#256). apply_pattern.py stamps each file into the target repo with parameters bound ({{param}} in target path and body). These are EXPERIMENT scaffolds, not product code: a blast-radius declaration, a signup-code metering stub, and a binding README the operator wires and launches after pre-registering the test card (assumption.py). Existing targets are skipped unless --force. blast_radius is a REQUIRED parameter with no default (INV-OBP-004) — without it bound, the contract pack still installs but this scaffold is skipped with a note, per the standard apply_pattern.py rule for missing required params.",
+  "scaffold_version": 1,
+  "pattern": "open-beta-probe",
+  "files": [
+    {
+      "template": "blast_radius.json.tmpl",
+      "target": "experiments/open-beta-probe/blast_radius.json",
+      "realizes": ["INV-OBP-004"],
+      "desc": "The declared blast-radius record: bounded|unbounded and the resulting live|compute-only mode. Stamping is refused without blast_radius bound."
+    },
+    {
+      "template": "signup_codes.py.tmpl",
+      "target": "experiments/open-beta-probe/signup_codes.py",
+      "realizes": ["INV-OBP-003", "INV-OBP-006"],
+      "desc": "Signup-code metering stub: issue/redeem/revoke unique per-cohort codes against {{code_issuance_endpoint}}; wiring TODO stated in-file."
+    },
+    {
+      "template": "README.md.tmpl",
+      "target": "experiments/open-beta-probe/README.md",
+      "realizes": ["INV-OBP-001", "INV-OBP-002", "INV-OBP-005"],
+      "desc": "Binding note: declare the blast radius before requesting codes; pre-register the assumption.py test card at strength 3-4 BEFORE the beta opens; the reputation-is-single-use and push-motion sequencing rules."
+    }
+  ]
+}

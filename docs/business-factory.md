@@ -169,6 +169,14 @@ Osterwalder 2019) + Ries's leap-of-faith assumptions are one structure:
   confidence; commitment currencies (scheduled time, staked reputation, paid money) are the
   only strong evidence. Vanity-metric lint: cumulative/gross counters are banned as success
   criteria (Ries — they falsify nothing); required form is per-cohort rates.
+  **Recalibrated (chief-wiggum#256, logged 2026-08-03):** the click rung's canonical
+  instrument, a landing-page smoke test, was cheap *relative to building* — that
+  calculus changed as build cost collapsed and the smoke-test signal itself degraded
+  (everyone has a waitlist page now, so a signup means less). `open-beta-probe`
+  produces strength 3–4 (time/reputation) at a cost that is often now comparable, so
+  it is frequently the better first instrument; `landing-page-smoke-test` is demoted
+  to a narrow-use case (see its pattern doc). The ladder's ORDER is unchanged — only
+  which rung is the cheap default moved.
 - **Kill review runs on fresh context**: per Boulding et al., the continue case is argued to a
   fresh-context quorum given **only** the pre-registered criteria and measured results — never
   the bet's accumulated working context. Invariant: kill-review agents must not inherit the
@@ -219,7 +227,12 @@ noisy small sample to infinity). The set that is actually valid at CW's target s
    cash-flow trough; this replaces LTV:CAC as the operative check at small n)
 3. `blended_cac < first_year_gross_profit_per_customer` (solvency without lifetime
    extrapolation)
-4. `pmf_score ≥ 40% (n ≥ 40)` before unlocking any paid-acquisition spend
+4. `pmf_score ≥ 40% (n ≥ 40)` before unlocking any paid-acquisition spend — **widened
+   (chief-wiggum#256) to every push motion**, not just paid ads: cold outreach and
+   launch campaigns wait on the same bar (Startup Genome's premature-scaling finding
+   by name). Pull motions (content, community presence, answering questions where the
+   pain is already posted) remain available throughout, including before this bar
+   clears.
 5. `chosen_price ∈ [Van Westendorp floor, ceiling]` with WTP evidence artifacts on file
    (refuse to scaffold a paid product with zero WTP evidence — "price before product" made
    mechanical)
@@ -338,8 +351,9 @@ through A+H+C before promoting anything to `--gate`.
   viability gate at authoring time, human checkpoint.
 - **C. Validation-experiment patterns + pre-registration gate** (#236) — assumption ledger,
   test cards with hashed thresholds, falsifiability (XYZ) linter, evidence-strength floor on
-  state transitions; first stamped experiment patterns: `landing-page-smoke-test` and
-  `presale`. This is the RCT-validated mechanism.
+  state transitions; stamped experiment patterns: `landing-page-smoke-test` (narrowed to a
+  non-default instrument, #256), `open-beta-probe` (#256 — usually the better first probe
+  now), and `presale`. This is the RCT-validated mechanism.
 - **D. Kill-review quorum** (#237) — a consult role whose evaluators receive only a generated
   brief of pre-registered criteria + measured results (fresh context enforced as an
   invariant), producing a `go/kill/hold/recycle` verdict ahead of the human decision.
@@ -396,6 +410,47 @@ ecosystem channel/owned audience in the acquisition plan); goalpost-integrity ha
 Missing optional inputs (`means.json`, `channels.json`) report `skipped`/`unattempted` — never a
 crash, never silently omitted.
 
+### Build-cost tracking (Track A extension, `scripts/build_cost.py`, #257)
+
+The ledger meters cash (`bet.py spend`) and operator hours, but the dominant input to
+most bets is **factory compute**, and it was invisible: a bet can consume a large share
+of a fixed monthly plan while its recorded cash spend reads `$8.48`. This extends the
+existing per-model pricing/attribution machinery (`scripts/factory_log.py` +
+`config/model_pricing.json`, INV-fh-002: prices come from the config, never memory; a
+cost is *omitted*, not zeroed, when a model has no listed price) from gates to bets, as
+a **sibling** importing `bet.py` the same way `channel.py`/`assumption.py` do — records
+journal into the same portfolio hash chain.
+
+**Two fields, never one**, per record: `nominal_usd` (tokens × `config/model_pricing.json`
+— the comparable, portable number across bets and against cash spend) and
+`plan_share_pct` (share of the billing period's plan CAPACITY consumed — the true
+economic cost under a fixed-price plan, where marginal API price overstates real
+outlay). The script never derives `plan_share_pct` itself (no harness API is assumed to
+expose true consumption): the caller supplies it, or it is recorded honestly
+`{unresolved}` — never guessed, never silently zero.
+
+```bash
+python3 scripts/build_cost.py record --attribute-to <bet-id|factory|unattributed> \
+    --model <model-id> --tokens-in N --tokens-out N [--plan-share-pct X] [--note "..."]
+python3 scripts/build_cost.py summary --attribute-to <bet-id|factory|unattributed>
+python3 scripts/build_cost.py portfolio                        # every bucket, sum-preserving
+```
+
+**Attribution** is explicit and recorded at the time of work — a bet id, the literal
+`factory` (CW's own development), or the literal `unattributed` — never reconstructed
+later and never spread pro-rata across bets (the same sum-preserving-attribution
+discipline as the in-flight `platform-cost-observability` pattern, #229): an
+`unattributed` bucket is always reported, never silently dropped.
+
+**Surfaced where decisions happen**: `bet.py portfolio` shows nominal + plan-share
+alongside cash and hours for every bet, plus the `factory`/`unattributed` buckets
+separately; the kill brief's "Build cost" section carries the same figures so an
+expensive bet under review is visible to the fresh-context evaluator. The envelope
+gains optional `nominal_build_cap_usd`/`plan_share_cap_pct` (`templates/bet-schema.json`)
+— **report-only at first** (`NEVER_GATES_PREFIXES "buildcost:"`, same shape as #274's
+capacity checks): plan-share accounting is inherently estimate-shaped, so promotion to
+blocking follows the normal validation ramp, never wired to `--gate` on its own.
+
 ### Channel engine (Track H, `scripts/channel.py`, #241)
 
 Bullseye mechanized over the bet ledger. The honest boundary, stated up front: **tooling cannot
@@ -443,15 +498,48 @@ platforms — Meta Ads, Google Ads, OpenAI-class asset generation (AI distributi
 like the GPT store count under `existing-platforms`), ESP/CRM/social/SEO/directory tooling —
 and never rebuilds them. Platform subscriptions and ad spend are ordinary cost-inputs line
 items (`flat_monthly`/meters in `templates/cost-inputs-schema.json`) counting against the bet
-envelope. **Paid channels carry the paid-spend unlock gate** (§4 invariant 4): no
-paid-acquisition spend before `pmf_score ≥ 40% (n ≥ 40)` or equivalent commitment-class
-evidence, and viability requires LTV above the channel's CAC floor — at micro price points
-paid ads are frequently underwater and the experiment verdict must say so. The stamped asset
+envelope. **Every push motion carries the push-motion unlock gate** (§4 invariant 4,
+widened chief-wiggum#256): no paid-acquisition spend, cold outreach, or launch campaign
+before `pmf_score ≥ 40% (n ≥ 40)` or equivalent commitment-class evidence — restated in
+the operator's own words: *push marketing comes only after assumptions are fully
+tested*. Viability additionally requires LTV above the channel's CAC floor for paid
+channels specifically — at micro price points paid ads are frequently underwater and
+the experiment verdict must say so. Pull motions (content, community presence,
+answering questions where the pain is already posted) are never gated by this rule. The
+stamped asset
 layer (launch checklists per `templates/launch-checklist-schema.json` — Levels'
 platform×timing×assets shape — copy scaffolds, Mom-Test scripts, prospect briefs, follow-up
 sequences) is per-bet artifacts, not a pattern category. Marketing capability graduates
 M0 founder+platforms → M1 focused-channel specialist → M2 agency/hire on the revenue-triggered
 formulas in `templates/marketing-tiers.md`; graduation is a journaled human decision.
+
+**Outward assets are chosen, not converged** (chief-wiggum#249): the failure the doctrine
+already names for `/design` ("designs are chosen, not converged" — CLAUDE.md) binds only on
+the once-per-product `/design` stage as written; it does not bind on the small, per-bet
+outward artifacts this track stamps — probe pages, product names, vendor/registrar choices —
+which is exactly how a first real bet shipped a single self-taste landing design, an
+uncollision-checked name shortlist, and an unchecked registrar in one pass. Same failure shape
+as the school-holidays #60 lesson: a step does not become optional because the artifact is
+small. A stamped `landing-page-smoke-test` or `presale` page ships ≥6 deliberately distinct
+rendered variants (INV-LPS-006/INV-PRE-006), grounded in a current-craft reference no more
+than 90 days stale (`docs/design-taste.md`, chief-wiggum#250), with the human pick recorded
+before the page ships; a launch checklist's copy/positioning candidates get the same
+treatment. **Checkable facts arrive pre-cleared**: a name shortlist ships with
+collision/domain checks already run per candidate — never presented for a pick and checked
+afterward — and a vendor/platform suggestion (registrar, ESP, CRM) ships with the operator's
+existing-account status already checked. This is docs/pattern-text only: a taste checkpoint
+is a human checkpoint, not a lintable property, and no gate script enforces it (the
+anti-theater rule cuts both ways).
+
+**Naming protocol**: entropy-injected candidate generation → an automated availability
+filter → collision research → the operator's pick, in that order (chief-wiggum#253 supplies
+the mechanical first two legs — `scripts/name_candidates.py` — so operator attention is never
+spent on a name that was never available). The shortlist that reaches the operator carries an
+elevator pitch plus every surviving candidate already collision-checked — domains resolving,
+same-sector companies, marketplace-app collisions, SERP noise — before a pick is spent on it.
+A bare-word search's top results are quoted **verbatim** into the shortlist, never summarised
+as a conclusion: a search relayed as "no collisions found" is exactly how a live direct twin
+(a same-name, same-product competitor) was missed on the first real bet.
 
 **Rep cadence + the *Traction* 50% rule** (ledger-side, surfaced in `bet.py evaluate`'s
 distribution block and `channel.py status`): while a bet is probing|validating, ≥N Mom-Test
@@ -525,15 +613,39 @@ pre-registered against the old thesis, so coverage and strength must be re-estab
 
 **Stamped experiment patterns** (the distinctive CW move — the factory stamps the
 experiment, not just tracks it, same #135 discipline): registry category
-`validation-experiment`, trust class `end-user-signal-driven`, both with stampable
+`validation-experiment`, trust class `end-user-signal-driven`, all three with stampable
 scaffolds via `/apply-pattern` — `landing-page-smoke-test` (honest static page +
-signup-capture instrumentation stub; strength 2–3; the cheapest universal demand test)
-and `presale` (honest pre-order checkout on an unbuilt product — not-built-yet, price,
+signup-capture instrumentation stub; strength 2–3; **narrowed to a non-default,
+narrow-use instrument, #256** — see its degradation note), `open-beta-probe` (**new,
+#256**: a working, deliberately-scoped product in real hands via an existing community,
+metered by trackable/revocable signup codes; strength 3–4; a mandatory blast-radius
+declaration forces compute-only/draft-only mode when the beta touches money, wages,
+tax, health, records, or third-party systems — "open beta is the new waitlist"), and
+`presale` (honest pre-order checkout on an unbuilt product — not-built-yet, price,
 and delivery window stated before the payment step; a REAL charge is the datum;
 refund-on-kill counted as wind-down cost; the only strength-5 producer). Their
 pre-registration/vanity-lint invariants are grounded in `assumption.py`; the page-level
 invariants are design-derived until first grounded use, flagged per the #139 allowance.
 Fake-door and concierge are named follow-ups, not shipped.
+
+**De-AI the copy** (chief-wiggum#255): generated marketing copy sits in the modal region
+of "SaaS landing page voice" and is now instantly recognisable as machine-written —
+em-dash triplets, antithesis ("not X — Y"), tricolons of three-word fragments, abstract
+virtue nouns as headers, zero specific numbers, zero named humans. The fix is not
+"write less like an AI"; it is to source voice from real customer language. Both stamped
+experiment patterns require a **voice-corpus** for the bet (verbatim customer quotes —
+feature-request threads, review streams, interview transcripts, inbound emails — stored
+with citations in the bet's directory) as mandatory drafting input, not inspiration; copy
+reuses the corpus's own nouns rather than marketing abstractions (INV-LPS-007/INV-PRE-007).
+`scripts/check_copy_voice.py` (report-only, per `docs/gate-rollout.md`) flags the
+measurable tells — em-dash density, antithesis patterns, tricolons, abstract-virtue
+headers, and a **specificity floor** (the share of substantive claims carrying a number, a
+named artifact, or a customer quote) — as candidates for the operator's **read-aloud
+test**: if the operator wouldn't say the sentence out loud to a customer, it doesn't ship.
+Multi-model + entropy applies the same way #253/#254 do (draft variants across the
+`consult_ai` quorum, discard the convergent phrasings via `scripts/divergence.py`, keep
+the odd ones) — but source material outranks sampling tricks: real quotes beat clever
+generation.
 
 ### Kill-review quorum (Track D, `bet.py kill-brief` / `kill-review`, #237)
 
@@ -545,6 +657,8 @@ the feature, preserved as a lintable invariant.
 
 ```bash
 python3 scripts/bet.py evaluate <bet-id> --results r.json   # criterion fires → recommends kill-review
+python3 scripts/bet.py finding <bet-id> --statement "..." --source-url <url> \
+    --bearing-on premise                                    # material external fact (#252)
 python3 scripts/bet.py kill-brief <bet-id>                  # render the brief (journal-backed values only)
 python3 scripts/bet.py kill-review <bet-id>                 # brief → quorum → verdicts journaled
 ```
@@ -559,14 +673,34 @@ python3 scripts/bet.py kill-review <bet-id>                 # brief → quorum �
 - **The brief is generated, not written** (`kill-brief`): hashed kill criteria verbatim
   (cited to the create/rebaseline journal record), measured values sourced from the
   journaled `kill-proposed` evaluation rows, envelope status (spend vs tranches from the
-  ledger), the open-assumption evidence table (`assumptions.json` when present), and the
-  **distribution-attempt table** — channel experiments run, exposure delivered,
-  rep-cadence adherence, with `unattempted` stated explicitly when no evidence exists.
-  Any value the generator cannot source is `UNRESOLVED:`, never prose. **Brief purity is
-  a generator self-check, not an operator gate**: every measured value must cite a
-  journal record id or a `bets/<id>/` artifact file, and thesis prose must not appear —
-  a violating brief is REFUSED (exit 1) unconditionally, like the retrospective guard;
-  it takes no `--gate` and gets no gate-ledger row of its own.
+  ledger), the open-assumption evidence table (`assumptions.json` when present), **material
+  findings** (below), and the **distribution-attempt table** — channel experiments run,
+  exposure delivered, rep-cadence adherence, with `unattempted` stated explicitly when no
+  evidence exists. Any value the generator cannot source is `UNRESOLVED:`, never prose.
+  **Brief purity is a generator self-check, not an operator gate**: every measured value
+  must cite a journal record id or a `bets/<id>/` artifact file, and thesis prose must not
+  appear — a violating brief is REFUSED (exit 1) unconditionally, like the retrospective
+  guard; it takes no `--gate` and gets no gate-ledger row of its own.
+- **Material findings** (`bet.py finding`, #252): a new journaled record type for an
+  external, citable fact bearing on the bet — distinct from an assumption (a claim under
+  test, #236) and from a measurement (a criterion's value, `evaluate`). Found while
+  dogfooding: a competitor twin discovered post-creation changed a bet's premise and
+  triggered an ad-hoc review, but the brief generator correctly refused to carry it — an
+  externally-researched fact had no journal channel, so the brief omitted the entire
+  reason for the review. `finding <bet-id> --statement "..." --source-url <url>
+  --bearing-on <ASM-id|premise|KC-id> [--evidence-grade verified|reported]` is refused
+  (exit 2) without a non-empty `--source-url` — a finding with no citable source is
+  unsourced prose, not a finding — and appears in the brief's "Material findings" section
+  cited to its own journal record, so brief purity is preserved rather than weakened.
+- **Two legitimate convening triggers** (#252): a dated criterion firing (`criterion`, the
+  original shape above) and a **material premise change** (`premise-change`) — a journaled
+  finding bearing on the bet's premise. `kill-brief`/`kill-review` accept an explicit
+  `--trigger` and otherwise auto-detect one from the journal; the brief states which
+  trigger convened it up front so evaluators judge the right question. The charters
+  (`config/lenses.json`) state that under a premise-change trigger, "insufficient evidence
+  gathered yet" is NOT by itself grounds for `hold` — the question is whether the premise
+  still supports continuing to spend. The distribution-fairness rule (below) is unchanged
+  under either trigger — a premise-change convening creates no back door around it.
 - **Verdict schema**: `{verdict: go|kill|hold|recycle, confidence, reasons[],
   cheapest_disconfirming_test?}` in a fenced JSON block; a `hold` must name the test
   that would settle it. Malformed provider output is flagged and carried as a
@@ -596,6 +730,63 @@ heuristics for bet selection** — every claim below is an assumption at bet lev
 pre-registered and tested per §2, never treated as established fact. The unifying premise:
 AI collapsed the cost of building software, so the *product* moat is gone economy-wide; the
 question each thesis answers is where an agile solo player capitalizes on that collapse.
+
+### 9.0 Signal-source tiering and the convergent-sampling risk (chief-wiggum#254)
+
+A failure deeper than any single screen surfaced on the first real bet: a direct competitor
+twin (same name, same product, same ecosystem, further along) was not bad luck — it is the
+**predicted output of the target-hunting method itself**. Another founder read the same
+public signal (a feature-request thread), reasoned with a model carrying the same priors,
+and reached the same wedge. Shared public input + shared model priors = convergent
+conclusions, deterministically. This puts a hole in the doctrine below: **public-board
+mining is a commodity input with decaying alpha** — any gap a public feature-request board
+reveals to us, it reveals simultaneously to everyone else running an AI-assisted version of
+the same play. A high-vote, years-old, unshipped thread is not a moat; it is a queue.
+
+**Signal-source tiering.** Every opportunity input a bet's thesis rests on is graded by how
+contestable it is:
+
+- **Tier A — private signal.** Inbound requests, personal-network problems, direct operator
+  observation, paid discovery conversations. Not in any public corpus; nobody else's agent is
+  reading it.
+- **Tier B — semi-public signal.** Paid datasets, marketplace analytics behind logins,
+  communities requiring standing/participation to see.
+- **Tier C — public signal.** Feature-request boards, review streams, forums. Cheap, real,
+  and **contested by construction** — assume a competitor is reading the same page today.
+
+A bet grounded solely on Tier C carries an explicit **convergence-risk flag** in its record,
+and the competitor sweep for it (below) must be run at CREATE time, not at name-pick time —
+running it only once a name is already chosen is exactly the sequencing that missed the
+twin on the first real bet.
+
+**Multi-model divergence with intersection-discard for option generation** (mirrors
+chief-wiggum#253's naming mechanism, applied to strategy rather than names — the reusable
+classifier is shared, `scripts/divergence.py`). When generating wedges, positioning, or
+differentiation options via the `consult_ai` quorum, options proposed independently by
+multiple models are the **converged region** — they are the obvious plays, therefore the
+contested ones. Unlike names (#253), an obvious strategy can still be *right*, so convergent
+options are not discarded outright: they are **labelled `convergent`** and require a stated
+reason why the bet wins a race every competitor's model can also see. Divergent,
+single-model options get first-class consideration rather than being averaged away.
+
+**Entropy injection into strategy generation**, purpose identical to #253 (sample the tails,
+not the mode): forced-constraint prompting (generate wedges under a randomly-drawn
+constraint — a specific segment, a specific cost structure, a specific distribution
+channel, an inversion of the obvious buyer), adversarial reframing ("argue the opposite
+thesis"), and analogical seeding from a randomly-drawn historical episode in §9.4's mined
+corpus.
+
+**The competitor sweep is a create-time gate input, not a nice-to-have**: `bet.py create`
+accepts `--competitor-sweep JSON` (`{date, sources[], competitors[{name, url}], unresolved[]}`),
+recorded on the bet as `competitor_sweep`. A bet whose sweep is missing or stale (>30 days)
+is flagged report-only at create and surfaced in the kill brief — never a hard block, since
+contested is often the correct call (§9.4: neglect arbitrage, judo strategy both thrive on
+contested markets). The mandate is only that contestedness is **known and stated at create
+time**, never discovered after the domain is bought.
+
+**Non-goal, stated plainly**: none of the above is a mandate to avoid contested markets.
+The mandate is legibility — a Tier-C-only bet with no competitor sweep is a bet whose
+convergence risk was never looked at, not a bet that was correctly screened out.
 
 ### 9.1 Ecosystem-wedge thesis
 
@@ -919,6 +1110,51 @@ field the ledger lacked before this ticket.
     contracting day rate for the same hours, not against zero and not against venture
     outcomes. This is the counterfactual the startup corpus never forces, and the ledger
     currently has no field for it.
+14. **Signal-source tier** (chief-wiggum#254, §9.0): what tier is the thesis's grounding
+    signal — private (A), semi-public (B), or public (C)? If Tier C, who else is reading
+    that same public signal right now, and has the create-time competitor sweep run?
+15. **Regulated-calculation liability** (chief-wiggum#260 — harvested from a bet whose
+    product computed a number a regulator can audit, killed the same day it was created,
+    on premise falsification, at $0 cash; the grounding research surfaced a
+    portfolio-level constraint that would otherwise die with the bet's file). For any
+    bet whose product *computes a number a regulator can audit* (wages, tax, super,
+    benefits, clinical dosing, safety thresholds):
+    1. **Who bears the error?** If the customer can be penalised for the product's
+       output, the vendor is in accessory territory the moment it has system-level
+       knowledge of a defect. **Worked example**: *FWO v Blue Impression / Ezy
+       Accounting* ([2018] FCAFC 134, upheld on appeal) — a firm providing payroll
+       services was penalised **$53,880 as an accessory** under Fair Work Act s550 for
+       configuring a system it knew could not satisfy the Award; the underpayment it
+       facilitated was **$750**. The finding turned on **system-level knowledge**
+       (the director knew the configured flat rates were non-compliant), not
+       per-employee knowledge. `{verified: primary — FWO media release, judgment}`. A
+       pure software *licensor* retains operational distance; s550(2)(c) reaches
+       involvement "by act or omission, directly or indirectly", and exposure
+       sharpens where the vendor supplies interpretation as a hosted ruleset rather
+       than a configurable tool, is told of a defect and keeps supplying, or **does
+       paid configuration work** — the Ezy fact pattern exactly, and the year-one
+       shape of any compliance-calculating product for a solo founder hand-onboarding
+       early customers.
+    2. **Is the correctness axis winnable?** Check whether incumbents *disclaim*
+       accuracy; if market leaders and the regulator's own calculator all disclaim,
+       correctness is not a differentiator — it is an unpriceable liability every
+       participant has already refused.
+    3. **Is the differentiator insurable?** "Contractually assumed liability" is a
+       standard PI exclusion, so a compliance warranty is cover the insurer does not
+       follow you into; statutory penalty exposure typically sits inside a bounded
+       sub-limit inclusive of defence costs with an "intentional, wilful, reckless"
+       carve-out — precisely the fault standard s550(2)(c) engages. A warranty a
+       policy excludes is not a moat; it is uncovered exposure.
+    4. **Will the operator do paid configuration?** For a solo founder the answer is
+       yes in year one. Price that as risk, not as revenue.
+    5. **Interpretation surface**: is the rule set bounded and licensable, or unbounded
+       and hand-built (e.g. dozens of jurisdiction-specific rulesets with no
+       licensable library, free-text prose from an official API)?
+
+    A bet failing 1–4 is not automatically refused — regulated calculation is a real
+    market — but the screen must be answered in the bet record at create time; an
+    unanswered screen while the thesis names a regulated-calculation domain is a
+    report-only finding (`bet.py create --regulated-calculation-screen JSON`).
 
 **Conflict to resolve, not paper over**: one model's screen says a high-vote public feature
 request means the platform will build it natively — *reject*. §9.3 says exactly the opposite,

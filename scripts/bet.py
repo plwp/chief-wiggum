@@ -152,25 +152,42 @@ the continue case is argued to a FRESH-CONTEXT quorum (``consult_ai.py --role
 kill-review`` — codex + opus required, claude-interactive optional, bounded
 charters per the lenses-not-personas convention) that sees only a GENERATED
 brief: hashed kill criteria verbatim, measured values with journal sources,
-envelope status, open-assumption evidence, and the distribution-attempt table.
-The evaluator having no sunk context is the feature (Boulding et al. 1997) —
-``kill-brief`` renders only journal-backed artifacts and REFUSES (exit 1, a
-hard self-check, not a ``--gate``) if the brief would carry an unsourced value
-or thesis prose. Verdict schema: ``{verdict: go|kill|hold|recycle, confidence,
-reasons[], cheapest_disconfirming_test?}``. **Distribution-fairness rule**
-(#241 amendment): a demand-shaped criterion (direction=has, or an explicit
-``demand_shaped`` flag) that fired while distribution is unattempted cannot
-ground a ``kill`` — a parsed kill verdict is mechanically downgraded to
-``recycle`` with a finding naming the cheapest untried exposure. The human
-sees the quorum verdicts BEFORE the accept/override instructions (the fresh
-verdict anchors the decision), and the verdicts + brief hash are journaled as
-a ``kill-review`` event. Nothing convenes the quorum automatically: a fired
-criterion RECOMMENDS ``kill-review``; the human runs it.
+envelope status, open-assumption evidence, material findings (#252), and the
+distribution-attempt table. The evaluator having no sunk context is the feature
+(Boulding et al. 1997) — ``kill-brief`` renders only journal-backed artifacts
+and REFUSES (exit 1, a hard self-check, not a ``--gate``) if the brief would
+carry an unsourced value or thesis prose. Verdict schema: ``{verdict:
+go|kill|hold|recycle, confidence, reasons[], cheapest_disconfirming_test?}``.
+**Distribution-fairness rule** (#241 amendment): a demand-shaped criterion
+(direction=has, or an explicit ``demand_shaped`` flag) that fired while
+distribution is unattempted cannot ground a ``kill`` — a parsed kill verdict is
+mechanically downgraded to ``recycle`` with a finding naming the cheapest
+untried exposure; this holds under EITHER convening trigger below, no
+exceptions. The human sees the quorum verdicts BEFORE the accept/override
+instructions (the fresh verdict anchors the decision), and the verdicts +
+brief hash are journaled as a ``kill-review`` event. Nothing convenes the
+quorum automatically: a fired criterion RECOMMENDS ``kill-review``; the human
+runs it.
+
+**Two legitimate convening triggers** (#252): a dated criterion firing
+(``criterion``, the original shape above), or a **material premise change** — a
+journaled ``finding`` (``bet.py finding``) bearing on the bet's premise, e.g. a
+competitor twin discovered post-creation. ``kill-brief``/``kill-review`` accept
+an explicit ``--trigger`` and otherwise auto-detect one from the journal; the
+brief states which trigger convened it up front, so evaluators judge the right
+question — under a premise-change trigger, "insufficient evidence gathered
+yet" is NOT by itself grounds for ``hold``; the question is whether the
+premise still supports continuing to spend. A ``finding`` is refused (exit 2)
+without a non-empty ``--source-url`` — an external fact with no citable source
+cannot enter a brief that must stay journal-backed.
 
 Subcommands:
     create      register a bet: envelope + kill criteria hashed into the journal
     spend       append a ledger entry (spend/time or a distribution rep)
     evaluate    evaluate dated criteria + report distribution-attempted status
+    finding     record a material external finding bearing on premise/assumption/
+                criterion (#252) — journaled, cited in kill-brief, refused without
+                a --source-url
     kill-brief  render the fresh-context kill brief (journal-backed values only)
     kill-review generate the brief, run the kill-review quorum, journal verdicts
     transition  move the state machine (incl. pivot, kill accept/override,
@@ -231,7 +248,11 @@ DEFAULT_MAX_IN_FLIGHT = 2
 # "screen:" is the #275 low-cap distribution-divergence screens (§9.6.5
 # screens 8-13) — same posture: brand-new bet-selection lints, never gated
 # until validated against a real candidate set.
-NEVER_GATES_PREFIXES = ("skipped:", "capacity:", "screen:")
+# "buildcost:" (#257) is the same shape: plan-share accounting is inherently
+# estimate-shaped (the harness rarely exposes true plan consumption), so the
+# envelope's nominal_build_cap_usd/plan_share_cap_pct checks are report-only
+# until validated, never a blocker on their own.
+NEVER_GATES_PREFIXES = ("skipped:", "capacity:", "screen:", "buildcost:")
 
 # Low-cap distribution-divergence screens (#275, docs/business-factory.md
 # §9.6.5 screens 8-13) — six candidate additions to the §9.5 standing
@@ -313,6 +334,14 @@ KILL_REVIEW_DIR = "kill-review"
 # Exposure-bearing numeric fields a channel-experiment record may carry — the
 # brief's "exposure delivered" column reads only these; absent → UNRESOLVED.
 EXPOSURE_KEYS = ("exposure", "traffic", "visitors", "impressions", "listings", "launches")
+
+# Material findings (#252): an external, citable fact bearing on the bet — distinct
+# from an assumption ledger entry (a claim under test) and a measurement (a
+# criterion's value). `bearing_on` names what it bears on: the bet's premise as a
+# whole, a specific assumption, or a specific kill criterion.
+FINDING_BEARING_ON_RE = re.compile(r"^(premise|ASM-[A-Za-z0-9_-]+|KC-[A-Za-z0-9_-]+)$")
+EVIDENCE_GRADES = ("verified", "reported")
+KILL_REVIEW_TRIGGERS = ("criterion", "premise-change")
 
 # Brief-purity lint: every [source: ...] citation must be a journal record id
 # or an artifact file inside this bet's directory — nothing else exists to a
@@ -419,6 +448,14 @@ def append_event(root: Path, event: str, ref: str, details: dict) -> dict:
 
 def bet_events(records: list[dict], bet_id: str) -> list[dict]:
     return [r for r in records if r.get("ref") == bet_id]
+
+
+def load_findings(records: list[dict], bet_id: str) -> list[dict]:
+    """Every journaled `finding` event for this bet (chief-wiggum#252) — external,
+    citable facts distinct from an assumption (a claim under test) or a measurement
+    (a criterion's value). Every finding was refused at record time without a
+    non-empty --source-url, so this list is journal-backed by construction."""
+    return [r for r in bet_events(records, bet_id) if r.get("event") == "finding"]
 
 
 # ---- goalpost hashing ----------------------------------------------------------
@@ -798,6 +835,143 @@ def low_cap_screen_findings(root: Path, bet: dict) -> list[str]:
     )
 
 
+# ---- signal-source tiering + competitor sweep (#254) ---------------------------
+
+SIGNAL_TIERS = ("A", "B", "C")
+# Convergence-risk staleness bar (chief-wiggum#254): a Tier-C (public) signal's
+# competitor sweep older than this is stale — public boards move, and the whole
+# point is that someone else may be reading the same page today.
+STALE_SWEEP_DAYS = 30
+
+
+def competitor_sweep_soundness(sweep) -> list[str]:
+    """states-and-dates-style soundness for a `competitor_sweep` block: every
+    required field present and well-typed. Malformed input is a finding, never a
+    crash — mirrors `criteria_soundness`'s shape for the same reason."""
+    if not isinstance(sweep, dict):
+        return ["competitor_sweep must be an object"]
+    out = []
+    if not _valid_date(sweep.get("date")):
+        out.append("competitor_sweep.date missing or not ISO (YYYY-MM-DD)")
+    if not isinstance(sweep.get("sources"), list):
+        out.append("competitor_sweep.sources must be a list")
+    competitors = sweep.get("competitors")
+    if not isinstance(competitors, list):
+        out.append("competitor_sweep.competitors must be a list")
+    elif any(not isinstance(c, dict) or not c.get("name") for c in competitors):
+        out.append("competitor_sweep.competitors entries each need a non-empty `name`")
+    if not isinstance(sweep.get("unresolved"), list):
+        out.append("competitor_sweep.unresolved must be a list")
+    return out
+
+
+def competitor_sweep_findings(bet: dict, as_of: date) -> list[str]:
+    """Tier-C signal grounding must be legible (chief-wiggum#254): a bet whose
+    thesis rests solely on a public (Tier C) signal is contested by construction —
+    the competitor sweep for it must exist and be current, checked at CREATE time,
+    not at name-pick time (the sequencing that missed a real direct-twin collision).
+    Report-only always: contested markets are frequently the correct call (§9.4 —
+    neglect arbitrage, judo strategy); the mandate is that contestedness is KNOWN
+    and STATED, never discovered after the domain is bought. Tier A/B or an
+    undeclared tier never produce a finding here beyond the `skipped:` note."""
+    tier = bet.get("signal_tier")
+    if tier is None:
+        return ["skipped: signal_tier not declared (chief-wiggum#254)"]
+    if tier != "C":
+        return []
+    sweep = bet.get("competitor_sweep")
+    if not sweep:
+        return [
+            "Tier-C signal (public, contested by construction) with no "
+            "competitor_sweep recorded — run one now, not at name-pick time "
+            "(chief-wiggum#254)"
+        ]
+    try:
+        age = (as_of - date.fromisoformat(sweep["date"])).days
+    except (KeyError, TypeError, ValueError):
+        return ["competitor_sweep.date is missing/malformed — cannot assess staleness"]
+    if age > STALE_SWEEP_DAYS:
+        return [
+            f"competitor_sweep is {age}d old (>{STALE_SWEEP_DAYS}d) — stale for a "
+            "Tier-C bet; someone else may be reading the same public signal today"
+        ]
+    return []
+
+
+# ---- standing screen 15: regulated-calculation liability (#260) ---------------
+
+# Keyword sweep over the thesis text — deliberately loose (a false positive just
+# means an operator answers a screen that turns out irrelevant; a false negative
+# means a real compliance-calculation bet ships unscreened, the worse failure).
+REGULATED_CALCULATION_KEYWORDS = (
+    "wage", "wages", "payroll", "tax", "taxes", "superannuation", "super",
+    "benefit", "benefits", "dosing", "dosage", "clinical", "prescri",
+    "safety threshold", "award rate", "penalty rate", "entitlement",
+    "compliance calculat", "regulatory calculat",
+)
+REGULATED_SCREEN_FIELDS = (
+    "who_bears_error", "correctness_winnable", "insurable",
+    "paid_configuration", "interpretation_surface",
+)
+
+
+def regulated_calculation_soundness(screen) -> list[str]:
+    """Every sub-question of standing screen 15 must be present and non-empty when
+    a screen is recorded at all — a half-answered screen is a malformed screen, the
+    same soundness discipline as `criteria_soundness`."""
+    if not isinstance(screen, dict):
+        return ["regulated_calculation_screen must be an object"]
+    return [
+        f"regulated_calculation_screen.{f} missing or empty"
+        for f in REGULATED_SCREEN_FIELDS
+        if not str(screen.get(f, "")).strip()
+    ]
+
+
+def regulated_calculation_findings(bet: dict) -> list[str]:
+    """Standing screen 15 (chief-wiggum#260, §9.5): a bet whose thesis names a
+    regulated-calculation domain (wages, tax, super, benefits, clinical dosing,
+    safety thresholds) but carries no recorded screen is a report-only finding —
+    never a block. Regulated calculation is a real market; the mandate is only that
+    the screen is ANSWERED, not that the answer be favorable."""
+    thesis = (bet.get("thesis") or "").lower()
+    if not any(k in thesis for k in REGULATED_CALCULATION_KEYWORDS):
+        return []
+    if bet.get("regulated_calculation_screen"):
+        return []
+    return [
+        "thesis mentions a regulated-calculation domain with no "
+        "regulated_calculation_screen recorded — answer standing screen 15 "
+        "(who bears the error, is correctness winnable, is it insurable, will "
+        "the operator do paid configuration, what is the interpretation surface — "
+        "chief-wiggum#260, `bet.py create --regulated-calculation-screen JSON`)"
+    ]
+
+
+def build_cost_findings(bet: dict, summary: dict) -> list[str]:
+    """Envelope build-cost caps (#257) — declared, not silently enforced. Both caps
+    are optional; absent → silent for that cap (never guessed). Report-only always
+    (NEVER_GATES_PREFIXES "buildcost:"): plan-share accounting is estimate-shaped and
+    this reinterprets an existing cap the same way #274's capacity checks do."""
+    env = bet.get("envelope", {}) or {}
+    out = []
+    nom_cap = env.get("nominal_build_cap_usd")
+    if isinstance(nom_cap, (int, float)) and summary.get("nominal_usd") is not None \
+            and summary["nominal_usd"] > nom_cap:
+        out.append(
+            f"buildcost: nominal build cost ${summary['nominal_usd']:g} exceeds "
+            f"nominal_build_cap_usd ${nom_cap:g}"
+        )
+    share_cap = env.get("plan_share_cap_pct")
+    if isinstance(share_cap, (int, float)) and summary.get("plan_share_pct") is not None \
+            and summary["plan_share_pct"] > share_cap:
+        out.append(
+            f"buildcost: plan-share {summary['plan_share_pct']:g}% exceeds "
+            f"plan_share_cap_pct {share_cap:g}%"
+        )
+    return out
+
+
 # ---- ledger --------------------------------------------------------------------
 
 
@@ -1076,14 +1250,24 @@ def brief_purity_findings(text: str, bet: dict, facts: list[dict]) -> list[str]:
     return out
 
 
-def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tuple[str, list[str], dict]:
+def build_kill_brief(
+    root: Path, bet_id: str, as_of: date | None = None, trigger: str | None = None,
+) -> tuple[str, list[str], dict]:
     """Render the fresh-context kill brief from journal-backed artifacts ONLY.
 
     Returns ``(markdown, findings, meta)``. ``findings`` (goalpost drift +
     purity-lint hits) non-empty ⇒ the caller must refuse to emit the brief —
     exit 1, a hard self-check, never a ``--gate``. ``meta`` carries what the
     fairness rule needs: fired criteria, demand-shaped fired criteria, the
-    live distribution status, and the cheapest untried exposure."""
+    live distribution status, and the cheapest untried exposure.
+
+    ``trigger`` (chief-wiggum#252) states which of the two legitimate kill-review
+    triggers convened this brief — a dated criterion firing, or a material premise
+    change (an external `finding` bearing on the bet's premise). Explicit callers
+    (``--trigger``) win; otherwise it is auto-detected: a fired criterion always
+    means ``criterion`` (it already recommends review); absent that, any
+    premise-bearing finding means ``premise-change``; absent both, ``criterion``
+    is the ad-hoc default for a human-convened review with no specific finding."""
     bet = load_bet(root, bet_id)
     records = load_journal(root)
     as_of = as_of or date.today()
@@ -1101,17 +1285,51 @@ def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tupl
     chan_src = f"bets/{bet_id}/channels.json"
     asm_src = f"bets/{bet_id}/assumptions.json"
 
+    kp_for_trigger = latest_kill_proposed(records, bet_id)
+    fired_for_trigger = (kp_for_trigger.get("details", {}) or {}).get("criteria") or [] if kp_for_trigger else []
+    material_findings = load_findings(records, bet_id)
+    premise_findings = [f for f in material_findings if (f.get("details", {}) or {}).get("bearing_on") == "premise"]
+    if trigger is None:
+        trigger = "criterion" if fired_for_trigger else ("premise-change" if premise_findings else "criterion")
+
+    trigger_note = (
+        "a material external finding bears on the bet's premise — "
+        "\"insufficient evidence gathered yet\" is NOT by itself grounds for `hold` "
+        "here; the question is whether the premise still supports continuing to spend"
+        if trigger == "premise-change" else
+        "a pre-registered dated kill criterion fired"
+    )
+
     lines = [
         f"# Kill brief: {bet_id} — {bet.get('title', '')}",
         "",
-        f"State: `{bet.get('state')}` as of {as_of.isoformat()}. This brief contains ONLY "
+        f"State: `{bet.get('state')}` as of {as_of.isoformat()}. Convening trigger: "
+        f"**{trigger}** ({trigger_note}). This brief contains ONLY "
         "journal-backed artifacts: pre-registered kill criteria, measured values with "
-        "sources, envelope status, open-assumption evidence, and distribution attempts. "
-        "It deliberately contains no history, no working context, and no thesis prose — "
-        "you are the fresh-context evaluator, and the missing context is the feature "
-        "(Boulding et al. 1997).",
+        "sources, envelope status, open-assumption evidence, material findings, and "
+        "distribution attempts. It deliberately contains no history, no working context, "
+        "and no thesis prose — you are the fresh-context evaluator, and the missing "
+        "context is the feature (Boulding et al. 1997).",
         "",
     ]
+
+    # -- material findings (#252): external, citable facts bearing on the bet —
+    #    distinct from an assumption (a claim under test) and a measurement (a
+    #    criterion's value). Journal-backed by construction (every `finding` event
+    #    was refused at record time without a --source-url).
+    lines.append("## Material findings")
+    lines.append("")
+    if not material_findings:
+        lines.append("- none recorded")
+    for f in material_findings:
+        d = f.get("details", {}) or {}
+        lines.append(fact(
+            f"finding bearing on {d.get('bearing_on', '?')} "
+            f"[{d.get('evidence_grade', 'reported')}]",
+            f"{d.get('statement', '')!r} — {d.get('source_url', '?')}",
+            f["record_id"],
+        ))
+    lines.append("")
 
     # -- criteria, verbatim, hash-cited
     crit_hash = content_hash(criteria)
@@ -1184,6 +1402,65 @@ def build_kill_brief(root: Path, bet_id: str, as_of: date | None = None) -> tupl
     time_cap = env.get("time_cap_hours")
     if isinstance(time_cap, (int, float)):
         lines.append(fact("time cap", f"{time_cap:g}h", bet_src))
+    lines.append("")
+
+    # -- build cost (#257): the dominant input to most bets, invisible until now.
+    # An expensive bet under review deserves to have that visible to a
+    # fresh-context evaluator, same as cash spend.
+    import build_cost
+    bc_records = build_cost.load_build_costs(root, bet_id)
+    bc_src = "; ".join(r["record_id"] for r in bc_records) or None
+    bc = build_cost.summarize(bc_records)
+    lines.append("## Build cost (nominal + plan-share)")
+    lines.append("")
+    if bc["records"]:
+        nominal = f"${bc['nominal_usd']:g}" if bc["nominal_usd"] is not None else "UNRESOLVED (unpriced model)"
+        if bc["nominal_partial"]:
+            nominal += " (partial — some entries unpriced)"
+        share = f"{bc['plan_share_pct']:g}%" if bc["plan_share_pct"] is not None else "UNRESOLVED (not supplied)"
+        if bc["plan_share_partial"]:
+            share += " (partial — some entries unresolved)"
+        lines.append(fact("nominal build cost", nominal, bc_src))
+        lines.append(fact("plan-share consumed", share, bc_src))
+        nom_cap = env.get("nominal_build_cap_usd")
+        if isinstance(nom_cap, (int, float)):
+            lines.append(fact("nominal_build_cap_usd", f"${nom_cap:g}", bet_src))
+        share_cap = env.get("plan_share_cap_pct")
+        if isinstance(share_cap, (int, float)):
+            lines.append(fact("plan_share_cap_pct", f"{share_cap:g}%", bet_src))
+    else:
+        lines.append("- none recorded")
+    lines.append("")
+
+    # -- signal-source grounding + competitor sweep (#254): a Tier-C bet's
+    #    convergence risk must be legible to the fresh-context evaluator, not just
+    #    to the operator at create time.
+    lines.append("## Signal grounding (convergence risk)")
+    lines.append("")
+    tier = bet.get("signal_tier")
+    lines.append(fact("signal tier", tier if tier else "UNRESOLVED: not declared", bet_src))
+    sweep = bet.get("competitor_sweep")
+    if sweep and isinstance(sweep, dict):
+        names = ", ".join(c.get("name", "?") for c in sweep.get("competitors") or []) or "none found"
+        lines.append(fact(
+            "competitor sweep",
+            f"run {sweep.get('date', '?')} via {', '.join(sweep.get('sources') or []) or '?'} "
+            f"— competitors: {names}",
+            bet_src,
+        ))
+        if sweep.get("unresolved"):
+            lines.append(fact("sweep unresolved items", "; ".join(sweep["unresolved"]), bet_src))
+    else:
+        lines.append(fact(
+            "competitor sweep",
+            "UNRESOLVED: no competitor_sweep recorded"
+            + (" — REQUIRED for a Tier-C bet" if tier == "C" else ""),
+            None,
+        ))
+    for f in competitor_sweep_findings(bet, as_of):
+        if not f.startswith("skipped:"):
+            findings_note = f"- **finding**: {f}"
+            lines.append(findings_note)
     lines.append("")
 
     # -- open-assumption evidence table (assumption.py owns the ledger; the
@@ -1793,6 +2070,26 @@ def cmd_create(args) -> int:
 
     criteria = parse_criteria_file(Path(args.criteria))
 
+    competitor_sweep = None
+    if args.competitor_sweep:
+        csp = Path(args.competitor_sweep)
+        if not csp.is_file():
+            raise BetError(f"competitor sweep file not found: {csp}")
+        try:
+            competitor_sweep = json.loads(csp.read_text())
+        except json.JSONDecodeError as e:
+            raise BetError(f"cannot parse {csp}: {e}") from e
+
+    regulated_calculation_screen = None
+    if args.regulated_calculation_screen:
+        rcp = Path(args.regulated_calculation_screen)
+        if not rcp.is_file():
+            raise BetError(f"regulated-calculation screen file not found: {rcp}")
+        try:
+            regulated_calculation_screen = json.loads(rcp.read_text())
+        except json.JSONDecodeError as e:
+            raise BetError(f"cannot parse {rcp}: {e}") from e
+
     bet = {
         "id": args.bet_id,
         "title": args.title,
@@ -1829,10 +2126,22 @@ def cmd_create(args) -> int:
         if not isinstance(low_cap_screens, dict):
             raise BetError(f"{lcs_path}: low-cap screens data must be a JSON object")
         bet["low_cap_screens"] = low_cap_screens
+    if args.signal_tier is not None:
+        bet["signal_tier"] = args.signal_tier
+    if competitor_sweep is not None:
+        bet["competitor_sweep"] = competitor_sweep
+    if regulated_calculation_screen is not None:
+        bet["regulated_calculation_screen"] = regulated_calculation_screen
 
     findings = [f"soundness: {f}" for f in criteria_soundness(criteria)]
     findings += [f"soundness: {f}" for f in envelope_soundness(envelope)]
     findings += [f"soundness: {f}" for f in liability_soundness(envelope)]
+    if competitor_sweep is not None:
+        findings += [f"soundness: {f}" for f in competitor_sweep_soundness(competitor_sweep)]
+    if regulated_calculation_screen is not None:
+        findings += [
+            f"soundness: {f}" for f in regulated_calculation_soundness(regulated_calculation_screen)
+        ]
     findings += [
         f if f.startswith("skipped:") else f"selection: {f}"
         for f in selection_lint(root, bet)
@@ -1840,6 +2149,11 @@ def cmd_create(args) -> int:
     # Low-cap distribution-divergence screens (#275, §9.6.5 screens 8-13) —
     # already self-prefixed 'screen: ' (NEVER_GATES_PREFIXES), no re-tagging.
     findings += low_cap_screen_findings(root, bet)
+    findings += [
+        f if f.startswith("skipped:") else f"signal: {f}"
+        for f in competitor_sweep_findings(bet, date.today())
+    ]
+    findings += [f"screen: {f}" for f in regulated_calculation_findings(bet)]
 
     rc = report(findings, args.gate)
     if rc:
@@ -1861,6 +2175,7 @@ def cmd_create(args) -> int:
         # per-bet override is a decision, not a mutable knob.
         "rep_cadence_per_week": args.cadence if args.cadence is not None else DEFAULT_REP_CADENCE,
         "target_cac_usd": args.target_cac,
+        "signal_tier": args.signal_tier,
     })
     print(
         f"bet: created {args.bet_id} [proposed] — envelope+criteria hashed into the "
@@ -2014,10 +2329,46 @@ def cmd_evaluate(args) -> int:
     return report(findings, args.gate)
 
 
+def cmd_finding(args) -> int:
+    """Record a material external finding (chief-wiggum#252) — a citable fact
+    bearing on the bet, distinct from an assumption (a claim under test) or a
+    measurement (a criterion's value). Malformed (no statement, no --source-url,
+    or an unrecognized --bearing-on) is a hard usage error (exit 2), the same
+    discipline as a states-and-dates criterion missing its date: a finding without
+    a source is not a finding, it is unsourced prose, and the whole point of this
+    record type is that `kill-brief` can cite it without weakening brief purity."""
+    root = portfolio_root(args.portfolio_dir)
+    load_bet(root, args.bet_id)  # existence check; raises BetError if unknown
+    if not args.statement or not args.statement.strip():
+        raise BetError("finding needs a non-empty --statement")
+    if not args.source_url or not args.source_url.strip():
+        raise BetError(
+            "finding is malformed without a --source-url — an external finding "
+            "with no citable source cannot enter the record (brief-purity discipline)"
+        )
+    if not args.bearing_on or not FINDING_BEARING_ON_RE.match(args.bearing_on):
+        raise BetError(
+            f"--bearing-on must be 'premise', an ASM-<id>, or a KC-<id>, "
+            f"got {args.bearing_on!r}"
+        )
+    grade = args.evidence_grade or "reported"
+    rec = append_event(root, "finding", args.bet_id, {
+        "statement": args.statement,
+        "source_url": args.source_url,
+        "bearing_on": args.bearing_on,
+        "evidence_grade": grade,
+    })
+    print(
+        f"bet: finding recorded for {args.bet_id} ({rec['record_id']}) — "
+        f"bears on {args.bearing_on}, evidence_grade={grade}"
+    )
+    return 0
+
+
 def cmd_kill_brief(args) -> int:
     root = portfolio_root(args.portfolio_dir)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
-    text, findings, _meta = build_kill_brief(root, args.bet_id, as_of)
+    text, findings, _meta = build_kill_brief(root, args.bet_id, as_of, getattr(args, "trigger", None))
     if findings:
         for f in findings:
             print(f"bet: [purity] {f}")
@@ -2037,7 +2388,7 @@ def cmd_kill_brief(args) -> int:
 def cmd_kill_review(args) -> int:
     root = portfolio_root(args.portfolio_dir)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
-    text, findings, meta = build_kill_brief(root, args.bet_id, as_of)
+    text, findings, meta = build_kill_brief(root, args.bet_id, as_of, getattr(args, "trigger", None))
     if findings:
         for f in findings:
             print(f"bet: [purity] {f}")
@@ -2287,6 +2638,11 @@ def cmd_transition(args) -> int:
             ecosystem_channel=None, owned_audience=None,
             means_ref=None, predecessor=args.bet_id, gate=args.gate,
             cadence=None, target_cac=None, low_cap_screens=None,
+            # A pivot's successor re-derives its own signal grounding (#254) and
+            # regulated-calculation screen (#260) — neither carries over
+            # automatically from the closed bet.
+            signal_tier=None, competitor_sweep=None,
+            regulated_calculation_screen=None,
         )
         rc = cmd_create(sub)
         if rc:
@@ -2396,6 +2752,9 @@ def cmd_portfolio(args) -> int:
     records = load_journal(root)
     bets = all_bets(root)
     today = date.today()
+    # Build-cost tracking (#257): deferred import, same module-cycle-avoidance
+    # shape as the assumption.py imports elsewhere in this file.
+    import build_cost
 
     findings: list[str] = []
     rows = []
@@ -2414,6 +2773,8 @@ def cmd_portfolio(args) -> int:
         except BetError:
             criteria = []
         pend = pending_kill(records, bid)
+        bc_summary = build_cost.summarize(build_cost.load_build_costs(root, bid))
+        findings += build_cost_findings(bet, bc_summary)
         rows.append({
             "id": bid,
             "state": bet["state"],
@@ -2424,6 +2785,7 @@ def cmd_portfolio(args) -> int:
             "next_criterion": _next_due(criteria, today),
             "distribution": distribution_status(root, bid)["status"],
             "kill_pending_proposal": bool(pend),
+            "build_cost": bc_summary,
             # #274: measured (never guessed) ongoing load — only meaningful
             # for a LIVE_STATES (lifestyle) bet, the zombie-fleet population.
             "ongoing_load_hours_per_week": (
@@ -2467,6 +2829,14 @@ def cmd_portfolio(args) -> int:
             "kill_on_trigger": latency,
         })
 
+    # Build-cost buckets outside any single bet — 'factory' (CW's own dev) and
+    # 'unattributed' — reported explicitly, never dropped or spread pro-rata (#257).
+    bc_portfolio = build_cost.portfolio_summary(root)
+    bc_other = {
+        k: v for k, v in bc_portfolio.items()
+        if k in (build_cost.FACTORY, build_cost.UNATTRIBUTED)
+    }
+
     if args.format == "json":
         print(json.dumps({
             "bets": rows,
@@ -2475,6 +2845,7 @@ def cmd_portfolio(args) -> int:
             "dead_bets": dead,
             "attention": attention,
             "liability_concurrency": liab,
+            "build_cost_other": bc_other,
             "findings": findings,
         }, indent=2))
         real = [f for f in findings if not f.startswith(NEVER_GATES_PREFIXES)]
@@ -2504,12 +2875,22 @@ def cmd_portfolio(args) -> int:
             f"; ongoing load: {r['ongoing_load_hours_per_week']:g}h/wk"
             if r["ongoing_load_hours_per_week"] is not None else ""
         )
+        bc = r["build_cost"]
+        nominal = f"${bc['nominal_usd']:g}" if bc["nominal_usd"] is not None else "{unresolved}"
+        share = f"{bc['plan_share_pct']:g}%" if bc["plan_share_pct"] is not None else "{unresolved}"
+        build_note = f"; build cost: nominal {nominal}, plan-share {share}" if bc["records"] else ""
         print(
             f"  {r['id']:24s} {r['state']:12s} spend ${r['spend_usd']:g}/"
             f"${r['unlocked_usd']:g} unlocked (cap ${r['cash_cap_usd']:g}), "
             f"{r['hours']:g}h; next criterion: {r['next_criterion']}; "
-            f"distribution: {r['distribution']}{load_note}{pend}"
+            f"distribution: {r['distribution']}{load_note}{build_note}{pend}"
         )
+    if bc_other:
+        for bucket, s in bc_other.items():
+            nominal = f"${s['nominal_usd']:g}" if s["nominal_usd"] is not None else "{unresolved}"
+            share = f"{s['plan_share_pct']:g}%" if s["plan_share_pct"] is not None else "{unresolved}"
+            print(f"  build cost [{bucket}]: {s['records']} record(s), nominal {nominal}, "
+                  f"plan-share {share} — never spread pro-rata across bets (#257)")
     if dead:
         losses = sorted(d["loss_usd"] for d in dead)
         median = losses[len(losses) // 2] if len(losses) % 2 else \
@@ -2568,6 +2949,20 @@ def main() -> int:
                          "screens (templates/bet-schema.json low_cap_screens — #275, "
                          "docs/business-factory.md §9.6.5 screens 8-13); absent fields are "
                          "UNRESOLVED findings (report-only), never a silent pass")
+    sp.add_argument("--signal-tier", default=None, choices=SIGNAL_TIERS,
+                    help="how contestable this bet's grounding signal is (chief-wiggum#254): "
+                         "A=private (inbound/network/observation), B=semi-public (paid "
+                         "data/gated communities), C=public (feature boards/reviews/forums — "
+                         "contested by construction; assume a competitor reads it too)")
+    sp.add_argument("--competitor-sweep", default=None, metavar="JSON",
+                    help="create-time competitor sweep file: {date, sources[], "
+                         "competitors[{name,url}], unresolved[]} — required for a Tier-C "
+                         "bet to avoid the not-run-until-name-pick-time failure (#254)")
+    sp.add_argument("--regulated-calculation-screen", default=None, metavar="JSON",
+                    help="standing screen 15 (chief-wiggum#260) file: {who_bears_error, "
+                         "correctness_winnable, insurable, paid_configuration, "
+                         "interpretation_surface} — flagged report-only when the thesis "
+                         "names a regulated-calculation domain and this is absent")
     sp.add_argument("--predecessor", default=None, help=argparse.SUPPRESS)
 
     sp = sub.add_parser("spend", help="append a spend/time/rep ledger entry")
@@ -2592,6 +2987,21 @@ def main() -> int:
                     help="evaluation date (default: today)")
 
     sp = sub.add_parser(
+        "finding",
+        help="record a material external finding bearing on the bet's premise, an "
+             "assumption, or a criterion (chief-wiggum#252) — journaled, cited in kill-brief",
+    )
+    common(sp)
+    sp.add_argument("bet_id")
+    sp.add_argument("--statement", required=True, help="the external, citable fact")
+    sp.add_argument("--source-url", required=True, metavar="URL",
+                    help="citable source — required; a finding without one is refused")
+    sp.add_argument("--bearing-on", required=True, metavar="ASM-id|premise|KC-id",
+                    help="what this finding bears on: 'premise', an ASM-<id>, or a KC-<id>")
+    sp.add_argument("--evidence-grade", default=None, choices=EVIDENCE_GRADES,
+                    help="how well-sourced the finding itself is (default: reported)")
+
+    sp = sub.add_parser(
         "kill-brief",
         help="render the fresh-context kill brief (journal-backed values only — #237)",
     )
@@ -2601,6 +3011,10 @@ def main() -> int:
                     help="brief date for the rep-cadence window (default: today)")
     sp.add_argument("--output", default=None, metavar="FILE",
                     help=f"write the brief here (default: bets/<id>/{BRIEF_NAME})")
+    sp.add_argument("--trigger", default=None, choices=KILL_REVIEW_TRIGGERS,
+                    help="which legitimate kill-review trigger convenes this brief "
+                         "(chief-wiggum#252); default: auto-detected from a fired "
+                         "criterion or a premise-bearing finding, 'criterion' otherwise")
 
     sp = sub.add_parser(
         "kill-review",
@@ -2612,6 +3026,9 @@ def main() -> int:
     sp.add_argument("--as-of", default=None, metavar="YYYY-MM-DD")
     sp.add_argument("--output-dir", default=None, metavar="DIR",
                     help=f"provider verdict files land here (default: bets/<id>/{KILL_REVIEW_DIR}/)")
+    sp.add_argument("--trigger", default=None, choices=KILL_REVIEW_TRIGGERS,
+                    help="which legitimate kill-review trigger convenes this brief "
+                         "(chief-wiggum#252); default: auto-detected")
 
     sp = sub.add_parser(
         "transition",
@@ -2666,6 +3083,7 @@ def main() -> int:
     args = p.parse_args()
     dispatch = {
         "create": cmd_create, "spend": cmd_spend, "evaluate": cmd_evaluate,
+        "finding": cmd_finding,
         "kill-brief": cmd_kill_brief, "kill-review": cmd_kill_review,
         "transition": cmd_transition, "rebaseline": cmd_rebaseline,
         "portfolio": cmd_portfolio,

@@ -85,6 +85,54 @@
       "minimum": 0,
       "description": "Current monthly recurring revenue, USD — operator-entered (not derivable in-repo), unlike ongoing_load which is always measured. Feeds the attention kill criterion (chief-wiggum#274, §9.6.3): a live product costing more than ATTENTION_LOAD_THRESHOLD_HOURS/wk while earning less than ATTENTION_REVENUE_THRESHOLD_USD MRR is a kill-or-redesign candidate. Absent → the check is silent for this bet, never guessed."
     },
+    "signal_tier": {
+      "type": "string",
+      "enum": ["A", "B", "C"],
+      "description": "How contestable this bet's grounding signal is (chief-wiggum#254): A = private signal (inbound requests, personal-network problems, direct operator observation, paid discovery conversations — not in any public corpus). B = semi-public (paid datasets, marketplace analytics behind logins, communities requiring standing). C = public (feature-request boards, review streams, forums) — contested by construction; assume a competitor's agent is reading the same page today. A Tier-C bet without a current `competitor_sweep` is a report-only finding (`bet.py create`/`kill-brief`); absent → the check reports `skipped`, never a crash."
+    },
+    "competitor_sweep": {
+      "type": "object",
+      "required": ["date", "sources", "competitors", "unresolved"],
+      "additionalProperties": false,
+      "description": "Create-time competitor sweep (chief-wiggum#254) — run BEFORE a name is picked, not after: the sequencing that missed a real direct-twin collision on the first bet. Stale (>30 days) or absent on a Tier-C bet is a report-only finding, surfaced in `bet.py create` and `kill-brief`.",
+      "properties": {
+        "date": { "type": "string", "description": "ISO date the sweep was run." },
+        "sources": {
+          "type": "array", "items": { "type": "string" },
+          "description": "Where the sweep looked (search engines, marketplace listings, review sites, ...)."
+        },
+        "competitors": {
+          "type": "array",
+          "description": "Direct competitors found, each with a name and (if known) a URL.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "url": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "unresolved": {
+          "type": "array", "items": { "type": "string" },
+          "description": "Anything the sweep could not verify — stated explicitly rather than silently assumed clear."
+        }
+      }
+    },
+    "regulated_calculation_screen": {
+      "type": "object",
+      "required": ["who_bears_error", "correctness_winnable", "insurable", "paid_configuration", "interpretation_surface"],
+      "additionalProperties": false,
+      "description": "Standing screen 15 answers (chief-wiggum#260, docs/business-factory.md §9.5) for a bet whose product computes a number a regulator can audit (wages, tax, super, benefits, clinical dosing, safety thresholds). A bet failing any sub-question is not automatically refused — the mandate is only that the screen is ANSWERED at create time; absent while the thesis names a regulated-calculation domain is a report-only finding (`bet.py create`).",
+      "properties": {
+        "who_bears_error": { "type": "string", "minLength": 1, "description": "Who bears the error, and does the vendor have (or risk having) system-level knowledge of a defect (FWO v Blue Impression/Ezy Accounting, [2018] FCAFC 134)." },
+        "correctness_winnable": { "type": "string", "minLength": 1, "description": "Do incumbents/the regulator's own calculator disclaim accuracy? If so, correctness is not a differentiator." },
+        "insurable": { "type": "string", "minLength": 1, "description": "Is the correctness differentiator actually insurable, or excluded as contractually-assumed liability?" },
+        "paid_configuration": { "type": "string", "minLength": 1, "description": "Will the operator do paid configuration work (the Ezy fact pattern) — priced as risk, not revenue." },
+        "interpretation_surface": { "type": "string", "minLength": 1, "description": "Is the rule set bounded and licensable, or unbounded and hand-built?" }
+      }
+    },
     "predecessor": {
       "type": ["string", "null"],
       "description": "Bet id this bet succeeded via a pivot, or null."
@@ -213,6 +261,16 @@
               "unlock_milestone_id": { "type": ["string", "null"] }
             }
           }
+        },
+        "nominal_build_cap_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional build-cost cap (chief-wiggum#257): tokens x config/model_pricing.json, summed across every scripts/build_cost.py record attributed to this bet. Report-only (NEVER_GATES_PREFIXES 'buildcost:') until validated — checked by bet.py portfolio's build_cost_findings(). Absent -> silent, never guessed."
+        },
+        "plan_share_cap_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional plan-capacity cap (chief-wiggum#257): share of the billing period's plan capacity this bet may consume, summed across every scripts/build_cost.py record attributed to this bet. Plan-share is inherently estimate-shaped (the harness rarely exposes true consumption) — report-only (NEVER_GATES_PREFIXES 'buildcost:') until validated. Absent -> silent, never guessed."
         }
       }
     }
