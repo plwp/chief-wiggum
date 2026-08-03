@@ -728,6 +728,181 @@ acquisition-plan and thesis blocks as Tracks H/C ground:
 7. **Landlord assessment** (for ecosystem plays): API-as-product vs API-as-moat; marketplace
    ToS on competing with paid features; host's Sherlock history.
 
+### 9.6 Low-cap micro-SaaS: the ceiling is a filter, not a moat (logged 2026-08-03)
+
+**Statement as posed**: deliberately target markets whose total achievable revenue is so low
+(say A$50–300k/yr at absolute maximum) that no funded competitor, platform incumbent or
+acquirer would bother attacking. The smallness itself is the defence; the operator harvests
+cash flow from a portfolio of such products.
+
+Grounded by a **distribution-divergence sweep** rather than a literature pass: the same
+self-contained brief put to five frontier non-Western models (`divergence` role, chief-wiggum#272)
+plus a Mandarin A/B on two of them. Method note — these are model opinions, not sources. They
+are used here the way `name_candidates.py` uses a dictionary: as an entropy source that escapes
+our own priors. Numeric claims below carry their status; **nothing model-asserted may gate a
+spend decision until independently verified.**
+
+#### 9.6.1 What the ceiling actually does
+
+Unanimous across all five distributions, and it is a correction rather than a refutation: **the
+ceiling deters capital, not peers.** The rigorous form is Sutton's *Sunk Costs and Market
+Structure* — where the sunk cost of entry is high, markets support few firms; where it is low,
+they fragment. AI collapsed the sunk cost of building software, so the equilibrium number of
+firms in any given niche rises and the rent per firm falls. The ceiling repels exactly one
+entrant class, the capital-intensive one, and does nothing to the class that is actually
+growing: solo operators for whom A$80k/yr is a good outcome. Kimi's formulation is the one to
+keep — *the ceiling protects against sharks; it does nothing about piranhas, and you are a
+piranha.*
+
+Two corollaries the original thesis hides:
+
+- **The ceiling caps the operator too.** There is no war chest to defend with, no capital to
+  buy a quiet period, and — per §9.1's exit research — no meaningful sale.
+- **The observable competitive future already exists.** Shopify apps, WordPress plugins and
+  Chrome extensions are post-cost-collapse ecosystems. Rent there accrues to review stacks,
+  search position and integrations — never to features.
+
+So the thesis survives **as a selection filter** (it is necessary: without it you are crushed
+by funded attackers) and dies **as a moat** (it is not sufficient: you are crushed by peers
+instead). Treat "low ceiling" as a screen a candidate must pass, never as the answer to "what
+defends this?".
+
+#### 9.6.2 The moats that do work at this scale
+
+Ranked by how well they survived cross-model challenge:
+
+1. **System-of-record switching cost.** Records the buyer is legally required to retain, or
+   years of accumulated operational history. Peers can clone features overnight; they cannot
+   clone the customer's accumulated records.
+2. **Channel saturation as a cornered resource.** In a 3,000-buyer market there is one
+   association, one trade show, one Facebook group, a dozen keywords. The channel does not
+   scale, so a second entrant *cannot buy in* — there is no inventory to purchase. This is the
+   one moat that is genuinely *caused by* smallness rather than merely coexisting with it.
+3. **Jurisdiction quarantine.** AU-legislated workflows are invisible to a US-centric indie
+   swarm building for a market 10× larger. Convergent across four of five models. **Note the
+   tension**: quarantine and the Hidden-Champions expansion clause (the same niche across 15
+   countries multiplies the ceiling while staying under every radar) are mutually exclusive.
+   Pick one per bet, deliberately.
+4. **Maintained-compliance annuity.** Award rules, NDIS price guides, BAS/GST changes — an
+   annuity of *labour*. An AI factory generates the content once; it does not want to service
+   correctness for years.
+5. **Suite bundling within one niche.** Own five tools used by the *same* buyer and a
+   competitor must replicate the suite, not a weekend project. This is the only fleet shape
+   that is a moat rather than a distraction — and it needs real interconnection, not a loose
+   collection.
+
+**This reframes the fleet.** A fleet of unrelated products divides attention and multiplies
+distribution learning (which is per-market, not per-product — each new niche resets trust,
+copy and channel knowledge to zero). A fleet aimed at one buyer pool amortises the channel and
+compounds the moat. If we run a fleet at all, it should be depth-first.
+
+#### 9.6.3 Fleet mechanics: attention is the budget
+
+Per-product steady-state load, model estimates converging on the same band: support 0.5–3
+hrs/wk, maintenance 0.5–1, integration babysitting 0–1.5 per live integration, plus a
+context-switch floor of ~0.5 that does not shrink with product size. **~2 hrs/wk median,
+1–4.5 range.** Against 15 hrs/wk minus marketing the current bet minus factory ops, the
+honest fleet ceiling is **3–6 products, not 10–15** — and the most pessimistic model put the
+realistic year-one number at **one**.
+
+The empirical case against the broad portfolio is stronger than the modelling: Walling's
+stair-step — the canonical teacher of this strategy — treats the small-product portfolio as a
+*stepping stone to one bigger product*, not an end state, and 37signals deliberately killed or
+sold everything but one product in 2014 with ~50 staff because attention dilution was binding.
+*(Both model-asserted; the 37signals consolidation is well known but the framing should be
+checked before it gates anything.)*
+
+Structural choices that raise the ceiling, convergent across models: annual prepaid billing
+only; technically literate desk-based buyers (trades and clinics generate support hell);
+one shared stack template across the fleet — same auth, billing, deploy, monitoring; near-zero
+integrations (every integration is a liability with a pulse); **no on-call products**; price
+floor around A$50–100/mo.
+
+Two of these are direct factory capabilities and are the strongest argument that *our* fleet
+economics might differ from the documented failures: the shared fleet skeleton (centralised
+identity, billing, logging, alerting built *before* product three, not after), and
+factory-automated fleet maintenance — dependency updates, test runs, tier-1 support triage.
+
+**Known failure mode**, named independently by every model: the zombie fleet. Products plateau,
+maintenance eats marketing time, updates stop, churn quietly outpaces sales, and eighteen
+months later the fleet is a graveyard producing a trickle of revenue and a pile of obligation.
+The Mandarin DeepSeek run put the operator-level version of this more sharply than the English
+one: *the ultimate risk is not money — it is looking at a perfectly-functioning product earning
+A$300/month and experiencing it as a burden rather than a moat.*
+
+#### 9.6.4 Australian corrections
+
+The US corpus is systematically wrong for this operator in ways worth encoding:
+
+- **TAM haircut.** A niche capping at A$300k/yr in the US often caps at **A$30–80k/yr** in
+  Australia (~26M people vs ~330M, lower per-capita small-business density in many verticals).
+  Bets modelled on US benchmarks are overstated 5–10×. *(Model-asserted; the population ratio
+  is fact, the vertical-density claim is not verified.)*
+- **Price ceiling.** A$49/mo is asserted as roughly the empirical AU B2B ceiling where the US
+  equivalent is US$99. *(Unverified — but it interacts with the A$50–100/mo price floor above,
+  and if both are true the viable window is narrow. Worth a real check.)*
+- **The advisor channel.** AU SMB software purchases route through bookkeepers, BAS agents and
+  accountants far more than the US corpus grasps — the direct analogue of Germany's
+  *Steuerberater* channel and DATEV. Convergent across three models, and it matches the
+  accountant-channel multiplier already recorded in the accrualflow dossier.
+- **Enumerable buyers are trivially satisfiable here.** ABN Lookup API, the NDIS provider
+  register, state licence registers, AHPRA. This makes §9.6.5's screen 1 cheap to automate.
+- **Cold B2B email** is asserted legal under the Spam Act's inferred-consent provision for
+  conspicuously published business addresses relevant to the offer, with unsubscribe. **This
+  is a legal claim and must be verified against the actual Act before any outreach runs.**
+- **R&D Tax Incentive** (~43.5% refundable for small companies) is raised as a way to stretch
+  a A$5k envelope, with the caveat that software claims are actively scrutinised. Unverified;
+  specialist advice required before it is counted in any envelope.
+
+#### 9.6.5 Screens and terminal states this adds
+
+Candidate additions to the §9.5 standing screens, in priority order. Consistent with
+`docs/gate-rollout.md` these ship report-only and are validated before blocking:
+
+8. **Enumerable buyers.** Can a spreadsheet of ≥500 named prospects be produced from public
+   sources in one afternoon? No list, no distribution, no business. Also an upper bound:
+   >5,000 records is a dead zone — too big for personal outbound, too small for paid.
+9. **Support-obligation hazard.** Reject real-time, critical-path or regulatory-deadline
+   functionality. A solo operator cannot carry an on-call obligation. **This is the same
+   conclusion the rabbitry kill reached from the liability direction (#260), arrived at
+   independently from the attention direction — treat the convergence as corroboration.**
+10. **Structural retention.** The product stores records the buyer must retain ≥5 years, or
+    runs a weekly-recurring workflow. Satisfaction is not retention.
+11. **Channel existence.** At least one of: sponsorable association newsletter under $500, a
+    browsed app marketplace, a trade show under 5,000 attendees, a >2k-member group.
+12. **Dark-matter demand.** 10–300 searches/mo across a 10–20 keyword cluster with nonzero
+    CPC, **or** ≥3 findable "what software do you use for X" threads. Note this supersedes the
+    cruder "reject if search volume is high" screen two models proposed: volume alone is
+    ambiguous, volume-with-commercial-intent is the signal.
+13. **Opportunity-cost benchmark.** Every low-cap bet is judged against the operator's
+    contracting day rate for the same hours, not against zero and not against venture
+    outcomes. This is the counterfactual the startup corpus never forces, and the ledger
+    currently has no field for it.
+
+**Conflict to resolve, not paper over**: one model's screen says a high-vote public feature
+request means the platform will build it natively — *reject*. §9.3 says exactly the opposite,
+mining high-vote years-unshipped items as ranked demand evidence. Both are right about half of
+it: vote count alone is ambiguous, and the discriminator is *why* it is unshipped. §9.3's
+existing "friction-not-economics" check is that discriminator and should be stated as the
+resolution rather than left implicit.
+
+**Terminal states.** The Mandarin run surfaced a terminal the ledger does not model: a small
+vertical vendor's normal ending is not a sale but **hold, extract cash, then shut down or hand
+the product to a loyal customer** — routine among Japanese and Chinese sub-10-person vertical
+vendors, and erased by the Silicon-Valley exit narrative. `bet.py`'s terminals are
+`killed | parked | lifestyle | sold`; `lifestyle` currently absorbs this case but says nothing
+about the wind-down. Worth a distinct terminal so a planned graceful shutdown is not recorded
+as the same event as a kill.
+
+**Ledger gap found while checking this** (verified in code, not model-asserted):
+`bet.py`'s `IN_FLIGHT` is `{probing, validating, building}` and `TERMINALS` includes
+`lifestyle`. A live, revenue-producing product therefore consumes **zero** in-flight slots
+while consuming operator hours forever — so a fleet of five lifestyle products leaves the cap
+reporting "room for two more bets" with 100% of the attention budget already spent. The
+`--max-in-flight` cap counts *bets being worked*, but §9.6.3 says the binding resource is
+*total attention including live products*. That is the exact arithmetic behind the zombie-fleet
+failure mode, and the ledger cannot currently see it.
+
 ---
 
 ## 10. Sources (condensed)
