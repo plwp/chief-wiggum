@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -21,7 +22,16 @@ from pathlib import Path
 
 import providers
 
+from chief_wiggum.hashing import stable_hash
+from chief_wiggum.trace_ids import MD_DEFINE_RE, canonical_id
+
 Runner = Callable[..., subprocess.CompletedProcess]
+
+# scripts/code_query.py — the shared "what governs this file" locator
+# (docs/code-query.md). review.py's own epic-artifact slicing
+# (chief-wiggum#332) reuses it exactly as /implement Step 8 does, rather
+# than re-deriving a second notion of "governing IDs" from scratch.
+CODE_QUERY_SCRIPT = Path(__file__).resolve().parents[1] / "code_query.py"
 
 # Truncate very large diffs so a provider call isn't blown past its context.
 DEFAULT_MAX_DIFF_BYTES = 200_000
@@ -362,6 +372,42 @@ def render_ticket_comments(ticket: TicketContext) -> str:
     )
 
 
+# chief-wiggum#332: a literal line separating a review-prompt template's
+# STATIC preamble (task framing, review standard, output format — none of
+# which ever reference a template var) from its VOLATILE per-ticket body
+# (title/description/AC/comments/diff). Ordering static-first — and
+# appending the checklist/epic sections to the STATIC half rather than the
+# very end of the whole prompt — means two DIFFERENT tickets sharing the
+# same template/checklist/epic artifacts produce a byte-identical prefix,
+# which is what lets a provider-side prompt-prefix cache hit across tickets
+# in the same epic/review role (the ticket_cost.py ledger already reads
+# ``cache_read`` fields; the pre-#332 layout could never earn one). A
+# template with no marker (every pre-#332 template) degrades to "entirely
+# volatile" — every substitution/section still lands somewhere, it just
+# isn't prefix-cacheable.
+VOLATILE_MARKER = "<!-- CW:VOLATILE -->"
+
+# A rendered comment thread is the one unbounded payload in the assembled
+# prompt before #332 — the diff has DEFAULT_MAX_DIFF_BYTES, comments had no
+# cap at all. Smaller than the diff cap: a review-shaped comment thread is
+# rarely legitimately huge, and this is a floor against pathological cases
+# (a long adversarial or bot-generated thread), not a routine truncation.
+DEFAULT_MAX_COMMENTS_BYTES = 50_000
+
+
+def truncate_text(text: str, max_bytes: int, *, label: str = "content") -> str:
+    """Truncate ``text`` to ``max_bytes`` (UTF-8), appending a labeled marker
+    stating the original size — the generic form ``truncate_diff`` below is
+    now a thin wrapper over (chief-wiggum#332), so the diff and the comment
+    thread share one truncation implementation rather than two copies that
+    could drift."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    head = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return head + f"\n\n... [{label} truncated at {max_bytes} bytes of {len(encoded)}] ..."
+
+
 def assemble_review_prompt(
     template: str,
     ticket: TicketContext,
@@ -369,28 +415,46 @@ def assemble_review_prompt(
     *,
     checklist: str | None = None,
     epic_sections: Iterable[tuple[str, str]] = (),
+    max_comments_bytes: int = DEFAULT_MAX_COMMENTS_BYTES,
 ) -> str:
-    """Substitute the review template and append the checklist + epic context.
+    """Substitute the review template and assemble the checklist + epic context
+    STATIC-FIRST, ticket content last (chief-wiggum#332).
 
-    Substitution is **single-pass** (one regex sweep over the template), so a
-    value that itself contains a token name (e.g. a ticket body mentioning
-    ``{{DIFF}}``) is never re-scanned and replaced. Braces in the diff are not
-    interpreted as format fields. ``{{TICKET_COMMENTS}}`` expands to the two
-    labeled amendment/discussion regions (CTR-fh-003) — distinct from
+    Substitution is **single-pass** (one regex sweep over the VOLATILE half
+    of the template only), so a value that itself contains a token name
+    (e.g. a ticket body mentioning ``{{DIFF}}``) is never re-scanned and
+    replaced. Braces in the diff are not interpreted as format fields.
+    ``{{TICKET_COMMENTS}}`` expands to the two labeled amendment/discussion
+    regions (CTR-fh-003), capped like the diff — distinct from
     ``{{ACCEPTANCE_CRITERIA}}``, which is never rewritten by comments
     (INV-fh-009/010).
+
+    ``template`` splits on ``VOLATILE_MARKER`` into a static prefix and a
+    volatile suffix; ``checklist``/``epic_sections`` are appended to the
+    STATIC prefix (not the end of the whole prompt, the pre-#332 layout) so
+    two different tickets sharing the same static inputs produce a
+    byte-identical prefix. A template with no marker is treated as entirely
+    volatile (``static_prefix`` empty) — every substitution and appended
+    section still lands in the output, it's simply not prefix-cacheable.
     """
+    if VOLATILE_MARKER in template:
+        static_prefix, volatile_body = template.split(VOLATILE_MARKER, 1)
+    else:
+        static_prefix, volatile_body = "", template
+
     replacements = {
         "TICKET_TITLE": ticket.title or "(untitled)",
         "TICKET_DESCRIPTION": ticket.body or "(no description)",
         "ACCEPTANCE_CRITERIA": _format_acceptance(ticket.acceptance_criteria),
-        "TICKET_COMMENTS": render_ticket_comments(ticket),
+        "TICKET_COMMENTS": truncate_text(
+            render_ticket_comments(ticket), max_comments_bytes, label="comment thread"
+        ),
         "DIFF": diff,
     }
-    prompt = re.sub(
+    volatile_rendered = re.sub(
         r"\{\{(TICKET_TITLE|TICKET_DESCRIPTION|ACCEPTANCE_CRITERIA|TICKET_COMMENTS|DIFF)\}\}",
         lambda m: replacements[m.group(1)],
-        template,
+        volatile_body,
     )
 
     extra: list[str] = []
@@ -399,30 +463,128 @@ def assemble_review_prompt(
             extra.append(f"\n\n## {title}\n\n{content.strip()}")
     if checklist and checklist.strip():
         extra.append(f"\n\n---\n\n{checklist.strip()}")
-    return prompt + "".join(extra)
+
+    static_rendered = static_prefix.rstrip() + "".join(extra)
+    if not static_rendered:
+        return volatile_rendered
+    return static_rendered + "\n\n---\n\n" + volatile_rendered.lstrip()
 
 
 def truncate_diff(diff: str, max_bytes: int = DEFAULT_MAX_DIFF_BYTES) -> str:
-    encoded = diff.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return diff
-    head = encoded[:max_bytes].decode("utf-8", errors="ignore")
-    return head + f"\n\n... [diff truncated at {max_bytes} bytes of {len(encoded)}] ..."
+    return truncate_text(diff, max_bytes, label="diff")
 
 
-def build_synthesis_prompt(response_paths: list[str]) -> str:
-    listing = "\n".join(f"- {p}" for p in response_paths) or "- (no reviewer responses)"
-    return (
-        "Synthesize the independent code reviews below into one actionable report.\n"
-        "Categorize each finding as high-confidence (apply), medium (verify first), "
-        "or low/architectural (flag for user).\n"
-        "Reviewers may have been assigned disjoint review lenses over the same "
-        "diff, so expect disjoint findings, not convergence. Combine by union: a "
-        "finding raised by a single reviewer is not weaker for lacking consensus "
-        "— do not downgrade it. Cross-verify against the diff only where "
-        "reviewers make contradictory claims about the same fact.\n\n"
-        f"Reviewer responses:\n{listing}\n"
-    )
+# --- epic-artifact slicing via code_query (chief-wiggum#332 item 1) ---------
+#
+# contracts.md/invariants.md are inlined WHOLE even when a ticket touches
+# only 1-2 governing IDs (this repo's own contracts.md is ~26KB) — the
+# slicing tool already exists and is used one step later in /implement Step
+# 8 (code_query.py orient/trace/guards). Review context assembly reuses the
+# SAME locator rather than re-deriving "what governs this file" from
+# scratch: for each file the diff touches, ask code_query.py orient for its
+# governing stable IDs, then keep only those IDs' declaration blocks from
+# each epic artifact. Any failure (code_query.py missing, a non-zero exit,
+# malformed JSON, zero IDs resolved) degrades to including the WHOLE
+# artifact — never a broken or silently empty review section.
+
+_DIFF_GIT_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
+
+
+def _touched_files(diff_text: str) -> list[str]:
+    """Deterministic, deduped list of post-image paths a unified diff
+    touches — mirrors consult_ai._touched_files_from_diff's discipline (a
+    small, self-contained duplicate rather than an import across modules
+    with very different dependency weights)."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _DIFF_GIT_HEADER_RE.finditer(diff_text):
+        path = match.group(2)
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _epic_slug_from_artifact_paths(paths: Iterable[str]) -> str | None:
+    """Best-effort epic slug inference from a ``docs/epics/<slug>/...`` path
+    (the ``--epic-artifact`` convention scripts/run_review.py's CLI already
+    uses) — lets review slicing find the right epic without a NEW CLI flag
+    duplicating what ``--epic-artifact`` already encodes. ``None`` when no
+    path follows the convention (an external caller supplying artifact
+    content directly, with no epic directory at all)."""
+    for p in paths:
+        parts = Path(p).parts
+        if "epics" in parts:
+            idx = parts.index("epics")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+    return None
+
+
+def slice_markdown_by_ids(text: str, ids: set[str]) -> str:
+    """Return only the stable-ID declaration blocks in ``text`` whose
+    canonical ID is in ``ids`` (chief-wiggum#332) — the SAME block-boundary
+    rule ``chief_wiggum.hashing.hash_markdown_defs`` uses (a block runs from
+    its declaring line to the next declaration or EOF), so slicing agrees
+    with what the ratchet/traceability scanners already consider "one
+    block". Returns ``""`` when ``ids`` is empty or nothing matches — the
+    caller falls back to the whole file text in that case, never a silently
+    empty review section. ``ids`` is canonicalized here too — a caller may
+    pass any casing (matching ``canonical_id``'s own case-insensitive
+    contract), not just the already-canonical form."""
+    if not ids:
+        return ""
+    canonical_ids = {canonical_id(i) for i in ids}
+    lines = text.splitlines()
+    decls: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        m = MD_DEFINE_RE.search(line)
+        if m:
+            decls.append((i, m.group(1)))
+    blocks: list[str] = []
+    for idx, (start, cid) in enumerate(decls):
+        end = decls[idx + 1][0] if idx + 1 < len(decls) else len(lines)
+        if canonical_id(cid) in canonical_ids:
+            blocks.append("\n".join(lines[start:end]).rstrip())
+    return "\n\n".join(blocks)
+
+
+def _governing_ids_for_files(
+    repo_root: str | Path, epic_slug: str, files: list[str], *, runner: Runner = subprocess.run,
+) -> set[str]:
+    """Best-effort: ask ``code_query.py orient`` for each touched file's
+    governing stable IDs (chief-wiggum#332) — the same locator /implement
+    Step 8 already uses, reused here so review context assembly stops
+    re-deriving "what governs this file" from scratch. ANY failure (script
+    missing, non-zero exit, malformed JSON, an unscanned/errored envelope)
+    degrades to an empty set — the caller falls back to whole-file
+    inclusion, never a broken review."""
+    ids: set[str] = set()
+    if not CODE_QUERY_SCRIPT.is_file():
+        return ids
+    for f in files:
+        try:
+            result = runner(
+                [
+                    sys.executable, str(CODE_QUERY_SCRIPT),
+                    "--repo", str(repo_root), "--epic", epic_slug,
+                    "--format", "json", "orient", f,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                continue
+            envelope = json.loads(result.stdout)
+        except Exception:  # noqa: BLE001 - best-effort; never break the review
+            continue
+        for fact in envelope.get("facts", []) or []:
+            fid = fact.get("id") if isinstance(fact, dict) else None
+            if isinstance(fid, str):
+                try:
+                    ids.add(canonical_id(fid))
+                except Exception:  # noqa: BLE001 - a malformed id string, skip it
+                    continue
+    return ids
 
 
 # --- git --------------------------------------------------------------------
@@ -593,7 +755,6 @@ class ReviewManifest:
     role: str
     diff_path: str
     prompt_path: str
-    synthesis_prompt_path: str
     provider_manifest: dict
     response_paths: list[str] = field(default_factory=list)
     # chief-wiggum#269: the base ACTUALLY diffed against (may differ from
@@ -635,8 +796,34 @@ def run_review(
     runner: Runner = subprocess.run,
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
     optional_timeout_default: int = providers.DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
+    force_fresh: bool = False,
+    epic_slug: str | None = None,
+    code_query_runner: Runner = subprocess.run,
 ) -> ReviewManifest:
-    """Assemble the review prompt, run the reviewer quorum, write synthesis inputs.
+    """Assemble the review prompt(s), run the reviewer quorum.
+
+    ``epic_slug`` (chief-wiggum#332 item 1): when given, each entry in
+    ``epic_sections`` is sliced down to just the stable-ID blocks that
+    ``code_query.py orient`` reports as governing the files this review's
+    diff touches (the same locator /implement Step 8 uses), instead of
+    inlining the whole artifact. Falls back to the WHOLE artifact when
+    ``epic_slug`` is omitted (the pre-#332 default — every existing caller),
+    when no governing IDs resolve for any reason (code_query.py missing, an
+    error, a diff with no matching files), or for an artifact whose slice
+    would otherwise be empty (nothing lost, never a silently blank section).
+    ``code_query_runner`` is the injected subprocess runner for that lookup
+    (defaults to ``subprocess.run``, matching ``runner``'s own default).
+
+    ``force_fresh`` (chief-wiggum#332 item 4): by default, a provider whose
+    FINAL assembled (post-lens) prompt content-hashes identically to its
+    last successful run in ``output_dir`` reuses that prior output instead
+    of being re-invoked — a loud ``REUSED:`` line is printed to stderr. This
+    is how re-running after a single-provider failure re-pays only that
+    provider: the OTHER providers' ``{role}-{provider}.md`` + matching
+    ``.hash`` sidecar are still there and still match, so they're reused;
+    the failed one has no success on record and always re-runs. Pass
+    ``force_fresh=True`` to bypass the cache unconditionally (``run_review.py
+    --fresh``).
 
     Refuses to run outside a git repo or when ``base`` cannot be resolved.
     ``execute`` (the provider call) is injected so the pipeline is testable; it
@@ -648,10 +835,14 @@ def run_review(
     applies on its own ``--role`` path, computed by the shared
     ``providers.optional_provider_timeout``.
 
-    Every provider gets the identical assembled prompt. If ``role`` maps a
-    provider to a lens (``config/providers.json`` role.lenses), that provider's
-    charter (``config/lenses.json``, or ``lenses`` if supplied) is appended —
-    the shared prompt itself is never altered (chief-wiggum#163).
+    Every provider gets the identical CONTENT (ticket, contracts, checklist,
+    diff) and, if ``role`` maps it to a lens (``config/providers.json``
+    role.lenses), that provider's charter appended (chief-wiggum#163) — but
+    not necessarily the identical BYTES for the diff. A provider declared
+    ``needs_inline_diff=False`` (real filesystem access — codex,
+    claude-interactive) gets a pointer to the diff file/git command instead
+    of the diff text itself (chief-wiggum#332); ``review-prompt.md`` on disk
+    always carries the full inline version for a human to read.
     """
     assert_git_repo(worktree, runner=runner)
     out = Path(output_dir)
@@ -666,11 +857,50 @@ def run_review(
     diff_path.write_text(diff)
     diff_stat = diff_shortstat(worktree, resolved.ref, runner=runner)
 
-    prompt = assemble_review_prompt(
+    # chief-wiggum#332 item 1: slice epic artifacts down to just the
+    # governing IDs the diff's touched files resolve to, via the same
+    # code_query.py orient locator /implement Step 8 uses — falling back to
+    # whole-file inclusion on ANY failure to resolve (no epic_slug, no
+    # touched files found in the diff, code_query error, zero IDs resolved,
+    # or a PARTICULAR artifact whose slice would be empty).
+    epic_sections = list(epic_sections)
+    if epic_sections and epic_slug:
+        touched = _touched_files(diff)
+        if touched:
+            governing_ids = _governing_ids_for_files(
+                worktree, epic_slug, touched, runner=code_query_runner
+            )
+            if governing_ids:
+                sliced_sections: list[tuple[str, str]] = []
+                for title, content in epic_sections:
+                    sliced = slice_markdown_by_ids(content, governing_ids)
+                    sliced_sections.append((title, sliced if sliced.strip() else content))
+                epic_sections = sliced_sections
+
+    # chief-wiggum#332: the diff is capped at max_diff_bytes and inlined into
+    # EVERY provider's prompt — but only a provider with no real filesystem
+    # access (Provider.needs_inline_diff=True, e.g. gemini-vertex's single
+    # synchronous SDK call) actually needs that. A provider that runs with
+    # real cwd access and its own tool loop (codex, claude, claude-interactive)
+    # can open `impl-diff.txt` itself, or reproduce it with `git diff`; up to
+    # ~100k avoidable input tokens per review for those. `prompt_inline` is
+    # what review-prompt.md on disk always shows (the full, human-readable
+    # prompt); `prompt_pointer` swaps the diff text for a pointer to the same
+    # information, reachable via the file or the git command below.
+    prompt_inline = assemble_review_prompt(
         template, ticket, diff, checklist=checklist, epic_sections=epic_sections
     )
+    diff_pointer = (
+        "[Not inlined here (chief-wiggum#332) — you have direct filesystem "
+        "access; the diff below is identical to what every other reviewer sees.\n"
+        f"Read it from: {diff_path.resolve()}\n"
+        f"Or reproduce it yourself: git diff {resolved.ref}...HEAD   (run from {Path(worktree).resolve()})]"
+    )
+    prompt_pointer = assemble_review_prompt(
+        template, ticket, diff_pointer, checklist=checklist, epic_sections=epic_sections
+    )
     prompt_path = out / "review-prompt.md"
-    prompt_path.write_text(prompt)
+    prompt_path.write_text(prompt_inline)
 
     if config is None:
         config = providers.load_config()
@@ -681,6 +911,17 @@ def run_review(
         )
     if execute is None:
         raise ReviewError("an execute callable is required to run the reviewer quorum")
+
+    # Per-provider prompt body (chief-wiggum#332): only a provider that
+    # declares it needs the diff inlined gets `prompt_inline`; everyone else
+    # gets the smaller `prompt_pointer`. Keyed by provider name so
+    # run_role_quorum's dict-shaped `prompt` support (both the
+    # MIN_PROMPT_BYTES floor and the #319 blindness token-floor estimate)
+    # measures each provider against ITS OWN body, not a mismatched one.
+    provider_prompts: dict[str, str] = {
+        p.name: prompt_inline if p.needs_inline_diff else prompt_pointer
+        for p in plan.runnable
+    }
 
     if lenses is None:
         lenses = providers.load_lenses()
@@ -693,6 +934,34 @@ def run_review(
     if lens_errors:
         raise ReviewError("; ".join(lens_errors))
 
+    # chief-wiggum#332 item 4: each provider's FINAL (post-lens) prompt,
+    # precomputed once — both for the reuse-cache lookup below and so
+    # _execute_for_quorum never recomputes prompt_for_provider per attempt.
+    final_prompts: dict[str, str] = {
+        p.name: providers.prompt_for_provider(
+            plan.role, p.name, provider_prompts.get(p.name, prompt_inline), lenses
+        )
+        for p in plan.runnable
+    }
+
+    # A provider whose FINAL prompt content-hashes identically to its last
+    # successful run in `out` reuses that prior output rather than being
+    # re-invoked — this is how re-running after a single provider's failure
+    # re-pays only that provider (chief-wiggum#332). Read BEFORE the quorum
+    # runs: _run_one_provider unlinks each provider's {role}-{provider}.md
+    # at the START of its own call, so the prior content must be captured
+    # into memory now or it would already be gone by the time a reused
+    # provider's wrapper tried to read it.
+    prior_ok: dict[str, str] = {}
+    if not force_fresh:
+        for p in plan.runnable:
+            ok_path = out / f"{role}-{p.name}.md"
+            hash_path = out / f"{role}-{p.name}.hash"
+            if not (ok_path.exists() and hash_path.exists()):
+                continue
+            if hash_path.read_text().strip() == stable_hash(final_prompts[p.name]):
+                prior_ok[p.name] = ok_path.read_text()
+
     # The quorum calls execute(provider); bind the assembled prompt here. A
     # provider mapped to a lens on this role gets its charter appended; the
     # shared prompt every provider starts from is identical either way. An
@@ -700,26 +969,72 @@ def run_review(
     # hung/slow claude-interactive fails fast instead of stalling the review
     # quorum for 1800s (chief-wiggum#188) — the required/optional decision is the
     # same shared helper consult_ai.py's own --role path uses.
+    #
+    # chief-wiggum#330 AC3: this wrapping lambda ALWAYS declares `attempt`/
+    # `previous_failure_kind` (so providers._run_one_provider's retry-context
+    # detection sees it and threads them in on every retry), but only
+    # forwards them to the caller-supplied `execute` when THAT callable opts
+    # in (providers.execute_accepts_retry_context) — every existing 3-arg
+    # `execute(provider, prompt, timeout_override)` caller/test keeps
+    # working completely unchanged; only one (scripts/run_review.py's real
+    # execute) currently opts in, to reduce a required provider's retry
+    # budget after a timeout rather than repeating its full first budget.
+    execute_wants_retry_context = providers.execute_accepts_retry_context(execute)
+
+    def _execute_for_quorum(p, attempt: int = 1, previous_failure_kind: str | None = None):
+        # chief-wiggum#332 item 4: a byte-identical prompt to the last
+        # successful run reuses that output — no new provider call. Only on
+        # the FIRST attempt: a retry (attempt > 1) always means THIS run's
+        # first attempt already failed, so there is nothing valid to reuse.
+        if attempt == 1 and p.name in prior_ok:
+            print(
+                f"REUSED: {p.name}'s prompt is byte-identical to its last "
+                f"successful run — reusing {out / f'{role}-{p.name}.md'} "
+                "without a new provider call (chief-wiggum#332). Pass "
+                "force_fresh=True to disable.",
+                file=sys.stderr,
+            )
+            return prior_ok[p.name]
+        # chief-wiggum#332: each provider's OWN FINAL (post-lens) prompt,
+        # falling back to the full inline prompt for a provider somehow
+        # absent from plan.runnable (shouldn't happen — defensive only).
+        provider_prompt = final_prompts.get(
+            p.name, providers.prompt_for_provider(plan.role, p.name, prompt_inline, lenses)
+        )
+        timeout_override = providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default)
+        if execute_wants_retry_context:
+            return execute(
+                p, provider_prompt, timeout_override,
+                attempt=attempt, previous_failure_kind=previous_failure_kind,
+            )
+        return execute(p, provider_prompt, timeout_override)
+
     quorum = providers.run_role_quorum(
         plan,
-        lambda p: execute(
-            p,
-            providers.prompt_for_provider(plan.role, p.name, prompt, lenses),
-            providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default),
-        ),
+        _execute_for_quorum,
         out,
-        # chief-wiggum#319: the SHARED (pre-lens) prompt + lens map, so the
-        # quorum also runs the blindness check and surfaces it in
-        # provider_manifest/review-manifest.json — the same prompt every
-        # provider above was rendered from via prompt_for_provider.
-        prompt=prompt,
+        # chief-wiggum#319/#332: the per-provider (pre-lens) prompt bodies +
+        # lens map, so the quorum also runs the blindness check and surfaces
+        # it in provider_manifest/review-manifest.json against the SAME body
+        # each provider was actually rendered from via prompt_for_provider —
+        # not a single shared value that would mismatch a pointer-prompt
+        # provider against an inline-prompt one.
+        prompt=provider_prompts,
         lenses=lenses,
     )
     response_paths = [r.path for r in quorum.results if r.path]
 
-    synthesis = build_synthesis_prompt(response_paths)
-    synthesis_path = out / "synthesis-prompt.md"
-    synthesis_path.write_text(synthesis)
+    # chief-wiggum#332 item 4: record each SUCCESSFUL provider's prompt hash
+    # so a future run (reused or freshly re-invoked) can tell whether its
+    # prompt actually changed. Written for every "ok" result, including a
+    # reused one (harmless — it's the same hash it already matched).
+    for r in quorum.results:
+        if r.status == "ok" and r.name in final_prompts:
+            (out / f"{role}-{r.name}.hash").write_text(stable_hash(final_prompts[r.name]))
+
+    # chief-wiggum#332: synthesis-prompt.md was dead weight — /implement Step 8
+    # synthesizes reviews via scripts/synthesize_reviews.py over the
+    # individual reviewer-<provider>.md files directly, never this artifact.
 
     manifest = ReviewManifest(
         ticket=ticket.number,
@@ -727,7 +1042,6 @@ def run_review(
         role=role,
         diff_path=str(diff_path),
         prompt_path=str(prompt_path),
-        synthesis_prompt_path=str(synthesis_path),
         provider_manifest=quorum.to_dict(),
         response_paths=response_paths,
         resolved_base_ref=resolved.ref,

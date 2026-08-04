@@ -457,7 +457,7 @@ def test_opus_provider_pins_claude_tool_to_opus_model(monkeypatch):
     assert opus.model == "claude-opus-4-6"
     seen = {}
 
-    def fake_claude(prompt, model=None, cwd=None):
+    def fake_claude(prompt, model=None, cwd=None, timeout=None):
         seen["model"] = model
         return "ok", consult_ai.Usage(usage_status="unavailable")
 

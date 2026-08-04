@@ -29,6 +29,14 @@ TEMPLATE_WITH_COMMENTS = TEMPLATE.replace(
     "Diff:", "Comments:\n{{TICKET_COMMENTS}}\nDiff:"
 )
 
+# A run_review() end-to-end test's minimal fixture template/ticket/diff can
+# assemble to well under providers.MIN_PROMPT_BYTES (chief-wiggum#330's
+# refuse-a-truncated-prompt guard, now enforced inside run_role_quorum,
+# which run_review's prompt flows through) — pad with a realistic checklist
+# so these tests exercise real end-to-end behavior rather than tripping a
+# guard meant for an actually-truncated prompt.
+LONG_CHECKLIST = "# Checklist\n" + "".join(f"- item {i}\n" for i in range(20))
+
 
 def _ticket(**kw):
     base = {"number": 42, "title": "Add thing", "body": "Do the thing", "acceptance_criteria": ["AC one", "AC two"]}
@@ -77,13 +85,139 @@ def test_single_pass_does_not_rescan_injected_values():
 def test_checklist_and_epic_sections_appended():
     out = review.assemble_review_prompt(
         TEMPLATE, _ticket(), "d",
-        checklist="# Checklist\n- item",
+        checklist=LONG_CHECKLIST,
         epic_sections=[("Contracts", "REQUIRES x"), ("Empty", "  ")],
     )
     assert "## Contracts" in out and "REQUIRES x" in out
     assert "# Checklist" in out
     # Empty epic section is skipped.
     assert "## Empty" not in out
+
+
+# --- static-first ordering for prompt-prefix caching (chief-wiggum#332) -----
+#
+# A template carrying review.VOLATILE_MARKER splits into a STATIC part
+# (everything before the marker — task framing/review standard/output
+# format, none of which reference a template var) and a VOLATILE part
+# (ticket title/description/AC/comments/diff, after the marker). Checklist
+# and epic sections are appended to the STATIC part, not the end of the
+# whole prompt — so for two DIFFERENT tickets sharing the same
+# template/checklist/epic sections, everything up to the ticket content is
+# byte-identical, which is what lets a provider-side prompt-prefix cache
+# hit across tickets in the same epic/review role.
+
+STATIC_FIRST_TEMPLATE = f"""# Code Review Request
+
+Static framing paragraph that never varies by ticket.
+
+## Review Standard
+
+Static review standard text.
+
+{review.VOLATILE_MARKER}
+## Context
+
+Ticket: {{{{TICKET_TITLE}}}}
+Desc: {{{{TICKET_DESCRIPTION}}}}
+AC:
+{{{{ACCEPTANCE_CRITERIA}}}}
+
+## Diff
+
+```diff
+{{{{DIFF}}}}
+```
+"""
+
+
+def test_static_prefix_is_byte_stable_across_two_different_tickets():
+    checklist = LONG_CHECKLIST
+    epic_sections = [("Contracts", "REQUIRES x")]
+
+    prompt_a = review.assemble_review_prompt(
+        STATIC_FIRST_TEMPLATE, _ticket(title="Ticket A", body="Body A"), "diff A content",
+        checklist=checklist, epic_sections=epic_sections,
+    )
+    prompt_b = review.assemble_review_prompt(
+        STATIC_FIRST_TEMPLATE,
+        _ticket(title="A completely different ticket B", body="Totally different body"),
+        "an entirely different diff body",
+        checklist=checklist, epic_sections=epic_sections,
+    )
+
+    import os
+
+    common = os.path.commonprefix([prompt_a, prompt_b])
+    # The static framing, review standard, checklist, and epic section must
+    # all land in the shared prefix — well beyond a token boundary.
+    assert "Static framing paragraph" in common
+    assert "Static review standard text" in common
+    assert "REQUIRES x" in common
+    assert "# Checklist" in common
+    # And the two prompts must actually diverge afterward (not identical).
+    assert prompt_a != prompt_b
+    assert "Ticket A" not in common
+    assert "Ticket A" in prompt_a
+    assert "A completely different ticket B" in prompt_b
+
+
+def test_prompt_without_the_volatile_marker_still_assembles_all_content():
+    # Backward compatibility: a template with no marker at all (every
+    # pre-#332 template) is treated as entirely volatile — every
+    # substitution and appended section still lands somewhere in the output.
+    out = review.assemble_review_prompt(
+        TEMPLATE, _ticket(), "d", checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", "REQUIRES x")],
+    )
+    assert "Ticket: Add thing" in out
+    assert "## Contracts" in out and "REQUIRES x" in out
+    assert "# Checklist" in out
+
+
+# --- comment thread capped like the diff (chief-wiggum#332) -----------------
+
+
+def test_comment_thread_is_capped_like_the_diff():
+    huge_comments = [
+        _comment(body="x" * 2000, created_at=f"2026-01-{i:02d}T00:00:00Z", id=i)
+        for i in range(1, 30)
+    ]
+    ticket = _ticket(comments=huge_comments)
+    out = review.assemble_review_prompt(
+        TEMPLATE_WITH_COMMENTS, ticket, "d", max_comments_bytes=2_000,
+    )
+    assert "truncated" in out
+    assert len(out.encode("utf-8")) < 2_000 * len(huge_comments)
+
+
+def test_comment_thread_under_the_cap_is_unaffected():
+    ticket = _ticket(comments=[_comment(body="short comment")])
+    out = review.assemble_review_prompt(TEMPLATE_WITH_COMMENTS, ticket, "d")
+    assert "short comment" in out
+    assert "truncated" not in out
+
+
+def test_shipped_review_prompt_template_uses_static_first_ordering():
+    # A regression guard on the actual shipped file (chief-wiggum#332): a
+    # future hand-edit that drops the marker would silently regress every
+    # review prompt back to non-cacheable, appended-at-the-end ordering.
+    shipped = Path(__file__).resolve().parents[1] / "templates" / "review-prompt.md"
+    text = shipped.read_text()
+    assert review.VOLATILE_MARKER in text
+    marker_pos = text.index(review.VOLATILE_MARKER)
+    # Every template var lives in the volatile half, after the marker.
+    static_part = text[:marker_pos]
+    assert "{{" not in static_part
+
+    out = review.assemble_review_prompt(
+        text, _ticket(), "the diff", checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", "REQUIRES x")],
+    )
+    assert "Ticket: Add thing" not in out  # sanity: this uses the real labels
+    assert "**Ticket**: Add thing" in out
+    assert "REQUIRES x" in out
+    assert "# Checklist" in out
+    assert "the diff" in out
 
 
 # --- diff truncation --------------------------------------------------------
@@ -655,23 +789,13 @@ def test_capture_diff_against_stale_local_main_is_polluted_but_remote_tracking_i
     assert "real_change.py" in fixed
 
 
-# --- synthesis prompt -------------------------------------------------------
-
-
-def test_synthesis_prompt_lists_responses():
-    p = review.build_synthesis_prompt(["a/reviewer-codex.md", "a/reviewer-gemini.md"])
-    assert "reviewer-codex.md" in p and "reviewer-gemini.md" in p
-
-
-def test_synthesis_prompt_instructs_union_not_consensus():
-    # Reconciliation of a (possibly lensed) quorum is union + cross-verify
-    # contested items — a unique finding must not be downgraded for lacking
-    # consensus (chief-wiggum#163).
-    p = review.build_synthesis_prompt(["a/reviewer-codex.md"])
-    assert "Combine by union" in p
-    assert "not weaker for lacking consensus" in p
-    assert "contradictory claims" in p
-    assert "consensus vs single-reviewer" not in p
+# --- dead synthesis-prompt.md artifact removed (chief-wiggum#332) -----------
+#
+# build_synthesis_prompt/synthesis-prompt.md was never consumed: /implement
+# Step 8 (implement.md) synthesizes reviews via scripts/synthesize_reviews.py
+# reading the individual reviewer-<provider>.md files directly, not this
+# artifact. run_review() must not spend a write (or a reader's attention) on
+# a file nothing reads.
 
 
 # --- full run (mocked git + provider) ---------------------------------------
@@ -707,7 +831,7 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", out,
-        template=TEMPLATE, checklist="# Checklist\n- item",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
         config={}, execute=execute, runner=runner,
     )
 
@@ -716,7 +840,10 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     # Files written.
     assert (out / "impl-diff.txt").exists()
     assert (out / "review-prompt.md").exists()
-    assert (out / "synthesis-prompt.md").exists()
+    # chief-wiggum#332: synthesis-prompt.md was dead weight — nothing reads
+    # it (/implement Step 8 uses synthesize_reviews.py over the individual
+    # reviewer-<provider>.md files instead) — so run_review must not write it.
+    assert not (out / "synthesis-prompt.md").exists()
     assert (out / "review-manifest.json").exists()
     # Provider manifest integrated.
     assert manifest.provider_manifest["ok"] is True
@@ -728,7 +855,223 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     # recorded rather than silently used.
     assert manifest.base_source == "local-fallback"
     assert manifest.base_fallback_reason is not None
-    assert "review-manifest" in str(out / "review-manifest.json")
+
+
+# --- per-provider diff inlining (chief-wiggum#332 item 2) -------------------
+
+
+def test_run_review_sends_a_pointer_instead_of_inline_diff_to_a_filesystem_capable_provider(tmp_path, monkeypatch):
+    """Only a provider with NO real tool loop (needs_inline_diff=True, e.g.
+    gemini-vertex) needs the diff inlined as text. A provider with real cwd
+    access (codex) gets a pointer to the diff file/git command instead —
+    the SAME diff, just not re-serialized as text into its prompt."""
+    role = Role(name="reviewer", required=("codex", "gemini-vertex"), optional=())
+    plan = RolePlan(
+        role=role,
+        required=(
+            Provider("codex", "tool", True, tool="codex", needs_inline_diff=False),
+            Provider("gemini-vertex", "tool", True, tool="gemini-vertex", needs_inline_diff=True),
+        ),
+        optional=(), missing_required=(), skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured[provider.name] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+UNIQUE_DIFF_MARKER_XYZ"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True
+    # gemini-vertex (no tool loop) gets the diff inlined as text.
+    assert "UNIQUE_DIFF_MARKER_XYZ" in captured["gemini-vertex"]
+    # codex (real filesystem access) gets a pointer, NOT the diff text.
+    assert "UNIQUE_DIFF_MARKER_XYZ" not in captured["codex"]
+    assert "impl-diff.txt" in captured["codex"]
+
+
+def test_run_review_prompt_md_on_disk_always_carries_the_full_inline_diff(tmp_path, monkeypatch):
+    # review-prompt.md is written for a human to inspect — it must always
+    # show the real diff, regardless of what any individual provider (which
+    # may have gotten a pointer) actually received.
+    role = Role(name="reviewer", required=("codex",), optional=())
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex", needs_inline_diff=False),),
+        optional=(), missing_required=(), skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+UNIQUE_DIFF_MARKER_XYZ"),
+        }
+    )
+    out = tmp_path / "out"
+
+    review.run_review(
+        _ticket(), tmp_path, "main", out,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=lambda p, pr, to=None: "A substantive review with findings to report here.",
+        runner=runner,
+    )
+
+    assert "UNIQUE_DIFF_MARKER_XYZ" in (out / "review-prompt.md").read_text()
+
+
+def test_run_review_all_inline_providers_matches_pre_332_behavior(tmp_path, monkeypatch):
+    # A role where every provider needs the diff inlined (the pre-#332
+    # default) behaves exactly as before — every provider sees the real
+    # diff text.
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured[provider.name] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+UNIQUE_DIFF_MARKER_XYZ"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert "UNIQUE_DIFF_MARKER_XYZ" in captured["codex"]
+    assert "UNIQUE_DIFF_MARKER_XYZ" in captured["gemini"]
+
+
+# --- partial-quorum reuse via prompt content-hash (chief-wiggum#332 item 4) --
+#
+# Retry deletes prior outputs WITHIN a single run (correct — staleness);
+# there was no memo ACROSS runs, so re-running run_review.py after one
+# provider failed re-paid every provider at full price. A provider whose
+# assembled (post-lens) prompt hash is unchanged from the last run reuses
+# its prior successful output instead of being re-invoked.
+
+
+def _memo_runner(tmp_path, diff_text="diff --git a b\n+added line"):
+    return _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, diff_text),
+        }
+    )
+
+
+def test_run_review_reuses_prior_output_when_prompt_hash_is_unchanged(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    manifest1 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    manifest2 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+
+    assert manifest1.ok is True and manifest2.ok is True
+    # Each provider's real execute ran exactly ONCE across both runs — the
+    # second run reused both (identical prompt, identical hash).
+    assert calls == {"codex": 1, "gemini": 1}
+    assert "REUSED" in capsys.readouterr().err
+
+
+def test_run_review_reinvokes_only_the_previously_failed_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+    codex_should_fail = {"value": True}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        if provider.name == "codex" and codex_should_fail["value"]:
+            raise RuntimeError("transient codex failure")
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    manifest1 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    assert manifest1.ok is False  # codex (required) failed every attempt
+
+    codex_should_fail["value"] = False
+    calls_before_rerun = dict(calls)
+    manifest2 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+
+    assert manifest2.ok is True
+    # gemini succeeded last time (unchanged prompt) -> NOT re-invoked.
+    assert calls["gemini"] == calls_before_rerun["gemini"]
+    # codex had no prior success on record -> WAS re-invoked.
+    assert calls["codex"] > calls_before_rerun["codex"]
+
+
+def test_run_review_fresh_flag_forces_reinvocation_even_with_a_hash_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    review.run_review(_ticket(), tmp_path, "main", out, force_fresh=True, **kwargs)
+
+    assert calls == {"codex": 2, "gemini": 2}
+
+
+def test_run_review_reruns_when_the_prompt_actually_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    # A different ticket title changes the assembled prompt -> different hash.
+    review.run_review(_ticket(title="A completely different title"), tmp_path, "main", out, **kwargs)
+
+    assert calls == {"codex": 2, "gemini": 2}
 
 
 def test_run_review_records_resolved_base_sha_and_diff_stat(tmp_path, monkeypatch):
@@ -754,7 +1097,7 @@ def test_run_review_records_resolved_base_sha_and_diff_stat(tmp_path, monkeypatc
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", out,
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     assert manifest.base == "main"
@@ -805,7 +1148,7 @@ def test_run_review_applies_lens_charter_per_provider(tmp_path, monkeypatch):
 
     review.run_review(
         _ticket(), tmp_path, "main", out,
-        template=TEMPLATE, checklist="# Checklist\n- item",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
         config={}, lenses=lenses, execute=execute, runner=runner,
     )
 
@@ -973,7 +1316,7 @@ def test_run_review_caps_hung_optional_delegate_and_still_succeeds(tmp_path, mon
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", tmp_path / "out",
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     # Required provider (codex) carried the role -> overall OK despite the
@@ -1031,10 +1374,74 @@ def test_run_review_honors_per_role_optional_timeout_on_review_path(tmp_path, mo
 
     review.run_review(
         _ticket(), tmp_path, "main", tmp_path / "out",
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     assert captured_timeouts["claude-interactive"] == 42 + 30
+
+
+def test_run_review_forwards_retry_context_to_an_execute_that_opts_in(tmp_path, monkeypatch):
+    """chief-wiggum#330 AC3, review-pipeline half: run_review's own quorum
+    wiring must let an injected `execute` that declares `attempt`/
+    `previous_failure_kind` (like run_review.py's real one) see them —
+    scripts/run_review.py's execute reduces a codex retry's budget after a
+    timeout using exactly this context."""
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    received: list[tuple[int, str | None]] = []
+
+    def execute(provider, prompt, timeout_override=None, *, attempt=1, previous_failure_kind=None):
+        received.append((attempt, previous_failure_kind))
+        if attempt == 1:
+            raise TimeoutError("codex did not respond in time")
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True
+    # gemini is optional and gets one attempt only, so any (attempt > 1)
+    # entry can only have come from codex's (required, retried) call.
+    assert (1, None) in received
+    assert any(kind == "timeout" for attempt, kind in received if attempt > 1)
+
+
+def test_run_review_execute_without_retry_context_is_unaffected(tmp_path, monkeypatch):
+    # Backward compatibility: the plain 3-arg execute(provider, prompt,
+    # timeout_override=None) contract every OTHER test in this file uses
+    # must keep working completely unchanged.
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    calls = {"n": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls["n"] += 1
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True
+    assert calls["n"] == 2  # codex + gemini, each called once, no retry needed
 
 
 # --- blindness detection surfaces through the review manifest (chief-wiggum#319) --
@@ -1084,7 +1491,7 @@ def test_run_review_surfaces_blind_provider_in_the_manifest(tmp_path, monkeypatc
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", tmp_path / "out",
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     assert manifest.ok is True  # blindness never blocks the quorum on its own
@@ -1094,3 +1501,204 @@ def test_run_review_surfaces_blind_provider_in_the_manifest(tmp_path, monkeypatc
 
     on_disk = json.loads((tmp_path / "out" / "review-manifest.json").read_text())
     assert on_disk["provider_manifest"]["blindness"]["outcome"] == "findings"
+
+
+# --- epic-artifact slicing via code_query (chief-wiggum#332 item 1) ---------
+#
+# Whole contracts.md/invariants.md files get inlined even when the ticket
+# only touches 1-2 governing IDs — this repo's own contracts.md is ~26KB.
+# code_query.py orient already answers "what governs this file" per touched
+# file (Step 8 uses it the same way); review context assembly should slice
+# artifacts down to exactly those IDs instead of re-deriving from scratch,
+# falling back to the whole file when the governing IDs can't be resolved.
+
+
+CONTRACTS_FIXTURE = """# Contracts
+
+### CTR-order-001
+REQUIRES: order id is present
+ENSURES: order is created
+
+### CTR-order-002
+REQUIRES: payment token is valid
+ENSURES: payment is charged
+
+### CTR-billing-005
+REQUIRES: invoice exists
+ENSURES: invoice is voided
+"""
+
+
+def test_slice_markdown_by_ids_returns_only_matching_blocks():
+    out = review.slice_markdown_by_ids(CONTRACTS_FIXTURE, {"CTR-ORDER-001"})
+    assert "CTR-order-001" in out
+    assert "order id is present" in out
+    assert "CTR-order-002" not in out
+    assert "CTR-billing-005" not in out
+
+
+def test_slice_markdown_by_ids_is_canonical_id_case_insensitive():
+    # trace_ids.canonical_id uppercases the kind, lowercases the slug — the
+    # slice must match regardless of how the caller's ID set is cased.
+    out = review.slice_markdown_by_ids(CONTRACTS_FIXTURE, {"ctr-ORDER-001"})
+    assert "CTR-order-001" in out
+
+
+def test_slice_markdown_by_ids_returns_empty_for_no_ids():
+    assert review.slice_markdown_by_ids(CONTRACTS_FIXTURE, set()) == ""
+
+
+def test_slice_markdown_by_ids_returns_empty_when_nothing_matches():
+    assert review.slice_markdown_by_ids(CONTRACTS_FIXTURE, {"CTR-nonexistent-999"}) == ""
+
+
+def test_epic_slug_from_artifact_paths_extracts_the_slug():
+    assert review._epic_slug_from_artifact_paths(
+        ["docs/epics/order-lifecycle/contracts.md", "docs/epics/order-lifecycle/invariants.md"]
+    ) == "order-lifecycle"
+
+
+def test_epic_slug_from_artifact_paths_none_when_no_epics_segment():
+    assert review._epic_slug_from_artifact_paths(["some/other/path.md"]) is None
+
+
+def test_epic_slug_from_artifact_paths_none_for_empty_list():
+    assert review._epic_slug_from_artifact_paths([]) is None
+
+
+def test_touched_files_from_diff_extracts_paths():
+    diff = "diff --git a/src/foo.py b/src/foo.py\n+x\ndiff --git a/src/bar.go b/src/bar.go\n+y\n"
+    assert review._touched_files(diff) == ["src/foo.py", "src/bar.go"]
+
+
+def test_touched_files_from_diff_empty_for_no_diff():
+    assert review._touched_files("no diff here") == []
+
+
+def test_governing_ids_for_files_parses_orient_json(tmp_path):
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        envelope = {"facts": [{"id": "CTR-order-001", "kind": "contract"}, {"id": None, "kind": "hotspot"}]}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
+
+    ids = review._governing_ids_for_files(tmp_path, "order-lifecycle", ["src/foo.py"], runner=runner)
+
+    assert ids == {"CTR-order-001"}
+    assert any("orient" in c for c in calls[0])
+    assert "src/foo.py" in calls[0]
+
+
+def test_governing_ids_for_files_degrades_to_empty_on_any_failure(tmp_path):
+    def broken_runner(cmd, **kwargs):
+        raise OSError("code_query.py not found")
+
+    ids = review._governing_ids_for_files(tmp_path, "order-lifecycle", ["src/foo.py"], runner=broken_runner)
+    assert ids == set()
+
+
+def test_governing_ids_for_files_degrades_on_nonzero_exit(tmp_path):
+    def runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="Error: epic dir not found")
+
+    ids = review._governing_ids_for_files(tmp_path, "order-lifecycle", ["src/foo.py"], runner=runner)
+    assert ids == set()
+
+
+def test_run_review_slices_epic_artifacts_to_governing_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    def code_query_runner(cmd, **kwargs):
+        envelope = {"facts": [{"id": "CTR-order-001"}]}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured["prompt"] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a/src/foo.py b/src/foo.py\n+touched"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", CONTRACTS_FIXTURE)],
+        config={}, execute=execute, runner=runner,
+        epic_slug="order-lifecycle", code_query_runner=code_query_runner,
+    )
+
+    assert "CTR-order-001" in captured["prompt"]
+    assert "order id is present" in captured["prompt"]
+    # The unrelated contract in the SAME file is sliced away.
+    assert "CTR-billing-005" not in captured["prompt"]
+
+
+def test_run_review_falls_back_to_whole_artifact_when_no_ids_resolve(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    def code_query_runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"facts": []}), stderr="")
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured["prompt"] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a/src/foo.py b/src/foo.py\n+touched"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", CONTRACTS_FIXTURE)],
+        config={}, execute=execute, runner=runner,
+        epic_slug="order-lifecycle", code_query_runner=code_query_runner,
+    )
+
+    # No governing IDs resolved -> fall back to the WHOLE artifact.
+    assert "CTR-order-001" in captured["prompt"]
+    assert "CTR-billing-005" in captured["prompt"]
+
+
+def test_run_review_without_epic_slug_uses_whole_artifacts_unchanged(tmp_path, monkeypatch):
+    # Backward compatibility: a caller that never passes epic_slug (the
+    # pre-#332 contract) gets whole-file inclusion exactly as before.
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured["prompt"] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a/src/foo.py b/src/foo.py\n+touched"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", CONTRACTS_FIXTURE)],
+        config={}, execute=execute, runner=runner,
+    )
+
+    assert "CTR-order-001" in captured["prompt"]
+    assert "CTR-billing-005" in captured["prompt"]

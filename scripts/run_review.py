@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum import review  # noqa: E402
-from consult_ai import consult_provider  # noqa: E402
+from consult_ai import consult_provider, reduced_retry_timeout  # noqa: E402
 
 DEFAULT_TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "review-prompt.md"
 DEFAULT_CHECKLIST = Path(__file__).resolve().parents[1] / "templates" / "review-checklist.md"
@@ -45,6 +45,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="TITLE=PATH",
         help="Optional epic artifact to include (e.g. Contracts=docs/epics/x/contracts.md)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "Force every provider to run fresh, ignoring any prior successful "
+            "output whose prompt hash still matches (chief-wiggum#332). By "
+            "default, re-running after a single provider's failure reuses "
+            "every OTHER provider's unchanged output instead of re-paying it."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # CTR-fh-002: a production ticket.json missing the `comments` key entirely
@@ -61,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     checklist = Path(args.checklist).read_text() if Path(args.checklist).exists() else None
 
     epic_sections: list[tuple[str, str]] = []
+    epic_artifact_paths: list[str] = []
     for spec in args.epic_artifact:
         if "=" not in spec:
             continue
@@ -68,10 +79,26 @@ def main(argv: list[str] | None = None) -> int:
         p = Path(path)
         if p.exists():
             epic_sections.append((title, p.read_text()))
+            epic_artifact_paths.append(path)
 
-    def execute(provider, prompt, timeout_override=None):
+    # chief-wiggum#332 item 1: infer the epic slug from the docs/epics/<slug>/
+    # convention --epic-artifact paths already follow, rather than adding a
+    # new CLI flag that would just duplicate what's already encoded there.
+    epic_slug = review._epic_slug_from_artifact_paths(epic_artifact_paths)
+
+    def execute(provider, prompt, timeout_override=None, *, attempt=1, previous_failure_kind=None):
         # timeout_override caps an OPTIONAL claude-interactive delegate so it
         # fails fast instead of stalling the review quorum at 1800s (#188).
+        #
+        # chief-wiggum#330 AC3: declaring attempt/previous_failure_kind opts
+        # this callable into providers.py's per-attempt retry context (see
+        # providers.execute_accepts_retry_context, threaded here via
+        # chief_wiggum.review.run_review's own opt-in wiring) — a retry that
+        # follows a TIMEOUT-classified failure gets a reduced budget instead
+        # of repeating the full one that just expired.
+        if attempt > 1 and previous_failure_kind == "timeout":
+            tool_name = provider.tool if provider.type == "tool" else "claude-interactive"
+            timeout_override = reduced_retry_timeout(tool_name, timeout_override)
         return consult_provider(
             provider, prompt, None, args.worktree, timeout_override=timeout_override
         )
@@ -87,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
             epic_sections=epic_sections,
             role=args.role,
             execute=execute,
+            force_fresh=args.fresh,
+            epic_slug=epic_slug,
         )
     except review.ReviewError as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import concurrent.futures
+import inspect
 import json
+import random
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -22,6 +25,123 @@ DEFAULT_LENSES = Path(__file__).resolve().parents[1] / "config" / "lenses.json"
 # voice that's allowed to fail. Deliberately shorter than every required consult
 # TOOL_TIMEOUTS entry: an optional provider should fail fast, not merely "less slow".
 DEFAULT_OPTIONAL_TIMEOUT_SECONDS = 300
+
+# A shared prompt smaller than this is almost never intentional — the
+# signature of a truncated write (chief-wiggum#163/#330). SINGLE source of
+# truth: consult_ai.py re-exports this rather than defining its own copy, so
+# every ``run_role_quorum`` entry path (consult_ai.py's own ``--role`` CLI
+# AND scripts/run_review.py, which calls straight into
+# ``chief_wiggum.review.run_review`` -> this module) is covered, not just
+# the CLI that happened to add a pre-check first.
+MIN_PROMPT_BYTES = 200
+
+
+class ShortPromptError(RuntimeError):
+    """Raised by ``run_role_quorum`` when the shared prompt is below
+    ``MIN_PROMPT_BYTES`` (chief-wiggum#330) — refuses BEFORE any provider
+    task is submitted, generalizing consult_ai.py's own pre-check (chief-
+    wiggum#163) to every caller of this module, not just that one CLI. A
+    truncated/empty prompt would otherwise burn a whole quorum's worth of
+    provider calls (each failing identically and uselessly) before the
+    caller ever finds out."""
+
+
+# Upper bound (seconds) on a WHOLE quorum's wall clock, independent of any
+# individual provider's own internal timeout (chief-wiggum#330). Every
+# execute() call this codebase ships is already individually bounded (a
+# subprocess process-group kill for CLI tools, a daemon-thread-join deadline
+# for the Vertex SDK call, a thread+join deadline for OpenRouter's HTTP
+# call) — this is deliberately generous (comfortably above claude-
+# interactive's own 1800s times a couple of retries) because it should
+# almost never fire in normal operation; it exists so a provider whose OWN
+# bound is missing or buggy cannot hang ``run_role_quorum`` forever. A
+# caller with tighter knowledge of its configured budgets may pass a smaller
+# ``quorum_timeout``, or ``None`` to fully opt out (matching the pre-#330
+# unbounded behavior).
+DEFAULT_QUORUM_TIMEOUT_SECONDS = 4200  # 70 minutes
+
+# Short exponential backoff between retry attempts (chief-wiggum#330) — NOT
+# a "wait for the API to be less busy" scheme, just enough breathing room
+# that an instant, full-payload, identical-prompt retry (the pre-#330
+# behavior: "a codex timeout at 600s is retried for another full 600s with
+# the identical ~60k-token prompt") doesn't hammer a provider that just
+# failed. Doubles per attempt, capped, with a small jitter so concurrent
+# retries across providers don't all land on the same instant.
+RETRY_BACKOFF_BASE_SECONDS = 0.5
+RETRY_BACKOFF_CAP_SECONDS = 8.0
+# A rate-limit-classified failure waits noticeably longer than a plain one —
+# a 429 wants the caller to back off, not retry at the same cadence.
+RETRY_BACKOFF_RATE_LIMIT_MULTIPLIER = 3.0
+
+
+def classify_failure(exc: BaseException) -> str:
+    """Coarse classification of a provider-call failure (chief-wiggum#330):
+    ``'timeout' | 'rate_limit' | 'other'``. Used to pick a retry backoff and
+    (for a caller whose ``execute`` opts into retry context — see
+    ``execute_accepts_retry_context``) to let the NEXT attempt reduce its
+    own budget after a timeout, rather than retrying with the identical
+    full budget that just expired.
+
+    Duck-typed on exception TYPE (recognizing every timeout shape this
+    codebase actually raises: the stdlib ``TimeoutError``,
+    ``concurrent.futures.TimeoutError`` — an alias of the former on the
+    Python versions this repo targets — and ``subprocess.TimeoutExpired``)
+    and, as a fallback, on the exception's message text — never on a
+    provider-specific payload shape, so a new provider's own wording still
+    classifies reasonably rather than raising.
+    """
+    if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
+        return "timeout"
+    # subprocess.TimeoutExpired is a subclass of Exception, not TimeoutError;
+    # imported lazily so this module doesn't need `subprocess` for anything
+    # else.
+    import subprocess as _subprocess
+
+    if isinstance(exc, _subprocess.TimeoutExpired):
+        return "timeout"
+    message = str(exc).lower()
+    if "429" in message or "rate limit" in message or "too many requests" in message:
+        return "rate_limit"
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    return "other"
+
+
+def _retry_backoff_seconds(attempt: int, previous_failure_kind: str | None) -> float:
+    """Backoff (seconds) before retry attempt ``attempt`` (2, 3, ...),
+    chosen from ``previous_failure_kind`` (chief-wiggum#330). Exponential in
+    the attempt number, capped, with up to 20% jitter so concurrent retries
+    don't all land in lockstep; a ``rate_limit`` classified failure gets a
+    multiplied delay on top of that schedule."""
+    exponent = max(0, attempt - 2)
+    delay = min(RETRY_BACKOFF_CAP_SECONDS, RETRY_BACKOFF_BASE_SECONDS * (2 ** exponent))
+    if previous_failure_kind == "rate_limit":
+        delay *= RETRY_BACKOFF_RATE_LIMIT_MULTIPLIER
+    jitter = delay * 0.2 * random.random()
+    return delay + jitter
+
+
+def execute_accepts_retry_context(execute: ExecuteFn) -> bool:
+    """Whether ``execute`` opts into per-attempt retry context
+    (chief-wiggum#330): an ``attempt`` keyword parameter, or ``**kwargs``.
+
+    Introspected once per provider task so every EXISTING ``execute(provider)``
+    1-arg callable — every test fixture in this repo, and any external
+    caller that hasn't opted in — keeps working completely unchanged: passing
+    extra keyword arguments to a callable that doesn't declare them would
+    raise a ``TypeError``, so this must be checked BEFORE the first call, not
+    discovered by trial and error. A callable ``inspect.signature`` cannot
+    introspect (a C builtin, some exotic callable) degrades to "not opted
+    in" rather than raising.
+    """
+    try:
+        sig = inspect.signature(execute)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.name == "attempt" or param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -59,6 +179,25 @@ class Provider:
     # tell an image-capable provider from a text-only one without waiting to
     # observe a suspiciously text-only critique.
     accepts_images: bool = True
+    # Does this provider's call path need the diff INLINED into its prompt
+    # text (chief-wiggum#332), or can it fetch the diff itself from the
+    # filesystem? True (the default — safe/conservative: assume a provider
+    # needs everything spoon-fed unless proven otherwise) for a call path
+    # with no real agentic tool loop: gemini-vertex (a single synchronous SDK
+    # request; its diff-scoped file retrieval, chief-wiggum#319, still
+    # starts FROM the diff embedded in the prompt) and every openrouter-
+    # backed provider (no filesystem access at all). False for a provider
+    # that runs with real ``cwd`` access and its own tool loop — codex,
+    # claude, claude-interactive (and gemini CLI's --yolo loop) can open a
+    # file named in the prompt themselves, so inlining the (possibly large)
+    # diff text is pure waste for them; a pointer to the diff file (or the
+    # git command to reproduce it) is enough. Declared per provider rather
+    # than inferred from ``reads_repo`` — that flag answers a DIFFERENT
+    # question (can this provider read the REPO at all, chief-wiggum#319);
+    # gemini-vertex is correctly ``reads_repo=True`` (its bespoke retrieval
+    # DOES read files) while still needing the diff inlined, because it has
+    # no tool loop to fetch a pointed-to file with.
+    needs_inline_diff: bool = True
 
 
 @dataclass(frozen=True)
@@ -187,6 +326,7 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
             model=raw.get("model"),
             reads_repo=bool(raw.get("reads_repo", True)),
             accepts_images=bool(raw.get("accepts_images", True)),
+            needs_inline_diff=bool(raw.get("needs_inline_diff", True)),
         )
     return providers
 
@@ -753,11 +893,24 @@ def _run_one_provider(
     # Only required providers are retried; an optional provider gets one shot.
     attempts_allowed = max(1, max_attempts) if required else 1
     last_error: str | None = None
+    last_failure_kind: str | None = None
     attempt = 0
+    # chief-wiggum#330: check ONCE, before the first call — never per-attempt
+    # (the callable's signature doesn't change between attempts, and a
+    # per-attempt check would be wasted introspection).
+    retry_context_aware = execute_accepts_retry_context(execute)
     for attempt in range(1, attempts_allowed + 1):
+        if attempt > 1:
+            # Short backoff before a retry (chief-wiggum#330) — not before
+            # the first attempt, which should run immediately.
+            time.sleep(_retry_backoff_seconds(attempt, last_failure_kind))
         try:
-            outcome = execute(provider)
+            if retry_context_aware:
+                outcome = execute(provider, attempt=attempt, previous_failure_kind=last_failure_kind)
+            else:
+                outcome = execute(provider)
         except Exception as exc:  # noqa: BLE001 - any provider failure is retryable
+            last_failure_kind = classify_failure(exc)
             last_error = f"execution failed: {exc}"
             continue
         # ``execute`` may return a bare string (the original contract, still
@@ -797,9 +950,10 @@ def run_role_quorum(
     min_bytes: int = 20,
     max_workers: int | None = None,
     write_manifest: bool = True,
-    prompt: str | None = None,
+    prompt: str | dict[str, str] | None = None,
     lenses: dict[str, Any] | None = None,
     blindness_margin: float = BLIND_PROVIDER_MARGIN,
+    quorum_timeout: float | None = DEFAULT_QUORUM_TIMEOUT_SECONDS,
 ) -> QuorumManifest:
     """Run a role's providers concurrently with retries and output validation.
 
@@ -807,14 +961,43 @@ def run_role_quorum(
     retried up to ``max_attempts`` times; optional providers fail without
     blocking the quorum. A ``{role}-manifest.json`` records per-provider status.
 
-    ``prompt`` (chief-wiggum#319): the SHARED prompt every provider in this
-    role started from, BEFORE per-provider lens rendering — pass it (with
+    ``prompt`` (chief-wiggum#319): the prompt every provider in this role
+    started from, BEFORE per-provider lens rendering — pass it (with
     ``lenses`` when the role uses any) to also run the blindness check
     (``detect_blind_providers``) and attach its ``BlindnessReport`` to the
     manifest. Omitted (the default) means "the caller didn't ask" — the
     manifest's ``blindness`` stays ``None``, distinct from a check that ran
-    and found nothing.
+    and found nothing. May be a single SHARED string (every provider gets the
+    identical body — the original contract) or a ``dict[provider_name, str]``
+    (chief-wiggum#332 — each provider gets its OWN body, e.g. a review role
+    handing a filesystem-capable provider a diff-pointer instead of the full
+    inline diff gemini-vertex needs); a provider name missing from the dict
+    is simply skipped in the blindness token-floor estimate (no size to
+    compare against, rather than a misleading zero). chief-wiggum#330: when
+    given, every variant is ALSO refused with ``ShortPromptError`` (before
+    any provider task is submitted) when it's below ``MIN_PROMPT_BYTES`` —
+    generalizing consult_ai.py's own CLI-level pre-check to every caller of
+    this function.
+
+    ``quorum_timeout`` (chief-wiggum#330): upper bound (seconds) on this
+    call's OWN wall clock, independent of any per-provider timeout — a
+    provider whose call ignores its own budget (a bug elsewhere) is
+    abandoned as a failure at this deadline rather than blocking the whole
+    quorum forever. Defaults to a generous ceiling that should never fire in
+    normal operation; pass ``None`` to fully opt out (the pre-#330
+    unbounded behavior).
     """
+    if prompt is not None:
+        prompt_variants = list(prompt.values()) if isinstance(prompt, dict) else [prompt]
+        shortest = min((len(p.strip().encode("utf-8")) for p in prompt_variants), default=0)
+        if shortest < MIN_PROMPT_BYTES:
+            raise ShortPromptError(
+                f"a shared prompt (or one of its per-provider variants) is only "
+                f"{shortest} bytes (minimum {MIN_PROMPT_BYTES}) — refusing to run the "
+                "quorum. This is the signature of a truncated or empty prompt "
+                "(chief-wiggum#163/#330); fix it before spending any provider call on it."
+            )
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -832,16 +1015,40 @@ def run_role_quorum(
     results: list[ProviderResult] = []
     if tasks:
         workers = max_workers or len(tasks)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [
-                pool.submit(
-                    _run_one_provider,
-                    provider, required, execute, out, plan.role.name, max_attempts, min_bytes,
-                )
-                for provider, required in tasks
-            ]
-            for fut in concurrent.futures.as_completed(futures):
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        future_map = {
+            pool.submit(
+                _run_one_provider,
+                provider, required, execute, out, plan.role.name, max_attempts, min_bytes,
+            ): (provider, required)
+            for provider, required in tasks
+        }
+        completed: set[concurrent.futures.Future] = set()
+        try:
+            for fut in concurrent.futures.as_completed(future_map, timeout=quorum_timeout):
+                completed.add(fut)
                 results.append(fut.result())
+        except concurrent.futures.TimeoutError:
+            # chief-wiggum#330: the quorum-level backstop fired. Every task
+            # not already collected above is abandoned as a failure — a
+            # thread that's still running cannot be killed (Python threads
+            # aren't forcibly cancellable, only OS processes are, via
+            # _kill_group in consult_ai.py's subprocess path), but the
+            # CALLER must not wait on it any longer than this deadline.
+            for fut, (provider, required) in future_map.items():
+                if fut in completed:
+                    continue
+                if fut.done():
+                    results.append(fut.result())
+                    continue
+                results.append(ProviderResult(
+                    provider.name, required, "failed", None, 0,
+                    f"abandoned: quorum deadline of {quorum_timeout}s exceeded",
+                ))
+        finally:
+            # wait=False: don't block returning on a task that ignored its
+            # own timeout — see the TimeoutError branch's comment above.
+            pool.shutdown(wait=False)
 
     # Deterministic order: required (config order) then optional.
     results.sort(key=lambda r: order.get(r.name, 1_000))
@@ -861,11 +1068,22 @@ def run_role_quorum(
 
     if prompt is not None:
         try:
+            # chief-wiggum#332: `prompt` may be a single shared string (every
+            # provider's OWN estimate uses the same body) or a dict keyed by
+            # provider name (each provider's estimate uses ITS OWN variant —
+            # a provider handed a small diff-pointer must not be measured
+            # against a large inline-diff provider's prompt size, or vice
+            # versa; either mismatch would make the blindness check wrong in
+            # exactly the direction that hides a real blind reading or
+            # false-flags a legitimately-smaller-prompt provider).
+            def _prompt_body_for(name: str) -> str:
+                return prompt[name] if isinstance(prompt, dict) else prompt
             prompt_tokens_by_provider = {
                 name: estimate_prompt_tokens(
-                    prompt_for_provider(plan.role, name, prompt, lenses or {})
+                    prompt_for_provider(plan.role, name, _prompt_body_for(name), lenses or {})
                 )
                 for name in seen
+                if not isinstance(prompt, dict) or name in prompt
             }
             manifest.blindness = detect_blind_providers(
                 plan.role, providers_by_name, results, prompt_tokens_by_provider,

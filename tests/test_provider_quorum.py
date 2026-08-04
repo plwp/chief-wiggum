@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import dataclass
 
 import providers
+import pytest
 from providers import (
     BLIND_PROVIDER_MARGIN,
     BlindnessReport,
@@ -306,6 +309,37 @@ def test_detect_blind_providers_unmeasured_is_a_finding_not_a_pass():
     assert "not the same as one measured and fine" in report.findings[0].message
 
 
+def test_detect_blind_providers_already_surfaces_claude_interactives_invisible_cost():
+    """chief-wiggum#331 item 3: the claude-interactive delegate has no
+    usage-bearing transport (consult_ai.consult_claude_interactive ALWAYS
+    returns usage_status='unavailable', per ADR-fh-05) — so whenever it
+    succeeds inside a role that requires repo reading, detect_blind_providers
+    (#319) already reports it as an "unmeasured" finding, not a quiet pass.
+    This is #319's existing "unmeasured is a finding, not a pass" rule
+    (see test_detect_blind_providers_unmeasured_is_a_finding_not_a_pass just
+    above) applied to the SPECIFIC provider #331 is about — pinned here so a
+    future change can't silently narrow that check to exclude the delegate."""
+    role = Role(name="reviewer", required=("codex",), optional=("claude-interactive",), requires_repo_read=True)
+    providers_by_name = {
+        "codex": _provider("codex"),
+        "claude-interactive": _provider("claude-interactive"),  # reads_repo=True (config default)
+    }
+    results = [
+        _result("codex", tokens_in=900_000, usage_status="provider-json"),
+        _result("claude-interactive", tokens_in=None, usage_status="unavailable", required=False),
+    ]
+
+    report = detect_blind_providers(
+        role, providers_by_name, results,
+        {"codex": 1300, "claude-interactive": 1300},
+    )
+
+    assert report.outcome == "findings"
+    finding = next(f for f in report.findings if f.provider == "claude-interactive")
+    assert finding.kind == "unmeasured"
+    assert "cannot be measured is not the same as one measured and fine" in finding.message
+
+
 def test_detect_blind_providers_inapplicable_when_role_does_not_require_repo_read():
     role = Role(name="design_critic", required=("gemini-vertex",), optional=(), requires_repo_read=False)
     providers_by_name = {"gemini-vertex": _provider("gemini-vertex")}
@@ -420,6 +454,23 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
     for role_name in ("reviewer", "risky_diff_review"):
         assert "gemini-vertex" in roles[role_name].required
         assert roles[role_name].requires_repo_read is True
+
+
+def test_shipped_config_declares_needs_inline_diff_correctly():
+    # chief-wiggum#332: only a provider with NO real agentic tool loop
+    # (gemini-vertex's single synchronous SDK call; every openrouter-backed
+    # provider) needs the diff spoon-fed as inline text — everything with
+    # real filesystem access via cwd can be pointed at the diff file instead.
+    from pathlib import Path as _Path
+
+    config = providers.load_config(_Path(__file__).resolve().parents[1] / "config" / "providers.json")
+    providers_by_name = providers.providers_from_config(config)
+
+    needs_inline = {"gemini-vertex", "deepseek", "kimi", "glm", "qwen", "minimax"}
+    for name in needs_inline:
+        assert providers_by_name[name].needs_inline_diff is True, name
+    for name in ("codex", "gemini", "claude", "claude-interactive", "opus"):
+        assert providers_by_name[name].needs_inline_diff is False, name
 
 
 # --- chief-wiggum#321: image-shaped blindness detection ---------------------
@@ -560,3 +611,251 @@ def test_shipped_config_declares_accepts_images_and_sends_images():
     # not just "the fields exist", but "the fields are consistent".
     report = detect_image_blind_providers(roles["design_critic"], providers_by_name)
     assert report.outcome == "pass"
+
+
+# --- quorum-level deadline (chief-wiggum#330) --------------------------------
+#
+# run_role_quorum's as_completed() used to have no timeout=, so a provider
+# call that hangs (ignoring its own individual budget — a bug elsewhere, or
+# simply a caller that never bounded it) could block the whole quorum call
+# forever. quorum_timeout bounds the CALLER's wait: any future still
+# unfinished at the deadline is reported as a failure rather than awaited.
+
+
+def test_run_role_quorum_abandons_a_hung_provider_at_the_quorum_deadline(tmp_path):
+    never = threading.Event()
+
+    def execute(provider):
+        if provider.name == "codex":
+            return SUBSTANTIVE
+        never.wait(30)  # simulates a provider call that ignores its own timeout
+        return SUBSTANTIVE
+
+    plan = _plan(["codex", "gemini-vertex"], [])
+    start = time.monotonic()
+    manifest = run_role_quorum(plan, execute, tmp_path, quorum_timeout=0.3, max_attempts=1)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"run_role_quorum did not return promptly ({elapsed}s)"
+    statuses = {r.name: r.status for r in manifest.results}
+    assert statuses["codex"] == "ok"
+    assert statuses["gemini-vertex"] == "failed"
+    gv_result = next(r for r in manifest.results if r.name == "gemini-vertex")
+    assert "deadline" in gv_result.error
+    never.set()  # let the background thread unblock so it doesn't linger
+
+
+def test_run_role_quorum_default_deadline_never_fires_on_ordinary_fast_execution(tmp_path):
+    # The default quorum_timeout is deliberately generous — every existing
+    # (fast, mocked) caller must be completely unaffected by its existence.
+    manifest = run_role_quorum(_plan(["codex"], ["gemini"]), lambda p: SUBSTANTIVE, tmp_path)
+    assert manifest.ok is True
+    assert all(r.status == "ok" for r in manifest.results)
+
+
+def test_run_role_quorum_quorum_timeout_none_means_unbounded(tmp_path):
+    # An explicit opt-out must still behave exactly like the pre-#330 code —
+    # no artificial cap when a caller asks for none.
+    manifest = run_role_quorum(
+        _plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path, quorum_timeout=None,
+    )
+    assert manifest.ok is True
+
+
+# --- classified, backed-off retries (chief-wiggum#330) -----------------------
+
+
+def test_retry_backs_off_between_attempts(tmp_path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(providers.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"codex": 0}
+
+    def execute(provider):
+        calls[provider.name] += 1
+        if calls[provider.name] < 2:
+            raise RuntimeError("transient")
+        return SUBSTANTIVE
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+
+    assert manifest.results[0].status == "ok"
+    assert len(sleeps) == 1  # one backoff, before the 2nd (successful) attempt
+    assert sleeps[0] > 0
+
+
+def test_retry_backoff_is_longer_after_a_rate_limit_than_a_plain_error(tmp_path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(providers.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"n": 0}
+
+    def execute(provider):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("HTTP 429: rate limit exceeded")
+        return SUBSTANTIVE
+
+    run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+    rate_limited_backoff = sleeps[0]
+
+    sleeps.clear()
+    calls["n"] = 0
+
+    def execute_plain(provider):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("connection reset")
+        return SUBSTANTIVE
+
+    run_role_quorum(_plan(["codex"], []), execute_plain, tmp_path, max_attempts=2)
+    plain_backoff = sleeps[0]
+
+    assert rate_limited_backoff > plain_backoff
+
+
+def test_classify_failure_recognizes_timeout_and_rate_limit_and_other():
+    assert providers.classify_failure(TimeoutError("x")) == "timeout"
+    assert providers.classify_failure(RuntimeError("HTTP 429 too many requests")) == "rate_limit"
+    assert providers.classify_failure(RuntimeError("connection reset by peer")) == "other"
+
+
+def test_classify_failure_recognizes_subprocess_timeout_expired():
+    import subprocess
+
+    exc = subprocess.TimeoutExpired(cmd=["x"], timeout=5)
+    assert providers.classify_failure(exc) == "timeout"
+
+
+def test_execute_opted_into_retry_context_receives_attempt_and_failure_kind(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    received: list[tuple[int, str | None]] = []
+
+    def execute(provider, attempt=1, previous_failure_kind=None):
+        received.append((attempt, previous_failure_kind))
+        if attempt == 1:
+            raise TimeoutError("slow")
+        return SUBSTANTIVE
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+
+    assert manifest.results[0].status == "ok"
+    assert received == [(1, None), (2, "timeout")]
+
+
+def test_execute_without_retry_context_is_unaffected(tmp_path, monkeypatch):
+    # Backward compatibility: a plain 1-arg execute (every existing caller
+    # and every other test in this file) must keep being called exactly as
+    # before — no attempt/previous_failure_kind ever forced onto it.
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    calls = {"codex": 0}
+
+    def execute(provider):
+        calls[provider.name] += 1
+        if calls[provider.name] < 2:
+            raise RuntimeError("transient")
+        return SUBSTANTIVE
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+    assert manifest.results[0].status == "ok"
+    assert calls["codex"] == 2
+
+
+def test_execute_accepting_var_keyword_args_is_treated_as_retry_context_aware(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    received = []
+
+    def execute(provider, **kwargs):
+        received.append(kwargs)
+        return SUBSTANTIVE
+
+    run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=1)
+    assert received[0].get("attempt") == 1
+
+
+# --- MIN_PROMPT_BYTES enforced inside run_role_quorum (chief-wiggum#330) -----
+#
+# consult_ai.py's own CLI already refused a truncated/empty prompt before
+# calling plan_role/run_role_quorum at all — but that guard only protects
+# ITS entry path. scripts/run_review.py builds its own (much larger,
+# assembled) prompt and calls providers.run_role_quorum directly, with no
+# equivalent guard — so a truncated assembled prompt there could still burn
+# a whole reviewer quorum's worth of provider calls (the #163 failure this
+# generalizes). Moving the floor into run_role_quorum covers every entry
+# path for free, and refuses BEFORE any provider task is submitted.
+
+
+def test_run_role_quorum_refuses_a_too_short_prompt_before_any_provider_runs(tmp_path):
+    called = []
+
+    def execute(provider):
+        called.append(provider.name)
+        return SUBSTANTIVE
+
+    with pytest.raises(providers.ShortPromptError):
+        run_role_quorum(_plan(["codex"], []), execute, tmp_path, prompt="short")
+
+    assert called == []  # refused before any provider was ever invoked
+
+
+def test_run_role_quorum_accepts_a_prompt_at_the_floor(tmp_path):
+    prompt = "x" * providers.MIN_PROMPT_BYTES
+    manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path, prompt=prompt)
+    assert manifest.ok is True
+
+
+def test_run_role_quorum_without_a_prompt_is_unaffected_by_the_floor(tmp_path):
+    # prompt=None means "the caller didn't ask" (pre-existing semantics for
+    # the blindness check too) — no floor to enforce.
+    manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path)
+    assert manifest.ok is True
+
+
+# --- per-provider prompt bodies (chief-wiggum#332: diff inlining) -----------
+#
+# run_role_quorum's `prompt` param may now be a dict keyed by provider name
+# (in addition to a single shared string) — this is how review.py sends a
+# SMALLER, pointer-shaped prompt to a filesystem-capable provider (codex,
+# claude-interactive) and the full inline diff only to gemini-vertex,
+# without breaking the MIN_PROMPT_BYTES floor or the #319 blindness
+# token-floor estimate, both of which must key off the RIGHT variant per
+# provider, not a single shared one.
+
+
+def test_run_role_quorum_accepts_a_dict_prompt_for_the_floor_check(tmp_path):
+    prompt = {
+        "codex": "x" * providers.MIN_PROMPT_BYTES,
+        "gemini-vertex": "y" * (providers.MIN_PROMPT_BYTES + 500),
+    }
+    manifest = run_role_quorum(_plan(["codex", "gemini-vertex"], []), lambda p: SUBSTANTIVE, tmp_path, prompt=prompt)
+    assert manifest.ok is True
+
+
+def test_run_role_quorum_dict_prompt_refuses_when_any_variant_is_too_short(tmp_path):
+    prompt = {"codex": "x" * providers.MIN_PROMPT_BYTES, "gemini-vertex": "too short"}
+    with pytest.raises(providers.ShortPromptError):
+        run_role_quorum(_plan(["codex", "gemini-vertex"], []), lambda p: SUBSTANTIVE, tmp_path, prompt=prompt)
+
+
+def test_run_role_quorum_dict_prompt_computes_per_provider_blindness_estimate(tmp_path):
+    # codex's own prompt is small (a pointer, chief-wiggum#332) so its
+    # measured tokens_in easily clears the blindness margin; gemini-vertex's
+    # own prompt is the full inline diff, so its blindness estimate must be
+    # based on ITS OWN (larger) prompt, not codex's smaller one — otherwise
+    # gemini-vertex could be falsely flagged blind against too low a bar,
+    # or codex could dodge a real blind reading against too high a bar.
+    small_pointer = "p" * (providers.MIN_PROMPT_BYTES + 10)   # ~52 tokens
+    large_inline = "d" * 20_000                                # ~5000 tokens
+    prompt = {"codex": small_pointer, "gemini-vertex": large_inline}
+
+    def execute(provider):
+        if provider.name == "codex":
+            # tokens_in far exceeds codex's OWN (small) prompt -> clearly read the repo.
+            return SUBSTANTIVE, _FakeUsage(tokens_in=900_000, usage_status="provider-json")
+        # tokens_in is close to gemini-vertex's OWN (large) prompt size -> blind.
+        return SUBSTANTIVE, _FakeUsage(tokens_in=5_050, usage_status="sdk-metadata")
+
+    plan = _plan(["codex", "gemini-vertex"], [])
+    manifest = run_role_quorum(plan, execute, tmp_path, prompt=prompt)
+
+    assert manifest.blindness is not None
+    assert manifest.blindness.outcome == "findings"
+    assert {f.provider for f in manifest.blindness.findings} == {"gemini-vertex"}
