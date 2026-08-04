@@ -190,3 +190,130 @@ def test_audit_does_not_count_covered_without_test():
     a = tr.audit(m)
     assert a["covered"] == 0  # covered status but no test ref
     assert a["gaps"]  # still flagged as a gap
+
+
+# --- chief-wiggum#342: zero-match update must never rewrite the file --------
+
+CANONICAL_TABLE_413 = """\
+| Ticket | Acceptance Criterion | Unit Test | Integration Test | E2E Test | Status |
+|--------|---------------------|-----------|-----------------|----------|--------|
+| #413 | Dunning ladder fires | dunning_test.go:TestLadder | — | — | pending |
+"""
+
+# Shape observed live in chief-wiggum#342: an epic table that keys tickets
+# into a heading, not a `Ticket` column — `AC`/`Status` are recognized, but
+# `Contracts / invariants` and `Planned tests` are NOT, so this must never be
+# treated as canonical (those two columns would be silently dropped by
+# render_markdown's fixed 6-column schema).
+NON_CANONICAL_TABLE = """\
+## #413 — 5/6 Dunning ladder
+
+| AC | Contracts / invariants | Planned tests | Status |
+|----|------------------------|----------------|--------|
+| #413-AC1 — ladder fires on day 7 | CTR-fh-020 | unit: TestLadder | pending |
+"""
+
+
+def test_update_file_zero_matches_returns_none():
+    text, n, warnings = tr.update_file(NON_CANONICAL_TABLE, ticket=413, status="covered")
+    assert text is None
+    assert n == 0
+
+
+def test_cli_update_non_canonical_table_leaves_file_byte_identical(tmp_path, capsys):
+    f = tmp_path / "traceability.md"
+    f.write_text(NON_CANONICAL_TABLE)
+    before = f.read_text()
+    rc = cli.main(["update", str(f), "--ticket", "413", "--status", "covered"])
+    after = f.read_text()
+    assert rc == 2
+    assert after == before  # byte-identical — nothing written
+    err = capsys.readouterr().err
+    assert "nothing written" in err
+
+
+def test_cli_update_non_matching_ticket_in_canonical_table_is_also_a_no_op(tmp_path, capsys):
+    f = tmp_path / "traceability.md"
+    f.write_text(CANONICAL_TABLE_413)
+    before = f.read_text()
+    rc = cli.main(["update", str(f), "--ticket", "999", "--status", "covered"])
+    after = f.read_text()
+    assert rc == 2
+    assert after == before
+    assert "nothing written" in capsys.readouterr().err
+
+
+def test_cli_update_canonical_table_matching_ticket_updates_rows(tmp_path, capsys):
+    f = tmp_path / "traceability.md"
+    f.write_text(CANONICAL_TABLE_413)
+    rc = cli.main(["update", str(f), "--ticket", "413", "--status", "covered"])
+    assert rc == 0
+    m = tr.parse_matrix(f.read_text())
+    assert m.rows[0].status == "covered"
+    assert "OK: updated 1 row(s)" in capsys.readouterr().out
+
+
+def test_mixed_file_only_canonical_table_changes_non_canonical_round_trips(tmp_path, capsys):
+    mixed = NON_CANONICAL_TABLE + "\n" + CANONICAL_TABLE_413
+    f = tmp_path / "traceability.md"
+    f.write_text(mixed)
+    rc = cli.main(["update", str(f), "--ticket", "413", "--status", "covered"])
+    after = f.read_text()
+    assert rc == 0
+    # The non-canonical table's exact original text survives verbatim.
+    assert NON_CANONICAL_TABLE.rstrip("\n") in after
+    # The canonical table's matching row was updated.
+    assert "| #413 | Dunning ladder fires | dunning_test.go:TestLadder | — | — | covered |" in after
+    # And the non-canonical row's own status cell was NOT touched.
+    assert "#413-AC1 — ladder fires on day 7 | CTR-fh-020 | unit: TestLadder | pending |" in after
+
+
+def test_cli_dry_run_never_writes_on_a_match(tmp_path, capsys):
+    f = tmp_path / "traceability.md"
+    f.write_text(CANONICAL_TABLE_413)
+    before = f.read_text()
+    rc = cli.main(["update", str(f), "--ticket", "413", "--status", "covered", "--dry-run"])
+    after = f.read_text()
+    assert rc == 0
+    assert after == before  # dry run never writes
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out
+    assert "would update 1 row(s)" in out
+
+
+def test_cli_dry_run_on_zero_matches_still_reports_and_never_writes(tmp_path, capsys):
+    f = tmp_path / "traceability.md"
+    f.write_text(NON_CANONICAL_TABLE)
+    before = f.read_text()
+    rc = cli.main(["update", str(f), "--ticket", "413", "--status", "covered", "--dry-run"])
+    after = f.read_text()
+    assert rc == 2
+    assert after == before
+    assert "DRY RUN" in capsys.readouterr().err
+
+
+def test_update_file_only_rerenders_tables_with_a_match():
+    """A second canonical table with NO matching row must also round-trip
+    byte-identical — only the table that actually changed is touched."""
+    other_ticket_table = (
+        "| Ticket | Acceptance Criterion | Unit Test | Integration Test | E2E Test | Status |\n"
+        "|--------|---------------------|-----------|-----------------|----------|--------|\n"
+        "| #77 | unrelated | — | — | — | pending |\n"
+    )
+    text = CANONICAL_TABLE_413 + "\n" + other_ticket_table
+    new_text, n, _warnings = tr.update_file(text, ticket=413, status="covered")
+    assert n == 1
+    assert other_ticket_table.rstrip("\n") in new_text
+
+
+def test_update_file_cwd_independent_prose_preserved():
+    doc = "Intro.\n\n" + CANONICAL_TABLE_413 + "\nOutro.\n"
+    new_text, n, _ = tr.update_file(doc, ticket=413, status="covered")
+    assert n == 1
+    assert "Intro." in new_text
+    assert "Outro." in new_text
+
+
+def test_update_file_invalid_status_raises():
+    with pytest.raises(ValueError):
+        tr.update_file(CANONICAL_TABLE_413, ticket=413, status="bogus")
