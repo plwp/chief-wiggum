@@ -56,6 +56,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts as _meta_location  # noqa: E402 - meta-location resolver (#213)
+from chief_wiggum import ai_disclosure  # noqa: E402
 from chief_wiggum import github as gh_meta  # noqa: E402
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -597,6 +598,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--label", action="append", default=[], dest="labels")
     p_create.add_argument("--assignee")
     p_create.add_argument("--epic")
+    p_create.add_argument(
+        "--disclose-ai", action="store_true",
+        help="Append the CW AI-authorship disclosure line to the issue body (#317) — "
+        "pass this for issues published to a public repo (e.g. /create-issue, /plan-epic)",
+    )
 
     p_update = sub.add_parser("update", help="Update fields on an issue")
     p_update.add_argument("ref")
@@ -644,8 +650,11 @@ def main(argv: list[str] | None = None) -> int:
 
         elif args.command == "create":
             backend = get_tracker(args.target, repo_root=repo_root)
+            body = args.body
+            if args.disclose_ai:
+                body = ai_disclosure.ensure_disclosure(body)
             draft = IssueDraft(
-                title=args.title, body=args.body, labels=args.labels,
+                title=args.title, body=body, labels=args.labels,
                 assignee=args.assignee, epic=args.epic,
             )
             print(backend.create(draft))

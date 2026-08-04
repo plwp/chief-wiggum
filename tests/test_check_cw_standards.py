@@ -1,5 +1,6 @@
 """Tests for scripts/check_cw_standards.py (the factory-self-standards linter)."""
 
+import datetime
 import subprocess
 import sys
 from pathlib import Path
@@ -93,3 +94,47 @@ def test_gate_flag_blocks(tmp_path):
     rg = subprocess.run([sys.executable, str(SCRIPTS / "check_cw_standards.py"), "--gate"],
                         capture_output=True, text=True)
     assert rg.returncode == 0
+
+
+# --- rule 5: AI Act posture doc (chief-wiggum#317) ---------------------------
+
+
+def test_ai_act_posture_missing(tmp_path):
+    _scaffold(tmp_path)
+    assert "ai-act-posture-missing" in _rules(check_cw_standards.check(tmp_path))
+
+
+def test_ai_act_posture_no_review_date(tmp_path):
+    _scaffold(tmp_path)
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "ai-act-posture.md").write_text("# Posture\n\nNo date here.\n")
+    findings = check_cw_standards.check(tmp_path)
+    assert "ai-act-posture-no-review-date" in _rules(findings)
+    assert "ai-act-posture-missing" not in _rules(findings)
+
+
+def test_ai_act_posture_fresh_ok(tmp_path):
+    _scaffold(tmp_path)
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "ai-act-posture.md").write_text("`last_reviewed: 2026-08-01`\n")
+    findings = check_cw_standards.check(tmp_path, today=datetime.date(2026, 8, 4))
+    rules = _rules(findings)
+    assert "ai-act-posture-missing" not in rules
+    assert "ai-act-posture-stale" not in rules
+    assert "ai-act-posture-no-review-date" not in rules
+
+
+def test_ai_act_posture_stale(tmp_path):
+    _scaffold(tmp_path)
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "ai-act-posture.md").write_text("`last_reviewed: 2024-01-01`\n")
+    findings = check_cw_standards.check(tmp_path, today=datetime.date(2026, 8, 4))
+    assert "ai-act-posture-stale" in _rules(findings)
+
+
+def test_real_repo_posture_doc_is_fresh():
+    """The real repo's own docs/ai-act-posture.md must pass the freshness check
+    it introduces — dogfooding the rule it adds (chief-wiggum#317)."""
+    findings = check_cw_standards.check()
+    assert not any(f.rule.startswith("ai-act-posture") for f in findings), \
+        "\n".join(str(f) for f in findings)

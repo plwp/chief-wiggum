@@ -24,3 +24,4 @@ The Claude Code adapter invokes the portable workflows through Claude-only mecha
 - Run dependency checks with the narrowest profile that matches the workflow, for example `python3 scripts/check_deps.py --for core --provider codex`.
 - Treat provider output as advisory unless the workflow explicitly defines it as a generated artifact. Verify code, tests, screenshots, and repository facts locally.
 - Keep new instructions harness-neutral unless they are explicitly inside a harness adapter.
+- Every commit, PR body, and issue body CW generates carries an AI-authorship disclosure (`chief_wiggum.ai_disclosure`, chief-wiggum#317) — see `docs/ai-act-posture.md` for CW's own determination under the EU AI Act (a distinct subject from the products CW builds, tracked by `docs/compliance/ai-act.json` per target repo, chief-wiggum#316).

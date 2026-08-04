@@ -1,0 +1,25 @@
+{
+  "$comment": "Stamped by /apply-pattern (ai-transparency-disclosure, chief-wiggum#316). Single source of truth for Art. 50 disclosure copy/defaults — the app's UI and output-writing code should READ this config rather than hardcode disclosure strings, so a copy change or a new conversational surface doesn't require re-auditing every call site.",
+  "conversational_surfaces": [
+    {
+      "surface": "{{conversational_surface}}",
+      "disclosure_text": "You're chatting with an AI assistant.",
+      "reachable_at": "first_interaction"
+    }
+  ],
+  "provenance_marker": {
+    "field_name": "generated_by_ai",
+    "field_value": true,
+    "applies_to": "{{synthetic_output_paths}}"
+  },
+  "deployer_disclosure": {
+    "emotion_recognition": { "enabled_by_default": true, "feature": null },
+    "biometric_categorisation": { "enabled_by_default": true, "feature": null },
+    "deepfake_publishing": { "enabled_by_default": true, "feature": null },
+    "ai_generated_public_interest_text": {
+      "enabled_by_default": true,
+      "editorial_responsibility_carve_out_claimed": false,
+      "editorial_responsibility_basis": null
+    }
+  }
+}

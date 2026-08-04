@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import ai_disclosure
+
 # The shared Mermaid palette (kept in one place instead of copied into prose).
 PALETTE = {
     "theme": "base",
@@ -143,7 +145,10 @@ def build_pr_body(
         "- [ ] Multi-AI review feedback addressed",
         "- [ ] No secrets or credentials committed",
     ]
-    return "\n".join(parts) + "\n"
+    body = "\n".join(parts) + "\n"
+    # #317: every CW-generated PR body published to a public repo carries an
+    # AI-authorship disclosure line — see chief_wiggum.ai_disclosure.
+    return ai_disclosure.ensure_disclosure(body)
 
 
 def validate_sections(body: str, required: tuple[str, ...] = REQUIRED_SECTIONS) -> list[str]:

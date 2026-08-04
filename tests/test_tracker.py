@@ -10,6 +10,7 @@ from pathlib import Path
 import artifacts  # scripts/artifacts.py — the meta-location resolver (#213)
 import pytest
 import tracker
+from chief_wiggum import ai_disclosure
 from tracker import (
     GithubBackend,
     IssueDraft,
@@ -687,6 +688,46 @@ class TestCLI:
         out = capsys.readouterr().out
         assert exit_code == 0
         assert json.loads(out)[0]["title"] == "CLI issue"
+
+    def test_create_cli_disclose_ai_appends_disclosure_line(self, tmp_path, capsys):
+        """#317: --disclose-ai is opt-in at the CLI layer only, so the library
+        create()/get() roundtrip (TestConformance) stays exact-body by default."""
+        cw_dir = tmp_path / "docs" / "cw"
+        cw_dir.mkdir(parents=True)
+        (cw_dir / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        exit_code = tracker.main([
+            "--repo-root", str(tmp_path), "create", "acme/app",
+            "--title", "Disclosed issue", "--body", "Original body.",
+            "--disclose-ai",
+        ])
+        assert exit_code == 0
+        ref = capsys.readouterr().out.strip()
+
+        exit_code = tracker.main(["--repo-root", str(tmp_path), "get", ref])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        body = json.loads(out)["body"]
+        assert "Original body." in body
+        assert ai_disclosure.DISCLOSURE_LINE in body
+
+    def test_create_cli_without_disclose_ai_leaves_body_unchanged(self, tmp_path, capsys):
+        cw_dir = tmp_path / "docs" / "cw"
+        cw_dir.mkdir(parents=True)
+        (cw_dir / "tracker.json").write_text(json.dumps({"backend": "local"}))
+
+        exit_code = tracker.main([
+            "--repo-root", str(tmp_path), "create", "acme/app",
+            "--title", "Undisclosed issue", "--body", "Original body.",
+        ])
+        assert exit_code == 0
+        ref = capsys.readouterr().out.strip()
+
+        exit_code = tracker.main(["--repo-root", str(tmp_path), "get", ref])
+        out = capsys.readouterr().out
+        body = json.loads(out)["body"]
+        assert body == "Original body."
+        assert ai_disclosure.DISCLOSURE_LINE not in body
 
     def test_create_get_list_via_cli_sidecar_target(self, tmp_path, capsys):
         """AC (#266): 'tracker.py --repo-root <target> list' finds issues

@@ -85,13 +85,16 @@ this is what makes the workflow backend-agnostic (GitHub today, `local` or
 others per `docs/cw/tracker.json` in the target repo). See `docs/tracker.md`
 for the full interface.
 
-Create the issue exactly **once**:
+Create the issue exactly **once**. Pass `--disclose-ai` — this is a CW-generated
+public artifact, and #317's decision is to disclose AI authorship on every one
+of them rather than argue Art. 50(2) (see `docs/ai-act-posture.md`):
 
 ```bash
 ref=$(python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" create "$owner_repo" \
   --title "$title" \
   --body "$body" \
-  --label "$label1" --label "$label2")
+  --label "$label1" --label "$label2" \
+  --disclose-ai)
 ```
 
 If a milestone/epic was specified, set it on the issue you just created — do

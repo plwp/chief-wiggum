@@ -12,7 +12,12 @@
       "summary": "Autonomous, signal-driven, ratchet-gated fix-forward refinement installed into the product. Trusted-signal changes deploy autonomously; untrusted-signal (end-user) changes quarantine for blocking admin approval.",
       "invariants": "INV-IMP-001..005",
       "spec": "patterns/improvement-loop/pattern.md",
-      "manifest": "patterns/improvement-loop/manifest.json"
+      "manifest": "patterns/improvement-loop/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": "the signal pipeline routes through an LLM-based classifier/summarizer without a human-editorial step before a fix is applied \u2014 re-screen Art. 50(2) provenance and Art. 6(3) profiling exposure at that point"
+      }
     },
     {
       "id": "engagement-instrumentation",
@@ -24,7 +29,15 @@
       "feeds": "improvement-loop",
       "invariants": "INV-EIN-001..007",
       "spec": "patterns/engagement-instrumentation/pattern.md",
-      "manifest": "patterns/engagement-instrumentation/manifest.json"
+      "manifest": "patterns/engagement-instrumentation/manifest.json",
+      "ai_act": {
+        "risk_surface": [
+          "art5_1a_manipulative_technique_surface",
+          "annex_iii_4_worker_monitoring"
+        ],
+        "obligations_stamped": [],
+        "escalates_tier_when": "instrumentation targets WORKERS rather than end-user customers (lands in Annex III(4)); emotion inference layered on top in a workplace/education context is Art. 5(1)(f) PROHIBITED, not high-risk"
+      }
     },
     {
       "id": "tiered-subscription",
@@ -36,7 +49,12 @@
       "feeds": "frictionless-onboarding, improvement-loop",
       "invariants": "INV-TSB-001..005",
       "spec": "patterns/tiered-subscription/pattern.md",
-      "manifest": "patterns/tiered-subscription/manifest.json"
+      "manifest": "patterns/tiered-subscription/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "frictionless-onboarding",
@@ -49,7 +67,12 @@
       "feeds": "improvement-loop",
       "invariants": "INV-FON-001..004",
       "spec": "patterns/frictionless-onboarding/pattern.md",
-      "manifest": "patterns/frictionless-onboarding/manifest.json"
+      "manifest": "patterns/frictionless-onboarding/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": "conversion prompts are personalised via profiling/behavioural inference rather than static limit-hit rules \u2014 the Art. 5(1)(a) manipulative-technique screen then applies"
+      }
     },
     {
       "id": "deployment-release",
@@ -61,7 +84,12 @@
       "feeds": "improvement-loop",
       "invariants": "INV-DRL-001..006",
       "spec": "patterns/deployment-release/pattern.md",
-      "manifest": "patterns/deployment-release/manifest.json"
+      "manifest": "patterns/deployment-release/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "fetch-on-webhook-reconcile",
@@ -74,7 +102,12 @@
       "depends_on": "provider-neutral-adapter",
       "feeds": "tiered-subscription, reconciliation-sweep, entitlement-overlay",
       "spec": "patterns/fetch-on-webhook-reconcile/pattern.md",
-      "manifest": "patterns/fetch-on-webhook-reconcile/manifest.json"
+      "manifest": "patterns/fetch-on-webhook-reconcile/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "elevated-access-session",
@@ -86,7 +119,12 @@
       "invariants": "INV-EAS-001..007",
       "depends_on": "provider-neutral-adapter, multi-tenant-isolation",
       "spec": "patterns/elevated-access-session/pattern.md",
-      "manifest": "patterns/elevated-access-session/manifest.json"
+      "manifest": "patterns/elevated-access-session/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "multi-tenant-isolation",
@@ -98,7 +136,12 @@
       "invariants": "INV-MTI-001..006",
       "feeds": "elevated-access-session, improvement-loop, tiered-subscription",
       "spec": "patterns/multi-tenant-isolation/pattern.md",
-      "manifest": "patterns/multi-tenant-isolation/manifest.json"
+      "manifest": "patterns/multi-tenant-isolation/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "provider-neutral-adapter",
@@ -110,7 +153,12 @@
       "invariants": "INV-PNA-001..006",
       "feeds": "fetch-on-webhook-reconcile, tiered-subscription, elevated-access-session, multi-tenant-isolation",
       "spec": "patterns/provider-neutral-adapter/pattern.md",
-      "manifest": "patterns/provider-neutral-adapter/manifest.json"
+      "manifest": "patterns/provider-neutral-adapter/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": "the adapted vendor is itself a general-purpose AI model provider \u2014 Art. 25/53 downstream-provider documentation attaches through this seam"
+      }
     },
     {
       "id": "entitlement-overlay",
@@ -123,7 +171,12 @@
       "depends_on": "tiered-subscription, fetch-on-webhook-reconcile",
       "feeds": "improvement-loop",
       "spec": "patterns/entitlement-overlay/pattern.md",
-      "manifest": "patterns/entitlement-overlay/manifest.json"
+      "manifest": "patterns/entitlement-overlay/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "immutable-assignment-snapshot",
@@ -135,7 +188,12 @@
       "invariants": "INV-IAS-001..003",
       "feeds": "engagement-instrumentation",
       "spec": "patterns/immutable-assignment-snapshot/pattern.md",
-      "manifest": "patterns/immutable-assignment-snapshot/manifest.json"
+      "manifest": "patterns/immutable-assignment-snapshot/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "referral-invite-loop",
@@ -148,7 +206,14 @@
       "depends_on": "elevated-access-session",
       "feeds": "improvement-loop",
       "spec": "patterns/referral-invite-loop/pattern.md",
-      "manifest": "patterns/referral-invite-loop/manifest.json"
+      "manifest": "patterns/referral-invite-loop/manifest.json",
+      "ai_act": {
+        "risk_surface": [
+          "art5_1a_manipulative_technique_surface"
+        ],
+        "obligations_stamped": [],
+        "escalates_tier_when": "reward-size/copy tuning is driven by an LLM-personalised or behaviourally-profiled targeting model rather than static admin-set parameters"
+      }
     },
     {
       "id": "build-test-floor",
@@ -160,7 +225,12 @@
       "invariants": "INV-BTF-001..005",
       "feeds": "deployment-release, improvement-loop",
       "spec": "patterns/build-test-floor/pattern.md",
-      "manifest": "patterns/build-test-floor/manifest.json"
+      "manifest": "patterns/build-test-floor/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "reconciliation-sweep",
@@ -173,7 +243,12 @@
       "depends_on": "fetch-on-webhook-reconcile",
       "feeds": "improvement-loop",
       "spec": "patterns/reconciliation-sweep/pattern.md",
-      "manifest": "patterns/reconciliation-sweep/manifest.json"
+      "manifest": "patterns/reconciliation-sweep/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "transactional-email-and-dunning",
@@ -186,7 +261,12 @@
       "depends_on": "provider-neutral-adapter, feature-entitlements",
       "feeds": "engagement-instrumentation, improvement-loop",
       "spec": "patterns/transactional-email-and-dunning/pattern.md",
-      "manifest": "patterns/transactional-email-and-dunning/manifest.json"
+      "manifest": "patterns/transactional-email-and-dunning/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": "dunning copy/timing personalisation is driven by profiling of the payer's likely distress/vulnerability rather than a static ladder"
+      }
     },
     {
       "id": "feature-entitlements",
@@ -199,7 +279,12 @@
       "depends_on": "entitlement-overlay",
       "feeds": "tiered-subscription, frictionless-onboarding, self-serve-billing-portal",
       "spec": "patterns/feature-entitlements/pattern.md",
-      "manifest": "patterns/feature-entitlements/manifest.json"
+      "manifest": "patterns/feature-entitlements/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "self-serve-billing-portal",
@@ -212,7 +297,12 @@
       "depends_on": "fetch-on-webhook-reconcile, feature-entitlements",
       "feeds": "feature-entitlements",
       "spec": "patterns/self-serve-billing-portal/pattern.md",
-      "manifest": "patterns/self-serve-billing-portal/manifest.json"
+      "manifest": "patterns/self-serve-billing-portal/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "platform-cost-observability",
@@ -220,12 +310,17 @@
       "category": "monitoring-feedback",
       "status": "specified",
       "trust_class": "operator-plane-read-only-surface",
-      "summary": "Surface the platform's own spend — the whole bill: cloud provider AND per-call vendors (LLM inference, media, email, managed DB, processor fees) — app-scoped and read-only in the SaaS admin panel. Per-source read-only credentials, ingest-then-serve snapshots (never request-path billing calls), staleness/settling-lag honesty, provision-time app attribution with sum-preserving breakdowns and an explicit unattributed bucket, and out-of-band budget alerts. Watches money going OUT the way the billing patterns watch money coming in; actuals feed the stack cost-tier model and /business-consultant unit economics. INV-PCO-001..007 (001 reuses an in-repo cluster; 002 borrows the deployment-release identity-split discipline without claiming realization; the rest design-derived — not yet built in any mined app, chief-wiggum#229).",
+      "summary": "Surface the platform's own spend \u2014 the whole bill: cloud provider AND per-call vendors (LLM inference, media, email, managed DB, processor fees) \u2014 app-scoped and read-only in the SaaS admin panel. Per-source read-only credentials, ingest-then-serve snapshots (never request-path billing calls), staleness/settling-lag honesty, provision-time app attribution with sum-preserving breakdowns and an explicit unattributed bucket, and out-of-band budget alerts. Watches money going OUT the way the billing patterns watch money coming in; actuals feed the stack cost-tier model and /business-consultant unit economics. INV-PCO-001..007 (001 reuses an in-repo cluster; 002 borrows the deployment-release identity-split discipline without claiming realization; the rest design-derived \u2014 not yet built in any mined app, chief-wiggum#229).",
       "invariants": "INV-PCO-001..007",
       "depends_on": "multi-tenant-isolation",
       "feeds": "improvement-loop",
       "spec": "patterns/platform-cost-observability/pattern.md",
-      "manifest": "patterns/platform-cost-observability/manifest.json"
+      "manifest": "patterns/platform-cost-observability/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "landing-page-smoke-test",
@@ -233,12 +328,17 @@
       "category": "validation-experiment",
       "status": "specified",
       "trust_class": "end-user-signal-driven",
-      "summary": "The cheapest universal demand test, stamped as an experiment (chief-wiggum#236): an honest static landing page + signup-capture instrumentation stub, bound to a pre-registered assumption.py test card whose threshold was hashed into the portfolio journal BEFORE launch. Success criterion is a per-cohort visitor-to-signup rate (vanity counters rejected); a signup is strength-2 (click) evidence — it can falsify demand cheaply, never validate willingness to pay. Pre-registration/vanity-lint invariants realized in-repo (scripts/assumption.py); page-level invariants design-derived until first grounded use. Visual design is chosen from >=6 divergent variants by the operator, never a single generated default (chief-wiggum#249); copy is drafted against a real voice-corpus with a report-only banned-construction lint (chief-wiggum#255). INV-LPS-001..007.",
+      "summary": "The cheapest universal demand test, stamped as an experiment (chief-wiggum#236): an honest static landing page + signup-capture instrumentation stub, bound to a pre-registered assumption.py test card whose threshold was hashed into the portfolio journal BEFORE launch. Success criterion is a per-cohort visitor-to-signup rate (vanity counters rejected); a signup is strength-2 (click) evidence \u2014 it can falsify demand cheaply, never validate willingness to pay. Pre-registration/vanity-lint invariants realized in-repo (scripts/assumption.py); page-level invariants design-derived until first grounded use. Visual design is chosen from >=6 divergent variants by the operator, never a single generated default (chief-wiggum#249); copy is drafted against a real voice-corpus with a report-only banned-construction lint (chief-wiggum#255). INV-LPS-001..007.",
       "invariants": "INV-LPS-001..007",
       "depends_on": null,
       "feeds": "presale",
       "spec": "patterns/landing-page-smoke-test/pattern.md",
-      "manifest": "patterns/landing-page-smoke-test/manifest.json"
+      "manifest": "patterns/landing-page-smoke-test/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": "the page embeds a conversational/generative widget (e.g. grounded-sales-chat) \u2014 that widget's own ai_act block governs, not this pattern"
+      }
     },
     {
       "id": "presale",
@@ -246,12 +346,17 @@
       "category": "validation-experiment",
       "status": "specified",
       "trust_class": "end-user-signal-driven",
-      "summary": "Checkout on an unbuilt product with HONEST pre-order framing (chief-wiggum#236): not-built-yet, price, and delivery window stated before the payment step; a REAL charge or authorized deposit is the datum (a simulated charge demotes the evidence to click class); refund-on-kill counted as wind-down cost in the harvest check. The only experiment class producing strength-5 (money) evidence — what the evidence-strength floor on bet.py transition building requires (Blank: purchase orders, not enthusiasm). Pre-registration/vanity-lint invariants realized in-repo (scripts/assumption.py); page/checkout invariants design-derived until first grounded use. Visual design is chosen from >=6 divergent variants by the operator, never a single generated default (chief-wiggum#249); copy is drafted against a real voice-corpus with a report-only banned-construction lint (chief-wiggum#255). INV-PRE-001..007.",
+      "summary": "Checkout on an unbuilt product with HONEST pre-order framing (chief-wiggum#236): not-built-yet, price, and delivery window stated before the payment step; a REAL charge or authorized deposit is the datum (a simulated charge demotes the evidence to click class); refund-on-kill counted as wind-down cost in the harvest check. The only experiment class producing strength-5 (money) evidence \u2014 what the evidence-strength floor on bet.py transition building requires (Blank: purchase orders, not enthusiasm). Pre-registration/vanity-lint invariants realized in-repo (scripts/assumption.py); page/checkout invariants design-derived until first grounded use. Visual design is chosen from >=6 divergent variants by the operator, never a single generated default (chief-wiggum#249); copy is drafted against a real voice-corpus with a report-only banned-construction lint (chief-wiggum#255). INV-PRE-001..007.",
       "invariants": "INV-PRE-001..007",
       "depends_on": null,
       "feeds": null,
       "spec": "patterns/presale/pattern.md",
-      "manifest": "patterns/presale/manifest.json"
+      "manifest": "patterns/presale/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "open-beta-probe",
@@ -259,12 +364,17 @@
       "category": "validation-experiment",
       "status": "specified",
       "trust_class": "end-user-signal-driven",
-      "summary": "A working, deliberately-scoped product put in real hands via an existing community, metered by signup codes (chief-wiggum#256): 'open beta is the new waitlist' — build cost collapsed and the smoke-test signal degraded, so a strength-3/4 open beta is often the better first instrument than a strength-2 smoke test now. Codes are trackable/revocable (attribution + felt scarcity); a mandatory blast-radius declaration forces compute-only/draft-only mode when the beta touches money/wages/tax/health/records/third-party systems (bounded may run live); reputation is single-use and priced into the envelope. Pre-registration/vanity-lint invariants realized in-repo (scripts/assumption.py); code-metering/blast-radius/reputation invariants design-derived until first grounded use. INV-OBP-001..006.",
+      "summary": "A working, deliberately-scoped product put in real hands via an existing community, metered by signup codes (chief-wiggum#256): 'open beta is the new waitlist' \u2014 build cost collapsed and the smoke-test signal degraded, so a strength-3/4 open beta is often the better first instrument than a strength-2 smoke test now. Codes are trackable/revocable (attribution + felt scarcity); a mandatory blast-radius declaration forces compute-only/draft-only mode when the beta touches money/wages/tax/health/records/third-party systems (bounded may run live); reputation is single-use and priced into the envelope. Pre-registration/vanity-lint invariants realized in-repo (scripts/assumption.py); code-metering/blast-radius/reputation invariants design-derived until first grounded use. INV-OBP-001..006.",
       "invariants": "INV-OBP-001..006",
       "depends_on": null,
       "feeds": null,
       "spec": "patterns/open-beta-probe/pattern.md",
-      "manifest": "patterns/open-beta-probe/manifest.json"
+      "manifest": "patterns/open-beta-probe/manifest.json",
+      "ai_act": {
+        "risk_surface": [],
+        "obligations_stamped": [],
+        "escalates_tier_when": null
+      }
     },
     {
       "id": "grounded-sales-chat",
@@ -277,7 +387,39 @@
       "depends_on": "provider-neutral-adapter",
       "feeds": "frictionless-onboarding, platform-cost-observability, improvement-loop",
       "spec": "patterns/grounded-sales-chat/pattern.md",
-      "manifest": "patterns/grounded-sales-chat/manifest.json"
+      "manifest": "patterns/grounded-sales-chat/manifest.json",
+      "ai_act": {
+        "risk_surface": [
+          "art50_1_transparency"
+        ],
+        "obligations_stamped": [],
+        "escalates_tier_when": "the assistant is extended to give advice in a regulated domain (health/financial/legal) or performs emotion/biometric inference on the user \u2014 re-screen toward high_risk_annex_iii"
+      }
+    },
+    {
+      "id": "ai-transparency-disclosure",
+      "title": "AI Transparency Disclosure",
+      "category": "compliance-gate",
+      "status": "specified",
+      "trust_class": "disclosure-path-is-protected-path",
+      "summary": "The Art. 50 contract pack as a stampable invariant cluster (chief-wiggum#316): first-interaction disclosure on every human-facing conversational surface, a machine-readable provenance marker on every synthetic-output write path, an explicit deployer disclosure config for emotion/biometric/deepfake/public-interest-text features, and a protected disclosure path a worker can't quietly remove. Makes docs/compliance/ai-act.json's transparency_art50 evidence[] real rather than a TODO.",
+      "invariants": "INV-ATD-001..004",
+      "spec": "patterns/ai-transparency-disclosure/pattern.md",
+      "manifest": "patterns/ai-transparency-disclosure/manifest.json",
+      "ai_act": {
+        "risk_surface": [
+          "art50_1_transparency",
+          "art50_2_provenance_marking",
+          "art50_3_4_deployer_disclosure"
+        ],
+        "obligations_stamped": [
+          "Art. 50(1)",
+          "Art. 50(2)",
+          "Art. 50(3)",
+          "Art. 50(4)"
+        ],
+        "escalates_tier_when": null
+      }
     }
   ],
   "stacks": {

@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EU AI Act classification (per built product)",
+  "description": "docs/compliance/ai-act.json in a target repo (chief-wiggum#316): one record per AI FEATURE, not per product. Produced by /architect, checked report-only by scripts/check_ai_act.py. Decoupled from docs/compliance-requirements.md (the regulated-DATA trigger) — this artifact triggers on AI FUNCTIONALITY and market reach, per the Act's own hook. Its own presence/absence is a legal fact under Art. 6(4): a provider claiming an Annex III system is NOT high-risk must document that assessment BEFORE the system is placed on the market, so a MISSING file is never equivalent to a recorded 'not high risk' — check_ai_act.py's classification_status distinguishes them explicitly.",
+  "type": "object",
+  "required": ["eu_scope", "eu_scope_reason", "features"],
+  "properties": {
+    "eu_scope": {
+      "type": "string",
+      "enum": ["in_scope", "out_of_scope", "TBD"],
+      "description": "Territorial-scope determination (Art. 2(1)(a)/(c)) — never a silent absence."
+    },
+    "eu_scope_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The Art. 2 limb relied on, in prose. TBD: markers gate dependent tickets via check_unresolved.py."
+    },
+    "features": {
+      "type": "array",
+      "description": "One entry per AI feature (a chat assistant, a recommendation engine, an emotion-inference component, ...) — NOT one entry per product. An empty array is a genuine, recorded 'this product has no AI features' (check_ai_act.py: classification_status=recorded, outcome=inapplicable) — different from the file not existing at all (classification_status=missing, outcome=findings).",
+      "items": {
+        "type": "object",
+        "required": ["feature_id", "role", "tier", "performs_profiling", "obligations", "evidence"],
+        "properties": {
+          "feature_id": {
+            "type": "string",
+            "pattern": "^[A-Z]+-[A-Z0-9]+-[0-9]{3}$",
+            "description": "Stable three-segment id, e.g. AIACT-CHATBOT-001."
+          },
+          "role": {
+            "type": "string",
+            "enum": ["provider", "deployer", "both"],
+            "description": "Art. 25: putting your name on a system makes you its provider."
+          },
+          "tier": {
+            "type": "string",
+            "enum": ["prohibited", "high_risk_annex_i", "high_risk_annex_iii", "transparency_art50", "minimal"]
+          },
+          "annex_iii_area": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 8,
+            "description": "Required (1-8) iff tier=high_risk_annex_iii; null otherwise."
+          },
+          "performs_profiling": {
+            "type": "boolean",
+            "description": "Always required, always checked: profiling is ALWAYS high-risk and voids any Art. 6(3) derogation, regardless of the tier otherwise claimed."
+          },
+          "derogation_assessment": {
+            "type": ["object", "null"],
+            "description": "Required when tier=high_risk_annex_iii and the feature is claimed NOT high-risk (Art. 6(4)) — the assessment document itself, not just a flag.",
+            "properties": {
+              "condition": {
+                "type": "string",
+                "enum": [
+                  "narrow_procedural_task",
+                  "improves_completed_human_activity",
+                  "detects_decision_patterns_without_replacing_human_review",
+                  "preparatory_task"
+                ]
+              },
+              "reasoning": { "type": "string" }
+            }
+          },
+          "obligations": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Article refs this feature owes, e.g. 'Art. 50(1)', 'Art. 50(2)'."
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "@cw-trace handles into code/tests/screenshots proving each obligation is actually wired — never a re-serialized contract body."
+          },
+          "legal_signoff": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "TBD: markers for anything a lawyer must confirm before this record can be relied on."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$comment": "Machine-readable surface for /apply-pattern. Human spec: patterns/ai-transparency-disclosure/pattern.md. Expressed AS an invariant cluster (see docs/patterns-registry.md#patterns-as-clusters-of-invariants). The Art. 50 contract pack as a stampable scaffold (chief-wiggum#316) — not just a classification entry in docs/compliance/ai-act.json, but the actual disclosure/provenance/config code /apply-pattern installs.",
+  "id": "ai-transparency-disclosure",
+  "version": 1,
+  "title": "AI Transparency Disclosure",
+  "category": "compliance-gate",
+  "trust_class": "disclosure-path-is-protected-path",
+
+  "applies_when": [
+    "the product has a human-facing conversational surface (chat/voice assistant) — Art. 50(1)",
+    "the product generates synthetic output (text/image/audio/video) that is persisted or published — Art. 50(2)",
+    "the product runs emotion recognition or biometric categorisation, or publishes deepfake media, or publishes AI-generated text on matters of public interest — Art. 50(3)/(4)",
+    "NOT when the product has no AI functionality at all — record eu_scope/tier=minimal instead of stamping this pattern"
+  ],
+
+  "components": [
+    "first-interaction-disclosure: every human-facing conversational surface mounts a disclosure element reachable AT OR BEFORE the first exchange, never behind a settings/about page",
+    "provenance-marker: every synthetic-output write path (text/image/audio/video) persists a machine-readable provenance field alongside the content, not as a separable metadata record that can silently detach",
+    "deployer-disclosure-config: emotion-recognition / biometric-categorisation / deepfake-publishing / AI-generated-public-interest-text features carry an explicit disclosure config (on by default), with the human-editorial-responsibility carve-out recorded when claimed, never assumed",
+    "protected-disclosure-path: the disclosure component and provenance-marker write path are protected paths (docs/ratchet.md) — a worker cannot quietly remove or feature-flag them off without a human-reviewed goalpost change"
+  ],
+
+  "invariants": {
+    "$comment": "The cluster this pattern guarantees. Design-derived from Art. 50(1)-(4) and chief-wiggum#316's Decision 4 (check_ai_act.py's 50(1)/50(2)/50(3)(4) checks) — not yet realized in a mined app; this pattern IS the first stamping of it.",
+    "cluster": [
+      {"id": "INV-ATD-001", "statement": "Every human-facing conversational surface has a disclosure element reachable at or before the first interaction (Art. 50(1) has no grace period).", "grounding": "design-derived"},
+      {"id": "INV-ATD-002", "statement": "Every synthetic-output write path persists a machine-readable provenance marker alongside the content it produces, never as a detachable side record.", "grounding": "design-derived"},
+      {"id": "INV-ATD-003", "statement": "A feature performing emotion recognition, biometric categorisation, or publishing deepfake/AI-generated public-interest content carries an explicit, on-by-default deployer disclosure config; any editorial-responsibility carve-out claimed is recorded with its basis, never assumed silently.", "grounding": "design-derived"},
+      {"id": "INV-ATD-004", "statement": "The disclosure component and the provenance-marker write path are protected paths: removing or disabling either is a goalpost change requiring human review, not a worker-diff.", "grounding": "design-derived"}
+    ]
+  },
+
+  "parameters": {
+    "config_dir": {"type": "string", "required": true, "description": "Where the stamped ai-disclosure.config.json lives (e.g. config/, internal/config)."},
+    "conversational_surface": {"type": "string", "required": true, "description": "The primary human-facing chat/voice surface name, for the stamped config's first entry (INV-ATD-001). Add further surfaces to the config by hand after stamping."},
+    "synthetic_output_paths": {"type": "array", "required": false, "default": "TBD: enumerate model-call sites writing persisted/published output", "description": "Model-call sites whose output is persisted/published, requiring INV-ATD-002 (provenance marker)."},
+    "deployer_disclosure_features": {"type": "array", "required": false, "default": "none declared at stamp time", "description": "Emotion/biometric/deepfake/public-interest-text features requiring INV-ATD-003 (deployer disclosure config)."}
+  },
+
+  "success_metrics": {
+    "metrics": [
+      {"id": "undisclosed_conversational_surfaces", "goal": "down", "desc": "human-facing AI surfaces with no first-interaction disclosure (target 0)"},
+      {"id": "unmarked_synthetic_outputs", "goal": "down", "desc": "synthetic-output writes with no provenance marker (target 0)"},
+      {"id": "disclosure_path_worker_edits", "goal": "down", "desc": "worker diffs touching the disclosure/provenance protected paths without human review (target 0)"}
+    ]
+  },
+
+  "protected_paths": ["the first-interaction disclosure component", "the provenance-marker write path", "the deployer disclosure config default"],
+
+  "ai_act": {
+    "risk_surface": ["art50_1_transparency", "art50_2_provenance_marking", "art50_3_4_deployer_disclosure"],
+    "obligations_stamped": ["Art. 50(1)", "Art. 50(2)", "Art. 50(3)", "Art. 50(4)"],
+    "escalates_tier_when": null
+  }
+}

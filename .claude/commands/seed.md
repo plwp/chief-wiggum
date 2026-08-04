@@ -69,6 +69,14 @@ If the product has no existing data source and no usage history (true greenfield
 
 **If the product holds regulated or sensitive data** (health, financial, biometric, children's, government-classified, or PII at scale), also research and fill `templates/compliance-requirements.md` into `$CW_TMP/compliance-requirements.md` (copied to `docs/compliance-requirements.md` at Step 7). This is where the compliance posture is grounded before contracts are written — data classification, privacy/cross-border law, retention + legal hold, de-identification, and the **AI/LLM data-path gate** (if regulated data is sent to any third-party model, its residency / no-training / no-retention posture is a GO/NO-GO gate resolved *here*, not deferred — it frequently overturns the default cloud/provider choice). Unconfirmed obligations get `TBD:` markers and gate dependent tickets; `/saas-gate` later verifies the filled doc. This is heavy web/legal research — spin it out to parallel workers by dimension (privacy law, security frameworks, data-path, retention) and keep only the cited findings.
 
+**EU AI Act territorial scope — a SEPARATE trigger from the data-sensitivity check above (chief-wiggum#316).** The Act does not key on regulated data; it keys on AI functionality and where the output lands. Ask independently of the data question: "does this product have any AI functionality (chat/assistant, recommendation, scoring, generative content, emotion/biometric inference), and could its output or users be in the EU?" Record the answer as an explicit value — never a silent absence — for `/architect` to carry into `docs/compliance/ai-act.json`:
+
+- `eu_scope: in_scope` — AI functionality exists AND a plausible EU nexus (Art. 2(1)(a) market placement, or Art. 2(1)(c) output used in the Union), with the reason and Art. 2 limb relied on.
+- `eu_scope: out_of_scope` — no AI functionality at all, OR no plausible EU nexus, with the reason.
+- `eu_scope: TBD` — genuinely unclear (e.g. an AI feature is planned but the target market isn't decided yet). `TBD:` gates dependent tickets via `check_unresolved.py`, same as any other unconfirmed fact.
+
+Write this to `$CW_TMP/eu-scope.md` (one paragraph: value, reason, limb) — `/architect` reads it when producing `docs/compliance/ai-act.json`.
+
 ### Step 3: Interactive architecture brainstorm
 
 Work through the key architecture decisions with the user. Don't assume — ask. Cover:
@@ -160,7 +168,7 @@ When both reviews are back:
 
 ### Step 7: Commit architecture decisions
 
-Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. If Step 2.5 produced domain context, copy it to `docs/domain-context.md` — `/architect` loads it before writing data contracts. If Step 2.5 produced a compliance-requirements doc (regulated-data products), copy it to `docs/compliance-requirements.md` — `/architect` folds it into security/privacy contracts and `/saas-gate` verifies it. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
+Copy the finalised architecture decisions to the target repo as `ARCHITECTURE.md`. If Step 2.5 produced domain context, copy it to `docs/domain-context.md` — `/architect` loads it before writing data contracts. If Step 2.5 produced a compliance-requirements doc (regulated-data products), copy it to `docs/compliance-requirements.md` — `/architect` folds it into security/privacy contracts and `/saas-gate` verifies it. `$CW_TMP/eu-scope.md` (the EU AI Act territorial-scope determination, chief-wiggum#316) always exists once Step 2.5 ran, regardless of the data-sensitivity trigger — copy it to `docs/eu-scope.md`; `/architect` reads it when producing `docs/compliance/ai-act.json`. Update `CLAUDE.md` if the tech stack has changed from what was previously documented.
 
 If Step 4.5 selected patterns, the installer already wrote `docs/patterns/` (adoption record + contract packs) and registered protected paths in `docs/quality/ratchet.json` — commit those too.
 
@@ -170,7 +178,8 @@ cd "$TARGET_DIR"
 mkdir -p docs
 cp "$CW_TMP/domain-context.md" docs/domain-context.md 2>/dev/null || true
 cp "$CW_TMP/compliance-requirements.md" docs/compliance-requirements.md 2>/dev/null || true
-git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md docs/compliance-requirements.md docs/patterns docs/quality/ratchet.json
+cp "$CW_TMP/eu-scope.md" docs/eu-scope.md 2>/dev/null || true
+git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md docs/compliance-requirements.md docs/eu-scope.md docs/patterns docs/quality/ratchet.json
 git commit -m "Add architecture decisions from seed session"
 git push
 ```
