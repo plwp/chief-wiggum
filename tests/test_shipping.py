@@ -74,6 +74,17 @@ def test_model_conformance_omitted_when_absent():
     assert "## Model Conformance" not in body
 
 
+def test_implementation_cost_included_when_provided():
+    body = shipping.build_pr_body(issue=1, summary="x", changes=["a"],
+                                  implementation_cost="| Layer |\n**$4.06**")
+    assert "## Implementation Cost" in body and "**$4.06**" in body
+
+
+def test_implementation_cost_omitted_when_absent():
+    body = shipping.build_pr_body(issue=1, summary="x", changes=["a"])
+    assert "## Implementation Cost" not in body
+
+
 def test_ux_section_included_when_provided():
     body = shipping.build_pr_body(
         issue=1, summary="x", changes=["a"],

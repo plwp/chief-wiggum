@@ -227,6 +227,12 @@ sub-agent), `requestId`, and `cwd`. The ingest:
 
 Re-run it whenever you want the log current; `0 new` means up to date.
 
+For per-ticket cost (`scripts/ticket_cost.py`, see [ticket-cost.md](ticket-cost.md))
+the ingest also accepts `--ticket` with an attribution guard (`--cwd-prefix` for
+worktree-precise tagging, else a cwd-derived repo match against `--repo`) and
+`--since-ts <epoch>` to window on a build-start stamp. Turns already ingested
+untagged can't be re-tagged (dedup keeps the first record), so tag at first ingest.
+
 ### OTEL ingest (for an existing OTEL pipeline)
 
 `ingest-claude-code` remains for OTEL setups. It only captures a run you wrapped
@@ -266,6 +272,15 @@ python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app
 `aggregate` splits Claude Code cost by `query_source` (orchestrator vs subagent)
 and reports `cost_usd_total = consult_cost + claude_code_cost` — the nominal cost
 of a factory run end to end. `/reflect` surfaces it as a factory-log finding.
+
+## Ticket attribution (`scripts/ticket_cost.py`)
+
+The same ledger sliced per ticket: a nominal estimate stamped on issues at
+`/create-issue` time (p50 of recorded calibration actuals per Effort class,
+UNRESOLVED below 3 samples — never guessed) and the measured actual rendered
+into the PR's `## Implementation Cost` section by `/implement` Step 11, which
+then journals a `ticket_cost` calibration event to close the loop. No records
+is reported **unmetered**, never $0. See [ticket-cost.md](ticket-cost.md).
 
 ## Bet attribution (`scripts/build_cost.py`, chief-wiggum#257)
 

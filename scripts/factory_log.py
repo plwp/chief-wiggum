@@ -518,7 +518,8 @@ def ingested_request_ids() -> set[str]:
 
 
 def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
-                              since: float | None = None) -> int:
+                              since: float | None = None, ticket: str | None = None,
+                              cwd_prefix: str | None = None) -> int:
     """Fold Claude Code's own per-turn token usage into the factory log.
 
     This is the end-to-end cost half of the ledger. `factory_log` already records
@@ -549,8 +550,21 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
 
     Explicit ingest — always writes (does not require CW_TELEMETRY). Returns the
     number of NEW records written. See docs/factory-telemetry.md.
+
+    ``ticket`` tags matching turns for per-ticket cost slicing
+    (``scripts/ticket_cost.py``). Transcripts carry no ticket number, so the tag
+    is applied by attribution guard, never blindly: a turn is tagged only when
+    its ``cwd`` sits under ``cwd_prefix`` (worktree-precise — what
+    ``/implement-wave`` workers should pass) or, absent a prefix, when the
+    turn's cwd-derived repo matches ``repo`` (right for a solo ``/implement``
+    session windowed by ``since``; a concurrent session on the SAME repo in the
+    same window would bleed in — pass ``cwd_prefix`` when that matters).
+    Dedup is by request id, so already-ingested turns cannot be re-tagged by a
+    later run: tag at first ingest.
     """
     root = Path(root) if root is not None else DEFAULT_TRANSCRIPT_ROOT
+    if ticket is not None and repo is None and cwd_prefix is None:
+        raise ValueError("ingest ticket tagging needs an attribution guard: pass repo and/or cwd_prefix")
     pricing, multipliers = load_pricing(), load_cache_multipliers()
     seen = ingested_request_ids()
     n = 0
@@ -632,9 +646,21 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
             }
             if e.get("sessionId"):
                 rec["session_id"] = e["sessionId"]
-            attributed = repo or _repo_from_cwd(e.get("cwd"))
+            cwd = e.get("cwd")
+            derived = _repo_from_cwd(cwd)
+            attributed = repo or derived
             if attributed:
                 rec["repo"] = attributed
+            if ticket is not None:
+                # Attribution guard, never a blind stamp: worktree-precise when a
+                # cwd_prefix is given, else cwd-derived-repo match. `repo` may be
+                # owner/repo while the cwd only yields the basename.
+                if cwd_prefix is not None:
+                    tag = bool(cwd) and str(cwd).startswith(str(cwd_prefix).rstrip("/"))
+                else:
+                    tag = bool(derived) and derived in (repo, str(repo).split("/")[-1])
+                if tag:
+                    rec["ticket"] = str(ticket)
             cost = cost_for_usage(model, tin, tout, cache_read=cache_read,
                                   cache_write_5m=w5, cache_write_1h=w1,
                                   pricing=pricing, multipliers=multipliers)
@@ -657,7 +683,7 @@ def _parse_iso_ts(value) -> float | None:
         return None
 
 
-def ingest_claude_code(path: Path, repo: str | None = None) -> int:
+def ingest_claude_code(path: Path, repo: str | None = None, ticket: str | None = None) -> int:
     """Fold a Claude Code OTEL export (console-exporter stderr capture, or OTLP file)
     into the factory log so /reflect sees end-to-end orchestrator+subagent token cost
     alongside consult/gate telemetry.
@@ -667,6 +693,10 @@ def ingest_claude_code(path: Path, repo: str | None = None) -> int:
     both flat-key and OTLP attributes shapes; skips anything that isn't an
     api_request. Explicit ingest — always writes (does not require CW_TELEMETRY).
     Returns the number of records ingested. See docs/factory-telemetry.md.
+
+    ``ticket`` tags every ingested record — unconditional here (unlike the
+    transcript ingest's attribution guard) because an OTEL capture is a
+    deliberate wrap of exactly one run: the caller already scoped what's in it.
     """
     path = Path(path)
     if not path.is_file():
@@ -700,6 +730,8 @@ def ingest_claude_code(path: Path, repo: str | None = None) -> int:
                 rec[key] = v
         if repo:
             rec["repo"] = repo
+        if ticket is not None:
+            rec["ticket"] = str(ticket)
         if _append(rec):
             n += 1
     return n
@@ -1228,6 +1260,8 @@ def main() -> int:
     a.add_argument("--format", choices=["text", "json"], default="json")
 
     ic = sub.add_parser("ingest-claude-code", help="Fold a Claude Code OTEL export into the log")
+    ic.add_argument("--ticket", help="Tag every ingested record with this ticket number "
+                                     "(the capture is a deliberate wrap of one run)")
     ic.add_argument("otel_file", help="JSONL from `... 2>capture.jsonl` with the console OTEL exporter")
     ic.add_argument("--repo", help="Tag ingested records with this repo")
 
@@ -1238,6 +1272,16 @@ def main() -> int:
     it.add_argument("--repo", help="Force this repo tag instead of deriving it from each record's cwd")
     it.add_argument("--since-days", type=float,
                     help="Only ingest turns newer than N days ago")
+    it.add_argument("--since-ts", type=float,
+                    help="Only ingest turns newer than this epoch timestamp "
+                         "(e.g. a per-ticket build-start stamp; overrides --since-days)")
+    it.add_argument("--ticket",
+                    help="Tag matching turns with this ticket number for per-ticket cost "
+                         "slicing (scripts/ticket_cost.py). Guarded, never blind: needs "
+                         "--cwd-prefix or a cwd-derived repo match against --repo")
+    it.add_argument("--cwd-prefix",
+                    help="Only tag turns whose cwd starts with this path (worktree-precise "
+                         "attribution for parallel /implement-wave workers)")
 
     cr_ = sub.add_parser("cost-report",
                          help="What Claude Code session cost is made of (report-only, never a gate)")
@@ -1252,7 +1296,7 @@ def main() -> int:
         print(log_path())
         return 0
     if args.cmd == "ingest-claude-code":
-        n = ingest_claude_code(Path(args.otel_file), repo=args.repo)
+        n = ingest_claude_code(Path(args.otel_file), repo=args.repo, ticket=args.ticket)
         print(f"factory_log: ingested {n} api_request event(s) from {args.otel_file}")
         return 0
     if args.cmd == "cost-report":
@@ -1265,7 +1309,14 @@ def main() -> int:
         return 0
     if args.cmd == "ingest-claude-transcripts":
         since = (time.time() - args.since_days * 86400) if args.since_days else None
-        n = ingest_claude_transcripts(Path(args.root), repo=args.repo, since=since)
+        if args.since_ts:
+            since = args.since_ts
+        try:
+            n = ingest_claude_transcripts(Path(args.root), repo=args.repo, since=since,
+                                          ticket=args.ticket, cwd_prefix=args.cwd_prefix)
+        except ValueError as exc:
+            print(f"factory_log: {exc}", file=sys.stderr)
+            return 2
         # Re-running is expected and safe (dedup is by request id), so say
         # explicitly that "0 new" means up-to-date rather than broken.
         print(f"factory_log: ingested {n} new Claude Code turn(s) from {args.root}"

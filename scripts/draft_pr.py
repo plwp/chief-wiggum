@@ -45,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--review", help="review-manifest.json")
     parser.add_argument("--ux", help="UX gate manifest JSON")
     parser.add_argument("--model-conformance", help="Markdown text or file for the Model Conformance section")
+    parser.add_argument("--implementation-cost",
+                        help="Markdown text or file for the Implementation Cost section "
+                             "(from scripts/ticket_cost.py actual --format markdown)")
     parser.add_argument("--base")
     parser.add_argument("--out", help="Write the PR body to this file (else stdout)")
     parser.add_argument("--print-command", action="store_true", help="Also print the gh pr create command")
@@ -58,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     if conformance and Path(conformance).exists():
         conformance = Path(conformance).read_text()
 
+    impl_cost = args.implementation_cost
+    if impl_cost and Path(impl_cost).exists():
+        impl_cost = Path(impl_cost).read_text()
+
     body = shipping.build_pr_body(
         issue=args.issue,
         summary=args.summary,
@@ -68,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         review=_load_json(args.review),
         ux=_load_json(args.ux),
         model_conformance=conformance,
+        implementation_cost=impl_cost,
     )
 
     missing = shipping.validate_sections(body)

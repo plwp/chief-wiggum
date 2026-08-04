@@ -25,3 +25,4 @@ As a **[role]**, I want **[capability]** so that **[benefit]**.
 - **Type**: <!-- bug | feature | enhancement | chore -->
 - **Priority**: <!-- critical | high | medium | low -->
 - **Effort**: <!-- S | M | L | XL -->
+- **Nominal cost**: <!-- from `scripts/ticket_cost.py estimate --effort <size>` — either "~$X.XX (p50 of N prior <size> tickets)" or its UNRESOLVED line verbatim. Never invent a figure. -->
