@@ -210,6 +210,15 @@ class TraceReport:
     # #281: ID-bearing artifacts that exist, have content, and yielded ZERO
     # parseable IDs.
     unparsed_artifacts: list[dict] = field(default_factory=list)
+    # #313 item 3: set (non-None) when the external link store has entries
+    # and NOT ONE of them anchored — the SECOND way this checker's own
+    # measurement can be broken, distinct from #281's zero-parseable-IDs case
+    # (that one is about the epic docs; this one is about the external
+    # store's regex/LSP anchoring). Both drive applicability to "error", but
+    # they need different explanations (the #281 banner text is specifically
+    # about stable IDs, which is wrong here) — this field lets callers tell
+    # them apart without string-sniffing warnings.
+    external_link_store_error: str | None = None
     # #289 item 5: the measured denominator (how many ID-bearing artifacts
     # were actually scanned) — so a zero is visible even inside an otherwise
     # green report, not just inferred from an empty finding list.
@@ -292,6 +301,7 @@ class TraceReport:
             "invalid_links": self.invalid_links,
             "malformed_ids": self.malformed_ids,
             "unparsed_artifacts": self.unparsed_artifacts,
+            "external_link_store_error": self.external_link_store_error,
             "unscanned": self.unscanned,
             "suspect_links": self.suspect_links,
             "suspect_contracts": self.suspect_contracts,
@@ -932,6 +942,27 @@ def check(
                 f"external link {entry.get('file')}::{entry.get('symbol')} "
                 f"({entry.get('verb')}) unresolved: {entry.get('reason')}"
             )
+        # #313 item 3: a store with entries where NOT ONE anchors (ok/suspect
+        # both empty) is always a defect — the language tier is missing, or
+        # the recorded paths/symbols are wrong. Left as a warning, this looks
+        # identical to an honestly empty store (both report zero coverage
+        # contribution); the #289 outcome vocabulary this module already
+        # implements (applicability: inapplicable | error) is the same
+        # absence-reads-as-normal shape, so it is reused rather than inventing
+        # a parallel signal. This OVERRIDES applicable/inapplicable — a broken
+        # anchoring mechanism is a defect regardless of what else in the epic
+        # happens to already be measured.
+        total_external = sum(len(v) for v in external.values())
+        if external_links.store_applicability(external) == "error":
+            report.applicability = "error"
+            anchored = len(external["ok"]) + len(external["suspect"])
+            report.external_link_store_error = (
+                f"external link store has {total_external} entries and NONE "
+                f"anchored (anchored {anchored} of {total_external}) — a broken "
+                "instrument: the language tier is missing or the recorded "
+                "paths/symbols are wrong (chief-wiggum#313)"
+            )
+            report.warnings.append(report.external_link_store_error)
 
     justifications, invalid_justifications = load_justifications(epic_dir)
     apply_justifications(report, justifications, invalid_justifications, today=today)
@@ -994,6 +1025,8 @@ def render_markdown(report: TraceReport) -> str:
             "nothing for coverage to hold over (inapplicable, not passing); any "
             "annotations found are dangling and remain soundness findings"
         )
+    elif report.applicability == "error" and report.external_link_store_error:
+        lines.append(f"- Applicability: ERROR — {report.external_link_store_error}.")
     elif report.applicability == "error":
         lines.append(
             f"- Applicability: ERROR — {report.id_bearing_artifacts_scanned} epic artifact(s) "
@@ -1253,6 +1286,14 @@ def main(argv: list[str] | None = None) -> int:
     # contract every gate shares (docs/gate-rollout.md); the state is carried
     # by the banner and by "applicability": "error" / "outcome": "error" in
     # the JSON.
+    if args.gate and report.applicability == "error" and report.external_link_store_error:
+        print(
+            f"check_traceability: ERROR — {report.external_link_store_error}; "
+            f"--gate {args.gate} measured nothing usable from the external store "
+            "(FAILURE, not a pass).",
+            file=sys.stderr,
+        )
+        return 1
     if args.gate and report.applicability == "error":
         print(
             "check_traceability: ERROR — "

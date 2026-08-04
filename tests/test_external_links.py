@@ -46,6 +46,27 @@ func unrelated() int {
 }
 """
 
+CS_SRC = """\
+namespace Orders;
+
+public class OrderService
+{
+    public void CreateOrder(Request req)
+    {
+        if (req.Start > req.End)
+        {
+            throw new ArgumentException("bad range");
+        }
+        Persist(req);
+    }
+
+    public int Unrelated()
+    {
+        return 1;
+    }
+}
+"""
+
 
 def _target(tmp_path, name="target"):
     root = tmp_path / name
@@ -123,6 +144,47 @@ def test_regex_tier_resolves_go_without_lsp(tmp_path):
     _write(root, "orders.go", changed)
     span2, _ = xl.resolve_symbol_span(root, "orders.go", "CreateOrder", use_lsp=False)
     assert span2.hash != span.hash
+
+
+def test_regex_tier_resolves_csharp_without_lsp(tmp_path):
+    """chief-wiggum#313: CS_FUNC_RE was never wired into the regex tier here,
+    so every C# anchor resolved `unresolved` — coverage was permanently
+    unsatisfiable for a C#-on-sidecar target. This is the reference case."""
+    root = _target(tmp_path)
+    _write(root, "OrderService.cs", CS_SRC)
+    span, reason = xl.resolve_symbol_span(root, "OrderService.cs", "CreateOrder", use_lsp=False)
+    assert reason is None
+    assert span.tier == "regex"
+    assert span.start == 4  # the `public void CreateOrder(Request req)` line
+    changed = CS_SRC.replace("bad range", "worse range")
+    _write(root, "OrderService.cs", changed)
+    span2, _ = xl.resolve_symbol_span(root, "OrderService.cs", "CreateOrder", use_lsp=False)
+    assert span2.hash != span.hash
+
+
+def test_csharp_regex_does_not_leak_into_other_suffixes(tmp_path):
+    """The C# member pattern is suffix-gated exactly like
+    write_emission._enclosing_symbol — a line that only reads as a C# member
+    declaration must not resolve for a non-.cs file."""
+    root = _target(tmp_path)
+    _write(root, "not_csharp.go", "public void CreateOrder(Request req)\n{\n}\n")
+    span, reason = xl.resolve_symbol_span(root, "not_csharp.go", "CreateOrder", use_lsp=False)
+    assert span is None
+    assert "not found" in reason
+
+
+def test_add_then_verify_ok_for_csharp(tmp_path):
+    root = _target(tmp_path)
+    _write(root, "OrderService.cs", CS_SRC)
+    store = tmp_path / "external-links.json"
+    entry, warning = xl.add_link(store, root, "OrderService.cs", "CreateOrder", "guards",
+                                 ["CTR-order-001"], use_lsp=False)
+    assert entry["symbol_hash"]
+    assert warning is None or "target_sha" in warning  # anchored; only the git-binding warning may fire
+    result = xl.verify_links(store, root, use_lsp=False)
+    assert [e["symbol"] for e in result["ok"]] == ["CreateOrder"]
+    assert result["ok"][0]["tier"] == "regex"
+    assert result["suspect"] == [] and result["unresolved"] == []
 
 
 def test_missing_file_and_missing_symbol_are_unresolved(tmp_path):
@@ -290,6 +352,61 @@ def test_target_sha_recorded_in_git_repo(tmp_path):
                                  ["CTR-a-001"], use_lsp=False)
     assert entry["target_sha"] and len(entry["target_sha"]) == 40
     assert warning is None  # anchored AND version-bound: nothing to warn about
+
+
+# --- store applicability (chief-wiggum#313 item 3) ---------------------------
+#
+# An empty store ("nothing authored yet") and a fully-populated-but-broken
+# store ("every entry present, NONE anchor") used to look identical to a
+# consumer that only reads counts — both report `unresolved: []`-shaped
+# vacuously or `ok: []` alike. That is the same absence-reads-as-normal shape
+# #289 named for check_traceability.py; the same pass|findings|inapplicable|
+# error vocabulary applies here, at the store's own granularity.
+
+
+def test_empty_store_is_inapplicable(tmp_path):
+    result = {"ok": [], "suspect": [], "unresolved": []}
+    assert xl.store_applicability(result) == "inapplicable"
+
+
+def test_fully_unresolved_populated_store_is_error(tmp_path):
+    root = _target(tmp_path)
+    _write(root, "hook.lua", "function on_save()\nend\n")
+    store = tmp_path / "external-links.json"
+    xl.add_link(store, root, "hook.lua", "on_save", "guards", ["CTR-x-001"])
+    xl.add_link(store, root, "hook.lua", "on_save2", "verifies", ["CTR-x-001"])
+    result = xl.verify_links(store, root)
+    assert result["ok"] == [] and result["suspect"] == []
+    assert len(result["unresolved"]) == 2
+    assert xl.store_applicability(result) == "error"
+
+
+def test_partially_resolved_store_is_ok_not_error(tmp_path):
+    """Only a store where NOTHING anchors is the defect — one healthy entry
+    alongside broken ones stays 'ok' (the existing warning-per-entry behavior
+    is unaffected)."""
+    root = _target(tmp_path)
+    _write(root, "orders.py", PY_SRC)
+    store = tmp_path / "external-links.json"
+    xl.add_link(store, root, "orders.py", "create_order", "guards", ["CTR-a-001"], use_lsp=False)
+    xl.add_link(store, root, "orders.py", "no_such_fn", "verifies", ["CTR-b-001"], use_lsp=False)
+    result = xl.verify_links(store, root, use_lsp=False)
+    assert len(result["ok"]) == 1 and len(result["unresolved"]) == 1
+    assert xl.store_applicability(result) == "ok"
+
+
+def test_cli_verify_prints_measured_denominator(tmp_path, capsys):
+    root = _target(tmp_path)
+    _write(root, "hook.lua", "function on_save()\nend\n")
+    store = tmp_path / "external-links.json"
+    xl.main(["add", str(store), "--target", str(root), "--file", "hook.lua",
+             "--symbol", "on_save", "--verb", "guards", "--ids", "CTR-x-001"])
+    capsys.readouterr()
+    rc = xl.main(["verify", str(store), "--target", str(root)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["applicability"] == "error"
+    assert out["anchored"] == "0 of 1 entries"
 
 
 # --- CLI ----------------------------------------------------------------------
