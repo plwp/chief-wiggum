@@ -67,7 +67,9 @@ python3 "$CW_HOME/scripts/close_epic_audit.py" \
   --output-dir "$CW_TMP/close-epic"
 ```
 
-Steps 2 (traceability), 2b (transition map), 2c (unresolved), 4 (mutation tooling), 7, and 11 **consume `$CW_TMP/close-epic/close-epic-manifest.json`** rather than recomputing — the exploratory parts (cross-surface consistency, UX flow, retrospective) still launch agents, but the audit state is structured. A `blocked: true` manifest is a workflow-level stop: resolve the failure before closing.
+Steps 2 (traceability), 2b (transition map), 2c (unresolved), **3 (integration tests, #323)**, 4 (mutation tooling), 7, and 11 **consume `$CW_TMP/close-epic/close-epic-manifest.json`** rather than recomputing — the exploratory parts (cross-surface consistency, UX flow, retrospective) still launch agents, but the audit state is structured. A `blocked: true` manifest is a workflow-level stop: resolve the failure before closing.
+
+The manifest carries `target_sha` — the target repo's HEAD at the moment this audit ran. Steps 2b/2c/3 below reuse the manifest's fields ONLY while `target_sha` still matches the current `$TARGET_REPO` HEAD (`git -C "$TARGET_REPO" rev-parse HEAD`) — provably the same state, nothing observed since could have changed. A step running AFTER a mutation (Step 2f's ratchet-journal commit in embedded mode is the one that can move HEAD mid-close) is not looking at stale data by accident: the sha mismatch is the signal to fall back to that step's own standalone recomputation, never to silently trust an old manifest.
 
 ### Step 2: Traceability audit
 
@@ -100,10 +102,23 @@ Report:
 
 ### Step 2b: Transition-map audit
 
-If `$EPIC_DIR/models/state-machines.json` exists, run a full transition-map verification:
+If `$EPIC_DIR/models/state-machines.json` exists, Step 1b's audit already ran this exact scan (same `$TARGET_REPO`, same model file, zero intervening writes at this point in the flow) and recorded the result in the manifest's `.transitions`. Reuse it when the manifest is still fresh (`target_sha` matches current HEAD — #323); re-run only when it isn't:
 
 ```bash
-python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$EPIC_DIR/models/state-machines.json" --output "$CW_TMP/transition-map-final.json" --format text
+MANIFEST="$CW_TMP/close-epic/close-epic-manifest.json"
+if [ "$(git -C "$TARGET_REPO" rev-parse HEAD)" = "$(jq -r .target_sha "$MANIFEST")" ]; then
+  jq '.transitions' "$MANIFEST" > "$CW_TMP/transition-map-final.json"
+else
+  # HEAD moved since Step 1b (the manifest no longer describes the current
+  # tree) — this is the ONLY case that re-runs the scan.
+  python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$EPIC_DIR/models/state-machines.json" \
+    --output "$CW_TMP/transition-map-final.json" --format json > /dev/null
+fi
+jq -r '.outcome as $o | .summary as $s |
+  "outcome: \($o) — \($s.covered)/\($s.total_model_transitions) covered, \($s.missing) missing, \($s.undocumented) undocumented",
+  (.entities[] | .name as $e | (.transitions[] | select(.status=="missing") | "MISSING  \($e): \(.from) -> \(.to) (\(.event))"),
+    ((.undocumented // []) | .[] | "UNDOCUMENTED  \($e): \(.from // "?") -> \(.to)"))' \
+  "$CW_TMP/transition-map-final.json"
 ```
 
 Report:
@@ -128,36 +143,45 @@ Findings feed into Step 9 (multi-AI analysis) and the final report.
 
 ### Step 2c: Unresolved-unknowns audit
 
-No epic closes with open unknowns in its artifacts:
+No epic closes with open unknowns in its artifacts. Step 1b's audit already scanned `$EPIC_DIR` for these markers into the manifest's `.unresolved`/`.blocked_tickets` — reuse it while the manifest is still fresh (same `target_sha` check as 2b); the standalone scan is the fallback, not the default:
 
 ```bash
-python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
+MANIFEST="$CW_TMP/close-epic/close-epic-manifest.json"
+if [ "$(git -C "$TARGET_REPO" rev-parse HEAD)" = "$(jq -r .target_sha "$MANIFEST")" ]; then
+  jq -r '.unresolved[] | "\(.file):\(.location) [\(.marker)] \(.text)  blocks: \(.tickets | join(", "))"' "$MANIFEST"
+else
+  python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
+fi
 ```
 
 Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the fact was resolved during implementation (update the artifact with the real value and a citation) or it wasn't (which means some ticket was built on a guess — trace it and verify what actually shipped). Target: zero markers.
 
 ### Step 2c2: Gate-validation check (docs/gate-validation.md)
 
-Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, and before Step 2f passes `--gate-verifier-tests` to `ratchet.py check`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e/2f keep their existing enforcement unchanged:
+Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, and before Step 2f passes `--gate-verifier-tests` to `ratchet.py check`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e/2f keep their existing enforcement unchanged. **One process checks all three gates** (#323) — `check_gate_validation.py` accepts multiple gate names and verifies the shared ratchet journal chain once for the whole call, instead of three separate processes each re-walking the same chain from genesis:
 
 ```bash
-python3 "$CW_HOME/scripts/check_gate_validation.py" check_traceability --validation-dir "$CW_HOME/docs/quality/validation" --gate
-python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer --validation-dir "$CW_HOME/docs/quality/validation" --gate
-python3 "$CW_HOME/scripts/check_gate_validation.py" ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate
+GATE_VALIDATION=$(python3 "$CW_HOME/scripts/check_gate_validation.py" \
+  check_traceability check_single_writer ratchet \
+  --validation-dir "$CW_HOME/docs/quality/validation" --format json)
+echo "$GATE_VALIDATION"
+TRACEABILITY_VALIDATED=$(echo "$GATE_VALIDATION" | jq -r '.gates.check_traceability.passing')
+SINGLE_WRITER_VALIDATED=$(echo "$GATE_VALIDATION" | jq -r '.gates.check_single_writer.passing')
+RATCHET_VALIDATED=$(echo "$GATE_VALIDATION" | jq -r '.gates.ratchet.passing')
 ```
 
 (A target repo that hosts gates of its own keeps their records at the same relative path in that repo — `docs/quality/validation/<gate>.json`, sibling to its ratchet journal — and this step checks them the same way.)
 
-**If any exits non-zero (no record, a stale/forged one, or a failing one), do not pass the corresponding blocking flag in the step below** — for `check_traceability`/`check_single_writer` that flag is `--gate coverage`; for `ratchet` it is `--gate-verifier-tests` (the ratchet's core pass-set/contract-hash check in Step 2f stays hard-blocking regardless — only the verifier-test dimension's blocking authority is governed by the record, per chief-wiggum#208) — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
+**If a gate's `_VALIDATED` var is not `true` (no record, a stale/forged one, or a failing one), do not pass the corresponding blocking flag in the step below** — for `check_traceability`/`check_single_writer` that flag is `--gate coverage`; for `ratchet` it is `--gate-verifier-tests` (the ratchet's core pass-set/contract-hash check in Step 2f stays hard-blocking regardless — only the verifier-test dimension's blocking authority is governed by the record, per chief-wiggum#208) — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
 
-If a checker that was previously wired blocking (`check_gate_validation.py ... --wire` was run for it earlier) shows `"authority": {"demoted": true, ...}` in this step's JSON output, its record went stale or missing/invalid WHILE blocking — surface the printed `DEMOTION` instruction (`previous_authority`/`demotion_reason`) verbatim in the close report alongside the coverage finding above (see `docs/gate-validation.md`'s "Auto-demotion" section, chief-wiggum#198); this is the same instruction-surfacing pattern as the escape-driven `demotion_check` in "Demotion: an escape a seed class should have caught," just triggered by staleness instead of a production escape.
+If a checker that was previously wired blocking (`check_gate_validation.py ... --wire` was run for it earlier) shows `.gates.<name>.authority.demoted == true` in `$GATE_VALIDATION`, its record went stale or missing/invalid WHILE blocking — surface the printed `DEMOTION` instruction (`.gates.<name>.authority.instruction`, carrying `previous_authority`/`demotion_reason`) verbatim in the close report alongside the coverage finding above (see `docs/gate-validation.md`'s "Auto-demotion" section, chief-wiggum#198); this is the same instruction-surfacing pattern as the escape-driven `demotion_check` in "Demotion: an escape a seed class should have caught," just triggered by staleness instead of a production escape.
 
 ### Step 2d: Traceability coverage gate
 
-Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`). Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_traceability --gate` passed; otherwise drop `--gate coverage` and report the finding instead:
+Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`). Only pass `--gate coverage` if Step 2c2's `$TRACEABILITY_VALIDATED` is `true`; otherwise drop `--gate coverage` and report the finding instead. **One invocation does both the coverage scan and the sidecar write** (#323 — `--write-links` is a no-op when the gate doesn't pass, so it always rides the same run instead of a second full annotation scan of the whole repo moments later):
 
 ```bash
-python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
+python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --write-links --format text
 ```
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
@@ -166,17 +190,11 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 
 **JUSTIFIED waivers**: a contract that's genuinely not going to be covered (e.g. manual QA only) may carry a committed waiver at `docs/epics/<slug>/justifications/*.json` (`reason`/`approver`/`expiry`/`ticket` — a justification without a ticket ref is invalid and does NOT satisfy coverage). Valid, non-expired waivers render as `justified_contracts` and satisfy the coverage gate honestly instead of a fabricated guard/verify annotation.
 
-Once the gate passes, (re)write the definition-hash sidecar so future runs can detect suspect links — never hand-maintain this file:
-
-```bash
-python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --write-links --format text
-```
-
-`--write-links` only updates `$TARGET_REPO/docs/quality/trace-links.json` when the coverage gate passes — a failing run leaves the sidecar untouched, so a broken state is never recorded as validated. Commit this file alongside the rest of `docs/quality/` in Step 2f.
+`--write-links` (re)writes the definition-hash sidecar so future runs can detect suspect links — never hand-maintain this file. It only updates `$TARGET_REPO/docs/quality/trace-links.json` when the coverage gate passes in THIS SAME run — a failing run leaves the sidecar untouched, so a broken state is never recorded as validated. Commit this file alongside the rest of `docs/quality/` in Step 2f.
 
 ### Step 2e: Single-writer coverage gate
 
-For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*. Only pass `--gate coverage` if Step 2c2's `check_gate_validation.py check_single_writer --gate` passed; otherwise drop `--gate coverage` and report the finding instead:
+For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*. Only pass `--gate coverage` if Step 2c2's `$SINGLE_WRITER_VALIDATED` is `true`; otherwise drop `--gate coverage` and report the finding instead:
 
 ```bash
 python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
@@ -186,7 +204,7 @@ Any writer of a controlled field whose enclosing symbol/file is **not** in `sanc
 
 ### Step 2f: Ratchet gate
 
-Resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`. If `$QUALITY_DIR/ratchet.json` exists (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID.
+`$QUALITY_DIR` is already resolved (Step 1's `workflow_context.py`, #324 — one resolution per session, reused rather than re-invoking `artifacts.py show` per step). If `$QUALITY_DIR/ratchet.json` exists (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID.
 
 **Reuse Step 1b's verification run instead of paying for the suite twice** (chief-wiggum#322, same pattern as `/implement` Step 4b) — `close_epic_audit.py` already ran `ver.verify(repo, ["test"])` on this exact `$TARGET_REPO` commit and recorded it in `close-epic-manifest.json`'s `verification.steps`. When that run named a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
 
@@ -202,7 +220,7 @@ python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifie
 python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
 ```
 
-Pass `--gate-verifier-tests` only if Step 2c2's `check_gate_validation.py ratchet --gate` passed; otherwise drop the flag (the check still *prints* `weakened_verifier_tests`/`removed_verifier_tests` findings report-only — surface them in the close report) and direct the operator to the gate-validation protocol, same as 2d/2e.
+Pass `--gate-verifier-tests` only if Step 2c2's `$RATCHET_VALIDATED` is `true`; otherwise drop the flag (the check still *prints* `weakened_verifier_tests`/`removed_verifier_tests` findings report-only — surface them in the close report) and direct the operator to the gate-validation protocol, same as 2d/2e.
 
 A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. A `weakened_verifier_tests`/`removed_verifier_tests` violation (chief-wiggum#206, channel C1c) means a test annotated `@cw-trace verifies` — the executable expression of a contract — was rewritten or dropped behind its still-green test ID; fix the code, or if the verifier test was *deliberately* revised, journal it via `ratchet.py record --amend-verifier <ref>` (a human act, same semantics as `--amend` for contracts). A `missing_tests` entry caused by a genuinely flaky/order-dependent case (not a real regression) is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead; state the quarantine count (and nearest expiry) in the close report so it isn't discovered later. `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
 
@@ -326,7 +344,7 @@ epic's own baseline isn't clobbered mid-audit), then hard-check every
 TICKETED id:
 
 ```bash
-QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)
+# $QUALITY_DIR already resolved at Step 1 (#324).
 python3 "$CW_HOME/scripts/debt_inventory.py" --repo "$TARGET_REPO" --out "$CW_TMP/close-epic/fresh-debt"
 python3 "$CW_HOME/scripts/plan_from_debt.py" verify --repo "$TARGET_REPO" \
   --plan "$QUALITY_DIR/remediation-plan.json" \
@@ -362,7 +380,18 @@ waives. Once `verify` passes, refresh the real inventory in `$QUALITY_DIR`
 
 Run the integration tests defined in `integration-tests.md`. These test cross-ticket behaviour that no individual ticket validates.
 
-For each integration test:
+**Check freshness before re-running the suite** (#323): Step 1b's audit already ran `ver.verify(repo, ["test"])` — the target's full test suite, which is where a repo's integration tests actually live and run — on this exact `$TARGET_REPO` HEAD, and recorded it as `close-epic-manifest.json`'s `.verification`. Re-running the whole suite a second time, moments later, on the identical unchanged commit is the single most expensive duplicate in this workflow:
+
+```bash
+MANIFEST="$CW_TMP/close-epic/close-epic-manifest.json"
+FRESH=$([ "$(git -C "$TARGET_REPO" rev-parse HEAD)" = "$(jq -r .target_sha "$MANIFEST")" ] && echo true || echo false)
+SUITE_OK=$(jq -r '.verification.ok // false' "$MANIFEST")
+```
+
+- **`$FRESH == true` and `$SUITE_OK == true`**: Step 1b's run is provably the same state and it was green. Do **not** re-run the suite from scratch. Instead, walk `integration-tests.md` and, for each named integration test, confirm it is represented as a passing case in Step 1b's evidence (`.verification.steps` in the manifest, or the test report it points at) by test path/id — report it PASS on that evidence. Only actually execute a specific test yourself when you cannot find it represented there (e.g. a Playwright/E2E spec outside the `test` profile Step 1b ran) — never claim a pass with no genuine evidence behind it.
+- **Otherwise** (`$FRESH == false` — a commit landed since Step 1b, e.g. Step 2f's ratchet-journal commit in embedded mode — or `$SUITE_OK == false`, or the manifest is missing): this is not a redundant second run, it is the only observation of the CURRENT state (or the first one that actually captures per-test failure detail). Run the full walk below for real.
+
+For each integration test (when actually running it):
 
 1. Set up the test scenario (create data via API, set up state)
 2. Execute the assertions across multiple surfaces
@@ -370,12 +399,12 @@ For each integration test:
 
 If the target repo has Playwright or E2E infrastructure, use it for UI-surface assertions. Otherwise, use API calls and database queries.
 
-**Run inside a verification worker** (contract: `docs/worker-contracts.md#verification-worker`) to keep the heavy test execution out of the orchestrator context. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`. The worker should:
-- Start services if needed (`docker compose up -d`)
-- Execute each integration test
+**Run inside a verification worker** (contract: `docs/worker-contracts.md#verification-worker`) to keep the heavy test execution out of the orchestrator context. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`. Give the worker `$FRESH`/`$SUITE_OK` and the manifest path so it makes the reuse-vs-rerun call above itself, rather than the orchestrator deciding blind. The worker should:
+- Start services if needed (`docker compose up -d`) — only when it is actually going to execute tests
+- Execute each integration test not already evidenced by a fresh, green Step 1b run
 - Capture results
-- Clean up (`docker compose down`)
-- Return a concise pass/fail summary
+- Clean up (`docker compose down`) — only if it started services
+- Return a concise pass/fail summary, noting which results came from Step 1b's evidence vs. a fresh run
 
 ### Step 4: Stitch-audit across epic scope
 

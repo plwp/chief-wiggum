@@ -469,6 +469,117 @@ def test_run_full_sequence(user_dir, tmp_path):
     assert _tracked_clean(target)
 
 
+# --- run executes the target's test command exactly once (#334) -----------------
+
+
+def test_run_executes_test_suite_exactly_once(user_dir, tmp_path, monkeypatch):
+    """`adopt.py run` used to run the detected test command TWICE against the
+    same unchanged HEAD: once for the survey's coverage-baseline attempt
+    (`coverage_baseline`), once for the ratchet-scored baseline
+    (`ratchet.run_suite_measured`, inside `cmd_baseline`). Both are REAL
+    subprocess executions of the same suite — only one may survive `run`."""
+    target = make_target(tmp_path / "t")
+    coverage_calls: list[int] = []
+    orig_coverage_baseline = adopt.coverage_baseline
+
+    def spy_coverage_baseline(*a, **k):
+        coverage_calls.append(1)
+        return orig_coverage_baseline(*a, **k)
+
+    monkeypatch.setattr(adopt, "coverage_baseline", spy_coverage_baseline)
+
+    suite_run_calls: list[int] = []
+    orig_run_suite_measured = ratchet.run_suite_measured
+
+    def spy_run_suite_measured(*a, **k):
+        suite_run_calls.append(1)
+        return orig_run_suite_measured(*a, **k)
+
+    monkeypatch.setattr(ratchet, "run_suite_measured", spy_run_suite_measured)
+
+    assert adopt.main(["run", "--repo", str(target),
+                       "--workdir", str(tmp_path / "wd")]) == 0
+    assert coverage_calls == [], (
+        "survey must NOT run the suite a second time when `run`'s baseline "
+        "step already scored it this HEAD — it must reuse the scorecard")
+    assert suite_run_calls == [1], (
+        "the ratchet-scored baseline must still be the ONE real execution")
+
+
+def test_survey_coverage_numbers_equal_scorecard_derived_values(user_dir, tmp_path):
+    """Acceptance criterion: survey's coverage numbers, when derived from a
+    just-computed baseline scorecard, are test-pinned to that scorecard —
+    not an independently re-parsed number that could silently drift."""
+    target = make_target(tmp_path / "t")
+    assert adopt.main(["run", "--repo", str(target),
+                       "--workdir", str(tmp_path / "wd")]) == 0
+    resolver = artifacts.Resolver.resolve(target)
+    survey = json.loads((resolver.meta_root / "adoption" / "survey.json").read_text())
+    sc = json.loads((resolver.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+    run = survey["test_run"]
+    assert run["detected"] is True
+    assert run["source"] == "ratchet-scorecard"
+    smeas = sc["suite_measurement"]
+    total_passed = sum(s["passed"] for s in run["steps"])
+    assert total_passed == smeas["total_passing"] == sc["passed"]
+    for step, suite_entry in zip(run["steps"], smeas["suites"], strict=True):
+        assert step["passed"] == suite_entry["passing_cases"]
+        assert step["exit_code"] == suite_entry["exit_code"]
+
+
+def test_baseline_pass_set_identical_with_and_without_reuse(user_dir, tmp_path):
+    """Acceptance criterion: the baseline record's pass-set is IDENTICAL
+    whether reached via `run` (survey reuses the scorecard) or via the old
+    two-real-runs path (standalone survey THEN standalone baseline) — the
+    dedup changes nothing about what gets journaled as the pass-set."""
+    target_a = make_target(tmp_path / "a")
+    assert adopt.main(["run", "--repo", str(target_a),
+                       "--workdir", str(tmp_path / "wd-a")]) == 0
+    resolver_a = artifacts.Resolver.resolve(target_a)
+    sc_a = json.loads((resolver_a.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+
+    target_b = make_target(tmp_path / "b")
+    artifacts.elect(target_b, "sidecar", backing="local")
+    assert adopt.main(["survey", "--repo", str(target_b)]) == 0
+    assert adopt.main(["baseline", "--repo", str(target_b),
+                       "--workdir", str(tmp_path / "wd-b")]) == 0
+    resolver_b = artifacts.Resolver.resolve(target_b)
+    sc_b = json.loads((resolver_b.quality_dir() / ratchet.SCORECARD_NAME).read_text())
+
+    assert sc_a["pass_set"] == sc_b["pass_set"]
+    assert sc_a["tests_run"] == sc_b["tests_run"] is True
+
+
+def test_survey_falls_back_to_real_run_when_reused_scorecard_is_stale(user_dir, tmp_path, monkeypatch):
+    """The reuse is provably-fresh only: a scorecard whose `target_sha` does
+    not match the CURRENT HEAD (e.g. a commit landed between two steps) must
+    never be silently trusted — build_survey re-runs for real instead,
+    mirroring `ratchet.py score --reuse-report`'s loud-fail-on-stale
+    discipline (never SERVE a stale measurement as current)."""
+    target = make_target(tmp_path / "t")
+    resolver = artifacts.elect(target, "sidecar", backing="local")
+    resolver = artifacts.Resolver.resolve(target)
+    calls: list[int] = []
+    orig_coverage_baseline = adopt.coverage_baseline
+
+    def spy(*a, **k):
+        calls.append(1)
+        return orig_coverage_baseline(*a, **k)
+
+    monkeypatch.setattr(adopt, "coverage_baseline", spy)
+    stale_scorecard = {
+        "target_sha": "0" * 40,  # provably not this repo's real HEAD sha
+        "passed": 0,
+        "pass_set": [],
+        "tests_run": True,
+        "suite_measurement": {"status": "applicable", "suites": [], "total_passing": 0},
+    }
+    doc = adopt.build_survey(target, resolver, reuse_scorecard=stale_scorecard)
+    assert calls == [1], "a stale (mismatched-HEAD) scorecard must trigger a REAL fallback run"
+    assert doc["test_run"]["detected"] is True
+    assert doc["test_run"].get("source") != "ratchet-scorecard"
+
+
 # --- gates honor the grandfather file --------------------------------------------
 
 

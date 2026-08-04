@@ -152,33 +152,48 @@ class WorkflowContext:
             f"export CW_TMP={env.shell_quote(str(self.tmp))}",
             f"export DEFAULT_BRANCH={env.shell_quote(self.default_branch)}",
         ]
+        # The #213 meta-location resolver is built ONCE here (#324) and
+        # reused below for every meta-location export (QUALITY_DIR,
+        # CW_META_ROOT, CW_META_MODE, EPIC_DIR) instead of each downstream
+        # workflow step re-invoking `artifacts.py show` (~10x across
+        # implement.md/implement-wave.md/close-epic.md) for the identical
+        # answer against the same unchanged target.
+        resolver = self._resolver()
         if self.repo_path is not None:
             lines.append(f"export TARGET_REPO={env.shell_quote(str(self.repo_path))}")
+            if resolver is not None:
+                lines.append(f"export QUALITY_DIR={env.shell_quote(str(resolver.quality_dir()))}")
+                lines.append(f"export CW_META_ROOT={env.shell_quote(str(resolver.meta_root))}")
+                lines.append(f"export CW_META_MODE={env.shell_quote(resolver.mode)}")
         if self.target is not None:
             lines.append(f"export TARGET_SLUG={env.shell_quote(self.target.slug)}")
         if self.issue is not None:
             lines.append(f"export ISSUE_NUMBER={self.issue}")
         if self.epic_slug is not None:
             lines.append(f"export EPIC_SLUG={env.shell_quote(self.epic_slug)}")
-            epic_dir = self._resolved_epic_dir()
-            if epic_dir is not None:
+            if resolver is not None:
+                epic_dir = resolver.epic_dir(self.epic_slug)
                 lines.append(f"export EPIC_DIR={env.shell_quote(str(epic_dir))}")
             else:
                 lines.append(f'export EPIC_DIR="$TARGET_REPO/docs/epics/{self.epic_slug}"')
         return "\n".join(lines)
 
-    def _resolved_epic_dir(self):
-        """Meta location is resolved, never assumed (#213): when the target
-        repo path is known, EPIC_DIR comes from the artifacts resolver, so a
-        sidecar election routes the epic-consuming skills to the sidecar.
-        Offline (--no-resolve) falls back to the embedded literal."""
-        if self.repo_path is None or self.epic_slug is None:
+    def _resolver(self):
+        """The #213 meta-location resolver for this target, resolved ONCE
+        (#324) and reused for every meta-location export in
+        ``shell_exports`` (``EPIC_DIR``, ``QUALITY_DIR``, ``CW_META_ROOT``,
+        ``CW_META_MODE``) instead of each workflow step re-invoking
+        ``artifacts.py show`` for the identical answer against the same
+        unchanged target. ``None`` when the repo path isn't known (offline
+        ``--no-resolve``) or resolution fails — callers fall back to the
+        embedded-default literal rather than raising."""
+        if self.repo_path is None:
             return None
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
             import artifacts
-            return artifacts.Resolver.resolve(Path(self.repo_path)).epic_dir(self.epic_slug)
+            return artifacts.Resolver.resolve(Path(self.repo_path))
         except Exception:
             return None
 

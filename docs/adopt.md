@@ -28,7 +28,11 @@ Mechanics live in `scripts/adopt.py`; the `/adopt` command is a thin adapter
    shipped gates plus the debt inventory (e.g. `saas_gate` inapplicable
    without a base URL; `check_traceability` report-only until contracts
    exist; `ratchet` applicable once baselined). Written to
-   `<meta root>/adoption/survey.json`, stamped with `target_sha`.
+   `<meta root>/adoption/survey.json`, stamped with `target_sha`. Inside
+   `adopt.py run` (below), this step **reuses** the ratchet baseline's
+   scorecard for its coverage numbers instead of running the test command a
+   second time (#334); standalone `adopt.py survey` always performs its own
+   real run.
 2. **Elections** (`adopt.py elect`) — footprint mode + domain scope via the
    #213 resolver ([sidecar.md](sidecar.md)). Defaults: **`sidecar` +
    whole-repo scope**. `--scope-from-codeowners` seeds `scope.json` from
@@ -63,15 +67,28 @@ Mechanics live in `scripts/adopt.py`; the `/adopt` command is a thin adapter
 6. **The adoption record** (`adopt.py record`) —
    `<meta root>/adoption/adoption.json`, the brownfield **switch**.
 
-`adopt.py run` chains all of it with per-step output. One ordering note: `run`
-performs the **election first** — the election decides where the survey (and
-every later artifact) persists, so surveying before electing would write the
-survey into the embedded default, i.e. the very target tree a sidecar adoption
-exists to keep clean. Step-by-step adoptions **must** elect first: standalone
-`survey`/`baseline`/`grandfather`/`record` on a target with **no election
-file refuse** (exit 2, "embedded mode is an explicit choice") rather than
-falling through to the resolver's silent embedded default and writing the
-target's own tree.
+`adopt.py run` chains all of it with per-step output, in the order **elect →
+baseline → survey → grandfather → record**. Two ordering notes:
+
+- `run` performs the **election first** — the election decides where the
+  survey (and every later artifact) persists, so surveying before electing
+  would write the survey into the embedded default, i.e. the very target tree
+  a sidecar adoption exists to keep clean. Step-by-step adoptions **must**
+  elect first: standalone `survey`/`baseline`/`grandfather`/`record` on a
+  target with **no election file refuse** (exit 2, "embedded mode is an
+  explicit choice") rather than falling through to the resolver's silent
+  embedded default and writing the target's own tree.
+- `run` performs **baseline before survey** (#334): both steps used to run
+  the target's test command for real, against the same unchanged HEAD —
+  baseline via `ratchet.py score`, survey via its own coverage-baseline
+  attempt. `run` now scores the baseline first and hands its scorecard to the
+  survey step, which reuses it (verified fresh: the scorecard's `target_sha`
+  must match the CURRENT HEAD, mirroring `ratchet.py score
+  --reuse-report`'s loud-fail-on-stale discipline — a mismatch is never
+  silently trusted, it triggers a real fallback run) instead of running the
+  suite a second time. The suite runs **exactly once** per `run`. Standalone
+  `adopt.py survey` — no baseline having just run in the same process — is
+  unaffected and always performs its own real run.
 
 **Re-adoption is an explicit operator act.** `run` on a target whose
 `adoption.json` already exists refuses ("already adopted (adopted_at …)")

@@ -216,6 +216,26 @@ def test_gate_ledger_against_this_repos_real_validation_dir(user_dir):
     assert gates["ratchet"]["wired"] is True
 
 
+def test_gate_ledger_verifies_shared_journal_chain_once(user_dir, monkeypatch):
+    """#323: every gate under one validation_dir shares the SAME ratchet
+    journal — gate_ledger() must hash-verify that chain ONCE for the whole
+    7-gate ledger, not once per gate (the amplification the ticket flagged
+    at status.py:91-101)."""
+    import check_gate_validation as gv
+
+    calls: list[int] = []
+    orig = gv._load_and_verify_chain
+
+    def spy(journal):
+        calls.append(1)
+        return orig(journal)
+
+    monkeypatch.setattr(gv, "_load_and_verify_chain", spy)
+    st = status.gather(ROOT)
+    assert len(st["gates"]) == 7
+    assert calls == [1], f"expected the journal to be verified exactly once, got {len(calls)} walks"
+
+
 # --- CLI -------------------------------------------------------------------------
 
 

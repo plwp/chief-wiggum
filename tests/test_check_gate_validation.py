@@ -968,6 +968,153 @@ def test_chain_broken_blocking_unwire_still_emits_demotion(tmp_path, monkeypatch
     assert "could not journal" in (transition.instruction or "")
 
 
+# --- #323: multiple gates per invocation, journal chain verified once -------
+
+
+def _write_multi_gate_records(tmp_path: Path, gates: tuple[str, ...]) -> Path:
+    """Write one <gate>.json record per name in `gates`, ALL corroborated by
+    ONE shared journal (one entry per gate, distinct record_ids) — the real
+    shape of a --validation-dir holding several gates' records side by side
+    (they always share the same ratchet journal, per JOURNAL_NAME being a
+    sibling of validation-dir, not gate-specific)."""
+    state = tmp_path / "quality"
+    vdir = state / "validation"
+    vdir.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for i, gate in enumerate(gates, start=1):
+        rid = f"rec-{i:05d}"
+        record = _minimal_valid_record(gate=gate, ratchet_record_id=rid)
+        (vdir / f"{gate}.json").write_text(json.dumps(record))
+        entries.append({"record_id": rid, "event": "gate-validation", "ref": gate})
+    _write_journal(state, entries)
+    return vdir
+
+
+def test_chain_cache_verifies_journal_once_across_gates(tmp_path, monkeypatch):
+    """Three gates sharing one --validation-dir share ONE ratchet journal file
+    (JOURNAL_NAME is a sibling of validation-dir, not gate-specific). Passing
+    the SAME chain_cache dict to check() for each gate must hash-walk that
+    journal exactly once, not once per gate."""
+    vdir = _write_multi_gate_records(tmp_path, ("gate_a", "gate_b", "gate_c"))
+
+    calls: list[int] = []
+    orig = gv._load_and_verify_chain
+
+    def spy(journal):
+        calls.append(1)
+        return orig(journal)
+
+    monkeypatch.setattr(gv, "_load_and_verify_chain", spy)
+    vdir = tmp_path / "quality" / "validation"
+    cache: dict = {}
+    for name in ("gate_a", "gate_b", "gate_c"):
+        report = gv.check(name, vdir, chain_cache=cache)
+        assert report.passing, report.provenance_errors
+    assert calls == [1], f"expected the journal to be verified exactly once, got {len(calls)} walks"
+
+
+def test_chain_cache_none_verifies_every_call_unchanged(tmp_path, monkeypatch):
+    """The default (chain_cache=None) is UNCHANGED — every existing
+    single-gate caller keeps re-verifying fresh each call (no shared state
+    silently introduced)."""
+    for name in ("gate_a", "gate_b"):
+        _write_record(tmp_path, name, _minimal_valid_record(gate=name))
+    calls: list[int] = []
+    orig = gv._load_and_verify_chain
+
+    def spy(journal):
+        calls.append(1)
+        return orig(journal)
+
+    monkeypatch.setattr(gv, "_load_and_verify_chain", spy)
+    vdir = tmp_path / "quality" / "validation"
+    gv.check("gate_a", vdir)
+    gv.check("gate_b", vdir)
+    assert calls == [1, 1]  # two independent walks — no cache was shared
+
+
+def test_cli_multi_gate_checks_each_and_reuses_chain(tmp_path, monkeypatch):
+    """CLI: multiple gate names in one invocation, each checked against its
+    own record, journal chain verified once for the whole process."""
+    vdir = _write_multi_gate_records(tmp_path, ("gate_a", "gate_b"))
+
+    calls: list[int] = []
+    orig = gv._load_and_verify_chain
+
+    def spy(journal):
+        calls.append(1)
+        return orig(journal)
+
+    monkeypatch.setattr(gv, "_load_and_verify_chain", spy)
+    rc = gv.main(["gate_a", "gate_b", "--validation-dir", str(vdir), "--gate", "--format", "json"])
+    assert rc == 0
+    assert calls == [1]
+
+
+def test_cli_multi_gate_json_nests_under_gates_key(tmp_path, capsys):
+    """Multi-gate JSON output is `{"gates": {name: {...}}}` — distinct from
+    the single-gate top-level shape every existing caller/test parses."""
+    _write_record(tmp_path, "gate_a", _minimal_valid_record(gate="gate_a"))
+    vdir = tmp_path / "quality" / "validation"
+    rc = gv.main(["gate_a", "no_such_gate", "--validation-dir", str(vdir), "--format", "json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert set(out["gates"]) == {"gate_a", "no_such_gate"}
+    assert out["gates"]["gate_a"]["passing"] is True
+    assert out["gates"]["no_such_gate"]["passing"] is False
+
+
+def test_cli_single_gate_json_shape_unchanged(tmp_path, capsys):
+    """Backward compatibility: a single gate name still produces the
+    byte-identical top-level shape (no `gates` wrapper)."""
+    _write_record(tmp_path, "gate_a", _minimal_valid_record(gate="gate_a"))
+    vdir = tmp_path / "quality" / "validation"
+    rc = gv.main(["gate_a", "--validation-dir", str(vdir), "--format", "json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "gates" not in out
+    assert out["gate"] == "gate_a"
+    assert out["passing"] is True
+
+
+def test_cli_multi_gate_exits_1_if_any_gate_fails_under_gate_mode(tmp_path):
+    _write_record(tmp_path, "gate_a", _minimal_valid_record(gate="gate_a"))
+    vdir = tmp_path / "quality" / "validation"
+    rc = gv.main(["gate_a", "gate_missing", "--validation-dir", str(vdir), "--gate"])
+    assert rc == 1
+
+
+def test_cli_multi_gate_refuses_wire(tmp_path, capsys):
+    """--wire/--unwire are single-gate operator acts — batching them across
+    multiple gates in one invocation is refused, not silently applied to the
+    first/last gate."""
+    vdir = tmp_path / "quality" / "validation"
+    vdir.mkdir(parents=True)
+    rc = gv.main(["gate_a", "gate_b", "--validation-dir", str(vdir), "--wire"])
+    assert rc == 2
+    assert "single-gate" in capsys.readouterr().err
+
+
+def test_cli_multi_gate_broken_chain_fails_every_gate(tmp_path, capsys):
+    """A shared chain_cache must not let a broken-chain error silently pass
+    for gates checked AFTER the one that discovered it — every gate sharing
+    that journal reports the same corroboration failure."""
+    vdir = _write_multi_gate_records(tmp_path, ("gate_a", "gate_b"))
+    journal = _journal(vdir)
+    # Corrupt one entry's hash so the chain no longer verifies.
+    lines = journal.read_text().splitlines()
+    entries = [json.loads(ln) for ln in lines]
+    entries[0]["record_hash"] = "0" * 64
+    journal.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+    rc = gv.main(["gate_a", "gate_b", "--validation-dir", str(vdir), "--gate", "--format", "json"])
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    for name in ("gate_a", "gate_b"):
+        assert out["gates"][name]["passing"] is False
+        assert any("chain broken" in e for e in out["gates"][name]["provenance_errors"])
+
+
 def test_validation_dir_is_defined_once_and_imported():
     """INV-fh-004: docs/quality/validation is defined in exactly one place —
     factory_log.DEFAULT_VALIDATION_DIR — and check_gate_validation IMPORTS it.

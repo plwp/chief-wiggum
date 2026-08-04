@@ -37,11 +37,18 @@ Subcommands mirror the adoption sequence:
                    switch (#216 reads it; /architect reads it in place of the
                    ``IS_NEW_PRODUCT`` file-existence heuristic).
 - ``run``          the whole sequence, printing each step. The election runs
-                   first (it decides where the survey persists); then survey →
-                   baseline → grandfather → record. A target whose
-                   adoption.json already exists refuses unless ``--re-adopt``
-                   — re-adoption is an explicit operator act, never a side
-                   effect of re-running the arrow.
+                   first (it decides where the survey persists); then baseline
+                   → survey → grandfather → record. Baseline now runs BEFORE
+                   survey (#334): survey's coverage-baseline numbers are
+                   derived from the SAME scorecard baseline just wrote (its
+                   ``target_sha`` matches the current HEAD) instead of
+                   re-running the target's test command a second time — the
+                   suite runs exactly once per ``run``. Standalone ``survey``
+                   is unaffected: with no scorecard to derive from, it still
+                   performs its own real run. A target whose adoption.json
+                   already exists refuses unless ``--re-adopt`` — re-adoption
+                   is an explicit operator act, never a side effect of
+                   re-running the arrow.
 
 Standalone ``survey``/``baseline``/``grandfather``/``record`` require a prior
 footprint election (``adopt elect`` / ``adopt run``): with no election file the
@@ -345,6 +352,53 @@ def coverage_baseline(target: Path) -> dict:
     return {"detected": True, "detection": detection.to_dict(), "steps": steps}
 
 
+def coverage_from_scorecard(scorecard: dict, target: Path) -> dict:
+    """The survey's ``test_run`` block, derived from an ALREADY-COMPUTED
+    ratchet baseline scorecard instead of re-running the target's test
+    command (#334). Only called once the caller (``build_survey``) has
+    confirmed ``scorecard["target_sha"]`` matches the CURRENT HEAD — a
+    scorecard from any other commit is not "the same state" and must not be
+    read here (see ``build_survey``).
+
+    Per-suite ``failed`` counts are NOT separately tracked by the ratchet
+    scorer (it tracks the pass-set, not a fail count) — reported ``None``
+    with a note, never fabricated, the same "unparsed, never fabricated"
+    discipline ``coverage_baseline`` itself follows for output it cannot
+    parse."""
+    smeas = scorecard.get("suite_measurement") or {}
+    if smeas.get("status") == ratchet.SUITE_STATUS_INAPPLICABLE:
+        return {
+            "detected": False,
+            "steps": [],
+            "note": smeas.get("reason") or "no test runner detected — cannot "
+                    "establish a coverage baseline",
+            "source": "ratchet-scorecard",
+        }
+    detection = verification.detect_project(target)
+    steps = [
+        {
+            "tool": e.get("suite"),
+            "command": None,
+            "exit_code": e.get("exit_code"),
+            "ok": e.get("exit_code") == 0,
+            "passed": e.get("passing_cases"),
+            "failed": None,
+            "note": "derived from the adoption baseline's ratchet scorecard "
+                    f"(source: {e.get('source')}) — the ratchet scorer tracks "
+                    "the pass-set only; a per-suite failed-case count is not "
+                    "separately measured",
+            "log_tail": "",
+        }
+        for e in (smeas.get("suites") or [])
+    ]
+    return {
+        "detected": True,
+        "detection": detection.to_dict(),
+        "steps": steps,
+        "source": "ratchet-scorecard",
+    }
+
+
 def ci_presence(target: Path) -> dict:
     workflows = sorted(
         p.name for p in (target / ".github" / "workflows").glob("*.y*ml")
@@ -501,11 +555,24 @@ def gate_verdicts(
     return v
 
 
-def build_survey(target: Path, resolver: artifacts.Resolver) -> dict:
+def build_survey(
+    target: Path, resolver: artifacts.Resolver, *, reuse_scorecard: dict | None = None,
+) -> dict:
+    """``reuse_scorecard`` (#334): an ALREADY-COMPUTED ratchet baseline
+    scorecard from earlier in the SAME ``run`` sequence. Reused only when its
+    ``target_sha`` matches the CURRENT HEAD — provably the same state, not an
+    assumption (mirrors ``ratchet.py score --reuse-report``'s loud-fail-on-
+    stale discipline: a mismatch never gets silently trusted). When absent or
+    stale, this runs the REAL coverage-baseline attempt exactly as before —
+    standalone ``adopt.py survey`` (no baseline having just run) always takes
+    this path."""
     age = repo_age(target)
     size = repo_size(target)
     tests = test_presence(target)
-    run = coverage_baseline(target)
+    if reuse_scorecard is not None and reuse_scorecard.get("target_sha") == artifacts.head_sha(target):
+        run = coverage_from_scorecard(reuse_scorecard, target)
+    else:
+        run = coverage_baseline(target)
     ci = ci_presence(target)
     epics_dir = resolver.epics_dir()
     has_epic_ids = bool(epics_dir.is_dir() and hash_epic_definitions(epics_dir))
@@ -555,10 +622,12 @@ def format_survey(doc: dict) -> str:
         lines.append(f"coverage baseline: {run['note']}")
     else:
         for s in run["steps"]:
-            counts = (
-                f"{s['passed']} passed, {s['failed']} failed"
-                if s["passed"] is not None else (s["note"] or "counts unparsed")
-            )
+            if s["passed"] is not None and s["failed"] is not None:
+                counts = f"{s['passed']} passed, {s['failed']} failed"
+            elif s["passed"] is not None:
+                counts = f"{s['passed']} passed (failed count unavailable)"
+            else:
+                counts = s["note"] or "counts unparsed"
             lines.append(
                 f"coverage baseline [{s['tool']}]: exit {s['exit_code']} — {counts}")
     ci = doc["ci"]
@@ -571,10 +640,10 @@ def format_survey(doc: dict) -> str:
     return "\n".join(lines)
 
 
-def cmd_survey(args) -> int:
+def cmd_survey(args, reuse_scorecard: dict | None = None) -> int:
     target = Path(resolve_target(args.owner_repo, args.repo))
     resolver = _require_election(target)
-    doc = build_survey(target, resolver)
+    doc = build_survey(target, resolver, reuse_scorecard=reuse_scorecard)
     out = adoption_dir(resolver) / SURVEY_NAME
     _write_json(out, doc)
     if args.format == "json":
@@ -1028,10 +1097,24 @@ def cmd_run(args) -> int:
     # (survey included) persists. Surveying before electing would write the
     # survey to the embedded default — i.e. into the very target tree a
     # sidecar adoption exists to keep clean.
+    #
+    # Baseline now runs BEFORE survey (#334): baseline's `ratchet score` is a
+    # REAL run of the target's test command; survey's own coverage-baseline
+    # attempt used to be a SECOND real run of that same command against the
+    # same unchanged HEAD. `_survey_reusing_baseline` reads the scorecard
+    # baseline just wrote and hands it to `cmd_survey`, which reuses it
+    # (target_sha-checked fresh) instead of running the suite again — the
+    # suite runs exactly once per `run`.
+    def _survey_reusing_baseline(a):
+        t = Path(resolve_target(a.owner_repo, a.repo))
+        r = _require_election(t)
+        sc = _load_json(r.quality_dir() / ratchet.SCORECARD_NAME)
+        return cmd_survey(a, reuse_scorecard=sc)
+
     steps = (
         ("elect", cmd_elect),
-        ("survey", cmd_survey),
         ("baseline", cmd_baseline),
+        ("survey", _survey_reusing_baseline),
         ("grandfather", cmd_grandfather),
         ("record", cmd_record),
     )

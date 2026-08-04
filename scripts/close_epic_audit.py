@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import artifacts  # noqa: E402 — #213 resolver; head_sha() stamps the manifest (#323)
 import check_unresolved  # noqa: E402
 from chief_wiggum import traceability as tr  # noqa: E402
 from chief_wiggum import verification as ver  # noqa: E402
@@ -43,6 +44,16 @@ class CloseEpicManifest:
     stitch: dict | None = None
     mutation_tools_available: list[str] = field(default_factory=list)
     verification: dict | None = None
+    # target_repo's HEAD at the moment this manifest was built (#323) — the
+    # freshness check every later /close-epic step needs before reusing
+    # `verification`/`transitions`/`unresolved` instead of recomputing: a
+    # match means "provably the same state" (nothing could have changed what
+    # was measured); a mismatch (a commit landed since — e.g. Step 2f's
+    # ratchet-journal commit in embedded mode) means a later step must
+    # re-run, never silently trust a stale manifest. None when the target
+    # isn't a readable git repo — freshness can't be claimed, so callers
+    # must treat that as "not fresh" too.
+    target_sha: str | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -99,11 +110,16 @@ def run_close_epic_audit(
     stitch_fn: Callable[[Path], dict] | None = None,
     which: Callable[[str], str | None] = shutil.which,
     mutation_tools: tuple[str, ...] = DEFAULT_MUTATION_TOOLS,
+    sha_fn: Callable[[Path], str | None] = artifacts.head_sha,
 ) -> CloseEpicManifest:
     """Coordinate the deterministic close-epic audits into one manifest."""
     epic = Path(epic_dir)
     target = Path(target_repo)
     manifest = CloseEpicManifest(epic_dir=str(epic), target_repo=str(target))
+    try:
+        manifest.target_sha = sha_fn(target)
+    except Exception as exc:  # noqa: BLE001
+        manifest.warnings.append(f"could not read target HEAD sha: {exc}")
 
     # Traceability coverage (isolated so a malformed file can't abort the audit).
     trace_file = epic / "traceability.md"
