@@ -47,6 +47,18 @@ class Provider:
     # here rather than inferred, so a role can tell a code-reading provider
     # from a text-only one without re-deriving it from behavior.
     reads_repo: bool = True
+    # Can this provider's call path ever RECEIVE image bytes (chief-wiggum#321)?
+    # True for every CLI/delegate that has real filesystem access via ``cwd``
+    # and can open a named screenshot itself (codex, gemini CLI, claude,
+    # claude-interactive) and for ``gemini-vertex``, which now attaches image
+    # parts directly to the SDK request for any prompt that names images
+    # under ``cwd`` (see ``consult_ai._read_touched_images``). False for a
+    # provider whose ENTIRE call path is a plain text completion with no
+    # attachment mechanism at all (the openrouter-backed models) — declared
+    # explicitly, mirroring ``reads_repo``, so a role that SENDS images can
+    # tell an image-capable provider from a text-only one without waiting to
+    # observe a suspiciously text-only critique.
+    accepts_images: bool = True
 
 
 @dataclass(frozen=True)
@@ -80,6 +92,18 @@ class Role:
     # that never needed repo-reading is never reported as if a provider
     # failed it.
     requires_repo_read: bool = True
+    # Does this role's job send IMAGE bytes to its providers (chief-wiggum#321)?
+    # True only for ``design_critic`` (sends rendered screenshots to critique).
+    # This is deliberately a SEPARATE axis from ``requires_repo_read`` —
+    # ``design_critic`` is correctly ``requires_repo_read=False`` (it was
+    # never asking a provider to read the repo), which is exactly why #319's
+    # ``detect_blind_providers`` cannot see this role's blindness: it never
+    # sends a diff, so there is nothing repo-shaped to be blind to. The
+    # blindness here is image-shaped — a required provider with no
+    # image-attachment path critiquing a written description of screenshots
+    # it never saw. Declared per role, checked against each provider's
+    # ``accepts_images`` by ``detect_image_blind_providers``.
+    sends_images: bool = False
 
 
 @dataclass(frozen=True)
@@ -162,6 +186,7 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
             delegate=raw.get("delegate"),
             model=raw.get("model"),
             reads_repo=bool(raw.get("reads_repo", True)),
+            accepts_images=bool(raw.get("accepts_images", True)),
         )
     return providers
 
@@ -176,6 +201,7 @@ def roles_from_config(config: dict[str, Any]) -> dict[str, Role]:
             lenses=dict(raw.get("lenses", {})),
             optional_timeout_seconds=raw.get("optional_timeout_seconds"),
             requires_repo_read=bool(raw.get("requires_repo_read", True)),
+            sends_images=bool(raw.get("sends_images", False)),
         )
     return roles
 
@@ -541,6 +567,124 @@ def detect_blind_providers(
 
 
 @dataclass
+class ImageBlindnessFinding:
+    """One provider composed into an image-sending role despite being
+    declared unable to receive images (chief-wiggum#321)."""
+
+    provider: str
+    required: bool
+    message: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ImageBlindnessReport:
+    """chief-wiggum#321: does every provider a role SENDS IMAGES to actually
+    declare that it can receive them? The same four-state gate vocabulary as
+    ``BlindnessReport`` (chief-wiggum#289): ``pass`` / ``findings`` /
+    ``inapplicable`` / ``error``. A report, never a gate — attached to the
+    quorum manifest alongside the repo-read ``BlindnessReport``, and computed
+    unconditionally (it needs no ``prompt``, unlike ``BlindnessReport``,
+    because it is a structural declaration check, not a per-call
+    measurement — see ``detect_image_blind_providers``).
+    """
+
+    role: str
+    sends_images: bool
+    findings: list[ImageBlindnessFinding] = field(default_factory=list)
+    providers_checked: int = 0
+    error: str | None = None
+
+    @property
+    def applicability(self) -> str:
+        if self.error:
+            return "error"
+        if not self.sends_images:
+            return "inapplicable"
+        return "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error. Derived, never stored."""
+        if self.applicability in ("error", "inapplicable"):
+            return self.applicability
+        return "findings" if self.findings else "pass"
+
+    def to_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "sends_images": self.sends_images,
+            "applicability": self.applicability,
+            "outcome": self.outcome,
+            "providers_checked": self.providers_checked,
+            "error": self.error,
+            "findings": [f.to_dict() for f in self.findings],
+        }
+
+
+def detect_image_blind_providers(
+    role: Role,
+    providers_by_name: dict[str, Provider],
+) -> ImageBlindnessReport:
+    """chief-wiggum#321: catch a role that SENDS images (``design_critic``
+    critiques rendered screenshots) composed with a required or optional
+    provider declared unable to RECEIVE images (``provider.accepts_images``
+    is ``False``) — the blindness shape #319's ``detect_blind_providers``
+    cannot see, because that check keys on ``requires_repo_read``/
+    ``reads_repo`` (a repo-reading gap), and ``design_critic`` is correctly
+    ``requires_repo_read=False``: it was never asking a provider to read the
+    repo, so nothing there is anomalous. The gap is a different axis
+    entirely — images, not repo access.
+
+    Unlike ``detect_blind_providers``, this is a STRUCTURAL/declaration
+    check, not a per-call measurement: whether a provider's call path can
+    receive image bytes at all is a fixed property of that call path (an
+    attachment mechanism either exists in the adapter or it doesn't), not
+    something that varies call to call. That means the defect this catches
+    — a role sending images to a provider wired to only ever see text — is
+    checkable from config alone, BEFORE any provider ever runs, which is
+    the whole point: the next role that sends images must be caught by
+    declaring it correctly, not by noticing after the fact that a critique
+    read suspiciously text-only (the ticket's own note that a token-floor
+    check can look "large enough" while carrying zero image content).
+
+    ``role.sends_images is False`` (every shipped role except
+    ``design_critic``) is ``inapplicable`` — a role that never sends images
+    was never asking a provider to look at one.
+    """
+    if not role.sends_images:
+        return ImageBlindnessReport(role=role.name, sends_images=False)
+
+    findings: list[ImageBlindnessFinding] = []
+    checked = 0
+    for name in list(role.required) + list(role.optional):
+        provider = providers_by_name.get(name)
+        if provider is None:
+            continue  # not enabled/available — a plan gap visible elsewhere
+        checked += 1
+        if provider.accepts_images:
+            continue
+        required = name in role.required
+        findings.append(ImageBlindnessFinding(
+            provider=name,
+            required=required,
+            message=(
+                f"{name} is a {'required' if required else 'optional'} provider "
+                f"of role {role.name!r}, which sends images, but {name} is "
+                "declared unable to accept images (provider.accepts_images="
+                "False) — it critiques a written description of the images, "
+                "never the rendered pixels (chief-wiggum#321)."
+            ),
+        ))
+    return ImageBlindnessReport(
+        role=role.name, sends_images=True, findings=findings, providers_checked=checked
+    )
+
+
+@dataclass
 class QuorumManifest:
     role: str
     results: list[ProviderResult] = field(default_factory=list)
@@ -548,6 +692,11 @@ class QuorumManifest:
     # passed to ``run_role_quorum``) — distinct from a check that RAN and
     # found nothing (chief-wiggum#319).
     blindness: BlindnessReport | None = None
+    # chief-wiggum#321: unlike ``blindness``, this needs no ``prompt`` (it's a
+    # static declaration check — see ``detect_image_blind_providers``), so it
+    # is always computed once there is at least one task to check. ``None``
+    # only when the plan had no tasks at all.
+    image_blindness: ImageBlindnessReport | None = None
 
     @property
     def ok(self) -> bool:
@@ -567,6 +716,8 @@ class QuorumManifest:
         }
         if self.blindness is not None:
             d["blindness"] = self.blindness.to_dict()
+        if self.image_blindness is not None:
+            d["image_blindness"] = self.image_blindness.to_dict()
         return d
 
 
@@ -696,9 +847,20 @@ def run_role_quorum(
     results.sort(key=lambda r: order.get(r.name, 1_000))
     manifest = QuorumManifest(plan.role.name, results)
 
+    providers_by_name = {p.name: p for p, _ in tasks}
+
+    # chief-wiggum#321: structural, needs no ``prompt`` — computed every run,
+    # unlike the token-floor ``blindness`` check below.
+    try:
+        manifest.image_blindness = detect_image_blind_providers(plan.role, providers_by_name)
+    except Exception as exc:  # noqa: BLE001 - the check itself must never break the quorum
+        manifest.image_blindness = ImageBlindnessReport(
+            role=plan.role.name, sends_images=plan.role.sends_images,
+            error=f"image blindness check failed: {exc}",
+        )
+
     if prompt is not None:
         try:
-            providers_by_name = {p.name: p for p, _ in tasks}
             prompt_tokens_by_provider = {
                 name: estimate_prompt_tokens(
                     prompt_for_provider(plan.role, name, prompt, lenses or {})

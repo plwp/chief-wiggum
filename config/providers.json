@@ -5,73 +5,84 @@
       "type": "tool",
       "tool": "codex",
       "enabled": true,
-      "reads_repo": true
+      "reads_repo": true,
+      "accepts_images": true
     },
     "gemini": {
       "type": "tool",
       "tool": "gemini",
       "enabled": false,
-      "reads_repo": true
+      "reads_repo": true,
+      "accepts_images": true
     },
     "gemini-vertex": {
       "type": "tool",
       "tool": "gemini-vertex",
       "enabled": true,
-      "reads_repo": true
+      "reads_repo": true,
+      "accepts_images": true
     },
     "claude": {
       "type": "tool",
       "tool": "claude",
       "enabled": false,
-      "reads_repo": true
+      "reads_repo": true,
+      "accepts_images": true
     },
     "claude-interactive": {
       "type": "delegate",
       "delegate": "claude-interactive",
       "enabled": true,
-      "reads_repo": true
+      "reads_repo": true,
+      "accepts_images": true
     },
     "opus": {
       "type": "tool",
       "tool": "claude",
       "model": "claude-opus-4-6",
       "enabled": true,
-      "reads_repo": true
+      "reads_repo": true,
+      "accepts_images": true
     },
     "deepseek": {
       "type": "tool",
       "tool": "openrouter",
       "model": "deepseek/deepseek-v4-pro",
       "enabled": true,
-      "reads_repo": false
+      "reads_repo": false,
+      "accepts_images": false
     },
     "kimi": {
       "type": "tool",
       "tool": "openrouter",
       "model": "moonshotai/kimi-k3",
       "enabled": true,
-      "reads_repo": false
+      "reads_repo": false,
+      "accepts_images": false
     },
     "glm": {
       "type": "tool",
       "tool": "openrouter",
       "model": "z-ai/glm-5.2",
       "enabled": true,
-      "reads_repo": false
+      "reads_repo": false,
+      "accepts_images": false
     },
     "qwen": {
       "type": "tool",
       "tool": "openrouter",
       "model": "qwen/qwen3.7-max",
       "enabled": true,
-      "reads_repo": false
+      "reads_repo": false,
+      "accepts_images": false
     },
     "minimax": {
       "type": "tool",
       "tool": "openrouter",
       "model": "minimax/minimax-m3",
       "enabled": true,
-      "reads_repo": false
+      "reads_repo": false,
+      "accepts_images": false
     }
   },
   "roles": {
@@ -137,7 +148,8 @@
         "claude-interactive"
       ],
       "optional_timeout_seconds": 300,
-      "requires_repo_read": false
+      "requires_repo_read": false,
+      "sends_images": true
     },
     "risky_diff_review": {
       "required": [
