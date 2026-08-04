@@ -9,7 +9,9 @@ once per run, and an unattributed cost was reported as a measured $0.00.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -23,9 +25,14 @@ MULTS = {"cache_read": 0.1, "cache_write_5m": 1.25, "cache_write_1h": 2.0}
 
 
 def _turn(request_id, *, model="claude-opus-5", tin=100, tout=200, cache_read=0,
-          w5=0, w1=0, sidechain=False, cwd="/repos/acme", ts="2026-08-03T06:15:00.000Z"):
-    """One assistant turn as Claude Code writes it to a session transcript."""
-    return json.dumps({
+          w5=0, w1=0, sidechain=False, cwd="/repos/acme", ts="2026-08-03T06:15:00.000Z",
+          agent=None):
+    """One assistant turn as Claude Code writes it to a session transcript.
+
+    ``agent`` is the sub-agent TYPE Claude Code stamps as ``attributionAgent``
+    (e.g. ``general-purpose``, ``Explore``) — absent (``None``) for an
+    orchestrator turn, matching the real transcript shape."""
+    rec = {
         "type": "assistant", "requestId": request_id, "sessionId": "sess-1",
         "timestamp": ts, "isSidechain": sidechain, "cwd": cwd,
         "message": {"model": model, "usage": {
@@ -34,7 +41,10 @@ def _turn(request_id, *, model="claude-opus-5", tin=100, tout=200, cache_read=0,
             "cache_creation": {"ephemeral_5m_input_tokens": w5,
                                "ephemeral_1h_input_tokens": w1},
         }},
-    })
+    }
+    if agent is not None:
+        rec["attributionAgent"] = agent
+    return json.dumps(rec)
 
 
 @pytest.fixture
@@ -335,3 +345,174 @@ def test_cost_report_handles_an_empty_log():
     rep = factory_log.session_cost_report([])
     assert rep["turns"] == 0 and rep["findings"] == []
     assert "ingest-claude-transcripts" in factory_log.render_cost_report(rep)
+
+
+# ---- sub-agent transcript discovery (chief-wiggum#345) -----------------------
+#
+# Claude Code writes the orchestrator's turns to `<project>/<session>.jsonl`
+# but every sub-agent's turns to a DEEPER path -- `<project>/<session>/
+# subagents/agent-<id>.jsonl`, and workflow sub-agents deeper still
+# (`.../subagents/workflows/<wf>/agent-<id>.jsonl`). A `*/*.jsonl` glob only
+# sees the first level, which is why the sub-agent layer read $0 while
+# carrying ~75% of real turn volume (verified against the real corpus, see
+# the implementation plan). These tests fail against the old two-level glob.
+
+def test_ingest_finds_subagent_transcripts_at_the_third_level(monkeypatch, tmp_path):
+    """This test MUST fail on the old `root.glob("*/*.jsonl")` -- neither the
+    subagents/ nor the subagents/workflows/<wf>/ turn would ever be seen."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(_turn("top-1", cwd="/repos/app") + "\n")
+
+    subagents = proj / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a.jsonl").write_text(
+        _turn("sub-1", cwd="/repos/app", sidechain=True) + "\n")
+
+    wf = subagents / "workflows" / "wf1"
+    wf.mkdir(parents=True)
+    (wf / "agent-b.jsonl").write_text(
+        _turn("sub-2", cwd="/repos/app", sidechain=True) + "\n")
+
+    n = factory_log.ingest_claude_transcripts(root)
+    assert n == 3
+    ids = {r["request_id"] for r in factory_log.read_log()}
+    assert ids == {"top-1", "sub-1", "sub-2"}
+
+
+def test_subagent_turns_land_in_the_subagent_layer(monkeypatch, tmp_path):
+    """query_source must derive from isSidechain OR the /subagents/ path --
+    belt-and-braces, so a sub-agent transcript missing isSidechain (older
+    format) still lands in the right layer."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    subagents = root / "p" / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a.jsonl").write_text(
+        _turn("sub-1", sidechain=True) + "\n")
+    (subagents / "agent-b.jsonl").write_text(
+        _turn("sub-2", sidechain=False) + "\n")  # path alone must qualify
+
+    factory_log.ingest_claude_transcripts(root)
+    recs = {r["request_id"]: r for r in factory_log.read_log()}
+    assert recs["sub-1"]["query_source"] == "subagent"
+    assert recs["sub-2"]["query_source"] == "subagent"
+
+
+def test_no_double_count_across_transcript_levels(monkeypatch, tmp_path):
+    """Request-id overlap between the orchestrator and sub-agent levels is 0 in
+    the real corpus (see the plan's verification), so widening the glob cannot
+    double-count -- pinned here with a fixture that deliberately reuses one id."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(_turn("dup-1", cwd="/repos/app") + "\n")
+    subagents = proj / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a.jsonl").write_text(
+        _turn("dup-1", cwd="/repos/app", sidechain=True) + "\n")
+
+    n = factory_log.ingest_claude_transcripts(root)
+    assert n == 1
+    assert len([r for r in factory_log.read_log() if r["request_id"] == "dup-1"]) == 1
+
+
+def test_ingest_records_cwd_and_agent_type(monkeypatch, tmp_path):
+    """`cwd` lets ticket_cost's read-time window slicing recover an untagged
+    turn later; `agent_type` is the sub-agent TYPE name (never message
+    content) and must never be conflated with the gate-cost `skill` key."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(
+        _turn("r1", cwd="/repos/app", agent="general-purpose") + "\n")
+
+    factory_log.ingest_claude_transcripts(root)
+    rec = json.loads(Path(tmp_path / "log.jsonl").read_text().strip())
+    assert rec["cwd"] == "/repos/app"
+    assert rec["agent_type"] == "general-purpose"
+    assert "skill" not in rec
+
+
+def test_until_ts_excludes_in_flight_turns(monkeypatch, tmp_path):
+    """`--until-ts` bounds a catch-up ingest so it can never consume an
+    in-flight ticket's own turns (the tag-at-ingest race, chief-wiggum#345)."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(
+        _turn("early", ts="2026-08-03T06:00:00.000Z") + "\n"
+        + _turn("late", ts="2026-08-03T07:00:00.000Z") + "\n")
+
+    cutoff = factory_log._parse_iso_ts("2026-08-03T06:30:00.000Z")
+    n = factory_log.ingest_claude_transcripts(root, until=cutoff)
+    assert n == 1
+    assert {r["request_id"] for r in factory_log.read_log()} == {"early"}
+
+
+# ---- count_transcript_turns: independent evidence, never a write (#345 AC4) -
+
+def test_count_transcript_turns_reports_buckets_without_writing(monkeypatch, tmp_path):
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    log.write_text("")  # present but empty, so byte-identity is checkable
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(_turn("r1", sidechain=False) + "\n")
+    subagents = proj / "s" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a.jsonl").write_text(_turn("r2", sidechain=True) + "\n")
+
+    before = log.read_bytes()
+    result = factory_log.count_transcript_turns(root)
+    assert result == {"scanned": True, "repl_main_thread": 1, "subagent": 1}
+    assert log.read_bytes() == before  # never writes -- a reader, not an ingest
+
+
+def test_count_transcript_turns_missing_root_is_not_scanned(tmp_path):
+    result = factory_log.count_transcript_turns(tmp_path / "does-not-exist")
+    assert result["scanned"] is False
+    # never crash, never claim zero as if it were a measured fact
+
+
+def test_count_transcript_turns_since_filters_by_file_mtime_not_turn_ts(monkeypatch, tmp_path):
+    """`since` is a CHEAP bound (plan §1e): whole FILES whose mtime precedes it
+    are skipped unread, so a bounded scan stays fast enough to run at PR time
+    -- this is a file-level filter, not a per-turn timestamp filter."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+
+    old_file = proj / "old.jsonl"
+    old_file.write_text(_turn("old-turn", cwd="/repos/app") + "\n")
+    old_mtime = time.time() - 30 * 86400
+    os.utime(old_file, (old_mtime, old_mtime))
+
+    new_file = proj / "new.jsonl"
+    new_file.write_text(_turn("new-turn", cwd="/repos/app") + "\n")
+
+    since = time.time() - 7 * 86400
+    result = factory_log.count_transcript_turns(root, since=since)
+    assert result["scanned"] is True
+    assert result["repl_main_thread"] == 1  # only the recently-touched file counted
+
+
+def test_count_transcript_turns_respects_repo_filter(monkeypatch, tmp_path):
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(
+        _turn("keep", cwd="/repos/app") + "\n"
+        + _turn("other-repo", cwd="/repos/other") + "\n")
+
+    result = factory_log.count_transcript_turns(root, repo="app")
+    assert result["scanned"] is True
+    assert result["repl_main_thread"] == 1
