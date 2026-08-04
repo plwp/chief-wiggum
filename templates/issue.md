@@ -16,6 +16,16 @@ As a **[role]**, I want **[capability]** so that **[benefit]**.
 
 <!-- Implementation hints, affected files, API changes, migration needs -->
 
+## Design Decisions
+
+<!-- Every non-trivial choice RESOLVED here by the issue author — never left as
+     a list of options for the implementing agent to pick from. One line per
+     decision: what was chosen and why. If a decision genuinely cannot be made
+     yet, write it as `TBD:` with what is needed to resolve it — a TBD gates
+     dependent work (scripts/check_unresolved.py). -->
+
+- **Decision**: <!-- e.g., "JWT middleware, not per-route decorators — matches existing auth stack" -->
+
 ## Out of Scope
 
 <!-- Explicitly list what this ticket does NOT cover -->

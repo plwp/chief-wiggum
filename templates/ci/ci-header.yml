@@ -5,4 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# Least-privilege token: CI only reads the checkout. Widen per-job if a job
+# genuinely needs to write (comments, releases) — never here at the top.
+permissions:
+  contents: read
+
+# Superseded runs on the same ref are wasted compute — cancel them.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:

@@ -28,7 +28,7 @@ For BREAK/WARN findings, here is the git history showing how each side was intro
 
 ## Known False Positive Patterns
 
-The automated diff above uses regex-based extraction and produces false positives. **Your job is to filter these out.** Common patterns to watch for:
+The automated diff above uses regex-based extraction and produces false positives. **Your job is to filter these out.** The worked examples below assume a TypeScript/Zod frontend against a Go/MongoDB backend — the stack this audit was first built for. When the target repo uses a different stack, apply the same *categories* of false positive (serialization-compatible types, request/response conflation, internal storage types, test fixtures) to its equivalents rather than dismissing the list as inapplicable. Common patterns to watch for:
 
 - **Same field name, different endpoint**: e.g., `days` appears as `Array<{date, day_type}>` in an availability response and `int` in a pricing response — they're unrelated fields
 - **TS string union vs Go string**: `Gender = 'male' | 'female'` serializes to a string — compatible with `*string`, not a real type mismatch

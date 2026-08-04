@@ -208,7 +208,7 @@ def test_scaffold_node_has_ci_install_test(tmp_path):
     ci_scaffold.scaffold_ci(tmp_path, ["node"])
     _, doc = _load_ci(tmp_path)
     runs = _all_run_steps(doc)
-    assert "npm ci" in runs
+    assert "npm install" in runs
     assert "npm test" in runs
 
 
@@ -218,7 +218,7 @@ def test_scaffold_multi_stack_covers_each(tmp_path):
     runs = _all_run_steps(doc)
     assert "go test ./..." in runs
     assert "pytest" in runs
-    assert "npm ci" in runs
+    assert "npm install" in runs
 
 
 def test_scaffold_is_idempotent_without_force(tmp_path):
