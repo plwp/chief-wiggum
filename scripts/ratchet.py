@@ -765,10 +765,35 @@ def reuse_suite_report(
             raise RatchetError(f"suite {suite.name!r}: no .trx found at reused report {report_path}")
         passed = parse_trx(docs)
         files = trx_case_files(cfg, suite, docs)
+    elif suite.parser == "go-test-json":
+        # #322: go-test-json has no XML/TRX document of its own — the
+        # "report" is just the ``go test -json`` stdout stream, captured to a
+        # file by whatever ran the suite (a verification-runner wrapper, or
+        # an operator's own `> report` redirect). Parsed identically to the
+        # fresh-run path, which reads the same shape straight off `proc.stdout`.
+        if not report_path.is_file():
+            raise RatchetError(
+                f"suite {suite.name!r}: --reuse-report {report_path} is not a file "
+                "(go-test-json has no directory report shape)"
+            )
+        text = report_path.read_text()
+        passed = parse_go_test_json(text)
+        files = go_case_dirs(cfg, suite, text)
+    elif suite.parser == "pass-fail-lines":
+        # Same reasoning as go-test-json: the "report" is captured stdout,
+        # parsed with the exact fresh-run PASS/FAIL line grammar. No file map
+        # exists for this parser even on the fresh-run path.
+        if not report_path.is_file():
+            raise RatchetError(
+                f"suite {suite.name!r}: --reuse-report {report_path} is not a file "
+                "(pass-fail-lines has no directory report shape)"
+            )
+        passed = parse_pass_fail_lines(report_path.read_text())
+        files = {}
     else:
         raise RatchetError(
             f"suite {suite.name!r}: --reuse-report is not supported for parser "
-            f"{suite.parser!r} (no on-disk report to reuse — only junit-xml/trx)"
+            f"{suite.parser!r} (unrecognized parser)"
         )
     ids = {f"{suite.name}::{cid}" for cid in passed}
     return ids, {cid: f for cid, f in files.items() if cid in ids}
