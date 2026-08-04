@@ -137,6 +137,36 @@ def test_traceability_audit_included(tmp_path):
     assert m.traceability["total"] == 2
 
 
+# --- target_sha stamping (#323): the freshness check later /close-epic steps --
+# --- need before reusing this manifest instead of recomputing -----------------
+
+
+def test_target_sha_stamped_from_injected_sha_fn(tmp_path):
+    m = _audit(tmp_path, sha_fn=lambda repo: "deadbeef" * 5)
+    assert m.target_sha == "deadbeef" * 5
+
+
+def test_target_sha_none_outside_a_git_repo(tmp_path):
+    """Default sha_fn is the real artifacts.head_sha — tmp_path here is not a
+    git repo, so this exercises the real "not a git repo" path, not a stub."""
+    m = _audit(tmp_path)
+    assert m.target_sha is None
+
+
+def test_target_sha_failure_is_warned_not_fatal(tmp_path):
+    def boom(repo):
+        raise RuntimeError("git binary missing")
+
+    m = _audit(tmp_path, sha_fn=boom)
+    assert m.target_sha is None
+    assert any("target HEAD sha" in w for w in m.warnings)
+
+
+def test_target_sha_in_manifest_dict(tmp_path):
+    m = _audit(tmp_path, sha_fn=lambda repo: "abc123")
+    assert m.to_dict()["target_sha"] == "abc123"
+
+
 def test_malformed_traceability_does_not_abort_audit(tmp_path, monkeypatch):
     m_in = _epic(tmp_path)
 
