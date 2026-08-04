@@ -362,6 +362,42 @@ def render_ticket_comments(ticket: TicketContext) -> str:
     )
 
 
+# chief-wiggum#332: a literal line separating a review-prompt template's
+# STATIC preamble (task framing, review standard, output format — none of
+# which ever reference a template var) from its VOLATILE per-ticket body
+# (title/description/AC/comments/diff). Ordering static-first — and
+# appending the checklist/epic sections to the STATIC half rather than the
+# very end of the whole prompt — means two DIFFERENT tickets sharing the
+# same template/checklist/epic artifacts produce a byte-identical prefix,
+# which is what lets a provider-side prompt-prefix cache hit across tickets
+# in the same epic/review role (the ticket_cost.py ledger already reads
+# ``cache_read`` fields; the pre-#332 layout could never earn one). A
+# template with no marker (every pre-#332 template) degrades to "entirely
+# volatile" — every substitution/section still lands somewhere, it just
+# isn't prefix-cacheable.
+VOLATILE_MARKER = "<!-- CW:VOLATILE -->"
+
+# A rendered comment thread is the one unbounded payload in the assembled
+# prompt before #332 — the diff has DEFAULT_MAX_DIFF_BYTES, comments had no
+# cap at all. Smaller than the diff cap: a review-shaped comment thread is
+# rarely legitimately huge, and this is a floor against pathological cases
+# (a long adversarial or bot-generated thread), not a routine truncation.
+DEFAULT_MAX_COMMENTS_BYTES = 50_000
+
+
+def truncate_text(text: str, max_bytes: int, *, label: str = "content") -> str:
+    """Truncate ``text`` to ``max_bytes`` (UTF-8), appending a labeled marker
+    stating the original size — the generic form ``truncate_diff`` below is
+    now a thin wrapper over (chief-wiggum#332), so the diff and the comment
+    thread share one truncation implementation rather than two copies that
+    could drift."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    head = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return head + f"\n\n... [{label} truncated at {max_bytes} bytes of {len(encoded)}] ..."
+
+
 def assemble_review_prompt(
     template: str,
     ticket: TicketContext,
@@ -369,28 +405,46 @@ def assemble_review_prompt(
     *,
     checklist: str | None = None,
     epic_sections: Iterable[tuple[str, str]] = (),
+    max_comments_bytes: int = DEFAULT_MAX_COMMENTS_BYTES,
 ) -> str:
-    """Substitute the review template and append the checklist + epic context.
+    """Substitute the review template and assemble the checklist + epic context
+    STATIC-FIRST, ticket content last (chief-wiggum#332).
 
-    Substitution is **single-pass** (one regex sweep over the template), so a
-    value that itself contains a token name (e.g. a ticket body mentioning
-    ``{{DIFF}}``) is never re-scanned and replaced. Braces in the diff are not
-    interpreted as format fields. ``{{TICKET_COMMENTS}}`` expands to the two
-    labeled amendment/discussion regions (CTR-fh-003) — distinct from
+    Substitution is **single-pass** (one regex sweep over the VOLATILE half
+    of the template only), so a value that itself contains a token name
+    (e.g. a ticket body mentioning ``{{DIFF}}``) is never re-scanned and
+    replaced. Braces in the diff are not interpreted as format fields.
+    ``{{TICKET_COMMENTS}}`` expands to the two labeled amendment/discussion
+    regions (CTR-fh-003), capped like the diff — distinct from
     ``{{ACCEPTANCE_CRITERIA}}``, which is never rewritten by comments
     (INV-fh-009/010).
+
+    ``template`` splits on ``VOLATILE_MARKER`` into a static prefix and a
+    volatile suffix; ``checklist``/``epic_sections`` are appended to the
+    STATIC prefix (not the end of the whole prompt, the pre-#332 layout) so
+    two different tickets sharing the same static inputs produce a
+    byte-identical prefix. A template with no marker is treated as entirely
+    volatile (``static_prefix`` empty) — every substitution and appended
+    section still lands in the output, it's simply not prefix-cacheable.
     """
+    if VOLATILE_MARKER in template:
+        static_prefix, volatile_body = template.split(VOLATILE_MARKER, 1)
+    else:
+        static_prefix, volatile_body = "", template
+
     replacements = {
         "TICKET_TITLE": ticket.title or "(untitled)",
         "TICKET_DESCRIPTION": ticket.body or "(no description)",
         "ACCEPTANCE_CRITERIA": _format_acceptance(ticket.acceptance_criteria),
-        "TICKET_COMMENTS": render_ticket_comments(ticket),
+        "TICKET_COMMENTS": truncate_text(
+            render_ticket_comments(ticket), max_comments_bytes, label="comment thread"
+        ),
         "DIFF": diff,
     }
-    prompt = re.sub(
+    volatile_rendered = re.sub(
         r"\{\{(TICKET_TITLE|TICKET_DESCRIPTION|ACCEPTANCE_CRITERIA|TICKET_COMMENTS|DIFF)\}\}",
         lambda m: replacements[m.group(1)],
-        template,
+        volatile_body,
     )
 
     extra: list[str] = []
@@ -399,15 +453,15 @@ def assemble_review_prompt(
             extra.append(f"\n\n## {title}\n\n{content.strip()}")
     if checklist and checklist.strip():
         extra.append(f"\n\n---\n\n{checklist.strip()}")
-    return prompt + "".join(extra)
+
+    static_rendered = static_prefix.rstrip() + "".join(extra)
+    if not static_rendered:
+        return volatile_rendered
+    return static_rendered + "\n\n---\n\n" + volatile_rendered.lstrip()
 
 
 def truncate_diff(diff: str, max_bytes: int = DEFAULT_MAX_DIFF_BYTES) -> str:
-    encoded = diff.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return diff
-    head = encoded[:max_bytes].decode("utf-8", errors="ignore")
-    return head + f"\n\n... [diff truncated at {max_bytes} bytes of {len(encoded)}] ..."
+    return truncate_text(diff, max_bytes, label="diff")
 
 
 def build_synthesis_prompt(response_paths: list[str]) -> str:

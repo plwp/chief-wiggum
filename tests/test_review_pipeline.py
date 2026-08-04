@@ -197,6 +197,29 @@ def test_comment_thread_under_the_cap_is_unaffected():
     assert "truncated" not in out
 
 
+def test_shipped_review_prompt_template_uses_static_first_ordering():
+    # A regression guard on the actual shipped file (chief-wiggum#332): a
+    # future hand-edit that drops the marker would silently regress every
+    # review prompt back to non-cacheable, appended-at-the-end ordering.
+    shipped = Path(__file__).resolve().parents[1] / "templates" / "review-prompt.md"
+    text = shipped.read_text()
+    assert review.VOLATILE_MARKER in text
+    marker_pos = text.index(review.VOLATILE_MARKER)
+    # Every template var lives in the volatile half, after the marker.
+    static_part = text[:marker_pos]
+    assert "{{" not in static_part
+
+    out = review.assemble_review_prompt(
+        text, _ticket(), "the diff", checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", "REQUIRES x")],
+    )
+    assert "Ticket: Add thing" not in out  # sanity: this uses the real labels
+    assert "**Ticket**: Add thing" in out
+    assert "REQUIRES x" in out
+    assert "# Checklist" in out
+    assert "the diff" in out
+
+
 # --- diff truncation --------------------------------------------------------
 
 
