@@ -789,23 +789,13 @@ def test_capture_diff_against_stale_local_main_is_polluted_but_remote_tracking_i
     assert "real_change.py" in fixed
 
 
-# --- synthesis prompt -------------------------------------------------------
-
-
-def test_synthesis_prompt_lists_responses():
-    p = review.build_synthesis_prompt(["a/reviewer-codex.md", "a/reviewer-gemini.md"])
-    assert "reviewer-codex.md" in p and "reviewer-gemini.md" in p
-
-
-def test_synthesis_prompt_instructs_union_not_consensus():
-    # Reconciliation of a (possibly lensed) quorum is union + cross-verify
-    # contested items — a unique finding must not be downgraded for lacking
-    # consensus (chief-wiggum#163).
-    p = review.build_synthesis_prompt(["a/reviewer-codex.md"])
-    assert "Combine by union" in p
-    assert "not weaker for lacking consensus" in p
-    assert "contradictory claims" in p
-    assert "consensus vs single-reviewer" not in p
+# --- dead synthesis-prompt.md artifact removed (chief-wiggum#332) -----------
+#
+# build_synthesis_prompt/synthesis-prompt.md was never consumed: /implement
+# Step 8 (implement.md) synthesizes reviews via scripts/synthesize_reviews.py
+# reading the individual reviewer-<provider>.md files directly, not this
+# artifact. run_review() must not spend a write (or a reader's attention) on
+# a file nothing reads.
 
 
 # --- full run (mocked git + provider) ---------------------------------------
@@ -850,7 +840,10 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     # Files written.
     assert (out / "impl-diff.txt").exists()
     assert (out / "review-prompt.md").exists()
-    assert (out / "synthesis-prompt.md").exists()
+    # chief-wiggum#332: synthesis-prompt.md was dead weight — nothing reads
+    # it (/implement Step 8 uses synthesize_reviews.py over the individual
+    # reviewer-<provider>.md files instead) — so run_review must not write it.
+    assert not (out / "synthesis-prompt.md").exists()
     assert (out / "review-manifest.json").exists()
     # Provider manifest integrated.
     assert manifest.provider_manifest["ok"] is True
