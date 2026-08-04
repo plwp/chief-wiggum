@@ -21,6 +21,22 @@ If the answer to any of these is no — fix it. Don't ship "good enough."
 - **Never skip browser-use/E2E validation** (Step 10) unless `--skip-browser-use` was explicitly passed by the user.
 - **Never create a PR before review is complete.** The PR is the final artifact (Step 11), not an intermediate checkpoint.
 
+## Disclosure (#317)
+
+Every commit and PR body this workflow generates is a CW-authored artifact
+published to a public repo. Append the AI-authorship trailer to every commit
+message you author for this ticket (test commits, implementation commits,
+fix-up commits):
+
+```bash
+python3 "$CW_HOME/scripts/ai_disclosure.py" commit-trailer --file "$CW_TMP/<ticket>/commit-msg.txt"
+git commit -F "$CW_TMP/<ticket>/commit-msg.txt"
+```
+
+PR bodies get the disclosure automatically — `draft_pr.py` calls
+`chief_wiggum.shipping.build_pr_body`, which appends it (Step 11). See
+`docs/ai-act-posture.md` for the determination this mechanizes.
+
 ## Autonomy
 
 **Run the full pipeline autonomously.** Do NOT pause between steps to ask "ready to proceed?" or "want to skip this?". Move through every step without asking for permission unless you genuinely need user input (e.g., ambiguous requirements in Step 2, a design decision where approaches conflict and there's no clear winner, or a blocking error you can't resolve).

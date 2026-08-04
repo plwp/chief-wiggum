@@ -12,6 +12,15 @@ Create a well-documented pull request with mermaid architecture diagrams, test e
 - `--base`: Base branch (default: main)
 - `--issue`: Issue number to link (optional)
 
+## Disclosure (#317)
+
+The PR body drafted in Step 4 carries an AI-authorship disclosure line
+automatically — `draft_pr.py` builds it via `chief_wiggum.shipping.build_pr_body`,
+which appends it. If any commit on this branch was authored outside `/implement`
+(so it never ran through that workflow's Disclosure step), append the trailer
+before pushing: `python3 "$CW_HOME/scripts/ai_disclosure.py" commit-trailer --file <msg>`.
+See `docs/ai-act-posture.md`.
+
 ## Workflow
 
 ### Step 0: Resolve paths
