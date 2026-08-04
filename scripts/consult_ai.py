@@ -608,6 +608,95 @@ def _read_touched_files(cwd: str | None, paths: list[str]) -> list[str]:
     return blocks
 
 
+# chief-wiggum#321: design_critic sends rendered SCREENSHOTS, not diff text —
+# a different blindness shape than #319's diff-scoped text retrieval above,
+# which never touches image bytes at all. A CLI tool provider with real
+# filesystem access via ``cwd`` (codex, claude-interactive) can already open
+# a named screenshot itself; gemini-vertex's call path is a single
+# non-agentic SDK request with no tool loop, so it needs the bytes handed to
+# it directly. The google-genai SDK's multimodal ``contents`` accepts a list
+# mixing plain text with ``types.Part.from_bytes(data=..., mime_type=...)``
+# image parts (verified against the installed google-genai package) — this
+# reads exactly the image files named in the prompt from ``cwd``, bounded the
+# same way #319 bounds diff-file retrieval: a capped count, a capped
+# per-image byte size, and the same path-traversal guard. A prompt that names
+# no images, or whose named images don't exist under ``cwd``, retrieves
+# nothing and ``contents`` stays exactly what it would have been without
+# this — an honest no-op, not a pretended fix.
+_IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+_IMAGE_PATH_RE = re.compile(
+    r"(?<![\w/])((?:[\w.\-]+/)*[\w.\-]+\.(?:png|jpe?g|webp|gif))\b",
+    re.IGNORECASE,
+)
+
+# Bounds mirroring MAX_RETRIEVED_FILES/MAX_RETRIEVED_FILE_BYTES above, sized
+# for images rather than source text: a handful of full-page screenshots per
+# design direction, capped well under Vertex's inline-request ceiling.
+MAX_RETRIEVED_IMAGES = 20
+MAX_RETRIEVED_IMAGE_BYTES = 8_000_000
+
+
+def _image_paths_from_prompt(text: str) -> list[str]:
+    """Extract image-file paths named in ``text`` (a design-critique prompt
+    names the screenshot files it wants critiqued — see ``design.md`` Step
+    4). Deterministic pattern match on a known set of image extensions,
+    deduped in first-seen order — NOT a general file-mention heuristic. A
+    path matched here that doesn't actually exist under ``cwd`` is simply
+    never retrieved (``_read_touched_images`` is best-effort), so a
+    false-positive match (e.g. a filename mentioned inside a URL) is
+    harmless.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _IMAGE_PATH_RE.finditer(text):
+        path = match.group(1)
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _read_touched_images(cwd: str | None, paths: list[str]) -> list[tuple[str, bytes, str]]:
+    """Read each named image's bytes + MIME type from ``cwd``, best-effort.
+
+    Mirrors ``_read_touched_files``'s discipline: a path that doesn't exist,
+    isn't readable, resolves outside ``cwd``, has an unrecognized extension,
+    or is over the per-image byte cap is skipped, never raised — a
+    retrieval gap degrades to fewer attached images, never fails the whole
+    consult. An oversized image is DROPPED rather than truncated (unlike the
+    text-file path): truncating binary image bytes would produce corrupt,
+    undecodable image data, not merely a shorter one.
+    """
+    if not cwd:
+        return []
+    base = Path(cwd).resolve()
+    images: list[tuple[str, bytes, str]] = []
+    for rel in paths[:MAX_RETRIEVED_IMAGES]:
+        candidate = (base / rel).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            continue  # path escapes cwd — never follow it
+        mime = _IMAGE_MIME_TYPES.get(candidate.suffix.lower())
+        if mime is None:
+            continue
+        try:
+            data = candidate.read_bytes()
+        except OSError:
+            continue
+        if len(data) > MAX_RETRIEVED_IMAGE_BYTES:
+            continue
+        images.append((rel, data, mime))
+    return images
+
+
 def consult_gemini_vertex(
     prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
 ) -> tuple[str, Usage]:
@@ -632,6 +721,16 @@ def consult_gemini_vertex(
     carrying no diff (e.g. an open-ended exploration prompt) retrieves
     nothing and this behaves exactly as before — an honest no-op, not a
     pretended fix.
+
+    chief-wiggum#321: the same call had NO image-attachment path at all —
+    ``design_critic`` sends this adapter rendered screenshots and it never
+    saw a single pixel, only the filenames a text prompt happened to name.
+    It now also reads every image file the prompt names (see
+    ``_image_paths_from_prompt``) from ``cwd`` and attaches each as an inline
+    ``types.Part.from_bytes`` image part alongside the text. A prompt naming
+    no images (every non-``design_critic`` role today) retrieves nothing and
+    ``contents`` is unaffected — this is additive to, and independent of,
+    the diff-file retrieval above.
     """
     project = get_secret("GOOGLE_CLOUD_PROJECT")
     location = get_secret("GOOGLE_CLOUD_LOCATION") or "global"
@@ -661,6 +760,18 @@ def consult_gemini_vertex(
         )
     else:
         contents = prompt
+
+    image_paths = _image_paths_from_prompt(prompt)
+    images = _read_touched_images(cwd, image_paths)
+    if images:
+        # Deferred import, mirroring the ``genai`` import above: only needed
+        # on this path, so a caller that never sends images never needs the
+        # submodule to resolve — the honest-no-op path picks up no new
+        # import requirement.
+        from google.genai import types  # type: ignore
+        contents = [contents] + [
+            types.Part.from_bytes(data=data, mime_type=mime) for _rel, data, mime in images
+        ]
 
     response = client.models.generate_content(model=requested_model, contents=contents)
     text = response.text or ""
@@ -1202,6 +1313,13 @@ def main():
         # regardless of whether the overall quorum passes.
         if manifest.blindness is not None:
             for finding in manifest.blindness.findings:
+                print(f"Warning: {finding.message}", file=sys.stderr)
+        # chief-wiggum#321: the image-shaped sibling of the above — a role
+        # that sends images composed with a provider that can't receive
+        # them. Structural, so this is populated even when ``manifest.blindness``
+        # is None (no ``prompt`` was passed for the token-floor check).
+        if manifest.image_blindness is not None:
+            for finding in manifest.image_blindness.findings:
                 print(f"Warning: {finding.message}", file=sys.stderr)
         if not manifest.ok:
             print(

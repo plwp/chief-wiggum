@@ -1463,7 +1463,7 @@ class _FakePart:
         self.mime_type = mime_type
 
     @classmethod
-    def from_bytes(cls, *, data: bytes, mime_type: str) -> "_FakePart":
+    def from_bytes(cls, *, data: bytes, mime_type: str) -> _FakePart:
         return cls(data, mime_type)
 
 

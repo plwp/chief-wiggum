@@ -114,7 +114,7 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role design_critic "$DESIGN_TMP/criti
 
 Responses land at `$DESIGN_TMP/critique/design_critic-<provider>.md` with status in `design_critic-manifest.json`.
 
-The prompt names the screenshot files (cwd is `$DESIGN_TMP` so the CLIs can open them) and asks for critique against:
+The prompt names the screenshot files (cwd is `$DESIGN_TMP`): a CLI tool provider (codex, claude-interactive) opens them itself via `cwd`; `gemini-vertex` — `design_critic`'s sole required provider — attaches each named image's bytes directly to the request (chief-wiggum#321; a diff-less/text-only role never triggers this and behaves exactly as before). It asks for critique against:
 - **Audience fit**: does this read right for the audience in `docs/domain-context.md`?
 - **Hierarchy**: is the most important thing on each screen visually the most important?
 - **Accessibility**: text contrast (WCAG AA), touch-target size on the mobile shots, focus/state affordances
