@@ -141,7 +141,41 @@ CS_FUNC_RE = re.compile(
     rf"|^\s*(?:{_CS_MODIFIER}\s+)+(?:{_CS_TYPE}\s+)([A-Za-z_]\w*)\s*(?:=>|\{{|$)"
 )
 
-_CS_SUFFIXES = frozenset({".cs"})
+# Suffix-GATED declaration regexes (chief-wiggum#313): a regex consulted ONLY
+# for its own suffix(es) because its pattern is permissive enough to misfire
+# on other languages' text. This is the ONE table both this module's
+# ``_enclosing_symbol`` (write-site anchoring) and
+# ``chief_wiggum.external_links``'s regex tier (symbol-span resolution)
+# dispatch through — before #313 the latter kept its own copy of "which
+# suffixes have a declaration regex" (by way of which REs it imported) and it
+# silently fell out of date the moment C# was added here. GO_FUNC_RE/
+# PY_FUNC_RE are NOT suffix-gated (their keywords are unambiguous across
+# languages, so they're tried unconditionally in ``_decl_name`` below);
+# TS_FUNC_RE is the ungated default for any suffix with no entry here.
+SUFFIX_GATED_FUNC_RE: dict[str, re.Pattern[str]] = {
+    ".cs": CS_FUNC_RE,
+}
+
+
+def _decl_name(line: str, suffix: str | None = None) -> str | None:
+    """The function/method/property name ``line`` declares, if any — the
+    single per-line declaration test. ``suffix`` selects the language regex
+    where one language's shape would misread another's: a suffix present in
+    ``SUFFIX_GATED_FUNC_RE`` is matched with ITS regex only (never falling
+    through to ``TS_FUNC_RE``); every other suffix uses the ungated
+    ``TS_FUNC_RE`` default. Shared by ``_enclosing_symbol`` below and by
+    ``chief_wiggum.external_links``'s regex tier (imported directly, not
+    reimplemented — the #313 fix)."""
+    for pat in (GO_FUNC_RE, PY_FUNC_RE):
+        m = pat.match(line)
+        if m:
+            return m.group(1)
+    gated = SUFFIX_GATED_FUNC_RE.get(suffix)
+    if gated is not None:
+        m = gated.match(line)
+        return (m.group(1) or m.group(2)) if m else None
+    m = TS_FUNC_RE.search(line)
+    return (m.group(1) or m.group(2)) if m else None
 
 
 def _enclosing_symbol(lines: list[str], idx: int, suffix: str | None = None) -> str | None:
@@ -152,21 +186,10 @@ def _enclosing_symbol(lines: list[str], idx: int, suffix: str | None = None) -> 
     deliberately permissive about return types and would otherwise match
     unrelated constructs in other languages).
     """
-    cs_enabled = suffix in _CS_SUFFIXES
     for j in range(idx, -1, -1):
-        line = lines[j]
-        for pat in (GO_FUNC_RE, PY_FUNC_RE):
-            m = pat.match(line)
-            if m:
-                return m.group(1)
-        if cs_enabled:
-            m = CS_FUNC_RE.match(line)
-            if m:
-                return m.group(1) or m.group(2)
-            continue  # don't let the TS shape claim a C# line
-        m = TS_FUNC_RE.search(line)
-        if m:
-            return m.group(1) or m.group(2)
+        name = _decl_name(lines[j], suffix)
+        if name:
+            return name
     return None
 
 

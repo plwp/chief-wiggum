@@ -27,11 +27,16 @@ Symbol anchoring is TIERED (settled in #213 — reuse, don't reimplement):
   (``chief_wiggum.lsp.SERVERS``; gopls today) resolve via
   ``textDocument/documentSymbol``.
 - **regex** — remaining known extensions (``config/languages.json`` tier-1 +
-  generic tier) fall back to the emitters' declaration regexes
-  (``chief_wiggum.write_emission`` GO_FUNC_RE/PY_FUNC_RE/TS_FUNC_RE — the same
-  matching ``_enclosing_symbol`` applies): the span runs from the symbol's
-  declaration line to the next declaration (mirroring
-  ``hashing.hash_markdown_defs`` block semantics).
+  generic tier) fall back to the emitters' declaration regexes via
+  ``chief_wiggum.write_emission._decl_name`` — the EXACT per-line dispatch
+  ``_enclosing_symbol`` uses (GO_FUNC_RE/PY_FUNC_RE unconditional,
+  ``SUFFIX_GATED_FUNC_RE`` for suffix-restricted regexes like C#'s
+  CS_FUNC_RE, TS_FUNC_RE as the ungated default) — imported directly rather
+  than reimplemented, so the two modules cannot drift on which suffixes have
+  a declaration regex (chief-wiggum#313: this tier used to hold its own copy
+  of that knowledge and it silently fell behind write_emission's when C# was
+  added). The span runs from the symbol's declaration line to the next
+  declaration (mirroring ``hashing.hash_markdown_defs`` block semantics).
 - beyond that — **skip-with-warning**: the entry is recorded/reported as
   ``unresolved`` with a reason, never dropped (same doctrine as
   ``verifier_hashes``' ``unscanned`` counts).
@@ -59,13 +64,14 @@ from chief_wiggum.trace_links import load_sidecar, write_sidecar  # noqa: E402
 
 # REUSE of existing span machinery, not a reimplementation: the Python ast tier
 # is verifier_hashes' qualified-function extraction (#206), the span hash is its
-# whitespace-normalized hasher, and the regex tier is write_emission's
-# declaration regexes (#160). These are private names imported deliberately —
-# promoting/renaming them would edit modules that feed OTHER gates'
-# scanner-version hashes (ratchet), staling validation records for no behavior
-# change.
+# whitespace-normalized hasher, and the regex tier is write_emission's OWN
+# per-line declaration dispatch (#160, #313) — ``_decl_name`` itself, not a
+# parallel re-derivation of which suffixes it covers. These are private names
+# imported deliberately — promoting/renaming them would edit modules that feed
+# OTHER gates' scanner-version hashes (ratchet), staling validation records for
+# no behavior change.
 from chief_wiggum.verifier_hashes import _hash_span, _qualified_functions  # noqa: E402
-from chief_wiggum.write_emission import GO_FUNC_RE, PY_FUNC_RE, TS_FUNC_RE  # noqa: E402
+from chief_wiggum.write_emission import _decl_name  # noqa: E402
 
 # Store filename beneath the meta root's quality/ dir — the sibling of
 # trace-links.json in sidecar mode.
@@ -116,25 +122,16 @@ def _ast_span(text: str, symbol: str) -> tuple[SymbolSpan | None, str | None]:
     return SymbolSpan(start, end, "ast", _hash_span(lines, start, end)), None
 
 
-def _decl_name(line: str) -> str | None:
-    """The function/symbol a line declares, if any — the SAME per-line matching
-    ``write_emission._enclosing_symbol`` applies (Go/Python anchored ``match``,
-    TS/JS ``search``)."""
-    for pat in (GO_FUNC_RE, PY_FUNC_RE):
-        m = pat.match(line)
-        if m:
-            return m.group(1)
-    m = TS_FUNC_RE.search(line)
-    if m:
-        return m.group(1) or m.group(2)
-    return None
-
-
-def _regex_span(lines: list[str], symbol: str) -> tuple[SymbolSpan | None, str | None]:
+def _regex_span(
+    lines: list[str], symbol: str, suffix: str | None = None
+) -> tuple[SymbolSpan | None, str | None]:
     """Regex tier: the span runs from the symbol's declaration line to the line
     before the next declaration (or EOF), trailing blanks trimmed — the same
-    block semantics as ``hashing.hash_markdown_defs``."""
-    decls = [(i, name) for i, line in enumerate(lines) if (name := _decl_name(line))]
+    block semantics as ``hashing.hash_markdown_defs``. ``suffix`` is threaded
+    through to ``write_emission._decl_name`` so a suffix-gated regex (C#'s
+    CS_FUNC_RE) is dispatched exactly like ``_enclosing_symbol`` does — never
+    a parallel gating decision (chief-wiggum#313)."""
+    decls = [(i, name) for i, line in enumerate(lines) if (name := _decl_name(line, suffix))]
     hits = [idx for idx, (i, name) in enumerate(decls) if name == symbol]
     if not hits:
         return None, f"symbol {symbol!r} not found (regex tier)"
@@ -221,7 +218,7 @@ def resolve_symbol_span(
         if span is not None:
             return span, None
     if suffix in cw_languages.all_known_extensions():
-        return _regex_span(lines, symbol)
+        return _regex_span(lines, symbol, suffix)
     return None, (
         f"no symbol-resolution tier for {suffix or '(no extension)'} files "
         "(no LSP server, no regex tier — see config/languages.json)"
@@ -357,6 +354,33 @@ def verify_links(
     return result
 
 
+def store_applicability(result: dict) -> str:
+    """Classify the STORE'S own health from a ``verify_links`` result — the
+    #289 ``pass | findings | inapplicable | error`` vocabulary applied at the
+    store's granularity (``check_traceability.py`` is the reference
+    implementation of this vocabulary). Only two non-``"ok"`` states are
+    reachable here — there is no partial-success/partial-failure "findings"
+    shape for a single store the way there is for a whole traceability
+    report:
+
+    - ``"inapplicable"`` — the store has ZERO entries (nothing authored yet,
+      an honest absence).
+    - ``"error"`` — the store has entries and NOT ONE of them anchored (``ok``
+      and ``suspect`` both empty) — a broken instrument (wrong language tier,
+      or the recorded paths/symbols are wrong), indistinguishable from an
+      empty store until this classification existed (chief-wiggum#313).
+    - ``"ok"`` — anything else: at least one entry anchors (``ok`` or
+      ``suspect`` — a suspect entry proves the anchor mechanism itself works,
+      even though that one entry's hash has drifted).
+    """
+    total = sum(len(v) for v in result.values())
+    if total == 0:
+        return "inapplicable"
+    if not result.get("ok") and not result.get("suspect"):
+        return "error"
+    return "ok"
+
+
 # --- CLI --------------------------------------------------------------------------
 
 
@@ -398,12 +422,28 @@ def main(argv: list[str] | None = None) -> int:
 
     # verify — report-only (docs/gate-rollout.md): findings print, exit stays 0;
     # blocking behavior belongs to the gates that CONSUME the verification
-    # (check_traceability's coverage math), not to this store tool.
+    # (check_traceability's coverage math), not to this store tool. The
+    # measured denominator (chief-wiggum#313 item 3) is printed unconditionally
+    # so a fully-broken store is visible even to a human skimming the counts,
+    # not just to a downstream gate that checks "applicability".
     result = verify_links(args.store, args.target, use_lsp=not args.no_lsp)
+    counts = {k: len(v) for k, v in result.items()}
+    total = sum(counts.values())
+    anchored = counts["ok"] + counts["suspect"]
+    applicability = store_applicability(result)
     print(json.dumps({
-        "counts": {k: len(v) for k, v in result.items()},
+        "counts": counts,
+        "applicability": applicability,
+        "anchored": f"{anchored} of {total} entries",
         **result,
     }, indent=2))
+    if applicability == "error":
+        print(
+            f"external-links: ERROR: {total} entries recorded and NONE anchored "
+            "(anchored 0) — a broken instrument: the language tier is missing "
+            "or the recorded paths/symbols are wrong (chief-wiggum#313)",
+            file=sys.stderr,
+        )
     return 0
 
 
