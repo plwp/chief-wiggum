@@ -45,6 +45,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="TITLE=PATH",
         help="Optional epic artifact to include (e.g. Contracts=docs/epics/x/contracts.md)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "Force every provider to run fresh, ignoring any prior successful "
+            "output whose prompt hash still matches (chief-wiggum#332). By "
+            "default, re-running after a single provider's failure reuses "
+            "every OTHER provider's unchanged output instead of re-paying it."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # CTR-fh-002: a production ticket.json missing the `comments` key entirely
@@ -97,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             epic_sections=epic_sections,
             role=args.role,
             execute=execute,
+            force_fresh=args.fresh,
         )
     except review.ReviewError as exc:
         print(f"Error: {exc}", file=sys.stderr)

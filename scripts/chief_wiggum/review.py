@@ -14,12 +14,15 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import providers
+
+from chief_wiggum.hashing import stable_hash
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -673,8 +676,20 @@ def run_review(
     runner: Runner = subprocess.run,
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
     optional_timeout_default: int = providers.DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
+    force_fresh: bool = False,
 ) -> ReviewManifest:
     """Assemble the review prompt(s), run the reviewer quorum.
+
+    ``force_fresh`` (chief-wiggum#332 item 4): by default, a provider whose
+    FINAL assembled (post-lens) prompt content-hashes identically to its
+    last successful run in ``output_dir`` reuses that prior output instead
+    of being re-invoked — a loud ``REUSED:`` line is printed to stderr. This
+    is how re-running after a single-provider failure re-pays only that
+    provider: the OTHER providers' ``{role}-{provider}.md`` + matching
+    ``.hash`` sidecar are still there and still match, so they're reused;
+    the failed one has no success on record and always re-runs. Pass
+    ``force_fresh=True`` to bypass the cache unconditionally (``run_review.py
+    --fresh``).
 
     Refuses to run outside a git repo or when ``base`` cannot be resolved.
     ``execute`` (the provider call) is injected so the pipeline is testable; it
@@ -765,6 +780,34 @@ def run_review(
     if lens_errors:
         raise ReviewError("; ".join(lens_errors))
 
+    # chief-wiggum#332 item 4: each provider's FINAL (post-lens) prompt,
+    # precomputed once — both for the reuse-cache lookup below and so
+    # _execute_for_quorum never recomputes prompt_for_provider per attempt.
+    final_prompts: dict[str, str] = {
+        p.name: providers.prompt_for_provider(
+            plan.role, p.name, provider_prompts.get(p.name, prompt_inline), lenses
+        )
+        for p in plan.runnable
+    }
+
+    # A provider whose FINAL prompt content-hashes identically to its last
+    # successful run in `out` reuses that prior output rather than being
+    # re-invoked — this is how re-running after a single provider's failure
+    # re-pays only that provider (chief-wiggum#332). Read BEFORE the quorum
+    # runs: _run_one_provider unlinks each provider's {role}-{provider}.md
+    # at the START of its own call, so the prior content must be captured
+    # into memory now or it would already be gone by the time a reused
+    # provider's wrapper tried to read it.
+    prior_ok: dict[str, str] = {}
+    if not force_fresh:
+        for p in plan.runnable:
+            ok_path = out / f"{role}-{p.name}.md"
+            hash_path = out / f"{role}-{p.name}.hash"
+            if not (ok_path.exists() and hash_path.exists()):
+                continue
+            if hash_path.read_text().strip() == stable_hash(final_prompts[p.name]):
+                prior_ok[p.name] = ok_path.read_text()
+
     # The quorum calls execute(provider); bind the assembled prompt here. A
     # provider mapped to a lens on this role gets its charter appended; the
     # shared prompt every provider starts from is identical either way. An
@@ -785,11 +828,25 @@ def run_review(
     execute_wants_retry_context = providers.execute_accepts_retry_context(execute)
 
     def _execute_for_quorum(p, attempt: int = 1, previous_failure_kind: str | None = None):
-        # chief-wiggum#332: each provider's OWN body (inline or pointer),
+        # chief-wiggum#332 item 4: a byte-identical prompt to the last
+        # successful run reuses that output — no new provider call. Only on
+        # the FIRST attempt: a retry (attempt > 1) always means THIS run's
+        # first attempt already failed, so there is nothing valid to reuse.
+        if attempt == 1 and p.name in prior_ok:
+            print(
+                f"REUSED: {p.name}'s prompt is byte-identical to its last "
+                f"successful run — reusing {out / f'{role}-{p.name}.md'} "
+                "without a new provider call (chief-wiggum#332). Pass "
+                "force_fresh=True to disable.",
+                file=sys.stderr,
+            )
+            return prior_ok[p.name]
+        # chief-wiggum#332: each provider's OWN FINAL (post-lens) prompt,
         # falling back to the full inline prompt for a provider somehow
         # absent from plan.runnable (shouldn't happen — defensive only).
-        shared_body = provider_prompts.get(p.name, prompt_inline)
-        provider_prompt = providers.prompt_for_provider(plan.role, p.name, shared_body, lenses)
+        provider_prompt = final_prompts.get(
+            p.name, providers.prompt_for_provider(plan.role, p.name, prompt_inline, lenses)
+        )
         timeout_override = providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default)
         if execute_wants_retry_context:
             return execute(
@@ -812,6 +869,14 @@ def run_review(
         lenses=lenses,
     )
     response_paths = [r.path for r in quorum.results if r.path]
+
+    # chief-wiggum#332 item 4: record each SUCCESSFUL provider's prompt hash
+    # so a future run (reused or freshly re-invoked) can tell whether its
+    # prompt actually changed. Written for every "ok" result, including a
+    # reused one (harmless — it's the same hash it already matched).
+    for r in quorum.results:
+        if r.status == "ok" and r.name in final_prompts:
+            (out / f"{role}-{r.name}.hash").write_text(stable_hash(final_prompts[r.name]))
 
     # chief-wiggum#332: synthesis-prompt.md was dead weight — /implement Step 8
     # synthesizes reviews via scripts/synthesize_reviews.py over the
