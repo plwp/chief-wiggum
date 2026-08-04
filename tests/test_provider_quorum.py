@@ -306,6 +306,37 @@ def test_detect_blind_providers_unmeasured_is_a_finding_not_a_pass():
     assert "not the same as one measured and fine" in report.findings[0].message
 
 
+def test_detect_blind_providers_already_surfaces_claude_interactives_invisible_cost():
+    """chief-wiggum#331 item 3: the claude-interactive delegate has no
+    usage-bearing transport (consult_ai.consult_claude_interactive ALWAYS
+    returns usage_status='unavailable', per ADR-fh-05) — so whenever it
+    succeeds inside a role that requires repo reading, detect_blind_providers
+    (#319) already reports it as an "unmeasured" finding, not a quiet pass.
+    This is #319's existing "unmeasured is a finding, not a pass" rule
+    (see test_detect_blind_providers_unmeasured_is_a_finding_not_a_pass just
+    above) applied to the SPECIFIC provider #331 is about — pinned here so a
+    future change can't silently narrow that check to exclude the delegate."""
+    role = Role(name="reviewer", required=("codex",), optional=("claude-interactive",), requires_repo_read=True)
+    providers_by_name = {
+        "codex": _provider("codex"),
+        "claude-interactive": _provider("claude-interactive"),  # reads_repo=True (config default)
+    }
+    results = [
+        _result("codex", tokens_in=900_000, usage_status="provider-json"),
+        _result("claude-interactive", tokens_in=None, usage_status="unavailable", required=False),
+    ]
+
+    report = detect_blind_providers(
+        role, providers_by_name, results,
+        {"codex": 1300, "claude-interactive": 1300},
+    )
+
+    assert report.outcome == "findings"
+    finding = next(f for f in report.findings if f.provider == "claude-interactive")
+    assert finding.kind == "unmeasured"
+    assert "cannot be measured is not the same as one measured and fine" in finding.message
+
+
 def test_detect_blind_providers_inapplicable_when_role_does_not_require_repo_read():
     role = Role(name="design_critic", required=("gemini-vertex",), optional=(), requires_repo_read=False)
     providers_by_name = {"gemini-vertex": _provider("gemini-vertex")}
