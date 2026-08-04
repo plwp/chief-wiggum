@@ -467,7 +467,6 @@ template requirements are duplicated in markdown.
 - `scripts/chief_wiggum/shipping.py`
 - `scripts/draft_pr.py`
 - `tests/test_shipping.py`
-- `templates/pr.md`
 - `.claude/commands/ship.md`
 - `.claude/commands/implement.md`
 

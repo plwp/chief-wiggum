@@ -1,6 +1,8 @@
 # Structured Review Checklist
 
-Score each item: **PASS**, **FAIL** (with one-line justification), or **N/A**.
+Score each item: **PASS**, **FAIL** (with one-line justification), **N/A** (the item genuinely does not apply to this change), or **BLOCKED** (you could not evaluate it — missing context, tool, or access; state what was missing).
+
+BLOCKED is never N/A and never PASS: "couldn't check" and "doesn't apply" are different verdicts, and conflating them is how gaps slip through as green.
 
 ## Behavior Preservation (refactor tickets — evaluate FIRST for `kind: refactor`)
 
@@ -32,7 +34,7 @@ For repos with an adoption record (chief-wiggum#215), score these against the de
 - [ ] State machine transitions are guarded — invalid transitions return an error
 - [ ] No field is stored in two different representations (e.g., both `item_ids` and `item_names`)
 
-## Formal Model Conformance (if formal models exist in models/ directory)
+## Formal Model Conformance (if formal models exist under the epic's `docs/epics/<slug>/models/`)
 - [ ] Every state machine transition in the model has a corresponding implementation path
 - [ ] Every invalid transition in the model is explicitly rejected (negative test exists)
 - [ ] Every REQUIRES precondition has a guard clause in the implementation code
@@ -76,6 +78,7 @@ For each section, output:
 - PASS: [item summary]
 - FAIL: [item summary] — [one-line justification]
 - N/A: [item summary]
+- BLOCKED: [item summary] — [what was missing]
 ```
 
-End with an overall verdict: `CHECKLIST: ALL_PASS` or `CHECKLIST: HAS_FAILURES (N items)`
+End with an overall verdict: `CHECKLIST: ALL_PASS`, `CHECKLIST: HAS_FAILURES (N items)`, or `CHECKLIST: BLOCKED (N items unevaluable)`. A checklist with BLOCKED items is not ALL_PASS.

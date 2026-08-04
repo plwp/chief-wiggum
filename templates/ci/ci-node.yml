@@ -5,8 +5,12 @@
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      # `npm install`, NOT `npm ci`: target repos frequently carry lockfile
+      # drift, and `npm ci` hard-fails on any drift — turning "deps drifted"
+      # into a misleading red build. Keep this in lockstep with
+      # templates/pre-merge-check.sh, which documents the same decision.
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       - name: Lint
         run: npm run lint --if-present
       - name: Build

@@ -18,6 +18,12 @@ Be thorough, but avoid filler:
 
 For each finding, separate what is directly supported by the diff from what you are inferring.
 
+Priority scale — apply it consistently:
+- **P0** — must not merge: data loss or corruption, security hole, broken core flow
+- **P1** — fix before merge: incorrect behaviour or a regression on a path users actually hit
+- **P2** — fix soon: robustness, performance, or maintainability problem with a plausible failure mode
+- **P3** — minor: low-likelihood edge or nice-to-have improvement
+
 ## Output Format
 
 If you find no meaningful issues, output exactly:

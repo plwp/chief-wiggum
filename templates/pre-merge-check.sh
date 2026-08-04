@@ -2,7 +2,7 @@
 # Pre-merge check: auto-detects project layers and runs their test/lint/build
 # commands. Language-agnostic — works for Go, Node, Python, Rust, or mixed repos.
 #
-# Usage: bash scripts/pre-merge-check.sh
+# Usage: bash scripts/pre-merge-check.sh [--strict]
 #
 # Detection rules (per directory):
 #   go.mod          → go test ./... && golangci-lint run ./... && go build ./...
@@ -12,8 +12,16 @@
 #   Makefile w/ ci  → make ci
 #
 # Add a .pre-merge-check file to any directory to override with custom commands.
+#
+# Failure output is printed (last 60 lines), never swallowed. A check that
+# CANNOT run (missing tool, no test runner) is reported as SKIPPED and the
+# final verdict says so — skipped is never silently equal to passed.
+# --strict additionally exits 1 when anything was skipped.
 
 set -euo pipefail
+
+STRICT=0
+[ "${1:-}" = "--strict" ] && STRICT=1
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,17 +38,22 @@ run_check() {
     shift
     TOTAL=$((TOTAL + 1))
     printf "${YELLOW}▶ %s${NC}\n" "$name"
-    if eval "$@" > /dev/null 2>&1; then
+    local log
+    log="$(mktemp)"
+    if eval "$@" > "$log" 2>&1; then
         printf "${GREEN}  ✓ %s${NC}\n" "$name"
     else
         printf "${RED}  ✗ %s${NC}\n" "$name"
+        # Never swallow failure output — whoever fixes this needs the diagnostics.
+        tail -n 60 "$log" | sed 's/^/    /'
         FAILED=$((FAILED + 1))
     fi
+    rm -f "$log"
 }
 
 skip_check() {
     SKIPPED=$((SKIPPED + 1))
-    printf "${YELLOW}  ⚠ %s (skipped — tool not found)${NC}\n" "$1"
+    printf "${YELLOW}  ⚠ %s (SKIPPED — %s)${NC}\n" "$1" "${2:-tool not found}"
 }
 
 # Scan a directory for a custom override file first, then auto-detect.
@@ -96,7 +109,9 @@ scan_dir() {
         elif grep -q '"jest"' "$dir/package.json" 2>/dev/null; then
             run_check "$label: tests" "cd '$dir' && npx jest --passWithNoTests"
         elif grep -q '"test"' "$dir/package.json" 2>/dev/null; then
-            run_check "$label: tests" "cd '$dir' && npm test -- --passWithNoTests 2>/dev/null || npm test"
+            run_check "$label: tests" "cd '$dir' && npm test"
+        else
+            skip_check "$label: tests" "no test runner configured (vitest/jest/npm test) — this Node layer ran NO tests"
         fi
 
         # Lint: prefer biome > eslint > npm run lint
@@ -113,15 +128,19 @@ scan_dir() {
     # Python
     if [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || [ -f "$dir/requirements.txt" ]; then
         printf "\n${YELLOW}── %s (Python)${NC}\n" "$label"
-        if command -v pytest &>/dev/null; then
-            run_check "$label: tests" "cd '$dir' && pytest"
-        elif [ -f "$dir/pyproject.toml" ] && grep -q 'pytest' "$dir/pyproject.toml" 2>/dev/null; then
-            run_check "$label: tests" "cd '$dir' && python -m pytest"
+        # Use the interpreter's own pytest (respects an active venv) rather than
+        # whatever global `pytest` binary happens to be on PATH.
+        if python3 -c "import pytest" >/dev/null 2>&1; then
+            run_check "$label: tests" "cd '$dir' && python3 -m pytest"
+        else
+            skip_check "$label: tests" "pytest not importable by python3 — this Python layer ran NO tests"
         fi
         if command -v ruff &>/dev/null; then
             run_check "$label: lint" "cd '$dir' && ruff check ."
         elif command -v flake8 &>/dev/null; then
             run_check "$label: lint" "cd '$dir' && flake8 ."
+        else
+            skip_check "$label: lint" "neither ruff nor flake8 found"
         fi
     fi
 
@@ -137,8 +156,9 @@ echo "════════════════════════�
 echo "  Pre-merge checks (auto-detected)"
 echo "═══════════════════════════════════════"
 
-# Scan repo root for top-level projects
-for marker in go.mod package.json pyproject.toml Cargo.toml; do
+# Scan repo root for top-level projects (same marker set as subdirs — a
+# root-level .pre-merge-check override or Makefile must not be silently ignored)
+for marker in go.mod package.json pyproject.toml Cargo.toml .pre-merge-check Makefile; do
     if [ -f "$REPO_ROOT/$marker" ]; then
         scan_dir "$REPO_ROOT" "root"
         break
@@ -166,9 +186,21 @@ done
 echo ""
 echo "═══════════════════════════════════════"
 printf "  Ran: %d  Passed: %d  Failed: %d  Skipped: %d\n" "$TOTAL" "$((TOTAL - FAILED))" "$FAILED" "$SKIPPED"
-if [ $FAILED -eq 0 ]; then
-    printf "${GREEN}  All checks passed. Safe to merge.${NC}\n"
-else
+if [ $TOTAL -eq 0 ] && [ $SKIPPED -eq 0 ]; then
+    # Nothing detected and nothing skipped = nothing was verified at all.
+    # "Zero checks" must never read as a pass (fail-open, chief-wiggum#289).
+    printf "${RED}  No project layers detected — NOTHING was checked. This is not a pass.${NC}\n"
+    exit 1
+elif [ $FAILED -gt 0 ]; then
     printf "${RED}  %d check(s) failed. Do NOT merge.${NC}\n" "$FAILED"
     exit 1
+elif [ $SKIPPED -gt 0 ]; then
+    printf "${YELLOW}  Executed checks passed, but %d check(s) were SKIPPED — not a full pass.${NC}\n" "$SKIPPED"
+    printf "${YELLOW}  Install the missing tools (or add a .pre-merge-check override) for full coverage.${NC}\n"
+    if [ $STRICT -eq 1 ]; then
+        printf "${RED}  --strict: skipped checks count as failures. Do NOT merge.${NC}\n"
+        exit 1
+    fi
+else
+    printf "${GREEN}  All checks passed. Safe to merge.${NC}\n"
 fi

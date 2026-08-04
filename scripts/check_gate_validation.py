@@ -224,10 +224,12 @@ def corpus_digest(root: str | Path) -> str:
 
 def _schema_errors(record: dict, schema: dict) -> list[str]:
     try:
-        import jsonschema  # noqa: PLC0415
+        from jsonschema.validators import validator_for  # noqa: PLC0415
     except ImportError:  # pragma: no cover - jsonschema is a project dependency
         return []
-    validator = jsonschema.Draft7Validator(schema)
+    # Honor the schema's own $schema declaration (draft 2020-12) instead of
+    # pinning draft-07 semantics regardless of what the file says.
+    validator = validator_for(schema)(schema)
     return [e.message for e in validator.iter_errors(record)]
 
 

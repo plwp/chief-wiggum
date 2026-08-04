@@ -1,8 +1,10 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/gate-validation-record.json",
   "title": "Gate validation record",
-  "description": "Per-gate protocol record (docs/gate-validation.md): seeded-defect trials, clean-corpus runs with coverage evidence, and an authority-boundary statement, proving a gate deserves to run in blocking (--gate) mode.",
+  "description": "Per-gate protocol record (docs/gate-validation.md): seeded-defect trials, clean-corpus runs with coverage evidence, and an authority-boundary statement, proving a gate deserves to run in blocking (--gate) mode. additionalProperties is false throughout: this record AUTHORIZES a gate to block, so a typo'd field must fail loudly, never pass silently (fail-open, chief-wiggum#289).",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "gate",
     "protocol_version",
@@ -35,6 +37,7 @@
     },
     "authority_boundary": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["proves", "artifact", "assumptions"],
       "properties": {
         "proves": { "type": "string", "minLength": 1 },
@@ -51,6 +54,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["seed_id", "seed_class", "repo", "expected", "result", "passed"],
         "properties": {
           "seed_id": { "type": "string" },
@@ -81,6 +85,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["repo", "findings", "coverage", "passed"],
         "properties": {
           "repo": { "type": "string" },
