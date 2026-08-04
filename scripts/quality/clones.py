@@ -239,7 +239,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="clone classes from jscpd locations")
     parser.add_argument("repo", help="path to the git repository")
     parser.add_argument("--workdir", required=True, help="scratch dir for jscpd output")
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="force a fresh jscpd run, bypassing the content-hash result cache (#328) "
+             "shared with duplication.py's aggregate percentage",
+    )
     args = parser.parse_args()
+    if args.no_cache:
+        os.environ[duplication.cache.NO_CACHE_ENV] = "1"
     print(json.dumps(analyze(args.repo, args.workdir), indent=2))
     return 0
 

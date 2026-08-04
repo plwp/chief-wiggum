@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import io
 import json
 import os
@@ -90,9 +91,68 @@ def _tool(name: str, venv: str | None = None, gobin: str | None = None) -> str |
     return shutil.which(name)
 
 
-def tracked_files(repo: str) -> list[str]:
+def _git_index_path(repo: str) -> str | None:
+    """Path to the index file that actually backs ``repo`` — handling a
+    linked ``git worktree`` (#328: ``trend.py`` throwaway-checks out one per
+    sampled commit), where ``.git`` is a FILE containing a ``gitdir:``
+    pointer rather than the index directory itself. ``None`` when it can't be
+    resolved (no ``.git`` at all, or an unreadable pointer file)."""
+    git_path = os.path.join(repo, ".git")
+    if os.path.isdir(git_path):
+        return os.path.join(git_path, "index")
+    if os.path.isfile(git_path):
+        try:
+            with open(git_path) as fh:
+                line = fh.readline().strip()
+        except OSError:
+            return None
+        if line.startswith("gitdir:"):
+            gitdir = line.split(":", 1)[1].strip()
+            if not os.path.isabs(gitdir):
+                gitdir = os.path.join(repo, gitdir)
+            return os.path.join(gitdir, "index")
+    return None
+
+
+def _index_fingerprint(repo: str) -> tuple:
+    """A cheap (no subprocess — one ``os.stat``), sufficient freshness token
+    for ``git ls-files``'s output: the index file's mtime+size. ``git
+    add``/``rm``/``mv``/checkout-of-a-different-tree all touch the index, so
+    this changes exactly when ``tracked_files``'s answer could have changed.
+    Falls back to a constant (always a "miss" on the fingerprint dimension,
+    i.e. no caching benefit but never wrong) when the index can't be stat'd —
+    an unusual git state must degrade to re-running, never to a stale hit."""
+    path = _git_index_path(repo)
+    if path is None:
+        return (None,)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (None,)
+    return (st.st_mtime_ns, st.st_size)
+
+
+@functools.cache
+def _tracked_files_at(repo: str, _fingerprint: tuple) -> tuple[str, ...]:
     out = run("git", "-C", repo, "ls-files").stdout.splitlines()
-    return [f for f in out if not EXCLUDE_RE.search(f)]
+    return tuple(f for f in out if not EXCLUDE_RE.search(f))
+
+
+def tracked_files(repo: str) -> list[str]:
+    """Git-tracked, non-excluded repo-relative paths for ``repo``.
+
+    ~8 callers (``bucket``, ``population.tracked_source``/``unknown_language_
+    files``, ``hotspots``, ``trend``, ``dead_code``, ``test_health``,
+    ``markers``) each shell ``git ls-files`` independently — one
+    ``debt_inventory``/``/code-metrics`` run triggered it many times over for
+    the SAME repo (#328). Memoized per ``(repo, index fingerprint)`` — NOT
+    bare repo path alone: a caller that rescans the SAME repo path after a
+    real git mutation (e.g. ``debt_inventory.build_inventory`` called twice
+    across a commit, as the #214 rename-probe test does) must see the new
+    tracked set, not a process-lifetime-stale one. Within one unchanged scan
+    this is exactly one real ``git ls-files`` per repo — the index-fingerprint
+    check itself is a single ``os.stat``, not a subprocess."""
+    return list(_tracked_files_at(repo, _index_fingerprint(repo)))
 
 
 def bucket(repo: str, path_filter=None) -> dict:

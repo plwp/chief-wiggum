@@ -29,7 +29,7 @@ import signal
 import subprocess
 import sys
 
-from . import population
+from . import cache, population
 
 # Production-only: exclude tests, generated, vendored, docs, node output.
 IGNORE = ",".join([
@@ -159,6 +159,21 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
             "skipped": "jscpd/node not found",
             "note": "duplication requires node + jscpd (npm i -g jscpd)",
         }
+
+    # #328/#214: this is the ONE invocation duplication.analyze's aggregate
+    # percentage and clones.py's clone-class clustering are meant to share —
+    # but they are two separate CLI processes in /close-epic (quality_slop_
+    # gate.py and debt_inventory.py), so an in-memory memo alone would not
+    # help. cache_key is a content hash of the exact corpus (whole-repo when
+    # `files` is None — the common unscoped case both consumers hit — or the
+    # explicit scope-narrowed list), built via chief_wiggum.manifest so a
+    # dirty/untracked edit busts it even with HEAD unchanged (the doctrine:
+    # never reuse a stale report because a re-run "looked" unchanged).
+    cache_key = cache.manifest_key(repo, files)
+    cached = cache.load(repo, "jscpd", cache_key)
+    if cached is not None:
+        return cached, None
+
     os.makedirs(workdir, exist_ok=True)
     timeout = timeout_seconds or _env_int("CW_JSCPD_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
     heap_mb = max_old_space_mb or _env_int("CW_JSCPD_MAX_OLD_SPACE_MB", DEFAULT_MAX_OLD_SPACE_MB)
@@ -277,6 +292,10 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
             # relative to (or absolute under), so it can remap them back to
             # repo-relative instead of leaving them pointed at this scratch dir.
             data["_corpus_root"] = corpus_root
+    # Only a genuinely successful measurement is memoized — a crash/skip
+    # (handled by the early returns above) must never be cached, or the very
+    # next call would keep replaying a broken instrument's non-result forever.
+    cache.store(repo, "jscpd", cache_key, data)
     return data, None
 
 
@@ -361,7 +380,13 @@ def main() -> int:
     parser.add_argument("repo", help="path to the git repository")
     parser.add_argument("--workdir", required=True, help="scratch dir for jscpd output")
     parser.add_argument("--name", default=None, help="display name for the repo")
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="force a fresh jscpd run, bypassing the content-hash result cache (#328)",
+    )
     args = parser.parse_args()
+    if args.no_cache:
+        os.environ[cache.NO_CACHE_ENV] = "1"
     print(json.dumps(analyze(args.repo, args.workdir, name=args.name), indent=2))
     return 0
 

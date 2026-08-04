@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 
+from . import cache
 from .complexity import _tool, bucket, dist, lizard_ccn, loc_counts
 
 
@@ -51,6 +52,16 @@ def sample_commits(repo: str, n: int) -> list[list[str]]:
 
 
 def measure_at(repo: str, commit: str, lizard_bin: str | None, workdir: str) -> dict:
+    """Metrics for ``repo`` at ``commit``. A historical commit's tree is
+    IMMUTABLE by definition, so this is a pure function of ``commit`` alone
+    (a full 40-char sha, not the truncated worktree-dirname prefix) — cached
+    on disk keyed by that sha (#328): the second call for the SAME commit,
+    even in a LATER process, performs zero ``git worktree`` checkouts.
+    ``CW_QUALITY_NO_CACHE=1`` (or ``--no-cache`` on this module's CLI)
+    bypasses both the read and the write."""
+    cached = cache.load(repo, "trend", commit)
+    if cached is not None:
+        return cached
     wt = os.path.join(workdir, "wt_" + commit[:10])
     run("git", "-C", repo, "worktree", "add", "--detach", "--force", wt, commit)
     try:
@@ -63,7 +74,7 @@ def measure_at(repo: str, commit: str, lizard_bin: str | None, workdir: str) -> 
         src_loc = loc_counts(src_files)
         test_loc = loc_counts(test_files)
         d = dist(lizard_ccn(src_files, lizard_bin)) or {}
-        return {
+        result = {
             "src_loc": src_loc, "test_loc": test_loc,
             "test_ratio": round(test_loc / src_loc, 2) if src_loc else 0,
             "src_files": len(src_files),
@@ -72,6 +83,8 @@ def measure_at(repo: str, commit: str, lizard_bin: str | None, workdir: str) -> 
             "pct_ccn_gt10": d.get("pct_ccn_gt10"),
             "pct_len_gt60": d.get("pct_len_gt60"),
         }
+        cache.store(repo, "trend", commit, result)
+        return result
     finally:
         run("git", "-C", repo, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
@@ -110,7 +123,13 @@ def main() -> int:
     parser.add_argument("--n", type=int, default=10, help="number of sample points")
     parser.add_argument("--venv", default=None, help="virtualenv with lizard")
     parser.add_argument("--gobin", default=None, help="dir containing go tools")
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="force fresh checkouts, bypassing the per-commit result cache (#328)",
+    )
     args = parser.parse_args()
+    if args.no_cache:
+        os.environ[cache.NO_CACHE_ENV] = "1"
     result = analyze(args.repo, args.workdir, n=args.n, venv=args.venv, gobin=args.gobin)
     print(json.dumps(result, indent=2))
     return 0

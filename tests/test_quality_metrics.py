@@ -372,7 +372,11 @@ def test_survival_second_run_same_head_reuses_cache(tmp_path, monkeypatch):
     assert len(calls) == 1
     r2 = survival.analyze(str(repo), workdir=str(tmp_path / "wd2"))
     assert len(calls) == 1, "second run at the SAME HEAD must be a cache hit"
-    assert r1 == r2
+    # r2 came back through the on-disk JSON cache, so int dict keys (the AGES
+    # bins) round-trip as strings — the same ambiguity report.py already
+    # tolerates (`by_age.get(14) or by_age.get("14")`). Compare via the same
+    # normalization rather than raw dict equality.
+    assert json.loads(json.dumps(r1)) == r2
 
 
 def test_survival_no_cache_env_forces_a_second_real_run(tmp_path, monkeypatch):
@@ -409,7 +413,7 @@ def test_survival_no_cache_env_forces_a_second_real_run(tmp_path, monkeypatch):
 
 
 def test_tracked_files_is_cached_per_process(synth_repo, monkeypatch):
-    complexity.tracked_files.cache_clear()
+    complexity._tracked_files_at.cache_clear()
     calls = []
     real_run = complexity.run
 
@@ -422,3 +426,18 @@ def test_tracked_files_is_cached_per_process(synth_repo, monkeypatch):
     second = complexity.tracked_files(str(synth_repo))
     assert first == second
     assert len(calls) == 1, "one git ls-files per repo per process"
+
+
+def test_tracked_files_reflects_a_mutation_between_calls(synth_repo, monkeypatch):
+    """The naive fix (cache keyed on bare repo path) is WRONG: a caller that
+    rescans the SAME repo path after a real git mutation (debt_inventory's
+    own rename-probe acceptance test does exactly this — build_inventory
+    called twice across a commit) must see the new tracked set, not a
+    process-lifetime-stale one."""
+    complexity._tracked_files_at.cache_clear()
+    before = complexity.tracked_files(str(synth_repo))
+    assert "new_file.py" not in before
+    (synth_repo / "new_file.py").write_text("z = 1\n")
+    _git(synth_repo, "add", "-A")
+    after = complexity.tracked_files(str(synth_repo))
+    assert "new_file.py" in after
