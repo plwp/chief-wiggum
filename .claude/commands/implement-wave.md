@@ -177,6 +177,11 @@ python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_RE
 
 **If `assert-main-pristine` fails, STOP** — main is on a feature branch or dirty (an isolation leak). Restore it (`git checkout "$DEFAULT_BRANCH"`, inspect/park any stray changes) before launching any wave, or every worktree will branch off a contaminated base.
 
+**Sweep orphaned worktrees from prior runs** (#329) — no workflow ever ran `git worktree remove`, so a crashed/killed prior session can leave merged-ticket worktrees sitting in the shared checkout indefinitely. Report-only signal, never a blocker: this only removes a worktree whose branch is PROVABLY merged into `$DEFAULT_BRANCH` (`git branch --merged`) — a parked ticket's branch was never merged, so it is never touched without any separate "is this parked" bookkeeping:
+```bash
+python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+```
+
 **Load amnesia context** (`$QUALITY_DIR` already resolved at Step 1, #324; if `$QUALITY_DIR/ratchet.json` exists): replay the recent ratchet journal so this session doesn't re-litigate decisions a previous wave already made (a parked ticket, an amended contract, a known-flaky suite):
 
 ```bash
@@ -225,7 +230,13 @@ For each ticket in the current wave (up to `--max-parallel`):
    mkdir -p "$TICKET_TMP"
    ```
 
-2. Launch a background **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) — it operates in its own isolated checkout, never the main checkout, and signals completion by writing its status/diff artifacts. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`, `run_in_background: true`.
+2. **Compute the shared dependency-cache plan** (#329) — `/implement`'s single-ticket rule ("symlink `node_modules`/`.venv` instead of reinstalling") is UNSAFE here: `--max-parallel` workers install concurrently in separate worktrees, and a raw symlink to a shared tree lets one worker's install (prune/relink/rewrite) race a sibling's read of the same files. Detect the worktree's ecosystem(s) and point each package manager at a SHARED, concurrency-safe cache **store** instead — never at the installed tree itself (`chief_wiggum/dep_provisioning.py` — every ecosystem's cache format uses its own per-entry locking and is designed for exactly this multi-process sharing):
+   ```bash
+   DEP_CACHE_ENV=$(python3 "$CW_HOME/scripts/dep_cache.py" plan --worktree "<worker's worktree path>" --shell)
+   ```
+   Pass `$DEP_CACHE_ENV` (the `export`/`mkdir -p` lines) to the worker to `eval` before it installs dependencies. The worker still runs its own `npm install`/`pip install`/`go mod download` into its OWN `node_modules`/`.venv`/module cache — only the download/extraction cost is shared, so concurrent workers stay isolated (no shared writable install tree) while skipping the network round-trip. If no recognized ecosystem is detected, the plan is empty and the worker installs normally.
+
+3. Launch a background **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) — it operates in its own isolated checkout, never the main checkout, and signals completion by writing its status/diff artifacts. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`, `run_in_background: true`.
 
    The worker prompt must include:
    - The full ticket details (title, body, acceptance criteria)
@@ -242,13 +253,14 @@ For each ticket in the current wave (up to `--max-parallel`):
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
      - You are in a git worktree. Assert isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.
+     - **Dependency install** (#329): `eval` the `$DEP_CACHE_ENV` lines above BEFORE running any install command, then install normally (`npm install`, `pip install`, `go mod download`, ...) into your own worktree. Do NOT symlink `node_modules`/`.venv`/a module cache from `$TARGET_REPO` or from another worker's worktree — under parallel workers that is a race, not a speedup.
      - Write all temp files to `$TICKET_TMP/` (pass the path explicitly).
      - If you encounter a blocking error after 3 retries, report it and stop — do not silently skip steps.
      - Do NOT run `gh pr create`, `gh pr merge`, or `git push`. The orchestrator handles all of this.
    - The target repo path and default branch name
    - Instructions to report back: branch name, test results, review findings, any issues
 
-3. If the wave has more tickets than `--max-parallel`, queue the excess. As each worker completes, launch the next queued ticket.
+4. If the wave has more tickets than `--max-parallel`, queue the excess. As each worker completes, launch the next queued ticket.
 
 **Worker timeout**: If a worker has not completed after **3 hours**, consider it hung. Implementation workers run the full /implement loop internally (AI consultations, TDD, review, validation) which legitimately takes 60-120 minutes per ticket. Only after the 3-hour mark should you log a warning, note the ticket as failed for this wave, and proceed with collecting results from completed agents. The hung ticket can be retried in a later wave or handled manually with `/implement`.
 
@@ -476,6 +488,12 @@ git branch -d "wave-$wave_number-staging"
 If the fast-forward fails (someone pushed to main in the meantime), rebase the staging branch and re-run the integration check.
 
 Only proceed to the next wave after the push succeeds.
+
+**Remove this wave's merged-ticket worktrees** (#329) — every ticket branch just merged into `$DEFAULT_BRANCH` above; its worktree has no more local work to do. `gc-worktrees` only removes a worktree whose branch is provably merged, so a PARKED ticket (protected-path violation, unresolved conflict — never merged this wave) survives without any separate bookkeeping; pass `--keep` for any ticket branch you know is parked as defense in depth:
+```bash
+python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH" \
+  $(for b in "${PARKED_BRANCHES[@]:-}"; do echo "--keep $b"; done)
+```
 
 **Release the wave lock** acquired in 4d — every exit from the staging/promote phase (success, integration-check abort, or fast-forward failure requiring manual intervention) must release it, or the next wave (in this same run) blocks on itself:
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -197,3 +197,128 @@ def create_staging_branch(
             f"could not create staging branch {name!r}: {(result.stderr or '').strip()}"
         )
     return name
+
+
+# --- worktree teardown (#329) ------------------------------------------------
+#
+# Neither /implement nor /implement-wave ever ran `git worktree remove` — every
+# ticket/wave worker's worktree accumulated forever in the shared target-repo
+# cache checkout. The safe cleanup criterion is "this worktree's branch is
+# provably merged into the default branch" (`git branch --merged`), which is
+# ALSO exactly the set a workflow wants to remove: a merged ticket has no more
+# local work to do, and a parked ticket (protected-path violation, unresolved
+# conflict, failed review) is by definition NOT merged, so it is never touched
+# by this sweep without any separate "is this ticket parked" bookkeeping.
+
+
+def list_worktrees(repo: str | Path, *, runner: Runner = subprocess.run) -> list[dict]:
+    """Parse `git worktree list --porcelain` into a list of {path, head, branch}.
+
+    `branch` is None for a detached-HEAD worktree (never auto-removed by
+    `gc_merged_worktrees` below — an unnamed branch can't be proven merged).
+    """
+    result = _git(["worktree", "list", "--porcelain"], repo, runner)
+    if result.returncode != 0:
+        raise GitSafetyError(f"git worktree list failed: {(result.stderr or '').strip()}")
+    entries: list[dict] = []
+    current: dict = {}
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            if current:
+                entries.append(current)
+                current = {}
+            continue
+        if line.startswith("worktree "):
+            current = {"path": line[len("worktree "):], "branch": None}
+        elif line.startswith("HEAD "):
+            current["head"] = line[len("HEAD "):]
+        elif line.startswith("branch "):
+            ref = line[len("branch "):]
+            current["branch"] = ref.removeprefix("refs/heads/")
+        elif line == "bare":
+            current["bare"] = True
+    if current:
+        entries.append(current)
+    return entries
+
+
+def merged_branches(
+    repo: str | Path, default_branch: str, *, runner: Runner = subprocess.run
+) -> set[str]:
+    """Local branches already merged into ``default_branch`` (ancestor check)."""
+    result = _git(
+        ["branch", "--merged", default_branch, "--format=%(refname:short)"], repo, runner
+    )
+    if result.returncode != 0:
+        raise GitSafetyError(f"git branch --merged failed: {(result.stderr or '').strip()}")
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def remove_worktree(
+    repo: str | Path, path: str | Path, *, force: bool = False, runner: Runner = subprocess.run
+) -> None:
+    """Remove a single worktree. Never `-D`/`reset --hard` — `worktree remove`
+    already refuses a worktree with uncommitted changes unless `force=True`."""
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    result = _git(args, repo, runner)
+    if result.returncode != 0:
+        raise GitSafetyError(f"could not remove worktree {path}: {(result.stderr or '').strip()}")
+
+
+def prune_worktrees(repo: str | Path, *, runner: Runner = subprocess.run) -> None:
+    result = _git(["worktree", "prune"], repo, runner)
+    if result.returncode != 0:
+        raise GitSafetyError(f"git worktree prune failed: {(result.stderr or '').strip()}")
+
+
+def gc_merged_worktrees(
+    repo: str | Path,
+    default_branch: str,
+    *,
+    keep_branches: Iterable[str] = (),
+    force: bool = False,
+    dry_run: bool = False,
+    runner: Runner = subprocess.run,
+) -> list[dict]:
+    """Remove every non-main worktree whose branch is merged into ``default_branch``.
+
+    Safe to call opportunistically from any workflow step that has the target
+    repo path: it never touches the main worktree (branch == default_branch,
+    or a resolved path match), never touches a detached-HEAD worktree, never
+    touches a branch explicitly listed in ``keep_branches`` (parked tickets
+    the caller knows about), and never touches an unmerged branch (a ticket
+    still in flight, or one that failed and was never merged). Returns the
+    removed entries; prunes stale worktree admin state afterward if anything
+    was removed.
+    """
+    repo_root = worktree_root(repo, runner=runner).resolve()
+    entries = list_worktrees(repo, runner=runner)
+    merged = merged_branches(repo, default_branch, runner=runner)
+    keep = set(keep_branches)
+    removed: list[dict] = []
+    for entry in entries:
+        branch = entry.get("branch")
+        if entry.get("bare"):
+            continue
+        if branch is None:
+            continue  # detached HEAD — can't prove merged, never auto-removed
+        if branch == default_branch:
+            continue  # the main worktree
+        try:
+            if Path(entry["path"]).resolve() == repo_root:
+                continue
+        except OSError:
+            pass
+        if branch in keep:
+            continue  # parked — explicit keep
+        if branch not in merged:
+            continue  # not merged — still in flight or never landed
+        if not dry_run:
+            remove_worktree(repo, entry["path"], force=force, runner=runner)
+        removed.append(entry)
+    if removed and not dry_run:
+        prune_worktrees(repo, runner=runner)
+    return removed

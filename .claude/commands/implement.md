@@ -947,5 +947,11 @@ fi
 
 (If the PR hasn't merged yet, record with `--gate pass` and without `--merged` — an unmerged record documents the run but doesn't move the high-water mark. In `/implement-wave` this is handled per wave instead.)
 
+**Sweep this ticket's worktree if it already merged** (#329) — no prior step ever ran `git worktree remove`, so the worker's worktree from Step 5/6 would otherwise sit in the shared checkout forever. `gc-worktrees` only removes a worktree whose branch is provably merged into `$DEFAULT_BRANCH`, so this is a safe no-op if the PR hasn't merged yet (human/CI review still pending) — a later `/implement` or `/implement-wave` run's own sweep will catch it once it has:
+```bash
+git -C "$TARGET_REPO" fetch origin "$DEFAULT_BRANCH"
+python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+```
+
 Close the loop:
 - Ask if the issue should be updated with a comment linking to the PR
