@@ -23,8 +23,15 @@ from pathlib import Path
 import providers
 
 from chief_wiggum.hashing import stable_hash
+from chief_wiggum.trace_ids import MD_DEFINE_RE, canonical_id
 
 Runner = Callable[..., subprocess.CompletedProcess]
+
+# scripts/code_query.py — the shared "what governs this file" locator
+# (docs/code-query.md). review.py's own epic-artifact slicing
+# (chief-wiggum#332) reuses it exactly as /implement Step 8 does, rather
+# than re-deriving a second notion of "governing IDs" from scratch.
+CODE_QUERY_SCRIPT = Path(__file__).resolve().parents[1] / "code_query.py"
 
 # Truncate very large diffs so a provider call isn't blown past its context.
 DEFAULT_MAX_DIFF_BYTES = 200_000
@@ -467,6 +474,119 @@ def truncate_diff(diff: str, max_bytes: int = DEFAULT_MAX_DIFF_BYTES) -> str:
     return truncate_text(diff, max_bytes, label="diff")
 
 
+# --- epic-artifact slicing via code_query (chief-wiggum#332 item 1) ---------
+#
+# contracts.md/invariants.md are inlined WHOLE even when a ticket touches
+# only 1-2 governing IDs (this repo's own contracts.md is ~26KB) — the
+# slicing tool already exists and is used one step later in /implement Step
+# 8 (code_query.py orient/trace/guards). Review context assembly reuses the
+# SAME locator rather than re-deriving "what governs this file" from
+# scratch: for each file the diff touches, ask code_query.py orient for its
+# governing stable IDs, then keep only those IDs' declaration blocks from
+# each epic artifact. Any failure (code_query.py missing, a non-zero exit,
+# malformed JSON, zero IDs resolved) degrades to including the WHOLE
+# artifact — never a broken or silently empty review section.
+
+_DIFF_GIT_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
+
+
+def _touched_files(diff_text: str) -> list[str]:
+    """Deterministic, deduped list of post-image paths a unified diff
+    touches — mirrors consult_ai._touched_files_from_diff's discipline (a
+    small, self-contained duplicate rather than an import across modules
+    with very different dependency weights)."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _DIFF_GIT_HEADER_RE.finditer(diff_text):
+        path = match.group(2)
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _epic_slug_from_artifact_paths(paths: Iterable[str]) -> str | None:
+    """Best-effort epic slug inference from a ``docs/epics/<slug>/...`` path
+    (the ``--epic-artifact`` convention scripts/run_review.py's CLI already
+    uses) — lets review slicing find the right epic without a NEW CLI flag
+    duplicating what ``--epic-artifact`` already encodes. ``None`` when no
+    path follows the convention (an external caller supplying artifact
+    content directly, with no epic directory at all)."""
+    for p in paths:
+        parts = Path(p).parts
+        if "epics" in parts:
+            idx = parts.index("epics")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+    return None
+
+
+def slice_markdown_by_ids(text: str, ids: set[str]) -> str:
+    """Return only the stable-ID declaration blocks in ``text`` whose
+    canonical ID is in ``ids`` (chief-wiggum#332) — the SAME block-boundary
+    rule ``chief_wiggum.hashing.hash_markdown_defs`` uses (a block runs from
+    its declaring line to the next declaration or EOF), so slicing agrees
+    with what the ratchet/traceability scanners already consider "one
+    block". Returns ``""`` when ``ids`` is empty or nothing matches — the
+    caller falls back to the whole file text in that case, never a silently
+    empty review section. ``ids`` is canonicalized here too — a caller may
+    pass any casing (matching ``canonical_id``'s own case-insensitive
+    contract), not just the already-canonical form."""
+    if not ids:
+        return ""
+    canonical_ids = {canonical_id(i) for i in ids}
+    lines = text.splitlines()
+    decls: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        m = MD_DEFINE_RE.search(line)
+        if m:
+            decls.append((i, m.group(1)))
+    blocks: list[str] = []
+    for idx, (start, cid) in enumerate(decls):
+        end = decls[idx + 1][0] if idx + 1 < len(decls) else len(lines)
+        if canonical_id(cid) in canonical_ids:
+            blocks.append("\n".join(lines[start:end]).rstrip())
+    return "\n\n".join(blocks)
+
+
+def _governing_ids_for_files(
+    repo_root: str | Path, epic_slug: str, files: list[str], *, runner: Runner = subprocess.run,
+) -> set[str]:
+    """Best-effort: ask ``code_query.py orient`` for each touched file's
+    governing stable IDs (chief-wiggum#332) — the same locator /implement
+    Step 8 already uses, reused here so review context assembly stops
+    re-deriving "what governs this file" from scratch. ANY failure (script
+    missing, non-zero exit, malformed JSON, an unscanned/errored envelope)
+    degrades to an empty set — the caller falls back to whole-file
+    inclusion, never a broken review."""
+    ids: set[str] = set()
+    if not CODE_QUERY_SCRIPT.is_file():
+        return ids
+    for f in files:
+        try:
+            result = runner(
+                [
+                    sys.executable, str(CODE_QUERY_SCRIPT),
+                    "--repo", str(repo_root), "--epic", epic_slug,
+                    "--format", "json", "orient", f,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                continue
+            envelope = json.loads(result.stdout)
+        except Exception:  # noqa: BLE001 - best-effort; never break the review
+            continue
+        for fact in envelope.get("facts", []) or []:
+            fid = fact.get("id") if isinstance(fact, dict) else None
+            if isinstance(fid, str):
+                try:
+                    ids.add(canonical_id(fid))
+                except Exception:  # noqa: BLE001 - a malformed id string, skip it
+                    continue
+    return ids
+
+
 # --- git --------------------------------------------------------------------
 
 
@@ -677,8 +797,22 @@ def run_review(
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
     optional_timeout_default: int = providers.DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
     force_fresh: bool = False,
+    epic_slug: str | None = None,
+    code_query_runner: Runner = subprocess.run,
 ) -> ReviewManifest:
     """Assemble the review prompt(s), run the reviewer quorum.
+
+    ``epic_slug`` (chief-wiggum#332 item 1): when given, each entry in
+    ``epic_sections`` is sliced down to just the stable-ID blocks that
+    ``code_query.py orient`` reports as governing the files this review's
+    diff touches (the same locator /implement Step 8 uses), instead of
+    inlining the whole artifact. Falls back to the WHOLE artifact when
+    ``epic_slug`` is omitted (the pre-#332 default — every existing caller),
+    when no governing IDs resolve for any reason (code_query.py missing, an
+    error, a diff with no matching files), or for an artifact whose slice
+    would otherwise be empty (nothing lost, never a silently blank section).
+    ``code_query_runner`` is the injected subprocess runner for that lookup
+    (defaults to ``subprocess.run``, matching ``runner``'s own default).
 
     ``force_fresh`` (chief-wiggum#332 item 4): by default, a provider whose
     FINAL assembled (post-lens) prompt content-hashes identically to its
@@ -722,6 +856,26 @@ def run_review(
     diff_path = out / "impl-diff.txt"
     diff_path.write_text(diff)
     diff_stat = diff_shortstat(worktree, resolved.ref, runner=runner)
+
+    # chief-wiggum#332 item 1: slice epic artifacts down to just the
+    # governing IDs the diff's touched files resolve to, via the same
+    # code_query.py orient locator /implement Step 8 uses — falling back to
+    # whole-file inclusion on ANY failure to resolve (no epic_slug, no
+    # touched files found in the diff, code_query error, zero IDs resolved,
+    # or a PARTICULAR artifact whose slice would be empty).
+    epic_sections = list(epic_sections)
+    if epic_sections and epic_slug:
+        touched = _touched_files(diff)
+        if touched:
+            governing_ids = _governing_ids_for_files(
+                worktree, epic_slug, touched, runner=code_query_runner
+            )
+            if governing_ids:
+                sliced_sections: list[tuple[str, str]] = []
+                for title, content in epic_sections:
+                    sliced = slice_markdown_by_ids(content, governing_ids)
+                    sliced_sections.append((title, sliced if sliced.strip() else content))
+                epic_sections = sliced_sections
 
     # chief-wiggum#332: the diff is capped at max_diff_bytes and inlined into
     # EVERY provider's prompt — but only a provider with no real filesystem

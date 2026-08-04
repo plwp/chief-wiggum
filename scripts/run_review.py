@@ -71,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     checklist = Path(args.checklist).read_text() if Path(args.checklist).exists() else None
 
     epic_sections: list[tuple[str, str]] = []
+    epic_artifact_paths: list[str] = []
     for spec in args.epic_artifact:
         if "=" not in spec:
             continue
@@ -78,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
         p = Path(path)
         if p.exists():
             epic_sections.append((title, p.read_text()))
+            epic_artifact_paths.append(path)
+
+    # chief-wiggum#332 item 1: infer the epic slug from the docs/epics/<slug>/
+    # convention --epic-artifact paths already follow, rather than adding a
+    # new CLI flag that would just duplicate what's already encoded there.
+    epic_slug = review._epic_slug_from_artifact_paths(epic_artifact_paths)
 
     def execute(provider, prompt, timeout_override=None, *, attempt=1, previous_failure_kind=None):
         # timeout_override caps an OPTIONAL claude-interactive delegate so it
@@ -108,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             role=args.role,
             execute=execute,
             force_fresh=args.fresh,
+            epic_slug=epic_slug,
         )
     except review.ReviewError as exc:
         print(f"Error: {exc}", file=sys.stderr)
