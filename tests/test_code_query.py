@@ -923,6 +923,30 @@ def test_provenance_index_reflects_a_dirty_file(tmp_path):
     assert batched_dirty == fallback_dirty
 
 
+def test_provenance_index_reflects_a_deleted_tracked_file(tmp_path):
+    """A tracked file that's since been deleted (but not yet committed) must
+    report dirty=True in the batched path too — the fallback's
+    `git status --porcelain` runs unconditionally, so it sees the deletion
+    even though the path no longer exists on disk."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+    (repo / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+
+    (repo / "f.py").unlink()
+    fallback = code_query._file_provenance(repo, "f.py")
+    assert fallback["dirty"] is True  # deletion is uncommitted, so it's dirty
+    assert fallback["blob_sha"] is None  # nothing left on disk to hash
+
+    index = code_query._build_provenance_index(repo)
+    batched = code_query._file_provenance(repo, "f.py", index=index)
+    assert batched == fallback
+
+
 def _spy_on_subprocess(monkeypatch):
     calls: list[list[str]] = []
     real_run = subprocess.run

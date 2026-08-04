@@ -65,6 +65,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -306,12 +307,73 @@ def _query_provenance(repo_root: Path, epics: list[Epic]) -> dict:
     }
 
 
-def _file_provenance(repo_root: Path, rel: str) -> dict:
-    """Per-fact provenance: current blob hash + dirty flag. Degrades to `None`s
-    (never raises) when the path isn't a file or git isn't available — the
-    fact itself is still returned, just without a hash lineage."""
+ProvenanceIndex = tuple[dict[str, str], set[str]]
+
+
+def _build_provenance_index(repo_root: Path) -> ProvenanceIndex | None:
+    """Batched replacement for calling ``_file_provenance`` once per fact
+    (#325): a ``{rel path: blob_sha}`` map for the WHOLE repo plus the set of
+    currently-dirty (uncommitted, working-tree-vs-HEAD) paths — ~6 total git
+    processes (``chief_wiggum.manifest.build_manifest``'s ls-tree/diff/
+    ls-files trio, plus ``changed_paths``'s second ls-tree+diff+ls-files pass
+    against HEAD) for an ENTIRE query, versus 2 per fact previously. Callers
+    build this ONCE per `cmd_*` invocation (one query = one process = one
+    index) and pass it to every ``_file_provenance``/``_annotation_fact``
+    call within that query — the two-plane doctrine is untouched: this is a
+    same-request batch, not a cache carried across queries (``from_cache``
+    stays ``False`` either way — same freshness, same answers, just fewer
+    processes to get there).
+
+    Returns ``None`` when the manifest can't be built (not a git repo, git
+    absent) — callers fall back to the original per-file subprocess path
+    rather than crashing.
+
+    Known, accepted narrowing: a path that exists on disk but is
+    gitignored (present, but excluded from both ``git ls-tree`` and
+    ``git ls-files --others --exclude-standard``) has no entry in the
+    manifest, so a lookup against the index reports ``blob_sha: None`` where
+    the unbatched fallback would have hashed it anyway (``git hash-object``
+    doesn't consult ``.gitignore``). Annotation/writer/epic-doc provenance
+    targets are always real tracked source or docs files in practice; this
+    is a deliberate, documented scope boundary, not a silent one.
+    """
+    try:
+        from chief_wiggum.manifest import (  # noqa: PLC0415
+            ManifestError,
+            build_manifest,
+            changed_paths,
+        )
+    except ImportError:
+        return None
+    try:
+        manifest = build_manifest(str(repo_root))
+        dirty = changed_paths(str(repo_root), "HEAD")
+    except ManifestError:
+        return None
+    return manifest, dirty
+
+
+def _file_provenance(repo_root: Path, rel: str, index: ProvenanceIndex | None = None) -> dict:
+    """Per-fact provenance: current blob hash + dirty flag.
+
+    When ``index`` (see ``_build_provenance_index``) is given, this is a pure
+    dict/set lookup — zero subprocesses. Without one, degrades to the
+    original per-call ``git hash-object``/``git status`` pair (never raises)
+    when the path isn't a file or git isn't available — the fact itself is
+    still returned, just without a hash lineage."""
     root = Path(repo_root)
     full = root / rel
+    if index is not None:
+        # Mirrors the fallback's exact asymmetry below: `blob_sha` is gated on
+        # the path existing NOW (git hash-object needs bytes to hash); `dirty`
+        # is NOT — the fallback's `git status --porcelain` runs unconditionally,
+        # so a path that was tracked and just got DELETED still reports
+        # `dirty: True` there (and must here too, via `changed_paths`'s own
+        # deletion handling) rather than the narrower `None` a naive
+        # is_file()-gated check would give a since-deleted tracked file.
+        manifest, dirty_paths = index
+        blob_sha = manifest.get(rel) if full.is_file() else None
+        return {"blob_sha": blob_sha, "dirty": rel in dirty_paths, "from_cache": False}
     blob_sha: str | None = None
     dirty: bool | None = None
     try:
@@ -885,6 +947,10 @@ def _hotspot_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
     authority = doc.get("authority", "")
     by_file = {h.get("file"): h for h in doc["hotspots"] if isinstance(h, dict) and h.get("file")}
 
+    # #325: `rel` is the SAME file for every fact this function can produce
+    # (own-hotspot OR coupled-partner) — compute provenance once rather than
+    # once per branch/loop-iteration that happens to match.
+    prov = _file_provenance(repo_root, rel)
     own = by_file.get(rel)
     facts: list[Fact] = []
     if own is not None and own.get("decile") == 10:
@@ -907,7 +973,7 @@ def _hotspot_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
                 "trend": own.get("trend"),
             },
             provenance={
-                **_file_provenance(repo_root, rel),
+                **prov,
                 "derived": True,
                 "generating_sha": sha,
             },
@@ -944,7 +1010,7 @@ def _hotspot_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
                         **{k: partner.get(k) for k in ("confidence", "co_changes")},
                     },
                     provenance={
-                        **_file_provenance(repo_root, rel),
+                        **prov,
                         "derived": True,
                         "generating_sha": sha,
                     },
@@ -987,6 +1053,11 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
     sha = doc.get("target_sha")
     authority = doc.get("authority", "")
     facts: list[Fact] = []
+    # #325: `rel` is the SAME file across every matching item — computed at
+    # most ONCE (lazily, on the first actual match) rather than once per
+    # matching debt item, which used to redo the same 2 git calls for a file
+    # that appears in several debt items.
+    prov: dict | None = None
     for item in doc["items"]:
         if not isinstance(item, dict) or not item.get("id"):
             continue
@@ -994,6 +1065,8 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
                 if isinstance(loc, str) and loc.rsplit(":", 1)[0] == rel]
         if not locs:
             continue
+        if prov is None:
+            prov = _file_provenance(repo_root, rel)
         # Grandfathered labeling (#215): a pre-adoption-baseline item is
         # STATED as such (and an expired grandfather loudly so) — the fact
         # stays in the answer either way; only the label changes. Expired-ness
@@ -1030,7 +1103,7 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
                 **gf_extra,
             },
             provenance={
-                **_file_provenance(repo_root, rel),
+                **prov,
                 "derived": True,
                 "generating_sha": sha,
             },
@@ -1077,6 +1150,41 @@ def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAUL
 # --- verb: governs --------------------------------------------------------------
 
 
+def _scan_writers_union(
+    repo_root: Path, epics: list[Epic], select: Callable[[Epic], list],
+) -> tuple[list, dict[str, Epic], list]:
+    """Union ``select(epic)``'s matching single-write-path invariants across
+    ALL epics into ONE ``check_single_writer.scan_writers`` call (#325),
+    instead of one full-source-tree walk per epic that happens to have a
+    match — ``scan_writers`` already accepts a list of invariants and
+    ``match_writers`` claims each candidate write site against every
+    invariant in that list independently, so unioning the list changes
+    nothing about which writers are found, only how many times the tree is
+    walked to find them.
+
+    Returns ``(writers, inv_to_epic, matching_all)``: the flat ``Writer``
+    list (unchanged shape); an ``{invariant_id: owning Epic}`` map so the
+    caller can partition results back onto the SAME epic attribution the
+    original per-epic loop produced; and the flat list of matched invariants
+    in discovery order, for callers that need to re-derive per-epic groupings
+    (e.g. "no writer found" warnings) without a second scan. If two epics
+    ever declared the SAME invariant id (a data bug — ids are meant to be
+    globally unique), the LAST epic wins the attribution in ``inv_to_epic``;
+    this is the one accepted edge case of merging the scans.
+    """
+    inv_to_epic: dict[str, Epic] = {}
+    matching_all: list = []
+    for epic_ctx in epics:
+        for inv in select(epic_ctx):
+            inv_to_epic[inv.id] = epic_ctx
+            matching_all.append(inv)
+    if not matching_all:
+        return [], inv_to_epic, matching_all
+    exclude = sorted({str(Path("docs") / "epics" / e.slug) for e in inv_to_epic.values()})
+    writers = check_single_writer.scan_writers(repo_root, matching_all, exclude=exclude)
+    return writers, inv_to_epic, matching_all
+
+
 def cmd_governs(repo_root: Path, target: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     rel = _norm(target)
@@ -1115,25 +1223,27 @@ def cmd_governs(repo_root: Path, target: str, epic: str | None, limit: int = DEF
     field_tok = target.split(".")[-1].strip().lower()
     facts: list[Fact] = []
     warnings: list[str] = []
+    # #325: one source scan across ALL epics, not one per epic that happens
+    # to declare a matching invariant.
+    writers, inv_to_epic, _matching_all = _scan_writers_union(
+        repo_root, epics, lambda e: [i for i in e.sw_invariants if field_tok in i.field_tokens()]
+    )
+    index = _build_provenance_index(repo_root) if writers else None
+    for w in writers:
+        owner = inv_to_epic.get(w.invariant_id)
+        facts.append(Fact(
+            kind="writer",
+            id=w.invariant_id,
+            statement=f"{'UNSANCTIONED' if not w.sanctioned else 'sanctioned'} writer of {w.field}",
+            handle=f"{w.file}:{w.line}",
+            epic=owner.slug if owner else None,
+            extra=w.to_dict(),
+            provenance=_file_provenance(repo_root, w.file, index=index),
+            exact=True,
+            violation=not w.sanctioned,
+            proximity=2,
+        ))
     for epic_ctx in epics:
-        matching = [i for i in epic_ctx.sw_invariants if field_tok in i.field_tokens()]
-        if matching:
-            writers = check_single_writer.scan_writers(repo_root, matching, exclude=[
-                str(Path("docs") / "epics" / epic_ctx.slug)
-            ])
-            for w in writers:
-                facts.append(Fact(
-                    kind="writer",
-                    id=w.invariant_id,
-                    statement=f"{'UNSANCTIONED' if not w.sanctioned else 'sanctioned'} writer of {w.field}",
-                    handle=f"{w.file}:{w.line}",
-                    epic=epic_ctx.slug,
-                    extra=w.to_dict(),
-                    provenance=_file_provenance(repo_root, w.file),
-                    exact=True,
-                    violation=not w.sanctioned,
-                    proximity=2,
-                ))
         contracts = epic_ctx.models.get("contracts.json")
         if contracts:
             for entity in contracts.get("entities", []):
@@ -1175,35 +1285,42 @@ def cmd_writers(repo_root: Path, target: str, epic: str | None, limit: int = DEF
     epics = discover_epics(repo_root, epic)
     canonical = check_traceability.canonical_id(target) if _ID_KIND_RE.match(target) else None
     field_tok = target.split(".")[-1].strip().lower()
+    if canonical:
+        select: Callable[[Epic], list] = lambda e: [i for i in e.sw_invariants if i.id == canonical]  # noqa: E731
+    else:
+        select = lambda e: [i for i in e.sw_invariants if field_tok in i.field_tokens()]  # noqa: E731
 
     facts: list[Fact] = []
     warnings: list[str] = []
-    matched_any_invariant = False
+    # #325: one source scan across ALL epics, not one per epic that happens
+    # to declare a matching invariant.
+    writers, inv_to_epic, matching_all = _scan_writers_union(repo_root, epics, select)
+    matched_any_invariant = bool(matching_all)
+    found_ids = {w.invariant_id for w in writers}
+    index = _build_provenance_index(repo_root) if writers else None
+    for w in writers:
+        owner = inv_to_epic.get(w.invariant_id)
+        facts.append(Fact(
+            kind="writer",
+            id=w.invariant_id,
+            statement=f"{'UNSANCTIONED' if not w.sanctioned else 'sanctioned'} writer of {w.field}",
+            handle=f"{w.file}:{w.line}",
+            epic=owner.slug if owner else None,
+            extra=w.to_dict(),
+            provenance=_file_provenance(repo_root, w.file, index=index),
+            exact=True,
+            violation=not w.sanctioned,
+            proximity=0,
+        ))
+    # Per-epic "no writer found" warnings + epic parse warnings — re-derived
+    # via `select` (a pure in-memory filter over already-loaded invariants,
+    # no rescan) rather than the union call, so this preserves the ORIGINAL
+    # per-epic loop's exact behavior: an epic's own `.warnings` only surface
+    # here when it ALSO has a matching invariant for this target.
     for epic_ctx in epics:
-        if canonical:
-            matching = [i for i in epic_ctx.sw_invariants if i.id == canonical]
-        else:
-            matching = [i for i in epic_ctx.sw_invariants if field_tok in i.field_tokens()]
+        matching = select(epic_ctx)
         if not matching:
             continue
-        matched_any_invariant = True
-        writers = check_single_writer.scan_writers(
-            repo_root, matching, exclude=[str(Path("docs") / "epics" / epic_ctx.slug)]
-        )
-        found_ids = {w.invariant_id for w in writers}
-        for w in writers:
-            facts.append(Fact(
-                kind="writer",
-                id=w.invariant_id,
-                statement=f"{'UNSANCTIONED' if not w.sanctioned else 'sanctioned'} writer of {w.field}",
-                handle=f"{w.file}:{w.line}",
-                epic=epic_ctx.slug,
-                extra=w.to_dict(),
-                provenance=_file_provenance(repo_root, w.file),
-                exact=True,
-                violation=not w.sanctioned,
-                proximity=0,
-            ))
         for inv in matching:
             if inv.id not in found_ids:
                 warnings.append(
@@ -1279,7 +1396,9 @@ def _owner_epic(epics: list[Epic], node_id: str) -> Epic | None:
     return None
 
 
-def _annotation_fact(ann, epics: list[Epic], repo_root: Path, *, exact: bool = True) -> Fact:
+def _annotation_fact(
+    ann, epics: list[Epic], repo_root: Path, *, exact: bool = True, index: ProvenanceIndex | None = None,
+) -> Fact:
     owner = _owner_epic(epics, ann.target)
     # emit_epic_annotations tags source_kind with the declaring ID's KIND (e.g.
     # "CTR") and ann.file is EPIC-relative; emit_source_annotations tags it with
@@ -1313,7 +1432,7 @@ def _annotation_fact(ann, epics: list[Epic], repo_root: Path, *, exact: bool = T
         handle=handle,
         epic=owner.slug if owner else None,
         extra=extra,
-        provenance=_file_provenance(repo_root, handle_file),
+        provenance=_file_provenance(repo_root, handle_file, index=index),
         exact=exact,
         proximity=0,
         prod=prod,
@@ -1337,7 +1456,8 @@ def _annotations_for(
 def cmd_guards(repo_root: Path, ctr_id: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     anns, warnings = _annotations_for(repo_root, ctr_id, epics, verbs=("guards", "ensures"))
-    facts = [_annotation_fact(a, epics, repo_root) for a in anns]
+    index = _build_provenance_index(repo_root)
+    facts = [_annotation_fact(a, epics, repo_root, index=index) for a in anns]
     canonical = check_traceability.canonical_id(ctr_id)
     summary = (
         f"guards: {len(facts)} guard/ensures site(s) for {canonical}"
@@ -1353,7 +1473,8 @@ def cmd_guards(repo_root: Path, ctr_id: str, epic: str | None, limit: int = DEFA
 def cmd_verifies(repo_root: Path, ctr_id: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
     epics = discover_epics(repo_root, epic)
     anns, warnings = _annotations_for(repo_root, ctr_id, epics, verbs=("verifies",))
-    facts = [_annotation_fact(a, epics, repo_root) for a in anns]
+    index = _build_provenance_index(repo_root)
+    facts = [_annotation_fact(a, epics, repo_root, index=index) for a in anns]
     canonical = check_traceability.canonical_id(ctr_id)
     summary = (
         f"verifies: {len(facts)} test/verification site(s) for {canonical}"
@@ -1370,7 +1491,8 @@ def cmd_annotations(repo_root: Path, node_id: str, epic: str | None, verb_filter
     epics = discover_epics(repo_root, epic)
     verbs = (verb_filter.lower(),) if verb_filter else None
     anns, warnings = _annotations_for(repo_root, node_id, epics, verbs=verbs)
-    facts = [_annotation_fact(a, epics, repo_root) for a in anns]
+    index = _build_provenance_index(repo_root)
+    facts = [_annotation_fact(a, epics, repo_root, index=index) for a in anns]
     canonical = check_traceability.canonical_id(node_id)
     scope = f" (verb={verb_filter})" if verb_filter else ""
     summary = (
@@ -1427,6 +1549,7 @@ def cmd_trace(repo_root: Path, node_id: str, epic: str | None, limit: int = DEFA
 
     epic_anns = _all_epic_annotations(epics)
     source_anns, ext_warnings = _all_source_annotations(repo_root)
+    index = _build_provenance_index(repo_root)
 
     facts: list[Fact] = []
     warnings: list[str] = list(ext_warnings)
@@ -1438,15 +1561,15 @@ def cmd_trace(repo_root: Path, node_id: str, epic: str | None, limit: int = DEFA
         realizers = [a for a in epic_anns if a.verb == "realizes" and a.target == canonical and a.source_id]
         for a in realizers:
             contract_ids.add(a.source_id)
-            facts.append(_annotation_fact(a, epics, repo_root))
+            facts.append(_annotation_fact(a, epics, repo_root, index=index))
     else:
         realizes = [a for a in epic_anns if a.verb == "realizes" and a.source_id == canonical]
         for a in realizes:
-            facts.append(_annotation_fact(a, epics, repo_root))
+            facts.append(_annotation_fact(a, epics, repo_root, index=index))
 
     for a in source_anns:
         if a.verb in ("guards", "ensures", "verifies") and a.target in contract_ids:
-            facts.append(_annotation_fact(a, epics, repo_root))
+            facts.append(_annotation_fact(a, epics, repo_root, index=index))
 
     if owner is not None:
         found = _find_derived_from_in_models(owner, canonical)
