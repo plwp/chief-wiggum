@@ -855,7 +855,112 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
     # recorded rather than silently used.
     assert manifest.base_source == "local-fallback"
     assert manifest.base_fallback_reason is not None
-    assert "review-manifest" in str(out / "review-manifest.json")
+
+
+# --- per-provider diff inlining (chief-wiggum#332 item 2) -------------------
+
+
+def test_run_review_sends_a_pointer_instead_of_inline_diff_to_a_filesystem_capable_provider(tmp_path, monkeypatch):
+    """Only a provider with NO real tool loop (needs_inline_diff=True, e.g.
+    gemini-vertex) needs the diff inlined as text. A provider with real cwd
+    access (codex) gets a pointer to the diff file/git command instead —
+    the SAME diff, just not re-serialized as text into its prompt."""
+    role = Role(name="reviewer", required=("codex", "gemini-vertex"), optional=())
+    plan = RolePlan(
+        role=role,
+        required=(
+            Provider("codex", "tool", True, tool="codex", needs_inline_diff=False),
+            Provider("gemini-vertex", "tool", True, tool="gemini-vertex", needs_inline_diff=True),
+        ),
+        optional=(), missing_required=(), skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured[provider.name] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+UNIQUE_DIFF_MARKER_XYZ"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True
+    # gemini-vertex (no tool loop) gets the diff inlined as text.
+    assert "UNIQUE_DIFF_MARKER_XYZ" in captured["gemini-vertex"]
+    # codex (real filesystem access) gets a pointer, NOT the diff text.
+    assert "UNIQUE_DIFF_MARKER_XYZ" not in captured["codex"]
+    assert "impl-diff.txt" in captured["codex"]
+
+
+def test_run_review_prompt_md_on_disk_always_carries_the_full_inline_diff(tmp_path, monkeypatch):
+    # review-prompt.md is written for a human to inspect — it must always
+    # show the real diff, regardless of what any individual provider (which
+    # may have gotten a pointer) actually received.
+    role = Role(name="reviewer", required=("codex",), optional=())
+    plan = RolePlan(
+        role=role,
+        required=(Provider("codex", "tool", True, tool="codex", needs_inline_diff=False),),
+        optional=(), missing_required=(), skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+UNIQUE_DIFF_MARKER_XYZ"),
+        }
+    )
+    out = tmp_path / "out"
+
+    review.run_review(
+        _ticket(), tmp_path, "main", out,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=lambda p, pr, to=None: "A substantive review with findings to report here.",
+        runner=runner,
+    )
+
+    assert "UNIQUE_DIFF_MARKER_XYZ" in (out / "review-prompt.md").read_text()
+
+
+def test_run_review_all_inline_providers_matches_pre_332_behavior(tmp_path, monkeypatch):
+    # A role where every provider needs the diff inlined (the pre-#332
+    # default) behaves exactly as before — every provider sees the real
+    # diff text.
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured[provider.name] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+UNIQUE_DIFF_MARKER_XYZ"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert "UNIQUE_DIFF_MARKER_XYZ" in captured["codex"]
+    assert "UNIQUE_DIFF_MARKER_XYZ" in captured["gemini"]
 
 
 def test_run_review_records_resolved_base_sha_and_diff_stat(tmp_path, monkeypatch):
