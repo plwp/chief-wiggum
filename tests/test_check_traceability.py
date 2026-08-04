@@ -953,6 +953,23 @@ def test_unresolved_external_link_is_surfaced_never_dropped(tmp_path, monkeypatc
     assert any("order.py::create_order" in w and "unresolved" in w for w in out["warnings"])
 
 
+def test_fully_unresolved_external_store_is_error_not_warning(tmp_path, monkeypatch, capsys):
+    """chief-wiggum#313 item 3: a store with entries where NONE anchor is a
+    broken instrument (wrong language tier or wrong recorded paths) — it must
+    fail --gate, not just print a warning that never blocks anything.
+    Deleting the source file every entry pointed at makes the store
+    100% unresolved (as opposed to test_unresolved_external_link_..., which
+    stays partially healthy)."""
+    epic, src, _store = _sidecar_target_with_external_links(tmp_path, monkeypatch)
+    (src / "order.py").unlink()
+    (src / "test_order.py").unlink()
+    rc = ct.main([str(epic), "--source", str(src), "--gate", "coverage", "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert out["applicability"] == "error"
+    assert out["outcome"] == "error"
+
+
 def test_explicit_external_links_flag_works_in_embedded_mode(tmp_path):
     """--external-links <path> reads the store even without a sidecar election."""
     from chief_wiggum import external_links
