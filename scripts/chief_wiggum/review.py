@@ -674,7 +674,7 @@ def run_review(
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
     optional_timeout_default: int = providers.DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
 ) -> ReviewManifest:
-    """Assemble the review prompt, run the reviewer quorum, write synthesis inputs.
+    """Assemble the review prompt(s), run the reviewer quorum.
 
     Refuses to run outside a git repo or when ``base`` cannot be resolved.
     ``execute`` (the provider call) is injected so the pipeline is testable; it
@@ -686,10 +686,14 @@ def run_review(
     applies on its own ``--role`` path, computed by the shared
     ``providers.optional_provider_timeout``.
 
-    Every provider gets the identical assembled prompt. If ``role`` maps a
-    provider to a lens (``config/providers.json`` role.lenses), that provider's
-    charter (``config/lenses.json``, or ``lenses`` if supplied) is appended —
-    the shared prompt itself is never altered (chief-wiggum#163).
+    Every provider gets the identical CONTENT (ticket, contracts, checklist,
+    diff) and, if ``role`` maps it to a lens (``config/providers.json``
+    role.lenses), that provider's charter appended (chief-wiggum#163) — but
+    not necessarily the identical BYTES for the diff. A provider declared
+    ``needs_inline_diff=False`` (real filesystem access — codex,
+    claude-interactive) gets a pointer to the diff file/git command instead
+    of the diff text itself (chief-wiggum#332); ``review-prompt.md`` on disk
+    always carries the full inline version for a human to read.
     """
     assert_git_repo(worktree, runner=runner)
     out = Path(output_dir)
@@ -704,11 +708,30 @@ def run_review(
     diff_path.write_text(diff)
     diff_stat = diff_shortstat(worktree, resolved.ref, runner=runner)
 
-    prompt = assemble_review_prompt(
+    # chief-wiggum#332: the diff is capped at max_diff_bytes and inlined into
+    # EVERY provider's prompt — but only a provider with no real filesystem
+    # access (Provider.needs_inline_diff=True, e.g. gemini-vertex's single
+    # synchronous SDK call) actually needs that. A provider that runs with
+    # real cwd access and its own tool loop (codex, claude, claude-interactive)
+    # can open `impl-diff.txt` itself, or reproduce it with `git diff`; up to
+    # ~100k avoidable input tokens per review for those. `prompt_inline` is
+    # what review-prompt.md on disk always shows (the full, human-readable
+    # prompt); `prompt_pointer` swaps the diff text for a pointer to the same
+    # information, reachable via the file or the git command below.
+    prompt_inline = assemble_review_prompt(
         template, ticket, diff, checklist=checklist, epic_sections=epic_sections
     )
+    diff_pointer = (
+        "[Not inlined here (chief-wiggum#332) — you have direct filesystem "
+        "access; the diff below is identical to what every other reviewer sees.\n"
+        f"Read it from: {diff_path.resolve()}\n"
+        f"Or reproduce it yourself: git diff {resolved.ref}...HEAD   (run from {Path(worktree).resolve()})]"
+    )
+    prompt_pointer = assemble_review_prompt(
+        template, ticket, diff_pointer, checklist=checklist, epic_sections=epic_sections
+    )
     prompt_path = out / "review-prompt.md"
-    prompt_path.write_text(prompt)
+    prompt_path.write_text(prompt_inline)
 
     if config is None:
         config = providers.load_config()
@@ -719,6 +742,17 @@ def run_review(
         )
     if execute is None:
         raise ReviewError("an execute callable is required to run the reviewer quorum")
+
+    # Per-provider prompt body (chief-wiggum#332): only a provider that
+    # declares it needs the diff inlined gets `prompt_inline`; everyone else
+    # gets the smaller `prompt_pointer`. Keyed by provider name so
+    # run_role_quorum's dict-shaped `prompt` support (both the
+    # MIN_PROMPT_BYTES floor and the #319 blindness token-floor estimate)
+    # measures each provider against ITS OWN body, not a mismatched one.
+    provider_prompts: dict[str, str] = {
+        p.name: prompt_inline if p.needs_inline_diff else prompt_pointer
+        for p in plan.runnable
+    }
 
     if lenses is None:
         lenses = providers.load_lenses()
@@ -751,7 +785,11 @@ def run_review(
     execute_wants_retry_context = providers.execute_accepts_retry_context(execute)
 
     def _execute_for_quorum(p, attempt: int = 1, previous_failure_kind: str | None = None):
-        provider_prompt = providers.prompt_for_provider(plan.role, p.name, prompt, lenses)
+        # chief-wiggum#332: each provider's OWN body (inline or pointer),
+        # falling back to the full inline prompt for a provider somehow
+        # absent from plan.runnable (shouldn't happen — defensive only).
+        shared_body = provider_prompts.get(p.name, prompt_inline)
+        provider_prompt = providers.prompt_for_provider(plan.role, p.name, shared_body, lenses)
         timeout_override = providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default)
         if execute_wants_retry_context:
             return execute(
@@ -764,11 +802,13 @@ def run_review(
         plan,
         _execute_for_quorum,
         out,
-        # chief-wiggum#319: the SHARED (pre-lens) prompt + lens map, so the
-        # quorum also runs the blindness check and surfaces it in
-        # provider_manifest/review-manifest.json — the same prompt every
-        # provider above was rendered from via prompt_for_provider.
-        prompt=prompt,
+        # chief-wiggum#319/#332: the per-provider (pre-lens) prompt bodies +
+        # lens map, so the quorum also runs the blindness check and surfaces
+        # it in provider_manifest/review-manifest.json against the SAME body
+        # each provider was actually rendered from via prompt_for_provider —
+        # not a single shared value that would mismatch a pointer-prompt
+        # provider against an inline-prompt one.
+        prompt=provider_prompts,
         lenses=lenses,
     )
     response_paths = [r.path for r in quorum.results if r.path]
