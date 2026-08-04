@@ -121,7 +121,7 @@ def _retry_backoff_seconds(attempt: int, previous_failure_kind: str | None) -> f
     return delay + jitter
 
 
-def execute_accepts_retry_context(execute: "ExecuteFn") -> bool:
+def execute_accepts_retry_context(execute: ExecuteFn) -> bool:
     """Whether ``execute`` opts into per-attempt retry context
     (chief-wiggum#330): an ``attempt`` keyword parameter, or ``**kwargs``.
 

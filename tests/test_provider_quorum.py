@@ -7,9 +7,8 @@ import threading
 import time
 from dataclasses import dataclass
 
-import pytest
-
 import providers
+import pytest
 from providers import (
     BLIND_PROVIDER_MARGIN,
     BlindnessReport,

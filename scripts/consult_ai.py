@@ -32,9 +32,9 @@ import tempfile
 import threading
 import time
 import tomllib
-import uuid
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
