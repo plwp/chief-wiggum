@@ -464,21 +464,6 @@ def truncate_diff(diff: str, max_bytes: int = DEFAULT_MAX_DIFF_BYTES) -> str:
     return truncate_text(diff, max_bytes, label="diff")
 
 
-def build_synthesis_prompt(response_paths: list[str]) -> str:
-    listing = "\n".join(f"- {p}" for p in response_paths) or "- (no reviewer responses)"
-    return (
-        "Synthesize the independent code reviews below into one actionable report.\n"
-        "Categorize each finding as high-confidence (apply), medium (verify first), "
-        "or low/architectural (flag for user).\n"
-        "Reviewers may have been assigned disjoint review lenses over the same "
-        "diff, so expect disjoint findings, not convergence. Combine by union: a "
-        "finding raised by a single reviewer is not weaker for lacking consensus "
-        "— do not downgrade it. Cross-verify against the diff only where "
-        "reviewers make contradictory claims about the same fact.\n\n"
-        f"Reviewer responses:\n{listing}\n"
-    )
-
-
 # --- git --------------------------------------------------------------------
 
 
@@ -647,7 +632,6 @@ class ReviewManifest:
     role: str
     diff_path: str
     prompt_path: str
-    synthesis_prompt_path: str
     provider_manifest: dict
     response_paths: list[str] = field(default_factory=list)
     # chief-wiggum#269: the base ACTUALLY diffed against (may differ from
@@ -789,9 +773,9 @@ def run_review(
     )
     response_paths = [r.path for r in quorum.results if r.path]
 
-    synthesis = build_synthesis_prompt(response_paths)
-    synthesis_path = out / "synthesis-prompt.md"
-    synthesis_path.write_text(synthesis)
+    # chief-wiggum#332: synthesis-prompt.md was dead weight — /implement Step 8
+    # synthesizes reviews via scripts/synthesize_reviews.py over the
+    # individual reviewer-<provider>.md files directly, never this artifact.
 
     manifest = ReviewManifest(
         ticket=ticket.number,
@@ -799,7 +783,6 @@ def run_review(
         role=role,
         diff_path=str(diff_path),
         prompt_path=str(prompt_path),
-        synthesis_prompt_path=str(synthesis_path),
         provider_manifest=quorum.to_dict(),
         response_paths=response_paths,
         resolved_base_ref=resolved.ref,

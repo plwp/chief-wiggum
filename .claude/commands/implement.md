@@ -496,7 +496,7 @@ The worker should:
      --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md"
    ```
    (The last one is what actually puts the target's house rules in front of every provider — #264. `--epic-artifact` silently skips a path that doesn't exist, so it is safe to pass unconditionally when no authorities were recorded.)
-   Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `synthesis-prompt.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
+   Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
 3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:
    ```bash
