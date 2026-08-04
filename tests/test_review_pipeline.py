@@ -1501,3 +1501,204 @@ def test_run_review_surfaces_blind_provider_in_the_manifest(tmp_path, monkeypatc
 
     on_disk = json.loads((tmp_path / "out" / "review-manifest.json").read_text())
     assert on_disk["provider_manifest"]["blindness"]["outcome"] == "findings"
+
+
+# --- epic-artifact slicing via code_query (chief-wiggum#332 item 1) ---------
+#
+# Whole contracts.md/invariants.md files get inlined even when the ticket
+# only touches 1-2 governing IDs — this repo's own contracts.md is ~26KB.
+# code_query.py orient already answers "what governs this file" per touched
+# file (Step 8 uses it the same way); review context assembly should slice
+# artifacts down to exactly those IDs instead of re-deriving from scratch,
+# falling back to the whole file when the governing IDs can't be resolved.
+
+
+CONTRACTS_FIXTURE = """# Contracts
+
+### CTR-order-001
+REQUIRES: order id is present
+ENSURES: order is created
+
+### CTR-order-002
+REQUIRES: payment token is valid
+ENSURES: payment is charged
+
+### CTR-billing-005
+REQUIRES: invoice exists
+ENSURES: invoice is voided
+"""
+
+
+def test_slice_markdown_by_ids_returns_only_matching_blocks():
+    out = review.slice_markdown_by_ids(CONTRACTS_FIXTURE, {"CTR-ORDER-001"})
+    assert "CTR-order-001" in out
+    assert "order id is present" in out
+    assert "CTR-order-002" not in out
+    assert "CTR-billing-005" not in out
+
+
+def test_slice_markdown_by_ids_is_canonical_id_case_insensitive():
+    # trace_ids.canonical_id uppercases the kind, lowercases the slug — the
+    # slice must match regardless of how the caller's ID set is cased.
+    out = review.slice_markdown_by_ids(CONTRACTS_FIXTURE, {"ctr-ORDER-001"})
+    assert "CTR-order-001" in out
+
+
+def test_slice_markdown_by_ids_returns_empty_for_no_ids():
+    assert review.slice_markdown_by_ids(CONTRACTS_FIXTURE, set()) == ""
+
+
+def test_slice_markdown_by_ids_returns_empty_when_nothing_matches():
+    assert review.slice_markdown_by_ids(CONTRACTS_FIXTURE, {"CTR-nonexistent-999"}) == ""
+
+
+def test_epic_slug_from_artifact_paths_extracts_the_slug():
+    assert review._epic_slug_from_artifact_paths(
+        ["docs/epics/order-lifecycle/contracts.md", "docs/epics/order-lifecycle/invariants.md"]
+    ) == "order-lifecycle"
+
+
+def test_epic_slug_from_artifact_paths_none_when_no_epics_segment():
+    assert review._epic_slug_from_artifact_paths(["some/other/path.md"]) is None
+
+
+def test_epic_slug_from_artifact_paths_none_for_empty_list():
+    assert review._epic_slug_from_artifact_paths([]) is None
+
+
+def test_touched_files_from_diff_extracts_paths():
+    diff = "diff --git a/src/foo.py b/src/foo.py\n+x\ndiff --git a/src/bar.go b/src/bar.go\n+y\n"
+    assert review._touched_files(diff) == ["src/foo.py", "src/bar.go"]
+
+
+def test_touched_files_from_diff_empty_for_no_diff():
+    assert review._touched_files("no diff here") == []
+
+
+def test_governing_ids_for_files_parses_orient_json(tmp_path):
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        envelope = {"facts": [{"id": "CTR-order-001", "kind": "contract"}, {"id": None, "kind": "hotspot"}]}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
+
+    ids = review._governing_ids_for_files(tmp_path, "order-lifecycle", ["src/foo.py"], runner=runner)
+
+    assert ids == {"CTR-order-001"}
+    assert any("orient" in c for c in calls[0])
+    assert "src/foo.py" in calls[0]
+
+
+def test_governing_ids_for_files_degrades_to_empty_on_any_failure(tmp_path):
+    def broken_runner(cmd, **kwargs):
+        raise OSError("code_query.py not found")
+
+    ids = review._governing_ids_for_files(tmp_path, "order-lifecycle", ["src/foo.py"], runner=broken_runner)
+    assert ids == set()
+
+
+def test_governing_ids_for_files_degrades_on_nonzero_exit(tmp_path):
+    def runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="Error: epic dir not found")
+
+    ids = review._governing_ids_for_files(tmp_path, "order-lifecycle", ["src/foo.py"], runner=runner)
+    assert ids == set()
+
+
+def test_run_review_slices_epic_artifacts_to_governing_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    def code_query_runner(cmd, **kwargs):
+        envelope = {"facts": [{"id": "CTR-order-001"}]}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured["prompt"] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a/src/foo.py b/src/foo.py\n+touched"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", CONTRACTS_FIXTURE)],
+        config={}, execute=execute, runner=runner,
+        epic_slug="order-lifecycle", code_query_runner=code_query_runner,
+    )
+
+    assert "CTR-order-001" in captured["prompt"]
+    assert "order id is present" in captured["prompt"]
+    # The unrelated contract in the SAME file is sliced away.
+    assert "CTR-billing-005" not in captured["prompt"]
+
+
+def test_run_review_falls_back_to_whole_artifact_when_no_ids_resolve(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    def code_query_runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"facts": []}), stderr="")
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured["prompt"] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a/src/foo.py b/src/foo.py\n+touched"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", CONTRACTS_FIXTURE)],
+        config={}, execute=execute, runner=runner,
+        epic_slug="order-lifecycle", code_query_runner=code_query_runner,
+    )
+
+    # No governing IDs resolved -> fall back to the WHOLE artifact.
+    assert "CTR-order-001" in captured["prompt"]
+    assert "CTR-billing-005" in captured["prompt"]
+
+
+def test_run_review_without_epic_slug_uses_whole_artifacts_unchanged(tmp_path, monkeypatch):
+    # Backward compatibility: a caller that never passes epic_slug (the
+    # pre-#332 contract) gets whole-file inclusion exactly as before.
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    captured = {}
+
+    def execute(provider, prompt, timeout_override=None):
+        captured["prompt"] = prompt
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a/src/foo.py b/src/foo.py\n+touched"),
+        }
+    )
+
+    review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", CONTRACTS_FIXTURE)],
+        config={}, execute=execute, runner=runner,
+    )
+
+    assert "CTR-order-001" in captured["prompt"]
+    assert "CTR-billing-005" in captured["prompt"]
