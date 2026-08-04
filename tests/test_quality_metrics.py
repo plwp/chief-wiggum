@@ -284,3 +284,141 @@ def test_trend_skips_without_lizard(synth_repo, monkeypatch):
     monkeypatch.setattr(trend, "_tool", lambda *a, **k: None)
     r = trend.analyze(str(synth_repo), workdir=str(synth_repo / "wt"), n=3)
     assert r.get("skipped") == "lizard not found"
+
+
+# --- #328: a sampled commit's metrics are immutable — the second measurement
+# of the SAME commit must perform zero checkouts (no `git worktree add`).
+# lizard is faked out (CI has none of the battery's tools installed) so this
+# exercises the caching path, not lizard itself.
+
+
+def _spy_on_worktree_add(monkeypatch, module):
+    calls: list[tuple] = []
+    real_run = module.run
+
+    def spy(*a, **kw):
+        calls.append(a)
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr(module, "run", spy)
+    return calls
+
+
+def test_trend_measure_at_second_call_same_commit_skips_checkout(synth_repo, monkeypatch):
+    monkeypatch.setattr(trend, "_tool", lambda *a, **k: "/usr/bin/true")
+    monkeypatch.setattr(trend, "lizard_ccn", lambda files, lizard_bin: [
+        {"nloc": 3, "ccn": 1, "length": 3, "file": f} for f in files
+    ])
+    commit, _date = trend.sample_commits(str(synth_repo), 2)[0]
+    calls = _spy_on_worktree_add(monkeypatch, trend)
+    workdir = str(synth_repo / "wt")
+
+    m1 = trend.measure_at(str(synth_repo), commit, "/usr/bin/true", workdir)
+    adds_after_first = sum(1 for c in calls if "worktree" in c and "add" in c)
+    assert adds_after_first >= 1
+
+    m2 = trend.measure_at(str(synth_repo), commit, "/usr/bin/true", workdir)
+    adds_after_second = sum(1 for c in calls if "worktree" in c and "add" in c)
+    assert adds_after_second == adds_after_first, (
+        "second measure_at for the SAME commit must perform zero checkouts"
+    )
+    assert m1 == m2
+
+
+def test_trend_measure_at_no_cache_env_forces_a_real_checkout(synth_repo, monkeypatch):
+    monkeypatch.setattr(trend, "_tool", lambda *a, **k: "/usr/bin/true")
+    monkeypatch.setattr(trend, "lizard_ccn", lambda files, lizard_bin: [])
+    commit, _date = trend.sample_commits(str(synth_repo), 2)[0]
+    calls = _spy_on_worktree_add(monkeypatch, trend)
+    workdir = str(synth_repo / "wt")
+
+    trend.measure_at(str(synth_repo), commit, "/usr/bin/true", workdir)
+    n1 = sum(1 for c in calls if "worktree" in c and "add" in c)
+    monkeypatch.setenv("CW_QUALITY_NO_CACHE", "1")
+    trend.measure_at(str(synth_repo), commit, "/usr/bin/true", workdir)
+    n2 = sum(1 for c in calls if "worktree" in c and "add" in c)
+    assert n2 > n1
+
+
+# --- #328: git-of-theseus walks committed history only (never the working
+# tree), so a second survival.analyze at the SAME HEAD must skip the tool
+# entirely, and reflect the same head_sha-keyed cache the trend/jscpd engines
+# use — but keyed on HEAD, not manifest content, per the module docstring.
+
+
+def test_survival_second_run_same_head_reuses_cache(tmp_path, monkeypatch):
+    payload = {"deadbeef": [[1700000000, 10], [1700950000, 8]]}
+    tool = _fake_theseus_tool(tmp_path, returncode=0, survival_payload=payload)
+    _patch_theseus_which(monkeypatch, tool)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "--initial-branch=main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "a@b.c"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "A"], check=True)
+    (repo / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "seed"], check=True)
+
+    calls: list[str] = []
+    real_run = survival._run_git_of_theseus
+
+    def spy(repo_arg, outdir):
+        calls.append(outdir)
+        return real_run(repo_arg, outdir)
+
+    monkeypatch.setattr(survival, "_run_git_of_theseus", spy)
+
+    r1 = survival.analyze(str(repo), workdir=str(tmp_path / "wd1"))
+    assert len(calls) == 1
+    r2 = survival.analyze(str(repo), workdir=str(tmp_path / "wd2"))
+    assert len(calls) == 1, "second run at the SAME HEAD must be a cache hit"
+    assert r1 == r2
+
+
+def test_survival_no_cache_env_forces_a_second_real_run(tmp_path, monkeypatch):
+    payload = {"deadbeef": [[1700000000, 10]]}
+    tool = _fake_theseus_tool(tmp_path, returncode=0, survival_payload=payload)
+    _patch_theseus_which(monkeypatch, tool)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "--initial-branch=main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "a@b.c"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "A"], check=True)
+    (repo / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "seed"], check=True)
+
+    calls: list[str] = []
+    real_run = survival._run_git_of_theseus
+
+    def spy(repo_arg, outdir):
+        calls.append(outdir)
+        return real_run(repo_arg, outdir)
+
+    monkeypatch.setattr(survival, "_run_git_of_theseus", spy)
+    survival.analyze(str(repo), workdir=str(tmp_path / "wd1"))
+    monkeypatch.setenv("CW_QUALITY_NO_CACHE", "1")
+    survival.analyze(str(repo), workdir=str(tmp_path / "wd2"))
+    assert len(calls) == 2
+
+
+# --- #328: complexity.tracked_files shells `git ls-files` on every call, with
+# ~8 callers across bucket/population/hotspots/trend/dead_code/test_health/
+# markers — a process-lifetime lru_cache means the SAME repo path only ever
+# pays for one subprocess.
+
+
+def test_tracked_files_is_cached_per_process(synth_repo, monkeypatch):
+    complexity.tracked_files.cache_clear()
+    calls = []
+    real_run = complexity.run
+
+    def spy(*a, **kw):
+        calls.append(a)
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr(complexity, "run", spy)
+    first = complexity.tracked_files(str(synth_repo))
+    second = complexity.tracked_files(str(synth_repo))
+    assert first == second
+    assert len(calls) == 1, "one git ls-files per repo per process"
