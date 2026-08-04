@@ -106,7 +106,10 @@ All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemin
 MILESTONE=$(gh issue view "$issue_number" --repo "$owner_repo" --json milestone -q '.milestone.title // empty')
 if [ -n "$MILESTONE" ]; then
   EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "$MILESTONE")
-  EPIC_DIR="$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .epics_dir)/$EPIC_SLUG"
+  # epics_dir = meta_root/epics (artifacts.Resolver.epics_dir) — $CW_META_ROOT
+  # is already resolved (Step 1's workflow_context.py, #324), so this needs
+  # no `artifacts.py show` call of its own.
+  EPIC_DIR="$CW_META_ROOT/epics/$EPIC_SLUG"
 fi
 ```
 
@@ -148,11 +151,13 @@ These artifacts are **hard constraints** on the implementation. The coding worke
 python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" orient path/to/file.go
 ```
 
-**Unresolved-unknowns gate**: scan the epic artifacts for markers this ticket would inherit:
+**Unresolved-unknowns gate**: `epic_inventory.py` already ran this exact scan (over this exact `$EPIC_DIR`, zero intervening writes) building `$TICKET_TMP/inventory.json` above — read its `.unresolved`/`.blocked_tickets` rather than re-scanning:
 ```bash
-python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json
+jq '.unresolved' "$TICKET_TMP/inventory.json"
 ```
 If any finding's `tickets` list includes this ticket (or the finding sits on an entity/operation this ticket implements), do NOT implement on the guessed value. Resolve the unknown first — introspect the real source, read the upstream repo, or ask the user — update the artifact with a citation, then proceed. Building a query layer against `TBD:` schema names produces code that compiles, passes mocked tests, and fails on first contact with reality.
+
+Fallback (only if `$TICKET_TMP/inventory.json` is missing or unreadable — the standalone case, never the normal path): `python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json`.
 
 If `$EPIC_STATUS` is `none` (this ticket was never on a milestone), proceed without epic context — the skill works standalone too. That is the ONLY case that silently proceeds; `missing` already stopped above.
 
@@ -270,12 +275,12 @@ Present a concise summary to the user. If there are open questions that genuinel
 #### Declared touch plan (adopted repos — ALL ticket kinds)
 
 Brownfield scope discipline is a property of the **repo**, not the ticket: it
-switches on when the #215 adoption record exists. Detect it via the resolver:
+switches on when the #215 adoption record exists. `$QUALITY_DIR`/`$CW_META_ROOT`
+are already resolved (Step 1's `workflow_context.py` — #324, one resolution per
+session reused everywhere, never re-invoked per step):
 
 ```bash
-CW_META=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json)
-ADOPTION_JSON="$(echo "$CW_META" | jq -r .meta_root)/adoption/adoption.json"
-QUALITY_DIR=$(echo "$CW_META" | jq -r .quality_dir)
+ADOPTION_JSON="$CW_META_ROOT/adoption/adoption.json"
 [ -f "$ADOPTION_JSON" ] && IS_ADOPTED=true || IS_ADOPTED=false
 ```
 
@@ -559,7 +564,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
    python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --json > "$TICKET_TMP/verify.json"
    ```
    It exits non-zero if any step fails (`jq .ok "$TICKET_TMP/verify.json"`). ALL tests must pass. Zero tolerance.
-4b. **Ratchet check** (see `docs/ratchet.md`) — resolve the target's quality dir via the meta-location resolver (`QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$(git rev-parse --show-toplevel)" --format json | jq -r .quality_dir)`; embedded targets resolve to `<repo>/docs/quality`, sidecar targets to the external meta root); if `$QUALITY_DIR/ratchet.json` exists, verify this ticket doesn't slide quality backward. **Reuse Step 4's run instead of paying for the suite twice** (chief-wiggum#284): when Step 4's JSON names a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
+4b. **Ratchet check** (see `docs/ratchet.md`) — `$QUALITY_DIR` is already resolved (Step 1, #324 — embedded targets `<repo>/docs/quality`, sidecar targets the external meta root); if `$QUALITY_DIR/ratchet.json` exists, verify this ticket doesn't slide quality backward. **Reuse Step 4's run instead of paying for the suite twice** (chief-wiggum#284): when Step 4's JSON names a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
    ```bash
    REPORT=$(python3 -c "import json; d=json.load(open('$TICKET_TMP/verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
    SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
@@ -621,28 +626,34 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
      ```
    - If any category is below 80% coverage, flag it as a gap in the PR body. Do NOT block shipping — this is a signal, not a gate, in Phase 1. (Phase 2 may tighten this to a hard gate.)
 8b. **Transition-map verification** (if `$HAS_TRANSITION_MAP == true`):
-   Run the verification script scoped to this ticket:
+   Run the verification script **once**, in JSON mode, scoped to this ticket — it writes the transition-map AND the JSON this step renders from, in the same pass (the separate `--format text` run used to be a second full re-scan of the same code producing the same comparison — #324):
    ```bash
-   python3 "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" --ticket "#$issue_number" --format text
+   python3 "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" \
+     --ticket "#$issue_number" --format json --output "$MODELS_DIR/transition-map.json" > "$TICKET_TMP/verify-transitions.json"
+   git add "$MODELS_DIR/transition-map.json"
+   ```
+   Render the summary locally from `$TICKET_TMP/verify-transitions.json` (no second invocation — `--output` writes the map regardless of `--format`, so one JSON run covers both consumers):
+   ```bash
+   jq -r '.outcome as $o | .summary as $s |
+     "outcome: \($o) — \($s.covered)/\($s.total_model_transitions) covered, \($s.missing) missing, \($s.undocumented) undocumented",
+     (.entities[] | .name as $e | (.transitions[] | select(.status=="missing") | "MISSING  \($e): \(.from) -> \(.to) (\(.event))"),
+       ((.undocumented // []) | .[] | "UNDOCUMENTED  \($e): \(.from // "?") -> \(.to)"))' \
+     "$TICKET_TMP/verify-transitions.json"
    ```
    This reports:
    - Which transitions this ticket was supposed to introduce (from `derived_from` provenance)
-   - Which are now present in code (COVERED)
-   - Which are still missing (MISSING) — implementation gap, fix before shipping
-   - Any undocumented transitions in the diff (UNDOCUMENTED) — either update the model or remove the code
+   - Which are now present in code (`status: "covered"`)
+   - Which are still missing (`status: "missing"`) — implementation gap, fix before shipping
+   - Any undocumented transitions in the diff (the `undocumented` array) — either update the model or remove the code
 
-   After verification, update the transition-map:
-   ```bash
-   python3 "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" --output "$MODELS_DIR/transition-map.json" --format json
-   git add "$MODELS_DIR/transition-map.json"
-   ```
-   Include transition coverage in the PR body under "Model conformance".
+   Include transition coverage (`.summary` above) in the PR body under "Model conformance".
 9. **Quality check** — Read the key files produced:
    - Is the code idiomatic for the language?
    - Are there any obvious issues (missing error handling, security gaps, dead code)?
    - Does it follow existing patterns in the codebase?
    - Would you be proud to ship this?
-10. **Clean up** — Stop any services you started (`docker compose down`)
+
+**Leave services running** — Step 9's UX gate and Step 10's browser-use validation both need them (#324: tearing down here only to restart moments later in Step 9 was a stop/start cycle for nothing). Teardown moves to the END of Step 10.
 
 If ANY verification fails: fix it directly, or re-launch the coding worker (contract: `docs/worker-contracts.md#implementation-worker`) with specific instructions for larger issues. Do NOT proceed to ship until verification passes.
 
@@ -707,7 +718,7 @@ Determine what tooling is available, in priority order:
 
 Name screenshots sequentially: `00-entry.png`, `01-form-empty.png`, `02-form-filled.png`, `03-success.png`, etc.
 
-If services need to be running, start them as in Step 8 before capturing. After capture, leave them running for Step 10 (browser-use validation) — do not stop yet.
+Services should still be running from Step 8 (#324: teardown no longer happens until after Step 10) — if they crashed or were never started, bring them up as in Step 8 before capturing. After capture, leave them running for Step 10 (browser-use validation) — do not stop yet.
 
 If screenshot capture fails entirely (services won't start, no browser tooling at all), note it as a gap and move on — do not block.
 
@@ -810,6 +821,8 @@ If **browser-use** exists (e.g. `tests/browser-use/run.py`):
 
 If no browser-use or E2E setup exists at all, note it as a gap in the final summary and move on.
 
+**Clean up** — now that Step 9 and Step 10 are both done with them, stop any services you started (`docker compose down`). (#324: teardown moved here from Step 8 — Step 9's UX gate and Step 10's browser-use validation both needed the services up, so tearing down mid-flow just meant restarting moments later.)
+
 ### Step 11: Ship PR
 
 **Do not create a PR until Steps 7-9 are complete.** The PR is the final artifact, not an intermediate checkpoint.
@@ -860,7 +873,7 @@ python3 "$CW_HOME/scripts/draft_pr.py" \
   --issue "$issue_number" --title "$pr_title" --summary "$summary" \
   --change "Change 1" --change "Change 2" \
   --mermaid-file "$TICKET_TMP/architecture.mmd" \
-  --verification "$TICKET_TMP/verification.json" \
+  --verification "$TICKET_TMP/verify.json" \
   --review "$TICKET_TMP/reviews/review-manifest.json" \
   --model-conformance "$TICKET_TMP/model-conformance.md" \
   --implementation-cost "$TICKET_TMP/implementation-cost.md" \
@@ -919,14 +932,15 @@ python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" \
 
 Commit the updated `traceability.md` (or comment on the epic milestone if other tickets are in flight).
 
-**Journal the ratchet** (resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`; if `$QUALITY_DIR/ratchet.json` exists): once the PR is merged, record the ticket so its passing tests enter the high-water mark:
+**Journal the ratchet** (`$QUALITY_DIR` already resolved at Step 1, #324; if `$QUALITY_DIR/ratchet.json` exists): once the PR is merged, record the ticket so its passing tests enter the high-water mark:
 
 ```bash
 python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
   --event ticket --ref "#$issue_number" --merged --notes "<one line: what shipped>"
 # Embedded mode only — in sidecar mode the journal/state live outside the
-# target, so there is nothing to commit in-tree:
-if [ "$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .mode)" = "embedded" ]; then
+# target, so there is nothing to commit in-tree ($CW_META_MODE already
+# resolved at Step 1, #324):
+if [ "$CW_META_MODE" = "embedded" ]; then
   git -C "$TARGET_REPO" add docs/quality && git -C "$TARGET_REPO" commit -m "chore: ratchet record for #$issue_number" && git -C "$TARGET_REPO" push
 fi
 ```
