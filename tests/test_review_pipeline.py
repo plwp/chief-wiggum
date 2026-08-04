@@ -963,6 +963,117 @@ def test_run_review_all_inline_providers_matches_pre_332_behavior(tmp_path, monk
     assert "UNIQUE_DIFF_MARKER_XYZ" in captured["gemini"]
 
 
+# --- partial-quorum reuse via prompt content-hash (chief-wiggum#332 item 4) --
+#
+# Retry deletes prior outputs WITHIN a single run (correct — staleness);
+# there was no memo ACROSS runs, so re-running run_review.py after one
+# provider failed re-paid every provider at full price. A provider whose
+# assembled (post-lens) prompt hash is unchanged from the last run reuses
+# its prior successful output instead of being re-invoked.
+
+
+def _memo_runner(tmp_path, diff_text="diff --git a b\n+added line"):
+    return _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, diff_text),
+        }
+    )
+
+
+def test_run_review_reuses_prior_output_when_prompt_hash_is_unchanged(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    manifest1 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    manifest2 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+
+    assert manifest1.ok is True and manifest2.ok is True
+    # Each provider's real execute ran exactly ONCE across both runs — the
+    # second run reused both (identical prompt, identical hash).
+    assert calls == {"codex": 1, "gemini": 1}
+    assert "REUSED" in capsys.readouterr().err
+
+
+def test_run_review_reinvokes_only_the_previously_failed_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+    codex_should_fail = {"value": True}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        if provider.name == "codex" and codex_should_fail["value"]:
+            raise RuntimeError("transient codex failure")
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    manifest1 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    assert manifest1.ok is False  # codex (required) failed every attempt
+
+    codex_should_fail["value"] = False
+    calls_before_rerun = dict(calls)
+    manifest2 = review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+
+    assert manifest2.ok is True
+    # gemini succeeded last time (unchanged prompt) -> NOT re-invoked.
+    assert calls["gemini"] == calls_before_rerun["gemini"]
+    # codex had no prior success on record -> WAS re-invoked.
+    assert calls["codex"] > calls_before_rerun["codex"]
+
+
+def test_run_review_fresh_flag_forces_reinvocation_even_with_a_hash_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    review.run_review(_ticket(), tmp_path, "main", out, force_fresh=True, **kwargs)
+
+    assert calls == {"codex": 2, "gemini": 2}
+
+
+def test_run_review_reruns_when_the_prompt_actually_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    out = tmp_path / "out"
+    calls = {"codex": 0, "gemini": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls[provider.name] += 1
+        return "A substantive review with findings to report here."
+
+    kwargs = dict(
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={},
+        execute=execute, runner=_memo_runner(tmp_path),
+    )
+    review.run_review(_ticket(), tmp_path, "main", out, **kwargs)
+    # A different ticket title changes the assembled prompt -> different hash.
+    review.run_review(_ticket(title="A completely different title"), tmp_path, "main", out, **kwargs)
+
+    assert calls == {"codex": 2, "gemini": 2}
+
+
 def test_run_review_records_resolved_base_sha_and_diff_stat(tmp_path, monkeypatch):
     """#269: a resolved remote-tracking base + its SHA + the diff's line count
     must land in review-manifest.json — so a wildly-oversized diff (the #281
