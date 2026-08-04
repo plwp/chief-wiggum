@@ -444,8 +444,14 @@ def test_workflow_adapters_consume_the_wired_verifier_gate():
     implement = (ROOT / ".claude" / "commands" / "implement.md").read_text()
     wave = (ROOT / ".claude" / "commands" / "implement-wave.md").read_text()
 
-    # /close-epic Step 2c2 checks the ratchet record like the other gates...
-    assert "check_gate_validation.py\" ratchet" in close_epic, (
+    # /close-epic Step 2c2 checks the ratchet record like the other gates —
+    # in ONE batched check_gate_validation.py invocation since #323 (the
+    # journal chain is verified once for all three gate names rather than
+    # once per gate), so "ratchet" is a space-separated arg in the SAME
+    # bash block as the script path, not necessarily adjacent to it.
+    gate_validation_block = close_epic.split("### Step 2c2:")[1].split("### Step 2d:")[0]
+    invocation = gate_validation_block.split("```bash")[1].split("```")[0]
+    assert "check_gate_validation.py" in invocation and "ratchet" in invocation, (
         "/close-epic no longer validates the ratchet gate's record before wiring")
     # ...Step 2f passes the blocking flag, with the downgrade posture stated.
     assert close_epic.count("--gate-verifier-tests") >= 2, (

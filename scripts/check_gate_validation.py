@@ -307,11 +307,42 @@ def _live_scanner_version(gate: str, scripts_dir: Path) -> tuple[str | None, str
     return (out, None) if out else (None, None)
 
 
-def _ratchet_provenance_errors(gate: str, record: dict, validation_dir: Path) -> list[str]:
+def _load_and_verify_chain(journal: Path) -> tuple[list[dict] | None, str | None]:
+    """Parse + hash-chain-verify one ratchet journal file, ONCE. Returns
+    ``(entries, None)`` on a verified chain, or ``(None, error)`` on a
+    missing/unreadable/broken one. Split out of ``_ratchet_provenance_errors``
+    (#323) so a caller checking MULTIPLE gates against the SAME journal (e.g.
+    `/close-epic` Step 2c2's three gates) can verify the chain once and reuse
+    it, instead of every gate re-walking the same file from genesis."""
+    if not journal.is_file():
+        return None, f"ratchet journal not found at {journal}"
+    try:
+        entries = [json.loads(line) for line in journal.read_text().splitlines() if line.strip()]
+    except json.JSONDecodeError:
+        return None, f"ratchet journal at {journal} is unreadable"
+    prev = "genesis"
+    for i, entry in enumerate(entries):
+        body = {k: v for k, v in entry.items() if k != "record_hash"}
+        expect = stable_hash(prev, json.dumps(body, sort_keys=True))
+        if entry.get("record_hash") != expect:
+            return None, f"ratchet journal chain broken at entry {i} ({entry.get('record_id', '?')}) — fail closed"
+        prev = expect
+    return entries, None
+
+
+def _ratchet_provenance_errors(
+    gate: str, record: dict, validation_dir: Path, *, chain_cache: dict | None = None,
+) -> list[str]:
     """Corroborate the record's ``ratchet_record_id`` against the hash-chained
     ratchet journal beside the validation dir. The chain is the tamper-evidence
     (docs/ratchet.md): a record id that isn't journaled — or a journal whose
-    chain doesn't verify — grants no provenance."""
+    chain doesn't verify — grants no provenance.
+
+    ``chain_cache`` (#323): an optional ``{journal_path: (entries, error)}``
+    dict a caller checking multiple gates can share across calls so the SAME
+    journal file is parsed and hash-verified only once per process, not once
+    per gate. ``None`` (the default) preserves the original behavior — verify
+    fresh every call — so every existing single-gate caller is unaffected."""
     rid_field = record.get("ratchet_record_id")
     rid_match = RID_RE.fullmatch(rid_field.strip()) if isinstance(rid_field, str) else None
     if rid_match is None:
@@ -321,19 +352,15 @@ def _ratchet_provenance_errors(gate: str, record: dict, validation_dir: Path) ->
         ]
     rid = rid_match.group(0)
     journal = validation_dir.resolve().parent / JOURNAL_NAME
-    if not journal.is_file():
-        return [f"ratchet journal not found at {journal} — cannot corroborate ratchet_record_id {rid}"]
-    try:
-        entries = [json.loads(line) for line in journal.read_text().splitlines() if line.strip()]
-    except json.JSONDecodeError:
-        return [f"ratchet journal at {journal} is unreadable — cannot corroborate {rid}"]
-    prev = "genesis"
-    for i, entry in enumerate(entries):
-        body = {k: v for k, v in entry.items() if k != "record_hash"}
-        expect = stable_hash(prev, json.dumps(body, sort_keys=True))
-        if entry.get("record_hash") != expect:
-            return [f"ratchet journal chain broken at entry {i} ({entry.get('record_id', '?')}) — fail closed"]
-        prev = expect
+    if chain_cache is not None:
+        cache_key = str(journal)
+        if cache_key not in chain_cache:
+            chain_cache[cache_key] = _load_and_verify_chain(journal)
+        entries, chain_error = chain_cache[cache_key]
+    else:
+        entries, chain_error = _load_and_verify_chain(journal)
+    if chain_error is not None:
+        return [f"{chain_error} — cannot corroborate ratchet_record_id {rid}"]
     match = next((e for e in entries if e.get("record_id") == rid), None)
     if match is None:
         return [f"ratchet_record_id {rid} not found in the ratchet journal at {journal}"]
@@ -354,6 +381,8 @@ def check(
     validation_dir: str | Path,
     schema: dict | None = None,
     scripts_dir: str | Path | None = None,
+    *,
+    chain_cache: dict | None = None,
 ) -> GateValidationReport:
     schema = schema or load_schema()
     scripts_dir = Path(scripts_dir) if scripts_dir else Path(__file__).resolve().parent
@@ -394,7 +423,9 @@ def check(
             f"gate reports {live!r} — the record is stale; re-run the trials against the current "
             "gate and re-author the record"
         )
-    report.provenance_errors.extend(_ratchet_provenance_errors(gate, record, Path(validation_dir)))
+    report.provenance_errors.extend(
+        _ratchet_provenance_errors(gate, record, Path(validation_dir), chain_cache=chain_cache)
+    )
 
     # Trials: pass/fail is DERIVED (result vs expected), never trusted from the flag.
     trials = record.get("seeded_defect_trials", []) or []
@@ -561,6 +592,7 @@ def check_and_transition(
     *,
     wire: bool = False,
     unwire: bool = False,
+    chain_cache: dict | None = None,
 ) -> tuple[GateValidationReport, AuthorityTransition]:
     """`check()` plus the journal-anchored blocking-authority verdict. Detects a
     record that went stale or missing/invalid WHILE the gate is journaled-wired
@@ -582,7 +614,7 @@ def check_and_transition(
     the operator-initiated ``--wire``/``--unwire`` append journal events. The
     ``--gate`` exit-1 guard stays the sole INV-fh-003 enforcement.
     @cw-trace guards INV-fh-003"""
-    report = check(gate, validation_dir, schema=schema, scripts_dir=scripts_dir)
+    report = check(gate, validation_dir, schema=schema, scripts_dir=scripts_dir, chain_cache=chain_cache)
     journal = _journal_path(validation_dir)
     was_wired = ratchet_last_authority_action(journal, gate) == "wire"
     append_action: str | None = None  # 'wire' | 'unwire', journaled AFTER the emit
@@ -679,7 +711,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Gate-of-gates: does this gate have a passing gate-validation record?",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("gate", help="Gate name, e.g. check_single_writer")
+    parser.add_argument(
+        "gates", metavar="gate", nargs="+",
+        help="Gate name(s), e.g. check_single_writer. Multiple names (#323) check "
+             "each against its OWN <gate>.json record but verify the shared ratchet "
+             "journal chain only ONCE for the whole invocation, instead of once per "
+             "gate — the journal is the same file for every gate under one "
+             "--validation-dir. Single-gate output is unchanged; multi-gate JSON "
+             "nests each gate's report under \"gates\".",
+    )
     parser.add_argument(
         "--validation-dir", default=DEFAULT_VALIDATION_DIR,
         help=f"Directory containing <gate>.json validation records (default: {DEFAULT_VALIDATION_DIR}; "
@@ -696,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
              "staleness silently goes unchecked.",
     )
     parser.add_argument("--gate", dest="gate_mode", action="store_true",
-                        help="Fail (exit 1) when the named gate lacks a passing validation record")
+                        help="Fail (exit 1) when any named gate lacks a passing validation record")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     wiring = parser.add_mutually_exclusive_group()
     wiring.add_argument(
@@ -704,15 +744,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Record that this gate is now wired --gate (blocking) in its workflow — "
              "only when the record currently passes (INV-fh-003); persists the "
              "blocking-authority state so a later staleness/regression can be detected "
-             "as an auto-demotion, not just a downgrade.",
+             "as an auto-demotion, not just a downgrade. Single-gate only.",
     )
     wiring.add_argument(
         "--unwire", action="store_true",
         help="Record that this gate is no longer wired --gate (an intentional un-wiring, "
              "not a demotion) — moves the tracked authority to 'validated' if the record "
-             "still passes, else 'report_only'.",
+             "still passes, else 'report_only'. Single-gate only.",
     )
     args = parser.parse_args(argv)
+
+    if len(args.gates) > 1 and (args.wire or args.unwire):
+        print("Error: --wire/--unwire are single-gate operator acts — "
+              "pass exactly one gate name with either flag", file=sys.stderr)
+        return 2
 
     try:
         schema = load_schema(Path(args.schema))
@@ -720,29 +765,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: cannot load gate-validation schema: {exc}", file=sys.stderr)
         return 2
 
-    report, transition = check_and_transition(
-        args.gate, args.validation_dir, schema=schema, scripts_dir=args.scripts_dir,
-        wire=args.wire, unwire=args.unwire,
-    )
+    # The chain is the SAME journal file for every gate under one
+    # --validation-dir (JOURNAL_NAME is a sibling of the validation dir, not
+    # gate-specific) — verify it once here and every check() call below reuses
+    # the cached (entries, error) instead of re-walking it from genesis (#323).
+    chain_cache: dict = {}
+    results: list[tuple[str, GateValidationReport, AuthorityTransition]] = []
+    for gate in args.gates:
+        report, transition = check_and_transition(
+            gate, args.validation_dir, schema=schema, scripts_dir=args.scripts_dir,
+            wire=args.wire, unwire=args.unwire, chain_cache=chain_cache,
+        )
+        results.append((gate, report, transition))
 
     if args.format == "json":
-        out = report.to_dict()
-        out["authority"] = transition.to_dict()
-        print(json.dumps(out, indent=2))
+        if len(results) == 1:
+            # Byte-identical to the pre-#323 single-gate shape — every
+            # existing caller/test parses this top-level object directly.
+            _gate, report, transition = results[0]
+            out = report.to_dict()
+            out["authority"] = transition.to_dict()
+            print(json.dumps(out, indent=2))
+        else:
+            out = {"gates": {}}
+            for gate, report, transition in results:
+                gd = report.to_dict()
+                gd["authority"] = transition.to_dict()
+                out["gates"][gate] = gd
+            print(json.dumps(out, indent=2))
     else:
-        print(render_text(report, transition))
+        for _gate, report, transition in results:
+            print(render_text(report, transition))
 
-    if transition.demoted:
-        print(f"check_gate_validation: DEMOTION — {transition.instruction}", file=sys.stderr)
+    for gate, _report, transition in results:
+        if transition.demoted:
+            print(f"check_gate_validation: DEMOTION ({gate}) — {transition.instruction}", file=sys.stderr)
 
     try:  # factory telemetry; no-op unless enabled, never breaks the gate
         from factory_log import emit_gate  # noqa: PLC0415
-        caught = 0 if report.passing else 1
-        emit_gate("check_gate_validation", "fail" if caught else "pass", caught=caught)
+        for _gate, report, _transition in results:
+            caught = 0 if report.passing else 1
+            emit_gate("check_gate_validation", "fail" if caught else "pass", caught=caught)
     except Exception:
         pass
 
-    if args.gate_mode and not report.passing:
+    if args.gate_mode and any(not report.passing for _g, report, _t in results):
         return 1
     return 0
 

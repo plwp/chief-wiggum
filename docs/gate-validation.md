@@ -219,6 +219,23 @@ python3 "$CW_HOME/scripts/check_gate_validation.py" check_single_writer \
   --validation-dir "$CW_HOME/docs/quality/validation"
 ```
 
+Multiple gate names may be passed in one invocation (chief-wiggum#323) — each
+is checked against its own `<gate>.json` record, but the shared ratchet
+journal beside `--validation-dir` is hash-chain-verified ONCE for the whole
+call instead of once per gate (`/close-epic` Step 2c2 checks its three gates
+this way):
+
+```bash
+python3 "$CW_HOME/scripts/check_gate_validation.py" \
+  check_traceability check_single_writer ratchet \
+  --validation-dir "$CW_HOME/docs/quality/validation" --format json
+```
+
+Single-gate JSON output is unchanged (the top-level object shown below);
+multi-gate JSON nests each gate's report under `"gates": {"<name>": {...}}`.
+`--wire`/`--unwire` remain single-gate operator acts — passing either with
+more than one gate name is refused (exit 2).
+
 Report-only by default (prints the record's status and exits 0). `--gate`
 makes it block:
 

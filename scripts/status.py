@@ -90,9 +90,15 @@ def gate_ledger(quality_dir: Path) -> list[dict]:
     entries: list[dict] = []
     if not validation_dir.is_dir():
         return entries
+    # Every gate under one validation_dir shares the SAME ratchet journal
+    # (JOURNAL_NAME is a sibling of validation_dir, not gate-specific) — one
+    # cache shared across the loop verifies that chain once instead of once
+    # per gate (#323, same fix as /close-epic Step 2c2's batched
+    # check_gate_validation.py call).
+    chain_cache: dict = {}
     for path in sorted(validation_dir.glob("*.json")):
         gate = path.stem
-        report = gate_validation.check(gate, validation_dir)
+        report = gate_validation.check(gate, validation_dir, chain_cache=chain_cache)
         if report.passing:
             verdict = "passing"
         elif not report.record_found:
