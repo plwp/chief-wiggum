@@ -177,6 +177,62 @@ def test_to_dict_and_shell_exports(monkeypatch, tmp_path):
     assert f"export EPIC_DIR='{resolved}'" in exports
 
 
+# --- QUALITY_DIR/meta-root export, resolved once (#324) ---------------------
+
+
+def test_shell_exports_include_quality_dir_and_meta_root(monkeypatch, tmp_path):
+    """QUALITY_DIR/CW_META_ROOT/CW_META_MODE are a pure function of the
+    target — resolvable at Step 1 without an epic — so every downstream step
+    can reuse them instead of re-invoking `artifacts.py show`."""
+    repo_dir = tmp_path / "repo"
+    monkeypatch.setattr(context.repo, "resolve_repo", lambda slug: repo_dir)
+    ctx = context.resolve(
+        "acme/app", tmp=tmp_path, home=REPO_ROOT, branch_detector=lambda p: "main",
+    )
+    exports = ctx.shell_exports()
+    assert f"export QUALITY_DIR={context.env.shell_quote(str(repo_dir / 'docs' / 'quality'))}" in exports
+    assert f"export CW_META_ROOT={context.env.shell_quote(str(repo_dir / 'docs'))}" in exports
+    assert "export CW_META_MODE='embedded'" in exports
+
+
+def test_shell_exports_omit_quality_dir_without_repo_path(tmp_path):
+    """Offline (`--no-resolve`, no repo path): nothing to resolve, so no
+    QUALITY_DIR/CW_META_ROOT/CW_META_MODE lines are emitted — never a guess."""
+    ctx = context.resolve(tmp=tmp_path, home=REPO_ROOT)
+    exports = ctx.shell_exports()
+    assert "QUALITY_DIR" not in exports
+    assert "CW_META_ROOT" not in exports
+    assert "CW_META_MODE" not in exports
+
+
+def test_shell_exports_resolves_meta_location_exactly_once(monkeypatch, tmp_path):
+    """The #213 resolver is built ONCE per `shell_exports()` call and reused
+    for EPIC_DIR + QUALITY_DIR + CW_META_ROOT + CW_META_MODE — not
+    re-resolved per export (#324's whole point: one resolution, many
+    readers)."""
+    repo_dir = tmp_path / "repo"
+    monkeypatch.setattr(context.repo, "resolve_repo", lambda slug: repo_dir)
+    ctx = context.resolve(
+        "acme/app", epic="Epic: Name", tmp=tmp_path, home=REPO_ROOT,
+        branch_detector=lambda p: "main",
+    )
+
+    import artifacts as artifacts_module
+
+    calls: list[int] = []
+    orig_resolve = artifacts_module.Resolver.resolve
+
+    def spy_resolve(*a, **k):
+        calls.append(1)
+        return orig_resolve(*a, **k)
+
+    monkeypatch.setattr(artifacts_module.Resolver, "resolve", staticmethod(spy_resolve))
+    ctx.shell_exports()
+    assert calls == [1], (
+        "shell_exports() must resolve the meta location exactly once and "
+        f"reuse it for every export, not once per export (got {len(calls)} calls)")
+
+
 def test_shell_exports_quote_hostile_values(monkeypatch, tmp_path):
     # A repo path / branch with spaces, single quotes, or shell metacharacters
     # must be safely quoted so `eval` cannot execute injected commands.
@@ -189,7 +245,18 @@ def test_shell_exports_quote_hostile_values(monkeypatch, tmp_path):
         branch_detector=lambda p: "feat/x'; rm -rf /; '",
     )
     exports = ctx.shell_exports()
-    # The injected command text survives only inside a single-quoted literal.
-    assert "touch pwned" not in exports.replace(context.env.shell_quote(str(nasty)), "")
+    # The injected command text survives only inside a single-quoted literal
+    # — verified by shell-tokenizing the WHOLE output (posix quote/escape
+    # rules) and confirming "touch"/"pwned" never appear as their OWN token
+    # (which is what would happen if quoting broke and `;` really split
+    # commands). QUALITY_DIR/CW_META_ROOT (#324) embed the same nasty path
+    # inside a longer string (`<nasty>/docs/...`), so a literal substring
+    # check against `shell_quote(str(nasty))` alone no longer covers every
+    # export line — tokenizing does.
+    import shlex
+
+    tokens = shlex.split(exports)
+    assert "touch" not in tokens
+    assert not any(t.startswith("pwned") or t == "pwned;" for t in tokens)
     assert context.env.shell_quote(str(nasty)) in exports
     assert context.env.shell_quote("feat/x'; rm -rf /; '") in exports
