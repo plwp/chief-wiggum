@@ -950,7 +950,7 @@ def run_role_quorum(
     min_bytes: int = 20,
     max_workers: int | None = None,
     write_manifest: bool = True,
-    prompt: str | None = None,
+    prompt: str | dict[str, str] | None = None,
     lenses: dict[str, Any] | None = None,
     blindness_margin: float = BLIND_PROVIDER_MARGIN,
     quorum_timeout: float | None = DEFAULT_QUORUM_TIMEOUT_SECONDS,
@@ -961,16 +961,23 @@ def run_role_quorum(
     retried up to ``max_attempts`` times; optional providers fail without
     blocking the quorum. A ``{role}-manifest.json`` records per-provider status.
 
-    ``prompt`` (chief-wiggum#319): the SHARED prompt every provider in this
-    role started from, BEFORE per-provider lens rendering — pass it (with
+    ``prompt`` (chief-wiggum#319): the prompt every provider in this role
+    started from, BEFORE per-provider lens rendering — pass it (with
     ``lenses`` when the role uses any) to also run the blindness check
     (``detect_blind_providers``) and attach its ``BlindnessReport`` to the
     manifest. Omitted (the default) means "the caller didn't ask" — the
     manifest's ``blindness`` stays ``None``, distinct from a check that ran
-    and found nothing. chief-wiggum#330: when given, ``prompt`` is ALSO
-    refused with ``ShortPromptError`` (before any provider task is
-    submitted) when it's below ``MIN_PROMPT_BYTES`` — generalizing
-    consult_ai.py's own CLI-level pre-check to every caller of this function.
+    and found nothing. May be a single SHARED string (every provider gets the
+    identical body — the original contract) or a ``dict[provider_name, str]``
+    (chief-wiggum#332 — each provider gets its OWN body, e.g. a review role
+    handing a filesystem-capable provider a diff-pointer instead of the full
+    inline diff gemini-vertex needs); a provider name missing from the dict
+    is simply skipped in the blindness token-floor estimate (no size to
+    compare against, rather than a misleading zero). chief-wiggum#330: when
+    given, every variant is ALSO refused with ``ShortPromptError`` (before
+    any provider task is submitted) when it's below ``MIN_PROMPT_BYTES`` —
+    generalizing consult_ai.py's own CLI-level pre-check to every caller of
+    this function.
 
     ``quorum_timeout`` (chief-wiggum#330): upper bound (seconds) on this
     call's OWN wall clock, independent of any per-provider timeout — a
@@ -981,13 +988,14 @@ def run_role_quorum(
     unbounded behavior).
     """
     if prompt is not None:
-        prompt_bytes = len(prompt.strip().encode("utf-8"))
-        if prompt_bytes < MIN_PROMPT_BYTES:
+        prompt_variants = list(prompt.values()) if isinstance(prompt, dict) else [prompt]
+        shortest = min((len(p.strip().encode("utf-8")) for p in prompt_variants), default=0)
+        if shortest < MIN_PROMPT_BYTES:
             raise ShortPromptError(
-                f"shared prompt is only {prompt_bytes} bytes (minimum {MIN_PROMPT_BYTES}) "
-                "— refusing to run the quorum. This is the signature of a truncated or "
-                "empty prompt (chief-wiggum#163/#330); fix it before spending any "
-                "provider call on it."
+                f"a shared prompt (or one of its per-provider variants) is only "
+                f"{shortest} bytes (minimum {MIN_PROMPT_BYTES}) — refusing to run the "
+                "quorum. This is the signature of a truncated or empty prompt "
+                "(chief-wiggum#163/#330); fix it before spending any provider call on it."
             )
 
     out = Path(output_dir)
@@ -1060,11 +1068,22 @@ def run_role_quorum(
 
     if prompt is not None:
         try:
+            # chief-wiggum#332: `prompt` may be a single shared string (every
+            # provider's OWN estimate uses the same body) or a dict keyed by
+            # provider name (each provider's estimate uses ITS OWN variant —
+            # a provider handed a small diff-pointer must not be measured
+            # against a large inline-diff provider's prompt size, or vice
+            # versa; either mismatch would make the blindness check wrong in
+            # exactly the direction that hides a real blind reading or
+            # false-flags a legitimately-smaller-prompt provider).
+            def _prompt_body_for(name: str) -> str:
+                return prompt[name] if isinstance(prompt, dict) else prompt
             prompt_tokens_by_provider = {
                 name: estimate_prompt_tokens(
-                    prompt_for_provider(plan.role, name, prompt, lenses or {})
+                    prompt_for_provider(plan.role, name, _prompt_body_for(name), lenses or {})
                 )
                 for name in seen
+                if not isinstance(prompt, dict) or name in prompt
             }
             manifest.blindness = detect_blind_providers(
                 plan.role, providers_by_name, results, prompt_tokens_by_provider,
