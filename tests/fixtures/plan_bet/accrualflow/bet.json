@@ -1,0 +1,25 @@
+{
+  "id": "accrualflow",
+  "title": "Xero prepayment & accrual schedule autopilot",
+  "thesis": "Xero 'Accepted, no plans' backlog wedge: auto-post amortization journals from tagged invoices; accountants buy across client bases; MYOB/QBO connectors later; statements as SKU-2",
+  "created": "2026-08-02T08:36:20+00:00",
+  "state": "parked",
+  "envelope": {
+    "cash_cap_usd": 1000,
+    "time_cap_hours": 100,
+    "calendar_cap_days": 90,
+    "attention_slots": 1,
+    "tranches": [
+      { "amount_usd": 300, "unlock_milestone_id": "m1-smoke-live" },
+      { "amount_usd": 700, "unlock_milestone_id": "m2-demand-validated" }
+    ]
+  },
+  "acquisition": {
+    "ecosystem_channel": "xero-app-store",
+    "owned_audience": null
+  },
+  "rep_cadence_per_week": 3.0,
+  "unlocked_milestones": ["m1-smoke-live"],
+  "predecessor": null,
+  "successor": null
+}

@@ -1,0 +1,7 @@
+{
+  "criteria": [
+    { "id": "KC-1", "metric": "smoke_signups", "comparator": ">=", "threshold": 30, "by_date": "2026-09-15", "direction": "has" },
+    { "id": "KC-2", "metric": "commitment_class_signals", "comparator": ">=", "threshold": 5, "by_date": "2026-10-01", "direction": "has" },
+    { "id": "KC-3", "metric": "paid_commitments", "comparator": ">=", "threshold": 3, "by_date": "2026-11-01", "direction": "has" }
+  ]
+}

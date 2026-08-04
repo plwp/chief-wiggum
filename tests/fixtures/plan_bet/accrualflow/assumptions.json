@@ -1,0 +1,36 @@
+{
+  "assumptions": [
+    {
+      "id": "ASM-001",
+      "depends_on_element": "value-proposition",
+      "source": "premortem",
+      "statement": "at least 40% of 10 interviewed AU bookkeepers running spreadsheet prepayment schedules will name an unmet need (reconciliation, multi-org pricing, AU focus) they say no existing app covers",
+      "status": "untested",
+      "created": "2026-08-02T08:49:15+00:00"
+    },
+    {
+      "id": "ASM-002",
+      "depends_on_element": "customer-segment",
+      "source": "premortem",
+      "statement": "at least 5% of 100 landing-page visitors from accountant-community channels will join the waitlist",
+      "status": "testing",
+      "created": "2026-08-02T08:49:15+00:00"
+    },
+    {
+      "id": "ASM-003",
+      "depends_on_element": "pricing",
+      "source": "financial_model",
+      "statement": "at least 3% of 40 waitlisted practices will pay a 19 USD pre-order deposit",
+      "status": "untested",
+      "created": "2026-08-02T08:49:15+00:00"
+    },
+    {
+      "id": "ASM-004",
+      "depends_on_element": "competitive-position",
+      "source": "canvas",
+      "statement": "at least 40% of 10 interviewed AU practices will name an unmet need that neither a low-cost incumbent add-on module nor a discovered direct competitor twin in the same app-store ecosystem (same name, same product, private beta, further along) already covers",
+      "status": "untested",
+      "created": "2026-08-02T22:29:15+00:00"
+    }
+  ]
+}

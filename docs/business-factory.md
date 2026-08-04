@@ -345,10 +345,14 @@ through A+H+C before promoting anything to `--gate`.
   dedicated portfolio repo, typed envelopes with tranches, states-and-dates kill criteria
   hashed into a ratchet-format journal, dated-criterion evaluation, bets-in-flight cap,
   harvest-gated terminal transitions. (Primitives 2.1, 2.3, 2.5.)
-- **B. `/plan-bet` product stage** (#238, parked — triggers when A+C have run against ≥1 real
-  bet) — `/design`-shaped: typed business-model artifact (BMO-enum fields, validation
-  statuses), assumption ledger generated from premortem + financial-model cells, Fermi
-  viability gate at authoring time, human checkpoint.
+- **B. `/plan-bet` product stage** (#238 — trigger fired, A+C had run against ≥1 real bet;
+  shipped) — `/design`-shaped: typed `business-model.json` artifact (BMO-enum `structure`,
+  Lean Canvas `canvas` fields each `{value, status, asm_ids}`), premortem coverage and
+  pain↔reliever (VPC) bipartite completeness checks, e3-value per-actor viability gated on
+  >2 declared actor types, and the Fermi viability gate at authoring time — the one check in
+  the whole stage that blocks unconditionally (`scripts/plan_bet.py`, `docs/gate-rollout.md`).
+  Schema fields are grounded directly in real portfolio bets, not speculated — see the schema
+  file's own description.
 - **C. Validation-experiment patterns + pre-registration gate** (#236) — assumption ledger,
   test cards with hashed thresholds, falsifiability (XYZ) linter, evidence-strength floor on
   state transitions; stamped experiment patterns: `landing-page-smoke-test` (narrowed to a
