@@ -806,6 +806,61 @@ def test_role_quorum_does_not_shorten_a_required_delegates_timeout(tmp_path, mon
     assert captured_timeouts["claude-interactive"] == consult_ai.TOOL_TIMEOUTS["claude-interactive"] + 30
 
 
+# --- reduced retry budget after a timeout (chief-wiggum#330 AC3) ------------
+#
+# "A codex timeout at 600s is retried for another full 600s with the
+# identical ~60k-token prompt" — the pre-#330 behavior. reduced_retry_timeout
+# halves the tool's resolved budget (floored at a usable minimum) for the
+# retry that follows a timeout-classified failure; the --role execute
+# closure opts into providers.py's per-attempt retry context to apply it.
+
+
+def test_reduced_retry_timeout_halves_the_resolved_budget(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    assert consult_ai.reduced_retry_timeout("codex", None) == consult_ai.TOOL_TIMEOUTS["codex"] // 2
+
+
+def test_reduced_retry_timeout_is_floored_at_a_usable_minimum(monkeypatch):
+    _clear_consult_timeout_env(monkeypatch)
+    assert consult_ai.reduced_retry_timeout("codex", 90) == consult_ai.MIN_RETRY_TIMEOUT_SECONDS
+
+
+def test_role_quorum_gives_a_codex_retry_a_smaller_budget_after_a_timeout(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config(config, optional_enabled=False)  # reviewer: required=[codex] only
+
+    attempts: list[int | None] = []
+
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
+        attempts.append(timeout_override)
+        if len(attempts) == 1:
+            raise TimeoutError("codex did not respond in time")
+        return "a substantive codex response, long enough to pass validation", consult_ai.Usage()
+
+    monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "consult_ai.py", "--role", "reviewer", str(prompt),
+            "--config", str(config), "--output-dir", str(output_dir),
+            "--min-bytes", "1", "--max-attempts", "2",
+        ],
+    )
+
+    consult_ai.main()
+
+    assert len(attempts) == 2
+    first, second = attempts
+    # A REQUIRED provider's first attempt has no override (None -> full
+    # budget); the retry after a timeout must be a real, smaller NUMBER.
+    assert first is None
+    assert second is not None
+    assert second < consult_ai.TOOL_TIMEOUTS["codex"]
+
+
 # --- _run_capture: hard-timeout process-group runner (#95) -------------------
 
 import time as _time  # noqa: E402
