@@ -179,6 +179,25 @@ class Provider:
     # tell an image-capable provider from a text-only one without waiting to
     # observe a suspiciously text-only critique.
     accepts_images: bool = True
+    # Does this provider's call path need the diff INLINED into its prompt
+    # text (chief-wiggum#332), or can it fetch the diff itself from the
+    # filesystem? True (the default — safe/conservative: assume a provider
+    # needs everything spoon-fed unless proven otherwise) for a call path
+    # with no real agentic tool loop: gemini-vertex (a single synchronous SDK
+    # request; its diff-scoped file retrieval, chief-wiggum#319, still
+    # starts FROM the diff embedded in the prompt) and every openrouter-
+    # backed provider (no filesystem access at all). False for a provider
+    # that runs with real ``cwd`` access and its own tool loop — codex,
+    # claude, claude-interactive (and gemini CLI's --yolo loop) can open a
+    # file named in the prompt themselves, so inlining the (possibly large)
+    # diff text is pure waste for them; a pointer to the diff file (or the
+    # git command to reproduce it) is enough. Declared per provider rather
+    # than inferred from ``reads_repo`` — that flag answers a DIFFERENT
+    # question (can this provider read the REPO at all, chief-wiggum#319);
+    # gemini-vertex is correctly ``reads_repo=True`` (its bespoke retrieval
+    # DOES read files) while still needing the diff inlined, because it has
+    # no tool loop to fetch a pointed-to file with.
+    needs_inline_diff: bool = True
 
 
 @dataclass(frozen=True)
@@ -307,6 +326,7 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
             model=raw.get("model"),
             reads_repo=bool(raw.get("reads_repo", True)),
             accepts_images=bool(raw.get("accepts_images", True)),
+            needs_inline_diff=bool(raw.get("needs_inline_diff", True)),
         )
     return providers
 

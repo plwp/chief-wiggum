@@ -6,35 +6,40 @@
       "tool": "codex",
       "enabled": true,
       "reads_repo": true,
-      "accepts_images": true
+      "accepts_images": true,
+      "needs_inline_diff": false
     },
     "gemini": {
       "type": "tool",
       "tool": "gemini",
       "enabled": false,
       "reads_repo": true,
-      "accepts_images": true
+      "accepts_images": true,
+      "needs_inline_diff": false
     },
     "gemini-vertex": {
       "type": "tool",
       "tool": "gemini-vertex",
       "enabled": true,
       "reads_repo": true,
-      "accepts_images": true
+      "accepts_images": true,
+      "needs_inline_diff": true
     },
     "claude": {
       "type": "tool",
       "tool": "claude",
       "enabled": false,
       "reads_repo": true,
-      "accepts_images": true
+      "accepts_images": true,
+      "needs_inline_diff": false
     },
     "claude-interactive": {
       "type": "delegate",
       "delegate": "claude-interactive",
       "enabled": true,
       "reads_repo": true,
-      "accepts_images": true
+      "accepts_images": true,
+      "needs_inline_diff": false
     },
     "opus": {
       "type": "tool",
@@ -42,7 +47,8 @@
       "model": "claude-opus-4-6",
       "enabled": true,
       "reads_repo": true,
-      "accepts_images": true
+      "accepts_images": true,
+      "needs_inline_diff": false
     },
     "deepseek": {
       "type": "tool",
@@ -50,7 +56,8 @@
       "model": "deepseek/deepseek-v4-pro",
       "enabled": true,
       "reads_repo": false,
-      "accepts_images": false
+      "accepts_images": false,
+      "needs_inline_diff": true
     },
     "kimi": {
       "type": "tool",
@@ -58,7 +65,8 @@
       "model": "moonshotai/kimi-k3",
       "enabled": true,
       "reads_repo": false,
-      "accepts_images": false
+      "accepts_images": false,
+      "needs_inline_diff": true
     },
     "glm": {
       "type": "tool",
@@ -66,7 +74,8 @@
       "model": "z-ai/glm-5.2",
       "enabled": true,
       "reads_repo": false,
-      "accepts_images": false
+      "accepts_images": false,
+      "needs_inline_diff": true
     },
     "qwen": {
       "type": "tool",
@@ -74,7 +83,8 @@
       "model": "qwen/qwen3.7-max",
       "enabled": true,
       "reads_repo": false,
-      "accepts_images": false
+      "accepts_images": false,
+      "needs_inline_diff": true
     },
     "minimax": {
       "type": "tool",
@@ -82,7 +92,8 @@
       "model": "minimax/minimax-m3",
       "enabled": true,
       "reads_repo": false,
-      "accepts_images": false
+      "accepts_images": false,
+      "needs_inline_diff": true
     }
   },
   "roles": {

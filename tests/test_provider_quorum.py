@@ -456,6 +456,23 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
         assert roles[role_name].requires_repo_read is True
 
 
+def test_shipped_config_declares_needs_inline_diff_correctly():
+    # chief-wiggum#332: only a provider with NO real agentic tool loop
+    # (gemini-vertex's single synchronous SDK call; every openrouter-backed
+    # provider) needs the diff spoon-fed as inline text — everything with
+    # real filesystem access via cwd can be pointed at the diff file instead.
+    from pathlib import Path as _Path
+
+    config = providers.load_config(_Path(__file__).resolve().parents[1] / "config" / "providers.json")
+    providers_by_name = providers.providers_from_config(config)
+
+    needs_inline = {"gemini-vertex", "deepseek", "kimi", "glm", "qwen", "minimax"}
+    for name in needs_inline:
+        assert providers_by_name[name].needs_inline_diff is True, name
+    for name in ("codex", "gemini", "claude", "claude-interactive", "opus"):
+        assert providers_by_name[name].needs_inline_diff is False, name
+
+
 # --- chief-wiggum#321: image-shaped blindness detection ---------------------
 
 
@@ -790,3 +807,55 @@ def test_run_role_quorum_without_a_prompt_is_unaffected_by_the_floor(tmp_path):
     # the blindness check too) — no floor to enforce.
     manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path)
     assert manifest.ok is True
+
+
+# --- per-provider prompt bodies (chief-wiggum#332: diff inlining) -----------
+#
+# run_role_quorum's `prompt` param may now be a dict keyed by provider name
+# (in addition to a single shared string) — this is how review.py sends a
+# SMALLER, pointer-shaped prompt to a filesystem-capable provider (codex,
+# claude-interactive) and the full inline diff only to gemini-vertex,
+# without breaking the MIN_PROMPT_BYTES floor or the #319 blindness
+# token-floor estimate, both of which must key off the RIGHT variant per
+# provider, not a single shared one.
+
+
+def test_run_role_quorum_accepts_a_dict_prompt_for_the_floor_check(tmp_path):
+    prompt = {
+        "codex": "x" * providers.MIN_PROMPT_BYTES,
+        "gemini-vertex": "y" * (providers.MIN_PROMPT_BYTES + 500),
+    }
+    manifest = run_role_quorum(_plan(["codex", "gemini-vertex"], []), lambda p: SUBSTANTIVE, tmp_path, prompt=prompt)
+    assert manifest.ok is True
+
+
+def test_run_role_quorum_dict_prompt_refuses_when_any_variant_is_too_short(tmp_path):
+    prompt = {"codex": "x" * providers.MIN_PROMPT_BYTES, "gemini-vertex": "too short"}
+    with pytest.raises(providers.ShortPromptError):
+        run_role_quorum(_plan(["codex", "gemini-vertex"], []), lambda p: SUBSTANTIVE, tmp_path, prompt=prompt)
+
+
+def test_run_role_quorum_dict_prompt_computes_per_provider_blindness_estimate(tmp_path):
+    # codex's own prompt is small (a pointer, chief-wiggum#332) so its
+    # measured tokens_in easily clears the blindness margin; gemini-vertex's
+    # own prompt is the full inline diff, so its blindness estimate must be
+    # based on ITS OWN (larger) prompt, not codex's smaller one — otherwise
+    # gemini-vertex could be falsely flagged blind against too low a bar,
+    # or codex could dodge a real blind reading against too high a bar.
+    small_pointer = "p" * (providers.MIN_PROMPT_BYTES + 10)   # ~52 tokens
+    large_inline = "d" * 20_000                                # ~5000 tokens
+    prompt = {"codex": small_pointer, "gemini-vertex": large_inline}
+
+    def execute(provider):
+        if provider.name == "codex":
+            # tokens_in far exceeds codex's OWN (small) prompt -> clearly read the repo.
+            return SUBSTANTIVE, _FakeUsage(tokens_in=900_000, usage_status="provider-json")
+        # tokens_in is close to gemini-vertex's OWN (large) prompt size -> blind.
+        return SUBSTANTIVE, _FakeUsage(tokens_in=5_050, usage_status="sdk-metadata")
+
+    plan = _plan(["codex", "gemini-vertex"], [])
+    manifest = run_role_quorum(plan, execute, tmp_path, prompt=prompt)
+
+    assert manifest.blindness is not None
+    assert manifest.blindness.outcome == "findings"
+    assert {f.provider for f in manifest.blindness.findings} == {"gemini-vertex"}
