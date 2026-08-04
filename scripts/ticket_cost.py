@@ -119,8 +119,8 @@ def summarize_ticket(records: list[dict], repo: str, ticket: str) -> dict:
                 "cost_partial": None, "consult_providers": []}
     for layer in layers.values():
         layer["cost_usd"] = round(layer["cost_usd"], 4)
-    total = round(sum(l["cost_usd"] for l in layers.values()), 4)
-    partial = any(l["unpriced_calls"] for l in layers.values())
+    total = round(sum(layer["cost_usd"] for layer in layers.values()), 4)
+    partial = any(layer["unpriced_calls"] for layer in layers.values())
     return {"repo": repo, "ticket": str(ticket), "status": "metered",
             "records": matched, "layers": layers, "total_cost_usd": total,
             "cost_partial": partial, "consult_providers": sorted(providers)}
@@ -159,14 +159,14 @@ def render_actual_markdown(summary: dict, estimate_usd: float | None = None) -> 
     ]
     labels = {"orchestrator": "Orchestrator", "subagents": "Subagents", "consults": "Consults"}
     for key, label in labels.items():
-        l = summary["layers"][key]
-        if not l["calls"]:
+        layer = summary["layers"][key]
+        if not layer["calls"]:
             continue
         if key == "consults" and summary["consult_providers"]:
             label = f"Consults ({', '.join(summary['consult_providers'])})"
-        cost = f"${l['cost_usd']:.2f}" + (" *" if l["unpriced_calls"] else "")
-        rows.append(f"| {label} | {l['calls']} | {_fmt_tokens(l['tokens_in'])} | "
-                    f"{_fmt_tokens(l['cache_tokens'])} | {_fmt_tokens(l['tokens_out'])} | {cost} |")
+        cost = f"${layer['cost_usd']:.2f}" + (" *" if layer["unpriced_calls"] else "")
+        rows.append(f"| {label} | {layer['calls']} | {_fmt_tokens(layer['tokens_in'])} | "
+                    f"{_fmt_tokens(layer['cache_tokens'])} | {_fmt_tokens(layer['tokens_out'])} | {cost} |")
     total = f"**${summary['total_cost_usd']:.2f}**"
     rows.append(f"| **Total** | | | | | {total} |")
     lines = ["\n".join(rows), ""]
@@ -176,7 +176,7 @@ def render_actual_markdown(summary: dict, estimate_usd: float | None = None) -> 
     note = ("Nominal model spend (tokens × `config/model_pricing.json`, cache-aware "
             "for Claude Code layers). Human time and CI excluded.")
     if summary["cost_partial"]:
-        unpriced = sum(l["unpriced_calls"] for l in summary["layers"].values())
+        unpriced = sum(layer["unpriced_calls"] for layer in summary["layers"].values())
         note += (f" **Partial**: {unpriced} of {summary['records']} calls had no "
                  "priced model — the total understates.")
     lines.append(f"<sub>{note}</sub>")
