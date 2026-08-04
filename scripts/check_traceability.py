@@ -86,17 +86,25 @@ from chief_wiggum import grandfather as cw_grandfather  # noqa: E402
 # silent skip. See config/languages.json + docs/languages.md.
 from chief_wiggum import languages as cw_languages  # noqa: E402
 
+# Single epic-tree walk (#326): every one of the five extractors below (and
+# ratchet.py's hash_epic_definitions/contract_measurement, and code_query.py's
+# _locate_definitions) used to independently rglob + read_text the same epic
+# directory. build_epic_model walks it ONCE per call; check()/build_report()
+# build exactly one EpicModel per invocation and every extractor here reads
+# from it instead of re-walking — see chief_wiggum/epic_model.py's module
+# docstring for the two-views-of-defined-ids rationale.
+from chief_wiggum.epic_model import build_epic_model  # noqa: E402
+
 # Shared with check_single_writer.py: the hash-derived --scanner-version and
 # the git-native manifest helper behind --changed-since (#160). walk_source_files
 # prunes submodules/nested git checkouts from the FULL scan so both scan modes
 # agree on the file universe (the manifest never surfaces submodule blobs).
-# hash_epic_definitions (#169) is the same contract-block hashing ratchet.py
-# uses for weakening detection — one implementation, not a parallel copy.
-from chief_wiggum.hashing import (  # noqa: E402
-    ID_BEARING_ARTIFACTS,
-    hash_epic_definitions,
-    scanner_version,
-)
+# ID_BEARING_ARTIFACTS/hash_epic_definitions (#169, #326) now live behind
+# chief_wiggum.epic_model.build_epic_model — imported below — rather than
+# being called from here directly; kept out of this import to avoid an
+# unused-import lint finding now that the five extractors (and check()'s
+# suspect-link hashing) all read from the shared EpicModel instead.
+from chief_wiggum.hashing import scanner_version  # noqa: E402
 from chief_wiggum.manifest import (  # noqa: E402
     ManifestError,
     build_manifest,
@@ -124,6 +132,7 @@ from chief_wiggum.trace_emission import (  # noqa: E402, F401
     Annotation,
     canonical_id,
     classify_source_kind,
+    emit_epic_annotations,
     emit_source_annotations,
     kind_of,
     parse_annotations,
@@ -149,7 +158,6 @@ from chief_wiggum.trace_links import (  # noqa: E402
     SIDECAR_RELPATH,
     build_sidecar,
     find_suspect_links,
-    is_justification_path,
     load_justifications,
     load_sidecar,
     write_sidecar,
@@ -336,24 +344,15 @@ def extract_defined_ids(epic_dir: str | Path) -> dict[str, str]:
     The ``justifications/`` subtree (waiver records, #169) is excluded: a
     waiver's own ``"id"`` field names the CTR/INV it waives and must never be
     misread as a new stable-ID declaration.
+
+    Builds (and discards) its own :class:`~chief_wiggum.epic_model.EpicModel`
+    when called standalone — callers that also need the other four extractors'
+    views over the SAME epic dir in one invocation should build one model via
+    ``build_epic_model`` themselves and read ``.defined_ids`` directly (as
+    ``check()``/``build_report`` now do, #326) rather than calling this
+    (and its four siblings) separately.
     """
-    root = Path(epic_dir)
-    defined: dict[str, str] = {}
-    if not root.exists():
-        return defined
-    for path in sorted(root.rglob("*")):
-        if path.suffix not in (".md", ".json") or not path.is_file():
-            continue
-        if is_justification_path(root, path):
-            continue
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        for m in DEFINE_RE.finditer(text):
-            node_id = canonical_id(m.group(1))
-            defined[node_id] = kind_of(node_id)
-    return defined
+    return build_epic_model(epic_dir).defined_ids
 
 
 def find_id_bearing_artifacts(epic_dir: str | Path) -> list[str]:
@@ -362,23 +361,10 @@ def find_id_bearing_artifacts(epic_dir: str | Path) -> list[str]:
     Empty-but-present files do NOT count: an epic dir holding a zero-byte
     contracts.md has nothing to parse yet and stays *inapplicable* — the
     error state (#281) is reserved for "there is text, and the scanner saw
-    nothing in it".
+    nothing in it". See :func:`extract_defined_ids`'s docstring re: standalone
+    vs. shared-model calls.
     """
-    root = Path(epic_dir)
-    if not root.exists():
-        return []
-    found: list[str] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.name not in ID_BEARING_ARTIFACTS:
-            continue
-        if is_justification_path(root, path):
-            continue
-        try:
-            if path.read_text().strip():
-                found.append(str(path.relative_to(root)))
-        except OSError:
-            continue
-    return found
+    return build_epic_model(epic_dir).id_bearing_artifacts
 
 
 def scan_malformed_ids(epic_dir: str | Path) -> list[dict]:
@@ -388,43 +374,7 @@ def scan_malformed_ids(epic_dir: str | Path) -> list[dict]:
     Same walk as ``extract_defined_ids`` (including the ``justifications/``
     exclusion) so the two can never disagree about what was read.
     """
-    root = Path(epic_dir)
-    out: list[dict] = []
-    if not root.exists():
-        return out
-    for path in sorted(root.rglob("*")):
-        if path.suffix not in (".md", ".json") or not path.is_file():
-            continue
-        if is_justification_path(root, path):
-            continue
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        for token in near_miss_ids(text):
-            line = next(
-                (i for i, ln in enumerate(text.splitlines(), 1) if token in ln), 0
-            )
-            out.append({
-                "file": str(path.relative_to(root)),
-                "line": line,
-                "token": token,
-                "expected": "KIND-SLUG-NNN (e.g. INV-order-001)",
-            })
-    return out
-
-
-def _collect_coverage_requirements(node, out: dict[str, list[str]]) -> None:
-    if isinstance(node, dict):
-        cid = node.get("id")
-        reqs = node.get("coverage_requires")
-        if isinstance(cid, str) and ID_RE.fullmatch(cid) and isinstance(reqs, list) and reqs:
-            out[canonical_id(cid)] = [str(r) for r in reqs]
-        for v in node.values():
-            _collect_coverage_requirements(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            _collect_coverage_requirements(v, out)
+    return build_epic_model(epic_dir).malformed_ids
 
 
 def extract_coverage_requirements(epic_dir: str | Path) -> dict[str, list[str]]:
@@ -437,50 +387,7 @@ def extract_coverage_requirements(epic_dir: str | Path) -> dict[str, list[str]]:
     Absent for a given ID, behavior is unchanged. Degrades gracefully on a
     missing epic dir or unparsable JSON (skipped, not raised).
     """
-    root = Path(epic_dir)
-    out: dict[str, list[str]] = {}
-    if not root.exists():
-        return out
-    for path in sorted(root.rglob("*.json")):
-        if is_justification_path(root, path):
-            continue
-        try:
-            doc = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        _collect_coverage_requirements(doc, out)
-    return out
-
-
-def emit_epic_annotations(rel: str, text: str) -> list[Annotation]:
-    """Per-file EMISSION: every ``@cw-trace`` annotation declared in one epic doc's
-    ``text``, attributed to the nearest stable ID declared above it. Pure function
-    of file content — no knowledge of the full defined-ID set (that join is
-    query-time, in ``build_report``).
-
-    A realizes/derive annotation is attributed to the nearest stable ID
-    *declared above it* in the same file, so it is tied to a real source.
-    Any kind that can be a link SOURCE qualifies (BUD-/EDG-/... declare
-    derive links the same way CTR-/INV- declare realizes — #166). BR is
-    only ever a link target, so a BR declaration RESETS attribution: an
-    annotation under a BR heading must not inherit an earlier contract
-    (that would let a stray realizes clear the BR's own orphan status).
-    """
-    annotations: list[Annotation] = []
-    nearest_contract: str | None = None
-    for i, line in enumerate(text.splitlines(), start=1):
-        for dm in DEFINE_RE.finditer(line):
-            if kind_of(dm.group(1)) == "BR":
-                nearest_contract = None
-            else:
-                nearest_contract = canonical_id(dm.group(1))
-        for verb, ids in parse_annotations(line):
-            src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
-            for target in ids:
-                annotations.append(
-                    Annotation(verb, target, rel, i, src_kind, source_id=nearest_contract)
-                )
-    return annotations
+    return build_epic_model(epic_dir).coverage_requirements
 
 
 def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
@@ -491,22 +398,7 @@ def scan_epic_annotations(epic_dir: str | Path) -> list[Annotation]:
     (source kind ``CTR``) — this is how a contract declares which business
     rule(s) it realizes.
     """
-    root = Path(epic_dir)
-    annotations: list[Annotation] = []
-    if not root.exists():
-        return annotations
-    for path in sorted(root.rglob("*")):
-        if path.suffix not in (".md", ".json") or not path.is_file():
-            continue
-        if is_justification_path(root, path):
-            continue
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        rel = str(path.relative_to(root))
-        annotations.extend(emit_epic_annotations(rel, text))
-    return annotations
+    return build_epic_model(epic_dir).epic_annotations
 
 
 SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv"}
@@ -677,6 +569,10 @@ def _scanner_version() -> str:
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "languages.py",
+        # The single epic-tree walk (#326) — every defined/coverage/malformed/
+        # annotation/hash view build_report() consumes is computed here now;
+        # a bug in the walk itself changes every one of those views at once.
+        cw_dir / "epic_model.py",
         # The per-file findings cache (#327) — finding-affecting by
         # construction: a bug in HOW a cache hit is validated or served would
         # change what a cached run reports vs a fresh scan, so any edit here
@@ -903,12 +799,18 @@ def check(
     the clock used for justification/grandfather-expiry checks; defaults to
     the real today."""
     schema = schema or load_schema()
-    defined = extract_defined_ids(epic_dir)
-    id_bearing = find_id_bearing_artifacts(epic_dir)
-    malformed = scan_malformed_ids(epic_dir)
-    coverage_requirements = extract_coverage_requirements(epic_dir)
+    # Single epic-tree walk (#326): one EpicModel replaces what used to be five
+    # independent rglob+read_text passes (extract_defined_ids,
+    # find_id_bearing_artifacts, scan_malformed_ids,
+    # extract_coverage_requirements, scan_epic_annotations) — every field below
+    # is read from it, never re-derived by calling those five functions again.
+    epic_model = build_epic_model(epic_dir)
+    defined = epic_model.defined_ids
+    id_bearing = epic_model.id_bearing_artifacts
+    malformed = epic_model.malformed_ids
+    coverage_requirements = epic_model.coverage_requirements
     # Contract->BR realizes links live in the epic docs; code/test links in source.
-    annotations = scan_epic_annotations(epic_dir)
+    annotations = list(epic_model.epic_annotations)
     unsupported: dict[str, int] = {}
     unscanned: list[dict] = []
     if source_root:
@@ -965,7 +867,10 @@ def check(
         )
 
     if links_path is not None:
-        current_hashes = hash_epic_definitions(Path(epic_dir))
+        # Reuse the SAME EpicModel built at the top of check() (#326) — this
+        # used to be a second independent hash_epic_definitions() walk of the
+        # epic dir on every call that passes --links (i.e. every normal run).
+        current_hashes = epic_model.definition_hashes
         sidecar = load_sidecar(links_path)
         report.suspect_links = find_suspect_links(sidecar, current_hashes)
         report.suspect_contracts = sorted({link["target"] for link in report.suspect_links})
@@ -1047,10 +952,15 @@ def write_links_sidecar(
     (they'd then never be able to go suspect). ``main`` rejects the
     ``--write-links --changed-since`` combination as a usage error (PR #181
     review)."""
-    annotations = scan_epic_annotations(epic_dir)
+    # One epic-tree walk (#326) for both the annotations and the definition
+    # hashes this sidecar bundles — previously two independent calls
+    # (scan_epic_annotations + hash_epic_definitions), each walking the epic
+    # dir on its own.
+    epic_model = build_epic_model(epic_dir)
+    annotations = list(epic_model.epic_annotations)
     if source_root:
         annotations += scan_source(source_root)
-    current_hashes = hash_epic_definitions(Path(epic_dir))
+    current_hashes = epic_model.definition_hashes
     body = build_sidecar(annotations, current_hashes, scanner_version=_scanner_version())
     # Version binding (#213): stamp the target HEAD the sidecar was computed
     # against. ADDITIVE key — load_sidecar/find_suspect_links tolerate its

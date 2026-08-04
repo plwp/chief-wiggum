@@ -803,6 +803,55 @@ def test_scan_writers_preserves_line_major_ordering_across_invariants(tmp_path):
     ]
 
 
+# --- #326: match_writers hoisting (line-index + field-forms computed once) --
+
+
+def test_match_writers_indexed_matches_match_writers_per_invariant(tmp_path):
+    """_match_writers_indexed(by_line, inv, forms), given a hoisted line index
+    and precomputed forms, must return EXACTLY what match_writers(sites, inv)
+    returns per invariant — the hoisting must not change any single
+    invariant's claim, only how often the shared work is redone."""
+    inv_a = sw.SingleWriterInvariant("INV-a-001", "", ["p.alpha"], ["Foo"], "s")
+    inv_b = sw.SingleWriterInvariant("INV-b-001", "", ["p.beta"], ["Foo"], "s")
+    (tmp_path / "f.go").write_text(
+        "func f(p *P) {\n\tp.Alpha = 1\n\tp.Beta = 2\n\tp.Alpha = 3\n}\n"
+    )
+    sites = sw.emit_write_sites("f.go", (tmp_path / "f.go").read_text())
+
+    by_line = sw._index_sites_by_line(sites)
+    for inv in (inv_a, inv_b):
+        forms = sw._distinct_field_forms(inv)
+        assert sw._match_writers_indexed(by_line, inv, forms) == sw.match_writers(sites, inv)
+
+
+def test_scan_writers_calls_distinct_field_forms_once_per_invariant_not_per_line(tmp_path, monkeypatch):
+    """Acceptance proof for #326: _distinct_field_forms(invariant) used to be
+    recomputed once per (file, line-group, invariant) inside match_writers —
+    now computed ONCE per invariant for the whole scan, regardless of how many
+    lines/files match. A file with several hit lines across two invariants
+    must not multiply the call count."""
+    inv_a = sw.SingleWriterInvariant("INV-a-001", "", ["p.alpha"], ["Foo"], "s")
+    inv_b = sw.SingleWriterInvariant("INV-b-001", "", ["p.beta"], ["Foo"], "s")
+    (tmp_path / "f.go").write_text(
+        "func f(p *P) {\n"
+        "\tp.Alpha = 1\n\tp.Beta = 2\n\tp.Alpha = 3\n\tp.Beta = 4\n\tp.Alpha = 5\n"
+        "}\n"
+    )
+    calls: list[str] = []
+    orig = sw._distinct_field_forms
+
+    def counting(inv):
+        calls.append(inv.id)
+        return orig(inv)
+
+    monkeypatch.setattr(sw, "_distinct_field_forms", counting)
+    writers = sw.scan_writers(tmp_path, [inv_a, inv_b])
+
+    assert writers  # sanity: the scan actually found writers on 5 hit lines
+    assert calls.count("INV-a-001") == 1
+    assert calls.count("INV-b-001") == 1
+
+
 def test_emission_captures_hyphenated_quoted_key(tmp_path):
     """Regression (#179 review): the pre-split scanner built regexes from the
     escaped field token, so a hyphenated Mongo key (`"plan-tier"`) matched. The

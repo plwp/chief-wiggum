@@ -14,6 +14,13 @@ Example (see `/implement` Step 2):
       --issue-json "$TICKET_TMP/issue-raw.json" --number 83 \
       --acceptance-criteria "Fold comments into the review prompt" \
       --output "$TICKET_TMP/ticket.json"
+
+By default this prints a ONE-LINE summary (path + counts), not the full JSON
+(#333) — the orchestrator already `tee`'d the raw issue JSON into its own
+context at Step 2 (`gh issue view ... | tee "$TICKET_TMP/issue-raw.json"`);
+printing the flattened ticket.json again billed the same issue body + full
+comment thread into the orchestrator's context a second time. Pass `--print`
+to get the full JSON on stdout when you actually need to inspect it.
 """
 
 from __future__ import annotations
@@ -44,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         help="One acceptance-criterion line (repeatable)",
     )
     parser.add_argument("--output", required=True, help="Where to write ticket.json")
+    parser.add_argument(
+        "--print", dest="print_full", action="store_true",
+        help="Print the full ticket.json to stdout (default: one-line summary only — "
+        "the issue body + comment thread is already in the orchestrator's context "
+        "via Step 2's `gh issue view | tee`, so printing it again here is redundant)",
+    )
     args = parser.parse_args(argv)
 
     raw = json.loads(Path(args.issue_json).read_text())
@@ -52,7 +65,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     text = json.dumps(ticket, indent=2) + "\n"
     Path(args.output).write_text(text)
-    print(text)
+    if args.print_full:
+        print(text)
+    else:
+        print(
+            f"wrote {args.output} "
+            f"({len(ticket['comments'])} comment(s), "
+            f"{len(ticket['acceptance_criteria'])} AC line(s))"
+        )
     return 0
 
 

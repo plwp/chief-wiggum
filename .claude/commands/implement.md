@@ -113,11 +113,15 @@ if [ -n "$MILESTONE" ]; then
 fi
 ```
 
-If a milestone exists and `$EPIC_DIR/` exists in the target repo, load:
+If a milestone exists, `$EPIC_DIR/` holds this epic's artifacts:
 - `contracts.md` — REQUIRES/ENSURES for APIs and entities
 - `state-machines.md` — valid state transitions
 - `invariants.md` — cross-cutting rules
 - `traceability.md` — which acceptance criteria need which tests
+
+**Do NOT read these into your own context here (#333).** The doctrine two paragraphs below ("query the architecture live") is not a suggestion for LATER steps only — Step 1 paying for a full context-load of exactly the docs `code_query.py` exists to answer questions about is the contradiction #333 fixed. Note that these paths EXIST; that's all Step 1 needs. Steps 4/6/8 fetch what they actually need, on demand, once `$HAS_FORMAL_MODELS` is known below:
+- **`$HAS_FORMAL_MODELS == true`**: use `code_query.py` (`orient`/`contract`/`state`/`show` — see below) to pull only the file:line handles and one-line statements relevant to the file/entity/contract in front of you. Never a full-file Read of `contracts.md`/`state-machines.md`/`invariants.md`/`traceability.md`.
+- **`$HAS_FORMAL_MODELS == false`** (prose-only epic, no `models/` dir — `code_query` can't answer structured queries without them): this is the ONLY case where reading the full prose docs is correct, and even then defer it to whichever step first needs epic constraints (typically Step 4's approach-prompt assembly), not eagerly here.
 
 Also check for **formal model artifacts** in `$EPIC_DIR/models/`:
 - `contracts.json` — structured contracts (machine-readable)
@@ -146,7 +150,7 @@ The inventory's `blocked_tickets` and `warnings` (e.g. malformed model JSON) fee
 
 These artifacts are **hard constraints** on the implementation. The coding worker MUST satisfy them. The review checklist MUST verify them. When formal models exist, test generation in Step 5 uses them for mechanical path coverage.
 
-**Query the architecture live instead of re-deriving it** — when $EPIC_DIR exists, `scripts/code_query.py` (see `docs/code-query.md`) answers "what governs this file/field/contract" from the epic artifacts + code annotations, as small JSON with `file:line` handles instead of a full context-load of these docs. Steps 4/6/8 below use it in place of ad hoc grepping:
+**Query the architecture live instead of re-deriving it** — when `$HAS_FORMAL_MODELS == true`, `scripts/code_query.py` (see `docs/code-query.md`) answers "what governs this file/field/contract" from the epic artifacts + code annotations, as small JSON with `file:line` handles instead of a full context-load of these docs. Steps 4/6/8 below use it — `orient` for a specific file, `contract`/`state` for a specific ID, `show` to dereference a handle to its actual text — in place of both ad hoc grepping AND the full doc load this section used to do:
 ```bash
 python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" orient path/to/file.go
 ```
@@ -193,6 +197,8 @@ python3 "$CW_HOME/scripts/write_ticket_context.py" \
 
 Pass one `--acceptance-criteria` per line you extracted for the "Present to the user" summary above (repeatable flag; omit entirely for a ticket with no explicit AC). `write_ticket_context.py` flattens `gh`'s raw comment shape (`author.login`, `authorAssociation`, `createdAt`) into `TicketComment`'s field names and always emits a `comments` array — an issue with zero comments still produces `"comments": []` (CTR-fh-002/IT-fh-10). An absent `comments` key would be the writer-side half of the #83 regression: `review.TicketContext.from_dict` warns loudly (`MissingCommentsWarning`) rather than silently defaulting, but this writer never omits the key in the first place.
 
+**Do not pass `--print`** (#333): by default the CLI prints a one-line summary (path + comment/AC counts), not the full ticket JSON — `gh issue view` above already `tee`'d the raw issue body + comments into your context once; the flattened ticket.json is the SAME text, so printing it again is a redundant second copy in the most expensive context. Only add `--print` if you genuinely need to inspect the flattened shape (e.g. debugging a `MissingCommentsWarning`).
+
 ### Step 3: Clarify requirements (only if needed)
 
 Present a concise summary of what needs building (scope in/out). Only ask the user questions if the ticket is genuinely ambiguous — unclear acceptance criteria, conflicting requirements, or missing critical details. If the ticket is well-specified, state your understanding and move on.
@@ -222,8 +228,9 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
    - Form its own implementation approach
    - Write its findings to `$TICKET_TMP/approach-opus.md`
 
-3. **Codebase deep-dive** — Launch a background **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel with all of the above; it signals completion by writing its findings artifact (and a status file), not via a harness notification. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough", `run_in_background: true`. This worker should:
-   - Read key files in the areas the ticket will touch (based on ticket description and labels)
+3. **Codebase deep-dive** — Launch a background **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel with all of the above; it signals completion by writing its findings artifact (and a status file), not via a harness notification. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough", `run_in_background: true`. **Seed it instead of sending it in cold (#333)** — `/architect` already produced ground this epic covers once; re-exploring it from zero per ticket is the redundancy #333 flags:
+   - Pass it `docs/quality/hotspots.json` if present (measured churn/complexity + `coupled_with` — tells it where scrutiny already concentrates) and instruct it to run `code_query.py orient` on any file the ticket's description/labels name BEFORE free-exploring, so it starts from what governs those files rather than rediscovering it.
+   - Scope its exploration to what THIS ticket adds/changes, not a full re-survey of the epic's subsystem — `/architect`'s own codebase survey already covered the subsystem-wide patterns; this worker's job is the ticket-specific delta (which exact files, which exact existing helpers to extend).
    - Document existing patterns, conventions, test infrastructure, and relevant data models
    - Write findings to `$TICKET_TMP/codebase-context.md`
    
@@ -231,7 +238,7 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
 
 Before launching, prepare the approach prompt at `$TICKET_TMP/approach-prompt.md` including:
 - Ticket title, description, and acceptance criteria
-- **Epic context** (if loaded): relevant contracts, invariants, state machine transitions — these are constraints, not suggestions
+- **Epic context** (if it belongs to an epic): relevant contracts, invariants, state machine transitions — these are constraints, not suggestions. Assemble this SECTION directly into `approach-prompt.md` (a file the AI providers read, not your own context): when `$HAS_FORMAL_MODELS == true`, pull only the specific contracts/invariants/transitions this ticket touches via `code_query.py contract`/`state`/`orient` (small, targeted — not the whole doc); when it's `false`, the epic is prose-only and there is no cheaper alternative to including the relevant `contracts.md`/`invariants.md`/`state-machines.md` sections verbatim.
 - **Orientation context** (give them the lay of the land, NOT the answer):
   - Tech stack and key dependencies
   - Repo structure (top-level tree or directory layout)
@@ -456,6 +463,12 @@ The worker should:
 1. Get the diff from the implementation:
    ```bash
    git diff "$DEFAULT_BRANCH"...HEAD > $TICKET_TMP/impl-diff.txt
+   ```
+
+   **Reset the append-only scratch file for THIS attempt (#333).** 3b/3c below `>>`-append to `review-context-extra.md`; a re-run of Step 7 within the same session (e.g. after Step 8 sends the ticket back for another review pass) must not inherit the previous attempt's findings on top of its own — that grows the reviewer prompt monotonically across attempts instead of reflecting only the current diff:
+   ```bash
+   mkdir -p "$TICKET_TMP/reviews"
+   : > "$TICKET_TMP/reviews/review-context-extra.md"
    ```
 
 1b. **Load the target's own review authorities (#264).** The multi-AI quorum reviews against CW's checklist; a brownfield repo's standing objections are invisible to it unless they are supplied:
@@ -946,6 +959,12 @@ fi
 ```
 
 (If the PR hasn't merged yet, record with `--gate pass` and without `--merged` — an unmerged record documents the run but doesn't move the high-water mark. In `/implement-wave` this is handled per wave instead.)
+
+**Sweep this ticket's worktree if it already merged** (#329) — no prior step ever ran `git worktree remove`, so the worker's worktree from Step 5/6 would otherwise sit in the shared checkout forever. `gc-worktrees` only removes a worktree whose branch is provably merged into `$DEFAULT_BRANCH`, so this is a safe no-op if the PR hasn't merged yet (human/CI review still pending) — a later `/implement` or `/implement-wave` run's own sweep will catch it once it has:
+```bash
+git -C "$TARGET_REPO" fetch origin "$DEFAULT_BRANCH"
+python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+```
 
 Close the loop:
 - Ask if the issue should be updated with a comment linking to the PR

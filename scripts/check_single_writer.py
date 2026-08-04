@@ -583,20 +583,33 @@ def _distinct_field_forms(inv: SingleWriterInvariant) -> list[tuple[str, str]]:
     return forms
 
 
-def match_writers(sites: list[WriteSite], invariant: SingleWriterInvariant) -> list[Writer]:
-    """Claim: query-time filter of field-agnostic ``sites`` against a single
-    invariant's controlled fields + sanctioned writers. Mirrors the original
-    interleaved scan exactly — including "one write record per (line,
-    invariant), first controlled-field-form wins" — but now as a pure function
-    of pre-emitted sites, with no filesystem access.
-    """
+def _index_sites_by_line(sites: list[WriteSite]) -> dict[tuple[str, int], list[WriteSite]]:
+    """Group ``sites`` by ``(file, line)`` — the per-file line index
+    ``match_writers`` used to rebuild on EVERY call (#326: once per invariant
+    per file, when a scan claims the same file's sites against N invariants).
+    Depends only on ``sites`` (a single file's emitted sites in
+    ``_scan_writers_and_unscanned``), so callers claiming one file's sites
+    against multiple invariants should build this ONCE and reuse it via
+    :func:`_match_writers_indexed` — see that loop's use of this function."""
     by_line: dict[tuple[str, int], list[WriteSite]] = defaultdict(list)
     for s in sites:
         by_line[(s.file, s.line)].append(s)
+    return by_line
 
+
+def _match_writers_indexed(
+    by_line: dict[tuple[str, int], list[WriteSite]],
+    invariant: SingleWriterInvariant,
+    forms: list[tuple[str, str]],
+) -> list[Writer]:
+    """The actual claim logic, taking an already-built line index and an
+    already-computed ``_distinct_field_forms(invariant)`` — both invariant-scan
+    hot-path callers (``_scan_writers_and_unscanned``) hoist once per file /
+    once per invariant respectively (#326), instead of ``match_writers``'
+    O(files × invariants) rebuild of both."""
     writers: list[Writer] = []
     for (file, line), line_sites in by_line.items():
-        for fpath, tok in _distinct_field_forms(invariant):
+        for fpath, tok in forms:
             matched: WriteSite | None = None
             for s in line_sites:
                 # persistence_only (`sink=db`): only DB sinks count — the bare
@@ -624,6 +637,23 @@ def match_writers(sites: list[WriteSite], invariant: SingleWriterInvariant) -> l
             ))
             break  # one write record per (line, invariant)
     return writers
+
+
+def match_writers(sites: list[WriteSite], invariant: SingleWriterInvariant) -> list[Writer]:
+    """Claim: query-time filter of field-agnostic ``sites`` against a single
+    invariant's controlled fields + sanctioned writers. Mirrors the original
+    interleaved scan exactly — including "one write record per (line,
+    invariant), first controlled-field-form wins" — but now as a pure function
+    of pre-emitted sites, with no filesystem access.
+
+    Public, backward-compatible entry point: builds its own line index and
+    field-forms list on every call. A caller claiming the SAME file's sites
+    against MANY invariants (``_scan_writers_and_unscanned``'s hot path)
+    should build both once via :func:`_index_sites_by_line`/
+    :func:`_distinct_field_forms` and call :func:`_match_writers_indexed`
+    directly instead — see that function's docstring (#326).
+    """
+    return _match_writers_indexed(_index_sites_by_line(sites), invariant, _distinct_field_forms(invariant))
 
 
 def scan_writers(
@@ -700,6 +730,12 @@ def _scan_writers_and_unscanned(
         if manifest is not None:
             scanner_hash = _scanner_version()
 
+    # (#326) _distinct_field_forms(invariant) depends ONLY on the invariant,
+    # not on any file's sites — computed once here (O(invariants)) instead of
+    # once per (file, line-group, invariant) inside match_writers, which was
+    # the actual hot loop this scan used to re-derive it in.
+    forms_by_invariant = [_distinct_field_forms(inv) for inv in invariants]
+
     for rel in candidates:
         if Path(rel).suffix not in SOURCE_EXTS:
             continue
@@ -741,9 +777,14 @@ def _scan_writers_and_unscanned(
         # "for line: for invariant", not "for invariant: for line" — a file with
         # hits for multiple invariants at interleaved lines must come out in line
         # order, not grouped by invariant).
+        # (#326) by_line is built ONCE per file here, not once per (file,
+        # invariant) as a bare match_writers(sites, inv) call per invariant
+        # would rebuild it — O(files × lines) instead of O(files × invariants
+        # × lines).
+        by_line = _index_sites_by_line(sites)
         tagged: list[tuple[int, Writer]] = []
         for idx, inv in enumerate(invariants):
-            for w in match_writers(sites, inv):
+            for w in _match_writers_indexed(by_line, inv, forms_by_invariant[idx]):
                 tagged.append((idx, w))
         tagged.sort(key=lambda t: (t[1].line, t[0]))
         writers.extend(w for _, w in tagged)

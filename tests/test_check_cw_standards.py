@@ -65,6 +65,30 @@ def test_bare_reference_still_flagged_when_target_prefix_absent(tmp_path):
     assert "dangling-script-ref" in _rules(check_cw_standards.check(tmp_path))
 
 
+# --- #326: basename set built once, not re-globbed per reference -----------
+
+
+def test_script_basenames_matches_script_exists_by_basename(tmp_path):
+    _scaffold(tmp_path, script="nested_helper.py")
+    scripts_dir = tmp_path / "scripts"
+    basenames = check_cw_standards._script_basenames(scripts_dir)
+    assert "nested_helper.py" in basenames
+    assert check_cw_standards._script_exists("some/other/path/nested_helper.py", scripts_dir, basenames)
+    assert check_cw_standards._script_exists("some/other/path/nested_helper.py", scripts_dir)  # standalone call
+
+
+def test_script_exists_precomputed_basenames_gives_same_answer_as_standalone(tmp_path):
+    _scaffold(tmp_path, script="real.py")
+    scripts_dir = tmp_path / "scripts"
+    basenames = check_cw_standards._script_basenames(scripts_dir)
+    assert check_cw_standards._script_exists("real.py", scripts_dir, basenames) is True
+    assert check_cw_standards._script_exists("real.py", scripts_dir, basenames) == \
+        check_cw_standards._script_exists("real.py", scripts_dir)
+    assert check_cw_standards._script_exists("ghost.py", scripts_dir, basenames) is False
+    assert check_cw_standards._script_exists("ghost.py", scripts_dir, basenames) == \
+        check_cw_standards._script_exists("ghost.py", scripts_dir)
+
+
 def test_gate_without_test_flagged(tmp_path):
     _scaffold(tmp_path, script="check_thing.py")  # a gate, no test file
     assert "gate-untested" in _rules(check_cw_standards.check(tmp_path))

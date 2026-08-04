@@ -75,11 +75,20 @@ import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 import check_single_writer  # noqa: E402
 import check_traceability  # noqa: E402
 from chief_wiggum import external_links  # noqa: E402 — sidecar link store (#213 Phase C)
+
+# Single epic-tree walk (#326): _locate_definitions used to independently
+# rglob + read_text every epic dir it discovers — build_epic_model now backs
+# it (reading its `raw_definitions` view, the justification-INCLUDED,
+# line-tracked superset check_traceability.extract_defined_ids does not use —
+# see chief_wiggum/epic_model.py's module docstring). Built fresh on every
+# discover_epics() call — never cached across code_query.py invocations, the
+# same no-cross-query-memoization doctrine Plane A has always followed.
+from chief_wiggum.epic_model import build_epic_model  # noqa: E402
 from chief_wiggum.hashing import scanner_version  # noqa: E402
 from chief_wiggum.textio import (
     read_text_safe,  # noqa: E402 — decode-defensive bulk-scan reads (#282/#289)
 )
-from chief_wiggum.trace_ids import DEFINE_RE, ID_KINDS  # noqa: E402
+from chief_wiggum.trace_ids import ID_KINDS  # noqa: E402
 
 DEFAULT_LIMIT = 40
 
@@ -135,22 +144,14 @@ class Epic:
 def _locate_definitions(epic_dir: Path) -> dict[str, tuple[str, int]]:
     """Every declared stable ID in this epic's docs, with its `(rel_file, line)` —
     unlike `check_traceability.extract_defined_ids`, this keeps line numbers
-    (needed by `show`'s dereference)."""
+    (needed by `show`'s dereference) and does NOT exclude the
+    `justifications/` subtree (a waiver's own "id" field is still a useful
+    locator here, even though it must never count as a coverage-affecting
+    declaration — see `chief_wiggum/epic_model.py`'s module docstring for why
+    this is a deliberate second view, not a bug)."""
     out: dict[str, tuple[str, int]] = {}
-    if not epic_dir.exists():
-        return out
-    for path in sorted(epic_dir.rglob("*")):
-        if path.suffix not in (".md", ".json") or not path.is_file():
-            continue
-        rel = str(path.relative_to(epic_dir))
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        for i, line in enumerate(text.splitlines(), start=1):
-            for m in DEFINE_RE.finditer(line):
-                nid = check_traceability.canonical_id(m.group(1))
-                out.setdefault(nid, (rel, i))
+    for nid, rel, line, _is_justification in build_epic_model(epic_dir).raw_definitions:
+        out.setdefault(nid, (rel, line))
     return out
 
 

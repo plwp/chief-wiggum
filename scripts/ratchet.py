@@ -116,15 +116,20 @@ import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 # exactly one contract-block hashing implementation, not a copy per module.
 # _hash_markdown_defs/_walk_json_ids are kept as thin aliases to that shared
 # home for callers/tests that reach into ratchet's (formerly private) internals.
+# build_epic_model (#326): one epic-tree walk backing load_contract_hashes AND
+# contract_measurement — cmd_score builds a single EpicModel and passes it to
+# both, instead of each independently walking cfg.epic_docs (previously four
+# separate rglob passes: hash_epic_definitions' two + find_id_bearing_artifacts'
+# one + scan_malformed_ids' one). chief_wiggum.hashing's own
+# find_id_bearing_artifacts/hash_epic_definitions/scan_malformed_ids stay
+# available (and unchanged) for any OTHER standalone caller (e.g. adopt.py).
 from chief_wiggum import grandfather  # noqa: E402
+from chief_wiggum.epic_model import build_epic_model  # noqa: E402
+from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
 from chief_wiggum.hashing import (  # noqa: E402
-    find_id_bearing_artifacts,
-    hash_epic_definitions,
-    scan_malformed_ids,
     scanner_version,
     stable_hash,
 )
-from chief_wiggum.hashing import hash_markdown_defs as _hash_markdown_defs  # noqa: E402,F401
 from chief_wiggum.hashing import walk_json_ids as _walk_json_ids  # noqa: E402,F401
 from chief_wiggum.trace_ids import ID_RE, canonical_id  # noqa: E402,F401
 from chief_wiggum.trace_ids import MD_DEFINE_RE as DEFINE_RE  # noqa: E402,F401
@@ -282,19 +287,25 @@ def load_config(repo: Path) -> Config:
 # ---- contract definition hashes (weakening detection) --------------------------
 
 
-def load_contract_hashes(cfg: Config) -> dict[str, str]:
+def load_contract_hashes(cfg: Config, model=None) -> dict[str, str]:
     """Map stable ID -> definition hash across all epic docs (md + model JSON).
 
-    Delegates to ``chief_wiggum.hashing.hash_epic_definitions`` (#169) — the
-    single implementation of contract-block hashing, also reused by
-    ``check_traceability.py`` for per-link suspect propagation.
+    Built from :func:`chief_wiggum.epic_model.build_epic_model` (#326) — the
+    single per-invocation epic-tree walk also reused by
+    ``check_traceability.py`` for per-link suspect propagation and by
+    :func:`contract_measurement` below for the id-bearing/malformed views.
+    ``model`` (optional) lets a caller that already built one for this
+    invocation (``cmd_score``) pass it in instead of triggering a second walk;
+    omitted, this builds its own — the still-correct, standalone behavior
+    every direct/test caller of this function relies on.
 
     ``epic_docs`` may be ABSOLUTE (sidecar mode, where the epic artifacts live
     outside the target — ``cmd_init`` writes the resolver's absolute epics dir
     there): ``Path.__truediv__`` with an absolute right-hand side yields the
     right-hand side, so the join below is correct in both modes.
     """
-    return hash_epic_definitions(cfg.repo / cfg.epic_docs)
+    model = model if model is not None else build_epic_model(cfg.repo / cfg.epic_docs)
+    return model.definition_hashes
 
 
 # Vacuous-pass fix (chief-wiggum#295, direct instance of #289 — one layer up
@@ -316,14 +327,18 @@ CONTRACT_STATUS_INAPPLICABLE = "inapplicable"
 CONTRACT_STATUS_ERROR = "error"
 
 
-def contract_measurement(cfg: Config, contract_hashes: dict[str, str]) -> dict:
+def contract_measurement(cfg: Config, contract_hashes: dict[str, str], model=None) -> dict:
     """The measurement diagnostics alongside ``contract_hashes`` itself: how
     many ID-bearing artifacts were scanned, which declaration-position tokens
     were malformed near-misses, and the derived status (see module note
-    above). Pure/read-only given an already-computed ``contract_hashes``."""
+    above). Pure/read-only given an already-computed ``contract_hashes``.
+    ``model`` (optional, #326): reuse an already-built ``EpicModel`` (the same
+    one ``contract_hashes`` was computed from in ``cmd_score``) instead of
+    walking the epic tree again; omitted, builds its own."""
     root = cfg.repo / cfg.epic_docs
-    id_bearing = find_id_bearing_artifacts(root)
-    malformed = scan_malformed_ids(root)
+    model = model if model is not None else build_epic_model(root)
+    id_bearing = model.id_bearing_artifacts
+    malformed = model.malformed_ids
     if contract_hashes:
         status = CONTRACT_STATUS_APPLICABLE
         unparsed: list[dict] = []
@@ -1578,7 +1593,12 @@ def cmd_init(args) -> int:
 
 def cmd_score(args) -> int:
     cfg = load_config(repo_root(args.repo))
-    contract_hashes = load_contract_hashes(cfg)
+    # One epic-tree walk for the whole `score` run (#326): previously
+    # load_contract_hashes (hash_epic_definitions' two rglob passes) and
+    # contract_measurement (find_id_bearing_artifacts + scan_malformed_ids,
+    # two more) each independently walked cfg.epic_docs — four passes total.
+    epic_model = build_epic_model(cfg.repo / cfg.epic_docs)
+    contract_hashes = load_contract_hashes(cfg, model=epic_model)
     # --reuse-report (#284): read with getattr defaults so a hand-built
     # argparse.Namespace predating this flag (house precedent, see
     # _resolve_retire_cases) degrades gracefully instead of AttributeError.
@@ -1614,7 +1634,7 @@ def cmd_score(args) -> int:
     # are goalposts — their bodies are hashed and ratcheted like contract
     # definitions. Files the extractor cannot hash are SURFACED, not dropped.
     vscan = scan_verifier_hashes(cfg.repo)
-    cmeas = contract_measurement(cfg, contract_hashes)
+    cmeas = contract_measurement(cfg, contract_hashes, model=epic_model)
     smeas = suite_measurement(suite_entries, tests_run=not args.no_tests,
                               suites_configured=len(cfg.suites))
     sc = {
@@ -2229,6 +2249,9 @@ def _scanner_version() -> str:
         here.parent / "artifacts.py",
         cw_dir / "grandfather.py",
         cw_dir / "hashing.py",
+        # The single epic-tree walk backing load_contract_hashes/
+        # contract_measurement (#326) — a bug in the walk changes both.
+        cw_dir / "epic_model.py",
         cw_dir / "trace_ids.py",
         cw_dir / "trace_links.py",
         cw_dir / "verification.py",

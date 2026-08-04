@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import git_safety
@@ -189,3 +190,143 @@ def test_assert_main_pristine_cli_wired():
     # The subcommand is registered and delegates to gitops (feature-branch main -> exit 1).
     rc = git_safety.main(["assert-main-pristine", "--main", ".", "--default-branch", "main"])
     assert rc in (0, 1)  # 0 if this repo is on main+clean, 1 otherwise — never a crash/usage error
+
+
+# --- worktree teardown (#329) ------------------------------------------------
+
+_PORCELAIN = """\
+worktree /repo/main
+HEAD aaa111
+branch refs/heads/main
+
+worktree /repo/.claude/worktrees/42
+HEAD bbb222
+branch refs/heads/feat/42-merged
+
+worktree /repo/.claude/worktrees/43
+HEAD ccc333
+branch refs/heads/feat/43-parked
+
+worktree /repo/.claude/worktrees/detached
+HEAD ddd444
+detached
+"""
+
+
+def _wt_runner(*, merged="main\nfeat/42-merged\n", remove_ok=True, prune_ok=True):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["git", "worktree"] and args[2] == "list":
+            return subprocess.CompletedProcess(args, 0, stdout=_PORCELAIN, stderr="")
+        if args[:2] == ["git", "branch"] and "--merged" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=merged, stderr="")
+        if args[:3] == ["git", "worktree", "remove"]:
+            rc = 0 if remove_ok else 1
+            return subprocess.CompletedProcess(args, rc, stdout="", stderr="" if remove_ok else "dirty")
+        if args[:3] == ["git", "worktree", "prune"]:
+            rc = 0 if prune_ok else 1
+            return subprocess.CompletedProcess(args, rc, stdout="", stderr="" if prune_ok else "boom")
+        if args[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(args, 0, stdout="/repo/main", stderr="")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    run.calls = calls
+    return run
+
+
+def test_list_worktrees_parses_porcelain():
+    entries = gitops.list_worktrees(".", runner=_wt_runner())
+    assert entries == [
+        {"path": "/repo/main", "head": "aaa111", "branch": "main"},
+        {"path": "/repo/.claude/worktrees/42", "head": "bbb222", "branch": "feat/42-merged"},
+        {"path": "/repo/.claude/worktrees/43", "head": "ccc333", "branch": "feat/43-parked"},
+        {"path": "/repo/.claude/worktrees/detached", "head": "ddd444", "branch": None},
+    ]
+
+
+def test_merged_branches_parses_refnames():
+    assert gitops.merged_branches(".", "main", runner=_wt_runner()) == {"main", "feat/42-merged"}
+
+
+def test_gc_merged_worktrees_removes_only_merged_non_main():
+    runner = _wt_runner()
+    removed = gitops.gc_merged_worktrees("/repo/main", "main", runner=runner)
+    assert [e["branch"] for e in removed] == ["feat/42-merged"]
+    remove_calls = [c for c in runner.calls if c[:3] == ["git", "worktree", "remove"]]
+    assert remove_calls == [["git", "worktree", "remove", "/repo/.claude/worktrees/42"]]
+    # Prune runs because something was removed.
+    assert any(c[:3] == ["git", "worktree", "prune"] for c in runner.calls)
+
+
+def test_gc_merged_worktrees_never_touches_main_or_detached():
+    runner = _wt_runner(merged="main\nfeat/42-merged\n")
+    removed = gitops.gc_merged_worktrees("/repo/main", "main", runner=runner)
+    branches = {e["branch"] for e in removed}
+    assert "main" not in branches
+    assert None not in branches
+
+
+def test_gc_merged_worktrees_keeps_unmerged_parked_ticket():
+    # feat/43-parked never appears in --merged output -> never removed, no
+    # bookkeeping needed to mark it "parked".
+    runner = _wt_runner(merged="main\nfeat/42-merged\n")
+    removed = gitops.gc_merged_worktrees("/repo/main", "main", runner=runner)
+    assert "feat/43-parked" not in {e["branch"] for e in removed}
+
+
+def test_gc_merged_worktrees_respects_explicit_keep_even_if_merged():
+    # Even a MERGED branch is preserved if the caller explicitly keeps it.
+    runner = _wt_runner(merged="main\nfeat/42-merged\n")
+    removed = gitops.gc_merged_worktrees(
+        "/repo/main", "main", keep_branches=["feat/42-merged"], runner=runner
+    )
+    assert removed == []
+
+
+def test_gc_merged_worktrees_dry_run_removes_nothing():
+    runner = _wt_runner()
+    removed = gitops.gc_merged_worktrees("/repo/main", "main", dry_run=True, runner=runner)
+    assert [e["branch"] for e in removed] == ["feat/42-merged"]
+    assert not any(c[:3] == ["git", "worktree", "remove"] for c in runner.calls)
+    assert not any(c[:3] == ["git", "worktree", "prune"] for c in runner.calls)
+
+
+def test_gc_merged_worktrees_no_prune_when_nothing_removed():
+    runner = _wt_runner(merged="main\n")
+    removed = gitops.gc_merged_worktrees("/repo/main", "main", runner=runner)
+    assert removed == []
+    assert not any(c[:3] == ["git", "worktree", "prune"] for c in runner.calls)
+
+
+def test_remove_worktree_raises_on_failure():
+    with pytest.raises(gitops.GitSafetyError, match="could not remove worktree"):
+        gitops.remove_worktree(".", "/repo/x", runner=_wt_runner(remove_ok=False))
+
+
+def test_cli_gc_worktrees_dry_run(capsys):
+    import git_safety as gs
+
+    orig = gitops.gc_merged_worktrees
+    gitops.gc_merged_worktrees = lambda *a, **k: [{"path": "/repo/.claude/worktrees/42", "branch": "feat/42-merged"}]
+    try:
+        rc = gs.main(["gc-worktrees", "--repo", "/repo/main", "--default-branch", "main", "--dry-run"])
+    finally:
+        gitops.gc_merged_worktrees = orig
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "would remove" in out
+    assert "feat/42-merged" in out
+
+
+def test_cli_list_worktrees_emits_json(capsys):
+    orig = gitops.list_worktrees
+    gitops.list_worktrees = lambda repo: [{"path": "/repo/main", "branch": "main"}]
+    try:
+        rc = git_safety.main(["list-worktrees", "--repo", "/repo/main"])
+    finally:
+        gitops.list_worktrees = orig
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{"path": "/repo/main", "branch": "main"}]

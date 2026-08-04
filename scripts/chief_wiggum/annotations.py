@@ -22,6 +22,7 @@ repo recognizes" has exactly one place to look.
 from __future__ import annotations
 
 import re
+from dataclasses import asdict, dataclass
 
 # --- @cw-writes (#93) --------------------------------------------------------
 #
@@ -65,3 +66,44 @@ def split_binding_names(raw: str) -> list[str]:
     binding plus ignored prose — the regex never captures it as multiple names.
     """
     return [n for n in (part.strip() for part in raw.split(",")) if n]
+
+
+# --- emit_site emission (#326) ------------------------------------------------
+#
+# check_instrumentation.py used to walk the source tree itself (its own raw
+# rglob + EMITS_TAG_RE loop), bypassing the scripts/emitters/ registry
+# check_traceability.py ("trace_annotation") and check_single_writer.py
+# ("write_site") already share via chief_wiggum.manifest.walk_source_files —
+# so, unlike its siblings, it never pruned submodules/nested git checkouts (a
+# correctness gap, not just a cost one). EmitSite/emit_emit_sites give
+# check_instrumentation.py a THIRD fact kind, "emit_site", so its scan can go
+# through the exact same per-language emitter dispatch as its siblings.
+
+
+@dataclass
+class EmitSite:
+    """A source-code site carrying an ``@cw-emits <name>`` annotation (#170).
+    ``payload`` for the ``"emit_site"`` fact kind."""
+
+    name: str
+    file: str
+    line: int
+    text: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def emit_emit_sites(path: str, text: str) -> list[EmitSite]:
+    """Per-file EMISSION: every ``@cw-emits`` annotation in one file's
+    ``text``. Comment-agnostic like ``EMITS_TAG_RE`` itself — no suffix
+    parameter needed (unlike ``emit_source_annotations``/``emit_write_sites``,
+    which strip per-language line comments before matching). This is the
+    function every ``emit_site`` emitter (language-specific or generic) under
+    ``scripts/emitters/`` delegates to."""
+    sites: list[EmitSite] = []
+    for i, line in enumerate(text.splitlines()):
+        for m in EMITS_TAG_RE.finditer(line):
+            for name in split_binding_names(m.group("names")):
+                sites.append(EmitSite(name=name, file=path, line=i + 1, text=line.strip()[:200]))
+    return sites

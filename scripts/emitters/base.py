@@ -8,6 +8,9 @@ A "fact kind" is one of the checkers' field-agnostic emission outputs:
 - ``"trace_annotation"`` — an ``@cw-trace`` annotation
   (``chief_wiggum.trace_emission.Annotation``), consumed by
   ``check_traceability.py``'s BR/contract/test coverage graph.
+- ``"emit_site"`` — an ``@cw-emits`` annotation
+  (``chief_wiggum.annotations.EmitSite``, #326), consumed by
+  ``check_instrumentation.py``'s telemetry-binding coverage check.
 
 Each language module under ``scripts/emitters/`` implements ``emit(path,
 content) -> list[Fact]`` for whichever fact kind(s) it supports (advertised

@@ -17,7 +17,10 @@ from emitters import generic, go, python, typescript
 def test_go_module_shape():
     assert go.language == "go"
     assert go.extensions == (".go",)
-    assert set(go.fact_kinds()) == {"write_site", "trace_annotation"}
+    # emit_site (#326): check_instrumentation.py's @cw-emits fact kind, added
+    # alongside write_site/trace_annotation so it can share the same
+    # per-language emitter dispatch as its siblings.
+    assert set(go.fact_kinds()) == {"write_site", "trace_annotation", "emit_site"}
 
 
 def test_python_module_shape():
