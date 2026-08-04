@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import draft_pr
-from chief_wiggum import shipping
+from chief_wiggum import ai_disclosure, shipping
 
 # --- mermaid ----------------------------------------------------------------
 
@@ -148,6 +148,19 @@ def test_mermaid_directive_escapes_apostrophe_values():
         assert "it\\'s-navy" in d
     finally:
         s.PALETTE["themeVariables"] = saved
+
+
+# --- AI-authorship disclosure (chief-wiggum#317) -----------------------------
+
+
+def test_build_pr_body_carries_ai_disclosure():
+    body = shipping.build_pr_body(issue=1, summary="x", changes=["a"])
+    assert ai_disclosure.DISCLOSURE_LINE in body
+
+
+def test_build_pr_body_still_has_all_required_sections_with_disclosure():
+    body = shipping.build_pr_body(issue=1, summary="x", changes=["a"])
+    assert shipping.validate_sections(body) == []
 
 
 # --- CLI --------------------------------------------------------------------
