@@ -378,7 +378,7 @@ def test_consult_provider_threads_timeout_override_to_delegate(monkeypatch):
     )
     received = {}
 
-    def fake_consult_claude_interactive(prompt, model=None, cwd=None, timeout=None):
+    def fake_consult_claude_interactive(prompt, model=None, cwd=None, timeout=None, **kwargs):
         received["timeout"] = timeout
         return "response", consult_ai.Usage()
 
@@ -405,6 +405,219 @@ def test_consult_provider_ignores_timeout_override_for_tool_providers(monkeypatc
     consult_ai.consult_provider(provider, "prompt", None, None, timeout_override=42)
 
     assert received["called"] is True
+
+
+def test_consult_provider_threads_ticket_into_delegate_session_naming(monkeypatch):
+    """chief-wiggum#331: consult_provider's ticket kwarg must reach the delegate
+    call so a task-scoped session name can be derived from it."""
+    provider = consult_ai.Provider(
+        name="claude-interactive", type="delegate", enabled=True, delegate="claude-interactive",
+    )
+    received = {}
+
+    def fake_consult_claude_interactive(prompt, model=None, cwd=None, timeout=None, **kwargs):
+        received["ticket"] = kwargs.get("ticket")
+        return "response", consult_ai.Usage()
+
+    monkeypatch.setattr(consult_ai, "consult_claude_interactive", fake_consult_claude_interactive)
+
+    consult_ai.consult_provider(provider, "prompt", None, None, ticket="42")
+
+    assert received["ticket"] == "42"
+
+
+# --- task-scoped delegate sessions (chief-wiggum#331) ------------------------
+#
+# The delegate used to always talk to the SAME shared tmux session
+# ("cw-claude"), which `start_session` only creates if absent — so every
+# consult after the first inherited the ENTIRE accumulated transcript of
+# every prior delegated task, paid the ~N x context billing that implies, and
+# serialized any two concurrent consults (a wave running tickets in parallel)
+# onto the one REPL. The fix is task-scoped sessions: every call gets its own
+# unique session name, so it always starts from empty context (nothing to
+# "/clear" — the session never existed before), and two concurrent calls get
+# two independent sessions that cannot queue behind each other. The session
+# is stopped in a finally-path so nothing survives a completed call.
+
+
+def test_claude_interactive_never_uses_the_shared_default_session(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+
+    def fake_run_capture(cmd, **kwargs):
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: None)
+
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+
+
+def test_claude_interactive_passes_a_session_flag_before_submit(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    calls = []
+
+    def fake_run_capture(cmd, **kwargs):
+        calls.append(cmd)
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: None)
+
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+
+    cmd = calls[0]
+    assert "--session" in cmd
+    session_idx = cmd.index("--session")
+    session_name = cmd[session_idx + 1]
+    # Never the shared constant — every call is task-scoped.
+    assert session_name != "cw-claude"
+    assert session_name.startswith("cw-claude-")
+    # --session (a top-level flag) must precede the "submit" subcommand.
+    assert cmd.index("submit") > session_idx + 1
+
+
+def test_claude_interactive_two_consecutive_calls_get_different_sessions(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    sessions = []
+
+    def fake_run_capture(cmd, **kwargs):
+        sessions.append(cmd[cmd.index("--session") + 1])
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: None)
+
+    consult_ai.consult_claude_interactive("first prompt", cwd=str(tmp_path))
+    consult_ai.consult_claude_interactive("second prompt", cwd=str(tmp_path))
+
+    assert len(sessions) == 2
+    assert sessions[0] != sessions[1]
+
+
+def test_claude_interactive_session_name_incorporates_the_ticket(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    calls = []
+
+    def fake_run_capture(cmd, **kwargs):
+        calls.append(cmd)
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: None)
+
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path), ticket="331")
+
+    cmd = calls[0]
+    session_name = cmd[cmd.index("--session") + 1]
+    assert "331" in session_name
+
+
+def test_claude_interactive_stops_its_session_after_a_successful_consult(tmp_path, monkeypatch):
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    stopped = []
+
+    def fake_run_capture(cmd, **kwargs):
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: stopped.append(session))
+
+    consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+
+    assert len(stopped) == 1
+    assert stopped[0].startswith("cw-claude-")
+
+
+def test_claude_interactive_stops_its_session_even_when_the_call_times_out(tmp_path, monkeypatch):
+    stopped = []
+
+    def fake_run_capture(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 1))
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: stopped.append(session))
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+
+    assert len(stopped) == 1
+
+
+def test_claude_interactive_stops_its_session_even_when_the_result_path_is_missing(tmp_path, monkeypatch):
+    stopped = []
+
+    def fake_run_capture(cmd, **kwargs):
+        return f"RESULT={tmp_path / 'never-written.md'}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: stopped.append(session))
+
+    with pytest.raises(RuntimeError):
+        consult_ai.consult_claude_interactive("prompt", cwd=str(tmp_path))
+
+    assert len(stopped) == 1
+
+
+def test_claude_interactive_two_concurrent_calls_use_distinct_sessions_and_never_block_each_other(tmp_path, monkeypatch):
+    """chief-wiggum#331 AC2: two concurrent consults must not queue on one
+    shared REPL. Each call's fake transport blocks on a 2-party barrier before
+    returning — if the two calls were serialized (one waiting on the other
+    before even reaching the transport), the barrier would never fill and the
+    test would hang/time out. Session names are also asserted distinct."""
+    import threading
+
+    result_file = tmp_path / "result.md"
+    result_file.write_text("delegate response")
+    barrier = threading.Barrier(2, timeout=5)
+    sessions: list[str] = []
+    lock = threading.Lock()
+
+    def fake_run_capture(cmd, **kwargs):
+        with lock:
+            sessions.append(cmd[cmd.index("--session") + 1])
+        barrier.wait()  # both threads must arrive here concurrently
+        return f"RESULT={result_file}\n", ""
+
+    monkeypatch.setattr(consult_ai, "_run_capture", fake_run_capture)
+    monkeypatch.setattr(consult_ai, "_stop_delegate_session", lambda session: None)
+
+    results = [None, None]
+    errors = [None, None]
+
+    def run(i, prompt):
+        try:
+            results[i] = consult_ai.consult_claude_interactive(prompt, cwd=str(tmp_path))
+        except Exception as exc:  # pragma: no cover - surfaced via assertion below
+            errors[i] = exc
+
+    t1 = threading.Thread(target=run, args=(0, "prompt one"))
+    t2 = threading.Thread(target=run, args=(1, "prompt two"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert errors == [None, None]
+    assert not t1.is_alive() and not t2.is_alive()
+    assert len(sessions) == 2
+    assert sessions[0] != sessions[1]
+
+
+def test_stop_delegate_session_is_best_effort_and_never_raises(monkeypatch):
+    """A failure to tear down a stray tmux session degrades to a stray
+    session, never a crashed (otherwise-successful) consult."""
+
+    def fake_run(*args, **kwargs):
+        raise OSError("tmux not installed")
+
+    monkeypatch.setattr(consult_ai.subprocess, "run", fake_run)
+
+    consult_ai._stop_delegate_session("cw-claude-does-not-matter")  # must not raise
 
 
 def write_config_with_delegate(path, *, optional_timeout_seconds=None, claude_interactive_required=False):
