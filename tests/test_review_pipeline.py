@@ -29,6 +29,14 @@ TEMPLATE_WITH_COMMENTS = TEMPLATE.replace(
     "Diff:", "Comments:\n{{TICKET_COMMENTS}}\nDiff:"
 )
 
+# A run_review() end-to-end test's minimal fixture template/ticket/diff can
+# assemble to well under providers.MIN_PROMPT_BYTES (chief-wiggum#330's
+# refuse-a-truncated-prompt guard, now enforced inside run_role_quorum,
+# which run_review's prompt flows through) — pad with a realistic checklist
+# so these tests exercise real end-to-end behavior rather than tripping a
+# guard meant for an actually-truncated prompt.
+LONG_CHECKLIST = "# Checklist\n" + "".join(f"- item {i}\n" for i in range(20))
+
 
 def _ticket(**kw):
     base = {"number": 42, "title": "Add thing", "body": "Do the thing", "acceptance_criteria": ["AC one", "AC two"]}
@@ -77,7 +85,7 @@ def test_single_pass_does_not_rescan_injected_values():
 def test_checklist_and_epic_sections_appended():
     out = review.assemble_review_prompt(
         TEMPLATE, _ticket(), "d",
-        checklist="# Checklist\n- item",
+        checklist=LONG_CHECKLIST,
         epic_sections=[("Contracts", "REQUIRES x"), ("Empty", "  ")],
     )
     assert "## Contracts" in out and "REQUIRES x" in out
@@ -707,7 +715,7 @@ def test_run_review_end_to_end(tmp_path, monkeypatch):
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", out,
-        template=TEMPLATE, checklist="# Checklist\n- item",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
         config={}, execute=execute, runner=runner,
     )
 
@@ -754,7 +762,7 @@ def test_run_review_records_resolved_base_sha_and_diff_stat(tmp_path, monkeypatc
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", out,
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     assert manifest.base == "main"
@@ -805,7 +813,7 @@ def test_run_review_applies_lens_charter_per_provider(tmp_path, monkeypatch):
 
     review.run_review(
         _ticket(), tmp_path, "main", out,
-        template=TEMPLATE, checklist="# Checklist\n- item",
+        template=TEMPLATE, checklist=LONG_CHECKLIST,
         config={}, lenses=lenses, execute=execute, runner=runner,
     )
 
@@ -973,7 +981,7 @@ def test_run_review_caps_hung_optional_delegate_and_still_succeeds(tmp_path, mon
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", tmp_path / "out",
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     # Required provider (codex) carried the role -> overall OK despite the
@@ -1031,10 +1039,74 @@ def test_run_review_honors_per_role_optional_timeout_on_review_path(tmp_path, mo
 
     review.run_review(
         _ticket(), tmp_path, "main", tmp_path / "out",
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     assert captured_timeouts["claude-interactive"] == 42 + 30
+
+
+def test_run_review_forwards_retry_context_to_an_execute_that_opts_in(tmp_path, monkeypatch):
+    """chief-wiggum#330 AC3, review-pipeline half: run_review's own quorum
+    wiring must let an injected `execute` that declares `attempt`/
+    `previous_failure_kind` (like run_review.py's real one) see them —
+    scripts/run_review.py's execute reduces a codex retry's budget after a
+    timeout using exactly this context."""
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+
+    received: list[tuple[int, str | None]] = []
+
+    def execute(provider, prompt, timeout_override=None, *, attempt=1, previous_failure_kind=None):
+        received.append((attempt, previous_failure_kind))
+        if attempt == 1:
+            raise TimeoutError("codex did not respond in time")
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True
+    # gemini is optional and gets one attempt only, so any (attempt > 1)
+    # entry can only have come from codex's (required, retried) call.
+    assert (1, None) in received
+    assert any(kind == "timeout" for attempt, kind in received if attempt > 1)
+
+
+def test_run_review_execute_without_retry_context_is_unaffected(tmp_path, monkeypatch):
+    # Backward compatibility: the plain 3-arg execute(provider, prompt,
+    # timeout_override=None) contract every OTHER test in this file uses
+    # must keep working completely unchanged.
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    calls = {"n": 0}
+
+    def execute(provider, prompt, timeout_override=None):
+        calls["n"] += 1
+        return "A substantive review with findings to report here."
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True
+    assert calls["n"] == 2  # codex + gemini, each called once, no retry needed
 
 
 # --- blindness detection surfaces through the review manifest (chief-wiggum#319) --
@@ -1084,7 +1156,7 @@ def test_run_review_surfaces_blind_provider_in_the_manifest(tmp_path, monkeypatc
 
     manifest = review.run_review(
         _ticket(), tmp_path, "main", tmp_path / "out",
-        template=TEMPLATE, config={}, execute=execute, runner=runner,
+        template=TEMPLATE, checklist=LONG_CHECKLIST, config={}, execute=execute, runner=runner,
     )
 
     assert manifest.ok is True  # blindness never blocks the quorum on its own
