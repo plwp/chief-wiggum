@@ -95,7 +95,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402 — #213 meta-location resolver
 from chief_wiggum.grandfather import expired_live  # noqa: E402 — #215 F8 render overlay
-from quality import clones, dead_code, markers, process, test_health  # noqa: E402
+from quality import cache, clones, dead_code, markers, process, test_health  # noqa: E402
 
 SCHEMA = "debt/1"
 ID_HEX_LEN = 10
@@ -891,7 +891,14 @@ def main() -> int:
                              "quality dir; use for read-only validation runs)")
     parser.add_argument("--workdir", default=None, help="scratch dir for tool output")
     parser.add_argument("--format", choices=["text", "json"], default="text")
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="force a fresh jscpd run, bypassing the #328 result cache shared with "
+             "quality_slop_gate.py's duplication signal",
+    )
     args = parser.parse_args()
+    if args.no_cache:
+        os.environ[cache.NO_CACHE_ENV] = "1"
     return run(args)
 
 

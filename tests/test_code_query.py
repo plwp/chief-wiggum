@@ -24,6 +24,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "code_query_repo"
 SCRIPT = Path(__file__).parent.parent / "scripts" / "code_query.py"
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
+import check_single_writer  # noqa: E402
 import code_query  # noqa: E402
 
 ENVELOPE_KEYS = {"summary", "facts", "omitted", "cursor", "warnings", "provenance", "applicability"}
@@ -879,3 +880,183 @@ def test_external_store_nonexistent_symbol_is_warning_not_fact(tmp_path, monkeyp
     guards = code_query.cmd_guards(repo, "CTR-order-001", None)
     assert not [f for f in guards["facts"] if f.get("source") == "external-link-store"]
     assert any("no_such_function" in w for w in guards["warnings"])
+
+
+# --- #325: batched provenance (O(1) git processes per query, not O(facts)) ----
+
+
+def test_build_provenance_index_matches_the_per_call_fallback():
+    """Dual-run parity (#325 AC): the batched index must answer exactly what
+    the original per-file git-hash-object/git-status calls would have, for a
+    clean tracked file, and for a nonexistent one."""
+    index = code_query._build_provenance_index(FIXTURE)
+    for rel in ("src/order.py", "src/admin.py", "ui/orders/page.tsx"):
+        batched = code_query._file_provenance(FIXTURE, rel, index=index)
+        fallback = code_query._file_provenance(FIXTURE, rel)
+        assert batched == fallback, rel
+    # nonexistent path: both must degrade the same way (no blob_sha, no crash)
+    batched = code_query._file_provenance(FIXTURE, "src/does_not_exist.py", index=index)
+    fallback = code_query._file_provenance(FIXTURE, "src/does_not_exist.py")
+    assert batched == fallback
+
+
+def test_provenance_index_reflects_a_dirty_file(tmp_path):
+    """The batched path must see an uncommitted edit exactly like the
+    per-file `git status --porcelain` fallback did — never narrower."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+    (repo / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+
+    fallback_clean = code_query._file_provenance(repo, "f.py")
+    assert fallback_clean["dirty"] is False
+
+    (repo / "f.py").write_text("x = 2\n")
+    index = code_query._build_provenance_index(repo)
+    batched_dirty = code_query._file_provenance(repo, "f.py", index=index)
+    fallback_dirty = code_query._file_provenance(repo, "f.py")
+    assert batched_dirty["dirty"] is True
+    assert batched_dirty == fallback_dirty
+
+
+def test_provenance_index_reflects_a_deleted_tracked_file(tmp_path):
+    """A tracked file that's since been deleted (but not yet committed) must
+    report dirty=True in the batched path too — the fallback's
+    `git status --porcelain` runs unconditionally, so it sees the deletion
+    even though the path no longer exists on disk."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "A"], cwd=repo, check=True)
+    (repo / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+
+    (repo / "f.py").unlink()
+    fallback = code_query._file_provenance(repo, "f.py")
+    assert fallback["dirty"] is True  # deletion is uncommitted, so it's dirty
+    assert fallback["blob_sha"] is None  # nothing left on disk to hash
+
+    index = code_query._build_provenance_index(repo)
+    batched = code_query._file_provenance(repo, "f.py", index=index)
+    assert batched == fallback
+
+
+def _spy_on_subprocess(monkeypatch):
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy(cmd, *a, **kw):
+        if isinstance(cmd, list) and cmd[:1] == ["git"]:
+            calls.append(cmd)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    return calls
+
+
+def test_file_provenance_with_index_spawns_no_additional_git_processes(monkeypatch):
+    """Once an index is built, looking up MANY different files' provenance
+    must cost ZERO additional git subprocesses — the marginal cost per fact
+    must be zero, which is what turns O(facts) into O(1) per query."""
+    index = code_query._build_provenance_index(FIXTURE)
+    calls = _spy_on_subprocess(monkeypatch)
+    for rel in ("src/order.py", "src/admin.py", "src/order_summary.py",
+                "src/legacy_util.py", "ui/orders/page.tsx"):
+        code_query._file_provenance(FIXTURE, rel, index=index)
+    assert calls == [], f"index lookups must not shell out to git: {calls}"
+
+
+def test_annotation_fact_reuses_a_shared_index(monkeypatch):
+    """_annotation_fact must accept and use a pre-built index instead of
+    always falling back to a fresh per-call git spawn."""
+    epics = code_query.discover_epics(FIXTURE, "checkout")
+    source_anns, _w = code_query._all_source_annotations(FIXTURE)
+    anns = [a for a in source_anns if a.verb in ("guards", "ensures", "verifies")]
+    assert anns, "fixture must have at least one source annotation to exercise"
+    index = code_query._build_provenance_index(FIXTURE)
+    calls = _spy_on_subprocess(monkeypatch)
+    for a in anns:
+        code_query._annotation_fact(a, epics, FIXTURE, index=index)
+    assert calls == []
+
+
+# --- #325: one source scan regardless of epic count --------------------------
+
+
+def _sw_invariant(inv_id: str, field: str, writer_glob: str):
+    return check_single_writer.SingleWriterInvariant(
+        id=inv_id, description=f"single write path for {field}",
+        controls_field=[field], sanctioned_writers=[writer_glob],
+        source="invariants.md",
+    )
+
+
+def test_governs_field_mode_scans_writers_once_across_epics(monkeypatch):
+    """cmd_governs' field-name mode used to call check_single_writer.
+    scan_writers ONCE PER EPIC with a matching invariant — E epics with a
+    matching invariant meant E full-tree walks. Union the matching
+    invariants across epics and scan once."""
+    inv_a = _sw_invariant("INV-a-001", "order.status", "src/order.py")
+    inv_b = _sw_invariant("INV-b-001", "order.status", "src/order.py")
+    epic_a = code_query.Epic(slug="epic-a", dir=FIXTURE / "docs" / "epics" / "checkout",
+                              sw_invariants=[inv_a])
+    epic_b = code_query.Epic(slug="epic-b", dir=FIXTURE / "docs" / "epics" / "checkout",
+                              sw_invariants=[inv_b])
+    monkeypatch.setattr(code_query, "discover_epics", lambda repo_root, epic=None: [epic_a, epic_b])
+
+    calls = []
+    real_scan = check_single_writer.scan_writers
+
+    def counting_scan(*a, **kw):
+        calls.append((a, kw))
+        return real_scan(*a, **kw)
+
+    monkeypatch.setattr(code_query.check_single_writer, "scan_writers", counting_scan)
+
+    env = code_query.cmd_governs(FIXTURE, "order.status", None)
+    assert len(calls) == 1, "one source scan regardless of epic count"
+    writer_facts = [f for f in env["facts"] if f["kind"] == "writer"]
+    assert {f["epic"] for f in writer_facts} == {"epic-a", "epic-b"}
+    assert {f["id"] for f in writer_facts} == {"INV-a-001", "INV-b-001"}
+
+
+def test_writers_scans_once_across_epics_matching_by_field(monkeypatch):
+    inv_a = _sw_invariant("INV-a-001", "order.status", "src/order.py")
+    inv_b = _sw_invariant("INV-b-001", "order.status", "src/order.py")
+    epic_a = code_query.Epic(slug="epic-a", dir=FIXTURE / "docs" / "epics" / "checkout",
+                              sw_invariants=[inv_a])
+    epic_b = code_query.Epic(slug="epic-b", dir=FIXTURE / "docs" / "epics" / "checkout",
+                              sw_invariants=[inv_b])
+    monkeypatch.setattr(code_query, "discover_epics", lambda repo_root, epic=None: [epic_a, epic_b])
+
+    calls = []
+    real_scan = check_single_writer.scan_writers
+
+    def counting_scan(*a, **kw):
+        calls.append((a, kw))
+        return real_scan(*a, **kw)
+
+    monkeypatch.setattr(code_query.check_single_writer, "scan_writers", counting_scan)
+
+    env = code_query.cmd_writers(FIXTURE, "order.status", None)
+    assert len(calls) == 1, "one source scan regardless of epic count"
+    writer_facts = [f for f in env["facts"] if f["kind"] == "writer"]
+    assert {f["epic"] for f in writer_facts} == {"epic-a", "epic-b"}
+
+
+def test_writers_by_id_still_warns_per_unmatched_epic_after_union(monkeypatch):
+    """Union-scanning must not lose the existing per-invariant 'no writer
+    found' warning when an invariant matches but no writer is found."""
+    inv_a = _sw_invariant("INV-a-001", "totally_unwritten_field", "src/nowhere.py")
+    epic_a = code_query.Epic(slug="epic-a", dir=FIXTURE / "docs" / "epics" / "checkout",
+                              sw_invariants=[inv_a])
+    monkeypatch.setattr(code_query, "discover_epics", lambda repo_root, epic=None: [epic_a])
+    env = code_query.cmd_writers(FIXTURE, "INV-a-001", None)
+    assert not [f for f in env["facts"] if f["kind"] == "writer"]
+    assert any("no writer found" in w for w in env["warnings"])

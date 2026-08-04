@@ -1148,6 +1148,144 @@ def test_score_reuse_report_absent_namespace_attrs_degrade_gracefully(tmp_path):
     assert ratchet.cmd_score(ns) == 0
 
 
+# ---- #322: --reuse-report extended to go-test-json / pass-fail-lines --------
+
+
+def test_score_reuse_report_go_test_json_skips_running_cmd(tmp_path):
+    """AC (#322): a go-test-json suite whose `cmd` would DESTROY the report if
+    it ran is configured; --reuse-report must parse the pre-written report
+    and never invoke cmd."""
+    report = tmp_path / "go-test.jsonl"
+    report.write_text(
+        '{"Action":"run","Package":"pkg/a","Test":"TestFoo"}\n'
+        '{"Action":"pass","Package":"pkg/a","Test":"TestFoo"}\n'
+        '{"Action":"run","Package":"pkg/a","Test":"TestBar"}\n'
+        '{"Action":"pass","Package":"pkg/a","Test":"TestBar"}\n'
+    )
+    make_repo(tmp_path, suites=[
+        {"name": "go", "cmd": f"rm -f {report}", "cwd": ".", "parser": "go-test-json"},
+    ])
+    rc = ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"go={report}"]))
+    assert rc == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert set(sc["pass_set"]) == {"go::pkg/a::TestFoo", "go::pkg/a::TestBar"}
+    assert report.is_file()  # cmd (which would have deleted it) never ran
+
+
+def test_score_reuse_report_go_test_json_excludes_failed_cases(tmp_path):
+    report = tmp_path / "go-test.jsonl"
+    report.write_text(
+        '{"Action":"pass","Package":"pkg/a","Test":"TestFoo"}\n'
+        '{"Action":"fail","Package":"pkg/a","Test":"TestBar"}\n'
+    )
+    make_repo(tmp_path, suites=[
+        {"name": "go", "cmd": "true", "cwd": ".", "parser": "go-test-json"},
+    ])
+    assert ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"go={report}"])) == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert set(sc["pass_set"]) == {"go::pkg/a::TestFoo"}
+
+
+def test_score_reuse_report_go_test_json_matches_a_fresh_run(tmp_path):
+    """AC3 (#322): reuse and a fresh run must produce the SAME pass-set."""
+    write_script = tmp_path / "write_go.py"
+    write_script.write_text(
+        "import sys\n"
+        "sys.stdout.write("
+        '\'{"Action":"pass","Package":"pkg/a","Test":"TestFoo"}\\n\'\n'
+        ")\n"
+    )
+    report = tmp_path / "go-test.jsonl"
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "go", "cmd": f"python3 {write_script}", "cwd": ".", "parser": "go-test-json"},
+    ])
+    assert ratchet.cmd_score(_score_args(tmp_path)) == 0
+    sc_fresh = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    # Build the report a wrapper would have captured from that same stdout.
+    proc_out = ratchet.subprocess.run(
+        cfg.suites[0].cmd, shell=True, cwd=cfg.repo, capture_output=True, text=True
+    ).stdout
+    report.write_text(proc_out)
+    assert ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"go={report}"])) == 0
+    sc_reused = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    assert sc_fresh["pass_set"] == sc_reused["pass_set"]
+
+
+def test_score_reuse_report_pass_fail_lines_skips_running_cmd(tmp_path):
+    report = tmp_path / "pf.txt"
+    report.write_text("PASS: test_one\nFAIL: test_two\nPASS: test_three\n")
+    make_repo(tmp_path, suites=[
+        {"name": "generic", "cmd": f"rm -f {report}", "cwd": ".", "parser": "pass-fail-lines"},
+    ])
+    rc = ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"generic={report}"]))
+    assert rc == 0
+    sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+    assert set(sc["pass_set"]) == {"generic::test_one", "generic::test_three"}
+    assert report.is_file()
+
+
+def test_score_reuse_report_pass_fail_lines_matches_a_fresh_run(tmp_path):
+    """AC3 (#322): reuse and a fresh run must produce the SAME pass-set."""
+    write_script = tmp_path / "write_pf.py"
+    write_script.write_text("print('PASS: test_one')\nprint('PASS: test_two')\n")
+    report = tmp_path / "pf.txt"
+    cfg = make_repo(tmp_path, suites=[
+        {"name": "generic", "cmd": f"python3 {write_script}", "cwd": ".", "parser": "pass-fail-lines"},
+    ])
+    assert ratchet.cmd_score(_score_args(tmp_path)) == 0
+    sc_fresh = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    proc_out = ratchet.subprocess.run(
+        cfg.suites[0].cmd, shell=True, cwd=cfg.repo, capture_output=True, text=True
+    ).stdout
+    report.write_text(proc_out)
+    assert ratchet.cmd_score(_score_args(tmp_path, reuse_report=[f"generic={report}"])) == 0
+    sc_reused = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
+
+    assert sc_fresh["pass_set"] == sc_reused["pass_set"]
+
+
+def test_score_reuse_report_go_test_json_missing_file_errors(tmp_path):
+    make_repo(tmp_path, suites=[
+        {"name": "go", "cmd": "true", "cwd": ".", "parser": "go-test-json"},
+    ])
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"go={tmp_path / 'nope.jsonl'}"]))
+
+
+def test_score_reuse_report_pass_fail_lines_stale_mtime_errors(tmp_path):
+    """A stale go-test-json/pass-fail-lines report must fail loudly, exactly
+    like junit-xml/trx already do — never silently score against leftover
+    state from an earlier ticket."""
+    import os
+    import time
+
+    report = tmp_path / "pf.txt"
+    report.write_text("PASS: test_one\n")
+    make_repo(tmp_path, suites=[
+        {"name": "generic", "cmd": "true", "cwd": ".", "parser": "pass-fail-lines"},
+    ])
+    old = time.time() - 10_000
+    os.utime(report, (old, old))
+    with pytest.raises(ratchet.RatchetError, match="stale|old"):
+        ratchet.cmd_score(_score_args(
+            tmp_path, reuse_report=[f"generic={report}"], reuse_report_max_age=60))
+
+
+def test_score_reuse_report_still_rejects_a_genuinely_unknown_parser(tmp_path):
+    """Every KNOWN parser is now supported; an unrecognized one must still
+    fail loudly rather than silently produce an empty pass-set."""
+    report = tmp_path / "whatever.txt"
+    report.write_text("anything")
+    cfg = make_repo(tmp_path, suites=[])
+    suite = ratchet.Suite(name="mystery", cmd="true", cwd=".", parser="mystery-parser")
+    with pytest.raises(ratchet.RatchetError, match="mystery-parser"):
+        ratchet.reuse_suite_report(cfg, suite, report, 1800)
+
+
 # ---- sanctioned pathset (chief-wiggum#213) -----------------------------------------
 
 

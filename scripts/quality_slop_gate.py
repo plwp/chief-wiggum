@@ -47,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import artifacts  # noqa: E402 — #213 meta-location resolver (debt.json lookup)
 from chief_wiggum.grandfather import expired_live  # noqa: E402 — #215 F8 render overlay
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from quality import duplication, survival, test_health  # noqa: E402
+from quality import cache, duplication, survival, test_health  # noqa: E402
 
 # GitClear [VENDOR] reference bands — direction is credible, exact multiples are
 # framing-dependent (corroborated directionally by DORA 2024, not independently
@@ -447,6 +447,11 @@ def _scanner_version() -> str:
         q_dir / "survival.py",
         q_dir / "duplication.py",
         q_dir / "test_health.py",
+        # #328: survival.analyze/duplication.run_jscpd now read/write this
+        # on-disk cache — a caching-logic change there changes whether this
+        # gate's numbers came from a fresh measurement or a reused one, so
+        # it is a finding-affecting dependency like the engines themselves.
+        q_dir / "cache.py",
     )
 
 
@@ -469,7 +474,13 @@ def main() -> int:
         help="Print the hash-derived scanner version (source hash of this module + its "
         "chief_wiggum deps) and exit",
     )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="force fresh survival/duplication runs, bypassing the #328 result cache",
+    )
     args = parser.parse_args()
+    if args.no_cache:
+        os.environ[cache.NO_CACHE_ENV] = "1"
 
     if args.scanner_version:
         print(_scanner_version())

@@ -30,3 +30,12 @@ import pytest
 def isolate_factory_log(tmp_path, monkeypatch):
     """Redirect factory telemetry to a per-test path (see module docstring)."""
     monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "factory-log.jsonl"))
+
+
+@pytest.fixture(autouse=True)
+def isolate_quality_cache(tmp_path, monkeypatch):
+    """Redirect the #328 quality-engine result cache (``quality/cache.py``) to
+    a per-test path — same rationale as ``isolate_factory_log`` above: without
+    this, a test run would read and write the operator's REAL
+    ``~/.chief-wiggum/cache/quality`` directory instead of a throwaway one."""
+    monkeypatch.setenv("CW_QUALITY_CACHE_DIR", str(tmp_path / "quality-cache"))

@@ -34,6 +34,8 @@ import shutil
 import subprocess
 import sys
 
+from . import cache
+
 AGES = [7, 14, 30, 60, 90]
 
 
@@ -187,12 +189,28 @@ def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
     """Run git-of-theseus then analyze survival. Degrades gracefully if absent
     (``status: "skipped"``); a present-but-failing tool reports
     ``status: "crashed"`` (#289) rather than being silently indistinguishable
-    from either "not installed" or a stale prior run's numbers."""
+    from either "not installed" or a stale prior run's numbers.
+
+    #328: git-of-theseus walks COMMITTED history only — it never reads the
+    working tree — so the result is a pure function of HEAD alone. Cached on
+    disk keyed by ``head_sha`` (unlike jscpd/trend, which read file bytes and
+    need the dirty-worktree-aware ``manifest_key`` instead): a second run at
+    the same HEAD, even from a later process, skips the tool entirely.
+    ``CW_QUALITY_NO_CACHE=1`` bypasses both the read and the write. Only a
+    genuinely successful measurement is memoized; ``head_sha`` returning
+    ``None`` (not a git repo) makes this uncacheable, never a crash."""
     name = name or repo.rstrip("/").split("/")[-1]
+    head = cache.head_sha(repo)
+    cached = cache.load(repo, "survival", head) if head else None
+    if cached is not None:
+        return cached
     survival_path, problem = _run_git_of_theseus(repo, workdir)
     if problem is not None:
         return {"repo": name, **problem}
-    return analyze_survival_json(survival_path, repo, name=name)
+    result = analyze_survival_json(survival_path, repo, name=name)
+    if head:
+        cache.store(repo, "survival", head, result)
+    return result
 
 
 def main() -> int:
@@ -200,7 +218,13 @@ def main() -> int:
     parser.add_argument("repo", help="path to the git repository")
     parser.add_argument("--workdir", required=True, help="scratch dir for git-of-theseus output")
     parser.add_argument("--name", default=None, help="display name for the repo")
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="force a fresh git-of-theseus run, bypassing the HEAD-keyed result cache (#328)",
+    )
     args = parser.parse_args()
+    if args.no_cache:
+        os.environ[cache.NO_CACHE_ENV] = "1"
     print(json.dumps(analyze(args.repo, args.workdir, name=args.name), indent=2))
     return 0
 

@@ -714,6 +714,83 @@ def test_jscpd_child_gets_heap_and_timeout_guards(tmp_path, monkeypatch):
         in kw["env"]["NODE_OPTIONS"]
 
 
+# --- #328: run_jscpd is the ONE invocation both duplication.py and clones.py
+# share within a process; it must ALSO be shared ACROSS processes (the
+# /close-epic case: quality_slop_gate.py and debt_inventory.py each spawn a
+# separate python process) via the on-disk cache in quality/cache.py, keyed
+# by manifest_key (content hash, dirty-worktree-aware) — never by mtime.
+
+
+def test_run_jscpd_second_call_same_corpus_is_cached(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    r1, problem1 = duplication.run_jscpd(str(repo), str(tmp_path / "wd1"))
+    assert problem1 is None
+    assert len(calls) == 1
+    r2, problem2 = duplication.run_jscpd(str(repo), str(tmp_path / "wd2"))
+    assert problem2 is None
+    assert len(calls) == 1, "second call with unchanged content must be a cache hit"
+    assert r2 == r1
+
+
+def test_run_jscpd_cache_shared_across_the_two_close_epic_consumers(tmp_path, monkeypatch):
+    """duplication.analyze (quality_slop_gate.py, its own process in
+    /close-epic) and clones.analyze (debt_inventory.py, a SEPARATE process)
+    both call run_jscpd with files=None in the common unscoped case — the
+    on-disk cache must let the second one skip the real tool entirely, which
+    is what makes the sharing survive across the two separate CLI processes
+    /close-epic actually spawns (an in-memory-only cache would not)."""
+    repo = _clone_repo(tmp_path)
+    fake_report = {
+        "statistics": {"total": {"sources": 5, "percentage": 1.0, "lines": 10}},
+        "duplicates": FAKE_DUPLICATES,
+    }
+    calls = _capture_jscpd(monkeypatch, report=fake_report)
+
+    dup_result = duplication.analyze(str(repo), workdir=str(tmp_path / "dup"))
+    assert len(calls) == 1
+    assert dup_result["duplication_pct_lines"] == 1.0
+
+    clone_result = clones.analyze(str(repo), str(tmp_path / "jscpd"))
+    assert len(calls) == 1, "clones.analyze (a separate process in real usage) must reuse the cache"
+    assert clone_result["clone_classes"]
+
+
+def test_run_jscpd_cache_busted_by_dirty_edit(tmp_path, monkeypatch):
+    """The doctrine (#328/#327): the cache must never silently scan less. A
+    dirty, uncommitted edit to a corpus file must bust the cache and force a
+    real re-run — never reuse a stale report because HEAD didn't move."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    duplication.run_jscpd(str(repo), str(tmp_path / "wd1"))
+    assert len(calls) == 1
+    (repo / "a.py").write_text("x = 2\n")
+    duplication.run_jscpd(str(repo), str(tmp_path / "wd2"))
+    assert len(calls) == 2, "a dirty edit must force a fresh jscpd run, not a cache hit"
+
+
+def test_run_jscpd_no_cache_env_forces_a_second_real_run(tmp_path, monkeypatch):
+    """The --no-cache escape hatch (CW_QUALITY_NO_CACHE): dual-run parity."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, report=EMPTY_REPORT)
+    duplication.run_jscpd(str(repo), str(tmp_path / "wd1"))
+    monkeypatch.setenv("CW_QUALITY_NO_CACHE", "1")
+    duplication.run_jscpd(str(repo), str(tmp_path / "wd2"))
+    assert len(calls) == 2
+
+
+def test_run_jscpd_only_caches_successful_measurements(tmp_path, monkeypatch):
+    """A crash/skip must never be memoized — the very next call must retry."""
+    repo = _make_repo(tmp_path, {"a.py": "x = 1\n"})
+    calls = _capture_jscpd(monkeypatch, proc=_FakeProc(returncode=1, stderr="boom"))
+    _data1, problem1 = duplication.run_jscpd(str(repo), str(tmp_path / "wd1"))
+    assert problem1["status"] == "crashed"
+    assert len(calls) == 1
+    _data2, problem2 = duplication.run_jscpd(str(repo), str(tmp_path / "wd2"))
+    assert problem2["status"] == "crashed"
+    assert len(calls) == 2, "a crash must never be cached as a fresh miss forever"
+
+
 def test_run_capture_kills_the_whole_process_group_on_timeout(monkeypatch):
     """npx spawns node as a GRANDCHILD. `subprocess.run(timeout=...)` kills only
     the direct child, orphaning the process that is actually eating the heap —
