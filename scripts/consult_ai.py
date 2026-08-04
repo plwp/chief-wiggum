@@ -45,6 +45,7 @@ from providers import (
     DEFAULT_CONFIG,
     DEFAULT_LENSES,
     DEFAULT_OPTIONAL_TIMEOUT_SECONDS,
+    MIN_PROMPT_BYTES,
     Provider,
     load_config,
     load_lenses,
@@ -135,6 +136,29 @@ def tool_timeout(tool: str, *, override: int | None = None) -> int:
         return general
     return TOOL_TIMEOUTS.get(tool, TIMEOUT)
 
+# A retry after a TIMEOUT-classified failure gets a REDUCED budget, not a
+# repeat of the full one (chief-wiggum#330) — "a codex timeout at 600s is
+# retried for another full 600s with the identical ~60k-token prompt" was
+# the pre-#330 behavior. Half the previously-resolved budget is still
+# generous headroom for a transient slow response, floored so the retry
+# stays usable.
+RETRY_TIMEOUT_REDUCTION_FACTOR = 0.5
+MIN_RETRY_TIMEOUT_SECONDS = 60
+
+
+def reduced_retry_timeout(tool: str, previous_override: int | None) -> int:
+    """Half of ``tool``'s FULLY-RESOLVED first-attempt budget (chief-wiggum#330
+    AC3), floored at ``MIN_RETRY_TIMEOUT_SECONDS``. ``previous_override`` is
+    whatever the first attempt was actually given (``None`` for a required
+    provider — its full budget; an explicit cap for an optional one) —
+    resolving through ``tool_timeout`` here (rather than halving the raw
+    override) means the reduction is always computed against the tool's REAL
+    first-attempt budget, so the second attempt can never end up larger than
+    the first."""
+    base = tool_timeout(tool, override=previous_override)
+    return max(MIN_RETRY_TIMEOUT_SECONDS, int(base * RETRY_TIMEOUT_REDUCTION_FACTOR))
+
+
 # ``DEFAULT_OPTIONAL_TIMEOUT_SECONDS`` and ``optional_provider_timeout`` are the SINGLE
 # source of the required/optional delegate-timeout decision — they live in providers.py
 # (chief-wiggum#188) so both this module's ``--role`` quorum and the /implement review
@@ -145,13 +169,16 @@ def tool_timeout(tool: str, *, override: int | None = None) -> int:
 # Default model for Vertex AI path (override with --model)
 DEFAULT_VERTEX_MODEL = "gemini-3.1-pro-preview"
 
-# A prompt file smaller than this is almost never intentional — it's the
-# signature of a truncated write (a template substitution that silently
-# produced nothing, an interrupted heredoc, etc). Live use burned a codex
-# call and an opus agent run on exactly this (chief-wiggum#163); refuse
-# before any provider is called rather than spend a slow, expensive
-# consultation on a prompt that was never meant to be submitted.
-MIN_PROMPT_BYTES = 200
+# MIN_PROMPT_BYTES: a prompt file smaller than this is almost never
+# intentional — it's the signature of a truncated write (a template
+# substitution that silently produced nothing, an interrupted heredoc,
+# etc). Live use burned a codex call and an opus agent run on exactly this
+# (chief-wiggum#163). Defined in providers.py (chief-wiggum#330) — the
+# SINGLE source of truth, re-exported here (imported above) so this refuses
+# before any provider is called on THIS entry path (single-tool AND --role
+# modes), and providers.run_role_quorum enforces the identical floor for
+# every OTHER caller (e.g. scripts/run_review.py), which never went through
+# this CLI's own pre-check at all before #330.
 
 
 @dataclass
@@ -698,6 +725,40 @@ def _read_touched_images(cwd: str | None, paths: list[str]) -> list[tuple[str, b
     return images
 
 
+def _call_with_deadline(fn, timeout: int):
+    """Run a blocking, non-cancellable call under a HARD wall-clock deadline
+    (chief-wiggum#330), mirroring ``_http_json_with_deadline``'s pattern above:
+    the call runs on a daemon thread and this function returns/raises once
+    either the call finishes or ``timeout`` elapses, whichever comes first.
+
+    Python cannot forcibly kill a thread — an abandoned daemon thread is not
+    joined and cannot outlive the process, but it is NOT stopped either; if
+    the underlying call never returns, that thread leaks until it does (or
+    the process exits). This is the same limitation ``_kill_group`` exists to
+    route around for subprocess-based providers (kill the OS process, not a
+    Python thread) — the Vertex SDK call has no subprocess to kill, so a
+    daemon-thread deadline is the best bound available: it unblocks the
+    CALLER (and therefore the quorum) even though the leaked call itself may
+    still be running somewhere.
+    """
+    result: dict = {}
+
+    def _run() -> None:
+        try:
+            result["value"] = fn()
+        except BaseException as exc:  # re-raised on the calling thread below
+            result["error"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"call exceeded its {timeout}s budget")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 def consult_gemini_vertex(
     prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
 ) -> tuple[str, Usage]:
@@ -706,12 +767,17 @@ def consult_gemini_vertex(
     Gemini 3.x text models generate only via the `global` location on Vertex,
     and the legacy vertexai.generative_models surface 404s on them.
 
-    ``timeout`` is accepted for CLI signature parity with the other tool
-    adapters (chief-wiggum#291) but is NOT enforced here: this call is a
-    synchronous SDK request with no subprocess to bound, and no wall-clock
-    deadline was wired for it before this ticket either — a pre-existing gap,
-    out of scope for #291 (which only threads the override chain through
-    call sites that already had a real ``TOOL_TIMEOUTS`` read to replace).
+    chief-wiggum#330: this call used to have NO wall-clock deadline at all —
+    ``timeout`` was accepted "for CLI signature parity" and never enforced,
+    because this is a synchronous SDK request with no subprocess to bound
+    (unlike every other tool adapter above, which routes through
+    ``_run_capture``'s process-group kill). ``gemini-vertex`` is REQUIRED in
+    the ``reviewer`` role, so a hung call used to block every review forever
+    — the one remaining unbounded path in a codebase that has fixed hangs
+    three times (#95, #188, the OpenRouter ``_http_json_with_deadline``). The
+    SDK call now runs under ``_call_with_deadline``, resolved through the
+    SAME override chain (chief-wiggum#291's ``tool_timeout``) every other
+    tool provider already uses.
 
     chief-wiggum#319: this adapter used to call ``generate_content`` with
     ``contents=prompt`` alone — ``cwd`` was accepted and never touched, so
@@ -774,7 +840,11 @@ def consult_gemini_vertex(
             types.Part.from_bytes(data=data, mime_type=mime) for _rel, data, mime in images
         ]
 
-    response = client.models.generate_content(model=requested_model, contents=contents)
+    effective_timeout = tool_timeout("gemini-vertex", override=timeout)
+    response = _call_with_deadline(
+        lambda: client.models.generate_content(model=requested_model, contents=contents),
+        effective_timeout,
+    )
     text = response.text or ""
     # @cw-trace guards CTR-fh-010 CTR-fh-011 — response.usage_metadata is a
     # usage-bearing source by construction; parsing failures never fail the
@@ -1192,11 +1262,18 @@ def consult_provider(
 ) -> tuple[str, Usage]:
     """Run one provider's consult.
 
-    ``timeout_override`` (chief-wiggum#188) only affects the claude-interactive
-    delegate today — the role quorum sets it when this provider is running in an
-    OPTIONAL slot, so a hung/slow interactive session fails fast instead of
-    holding the whole role's wall-clock to its full 1800s budget. Tool providers
-    ignore it; their own ``TOOL_TIMEOUTS`` entries are already well under that.
+    ``timeout_override`` (chief-wiggum#188) is set by the role quorum when
+    this provider is running in an OPTIONAL slot, so a hung/slow call fails
+    fast instead of holding the whole role's wall-clock to its full budget.
+    Threaded to BOTH branches (chief-wiggum#330): the claude-interactive
+    delegate's 1800s default AND every tool provider's own ``TOOL_TIMEOUTS``
+    entry (codex 600s, gemini 1200s, gemini-vertex/claude 600s) sit well
+    above the 300s optional cap, so dropping it on the tool branch (the
+    pre-#330 behavior) left an optional tool provider able to hold a role's
+    wall-clock exactly like the delegate used to before #188. Every
+    ``consult_*`` tool function already accepts a ``timeout`` kwarg and
+    resolves it through ``tool_timeout`` (chief-wiggum#291) — a required
+    provider's ``None`` override still falls through that chain unchanged.
 
     Returns ``(text, usage)`` (chief-wiggum#319) — previously this discarded
     ``usage`` after telemetry, so a role quorum (``providers.run_role_quorum``)
@@ -1211,7 +1288,7 @@ def consult_provider(
         # (chief-wiggum#237 — e.g. the `opus` provider pins the claude tool
         # to the opus model); else the tool's configured default.
         effective_model = model or provider.model
-        text, usage = TOOLS[provider.tool](prompt, model=effective_model, cwd=cwd)
+        text, usage = TOOLS[provider.tool](prompt, model=effective_model, cwd=cwd, timeout=timeout_override)
         _emit_consult_telemetry(provider.tool, effective_model, cwd, usage, ticket=ticket)
         return text, usage
     if provider.type == "delegate":
@@ -1346,7 +1423,9 @@ def main():
         # provider gets the identical shared prompt; a provider mapped to a lens
         # (config/providers.json role.lenses) additionally gets its charter
         # appended (chief-wiggum#163) — the shared body itself never changes.
-        def execute(provider: Provider) -> tuple[str, Usage]:
+        def execute(
+            provider: Provider, attempt: int = 1, previous_failure_kind: str | None = None,
+        ) -> tuple[str, Usage]:
             provider_prompt = prompt_for_provider(plan.role, provider.name, prompt, lenses)
             # An optional provider's delegate call is capped to a much shorter
             # wall-clock than a required one (chief-wiggum#188): it's allowed to
@@ -1357,6 +1436,14 @@ def main():
             timeout_override = optional_provider_timeout(
                 plan.role, provider.name, DEFAULT_OPTIONAL_TIMEOUT_SECONDS
             )
+            # chief-wiggum#330 AC3: a retry that follows a TIMEOUT-classified
+            # failure gets a reduced budget, not another full one — the
+            # `attempt`/`previous_failure_kind` context this function's own
+            # signature declares (see providers.execute_accepts_retry_context)
+            # is how providers._run_one_provider's retry loop tells us this.
+            if attempt > 1 and previous_failure_kind == "timeout":
+                tool_name = provider.tool if provider.type == "tool" else "claude-interactive"
+                timeout_override = reduced_retry_timeout(tool_name, timeout_override)
             return consult_provider(
                 provider, provider_prompt, args.model, args.cwd,
                 ticket=args.ticket, timeout_override=timeout_override,
