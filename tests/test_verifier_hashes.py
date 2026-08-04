@@ -329,6 +329,71 @@ def test_retire_verifier_drops_a_tracked_ref(tmp_path, capsys):
     assert rc == 0 and ref not in v["removed_verifier_tests"]
 
 
+# ---- extension allow-list / size cap (#326) -------------------------------
+
+
+def test_non_source_extension_is_never_read(tmp_path):
+    """A file whose extension no known language/verification-artifact tier
+    recognizes (an image, a lockfile, ...) must never be opened at all — even
+    when it happens to literally contain the tag string. Before #326,
+    scan_file's non-.py branch read EVERY such file in full with no
+    allow-list; images/lockfiles/fixtures dominated ratchet score's I/O as a
+    result."""
+    make_repo(tmp_path)
+    (tmp_path / "tests/fixture.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n# @cw-trace verifies CTR-exp-001\n"
+    )
+    scan = scan_verifier_hashes(tmp_path)
+    assert not scan.unscanned  # never even opened, so never bumped as unscanned
+    assert not any("fixture.png" in ref for ref in scan.hashes)
+
+
+def test_recognized_unsupported_language_extension_is_still_scanned(tmp_path):
+    """A 'recognized but unsupported' language extension (e.g. .php — no
+    emitter, but curated in config/languages.json) stays in scope: it must
+    still be READ and surfaced as unscanned when it carries the tag — the
+    allow-list is deliberately as generous as the rest of the system's known
+    source-extension universe (see SCANNABLE_EXTS), not narrower."""
+    make_repo(tmp_path)
+    (tmp_path / "tests/legacy_test.php").write_text(
+        "<?php\n// @cw-trace verifies CTR-exp-001\n"
+    )
+    scan = scan_verifier_hashes(tmp_path)
+    assert scan.unscanned.get("unsupported extension .php") == 1
+
+
+def test_oversized_non_py_file_is_capped_not_fully_read(tmp_path, monkeypatch):
+    """A file larger than the size cap is read only up to the cap — an
+    annotation past that offset is not detected (a documented, accepted
+    boundary), but the file is never read in full."""
+    import chief_wiggum.verifier_hashes as vh
+
+    monkeypatch.setattr(vh, "MAX_NONPY_SCAN_BYTES", 64)
+    make_repo(tmp_path)
+    padding = "x" * 200
+    (tmp_path / "tests/huge_test.go").write_text(
+        f"// {padding}\n// @cw-trace verifies CTR-exp-001\nfunc TestX(t *testing.T) {{}}\n"
+    )
+    scan = scan_verifier_hashes(tmp_path)
+    # The annotation lives past the 64-byte cap, so it is never seen — not
+    # bumped as unscanned (bumping requires having READ the tag at all).
+    assert "unsupported extension .go" not in scan.unscanned
+
+
+def test_oversized_non_py_file_within_head_is_still_detected(tmp_path, monkeypatch):
+    """The head of an oversized file IS still scanned — only content past the
+    cap is skipped."""
+    import chief_wiggum.verifier_hashes as vh
+
+    monkeypatch.setattr(vh, "MAX_NONPY_SCAN_BYTES", 64)
+    make_repo(tmp_path)
+    (tmp_path / "tests/huge_test.go").write_text(
+        "// @cw-trace verifies CTR-exp-001\n" + ("// " + "x" * 200 + "\n") * 5
+    )
+    scan = scan_verifier_hashes(tmp_path)
+    assert scan.unscanned.get("unsupported extension .go") == 1
+
+
 def test_ambiguous_duplicate_qualname_is_surfaced_not_recorded(tmp_path):
     """Two functions sharing a qualified name (conditional top-level
     redefinition) is ambiguous — surfaced as unscanned, never recorded as a

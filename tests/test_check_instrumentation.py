@@ -223,6 +223,64 @@ def test_scan_missing_source_root_returns_empty(tmp_path):
     assert ci.scan_emit_sites(tmp_path / "does-not-exist") == []
 
 
+# --- #326: shares the emitter registry + walk_source_files with its siblings -
+
+
+def test_scan_emit_sites_skips_nested_git_checkout(tmp_path):
+    """Submodules/vendored repos (a dir containing a .git entry) must be
+    excluded from the scan — mirrors
+    test_check_traceability.py::test_full_scan_skips_nested_git_checkout and
+    test_check_single_writer.py's equivalent. Before #326 this scanner used
+    its own raw rglob (bypassing chief_wiggum.manifest.walk_source_files) and
+    so, unlike its siblings, never pruned a submodule — a correctness gap
+    this fix closes."""
+    _write(tmp_path, "app/real.py", "# @cw-emits real_metric\n")
+    sub = tmp_path / "vendor-app"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: ../.git/modules/vendor-app\n")
+    (sub / "lib.py").write_text("# @cw-emits vendored_metric\n")
+
+    sites = ci.scan_emit_sites(tmp_path)
+
+    names = {s.name for s in sites}
+    assert names == {"real_metric"}
+
+
+def test_scan_emit_sites_routes_through_the_emitter_registry(tmp_path, monkeypatch):
+    """The scan must dispatch through scripts/emitters (the SAME per-language
+    registry check_traceability.py/check_single_writer.py use) rather than a
+    private rglob+regex loop — proven by monkeypatching emitters.emit and
+    observing it gets called for a source file in the scan."""
+    import emitters
+
+    _write(tmp_path, "app/real.py", "# @cw-emits real_metric\n")
+    calls: list[str] = []
+    orig_emit = emitters.emit
+
+    def spying_emit(path, content):
+        calls.append(path)
+        return orig_emit(path, content)
+
+    monkeypatch.setattr(ci.emitters, "emit", spying_emit)
+    sites = ci.scan_emit_sites(tmp_path)
+
+    assert "app/real.py" in calls
+    assert {s.name for s in sites} == {"real_metric"}
+
+
+def test_emit_site_fact_kind_matches_direct_emission(tmp_path):
+    """scan_emit_sites' output for one file must be byte-identical to calling
+    chief_wiggum.annotations.emit_emit_sites directly — the emitter module is
+    a pure delegation, same discipline as write_site/trace_annotation."""
+    from chief_wiggum.annotations import emit_emit_sites
+
+    content = "# @cw-emits asr_latency\ndef handler():\n    pass\n"
+    _write(tmp_path, "app/handler.py", content)
+    direct = emit_emit_sites("app/handler.py", content)
+    sites = ci.scan_emit_sites(tmp_path)
+    assert sites == direct
+
+
 # --- check(): missing bindings, gate semantics -------------------------------
 
 
