@@ -14,7 +14,7 @@ Create a well-documented pull request with mermaid architecture diagrams, test e
 
 ## Disclosure (#317)
 
-The PR body drafted in Step 4 carries an AI-authorship disclosure line
+The PR body drafted in Step 5 carries an AI-authorship disclosure line
 automatically — `draft_pr.py` builds it via `chief_wiggum.shipping.build_pr_body`,
 which appends it. If any commit on this branch was authored outside `/implement`
 (so it never ran through that workflow's Disclosure step), append the trailer
@@ -28,6 +28,7 @@ See `docs/ai-act-posture.md`.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
 ```
 
@@ -128,9 +129,35 @@ It exits non-zero if any step fails. **If tests fail, stop and fix them** — do
 
 If browser-use screenshots exist, reference them.
 
-### Step 4: Draft the PR
+### Step 4: Price the build
 
-Assemble the PR body with the tested helper. It folds in the verification evidence, optional model-conformance/UX manifests, and a Mermaid diagram (themed with the shared palette automatically), validates the required sections, and can print the `gh pr create` command:
+Fold this session's token spend into the factory ledger and render the measured actual (`docs/ticket-cost.md`), so the PR carries the same cost evidence `/implement` produces.
+
+**Skip this step entirely when no issue number is known.** `--ticket` attribution is guarded, never blind — with nothing to attribute to, do not ingest with a ticket tag; the PR then carries no cost section, which is honest.
+
+`/ship` is standalone: there is no `/implement` build-start stamp to window the ingest to. Window it to this branch's first commit instead — mechanical and prompt-free, but best-effort: work before the branch existed is not counted, and unrelated sessions in this repo inside the window may be. That caveat ships **in the PR body**, appended to the cost section below, not just here.
+
+```bash
+branch_start_ts=$(git log "$DEFAULT_BRANCH..HEAD" --format=%ct | tail -1)
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
+  --repo "$owner_repo" --ticket "$issue_number" \
+  --since-ts "$branch_start_ts"
+python3 "$CW_HOME/scripts/ticket_cost.py" actual \
+  --repo "$owner_repo" --ticket "$issue_number" \
+  --format markdown > "$CW_TMP/implementation-cost.md"
+cat >> "$CW_TMP/implementation-cost.md" <<'EOF'
+
+> **Attribution**: standalone `/ship` has no per-ticket build-start stamp, so this
+> ingest is windowed to the branch's first commit. Work done before the branch
+> existed is not counted; unrelated sessions in this repo inside the window may be.
+EOF
+```
+
+If the issue body carries a `Nominal cost: ~$X.XX` line (stamped by `/create-issue`), add `--estimate X.XX` to the `actual` call so the section shows estimate-vs-actual variance. If the output says **Unmetered**, keep it verbatim — that is absence of telemetry, never a $0 build; do not drop the section or render it as $0.
+
+### Step 5: Draft the PR
+
+Assemble the PR body with the tested helper. It folds in the verification evidence, optional model-conformance/UX manifests, the implementation-cost section from Step 4, and a Mermaid diagram (themed with the shared palette automatically), validates the required sections, and can print the `gh pr create` command:
 
 ```bash
 python3 "$CW_HOME/scripts/draft_pr.py" \
@@ -138,12 +165,13 @@ python3 "$CW_HOME/scripts/draft_pr.py" \
   --change "Change 1" --change "Change 2" \
   --mermaid-file "$CW_TMP/architecture.mmd" \
   --verification "$CW_TMP/verification.json" \
+  --implementation-cost "$CW_TMP/implementation-cost.md" \
   --base "$base_branch" --out "$CW_TMP/pr-body.md" --print-command
 ```
 
-The Mermaid palette no longer needs to be hand-copied — `draft_pr.py` injects the `%%{init}%%` theme (use `--mermaid-sequence` for sequence diagrams). The diagram *content* is still yours to author. It exits non-zero if a required section (Summary, Changes, Test Evidence) is missing.
+(Omit `--implementation-cost` when Step 4 was skipped — the section is then omitted.) The Mermaid palette no longer needs to be hand-copied — `draft_pr.py` injects the `%%{init}%%` theme (use `--mermaid-sequence` for sequence diagrams). The diagram *content* is still yours to author. It exits non-zero if a required section (Summary, Changes, Test Evidence) is missing.
 
-### Step 5: Preview and confirm
+### Step 6: Preview and confirm
 
 Show the user the full PR body and ask:
 1. Does the summary capture it?
@@ -151,7 +179,7 @@ Show the user the full PR body and ask:
 3. Any additional context to add?
 4. Ready to create?
 
-### Step 6: Create the PR
+### Step 7: Create the PR
 
 ```bash
 git push -u origin HEAD
@@ -167,7 +195,14 @@ gh pr create \
 
 If an issue was specified, it should be linked via "Closes #N" in the body.
 
-### Step 7: Report
+Then, if Step 4 priced the build, **record the calibration point** so standalone PRs feed the estimator too. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure:
+
+```bash
+python3 "$CW_HOME/scripts/ticket_cost.py" record \
+  --repo "$owner_repo" --ticket "$issue_number" --effort "$effort"
+```
+
+### Step 8: Report
 
 Show:
 - PR URL
