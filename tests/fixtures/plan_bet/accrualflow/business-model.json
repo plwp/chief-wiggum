@@ -1,0 +1,127 @@
+{
+  "$comment": "chief-wiggum#238 validation: accrualflow re-authored through /plan-bet. Grounding: canvas.value-proposition/customer-segment/pricing/competitive-position asm_ids match the REAL accrualflow assumptions.json depends_on_element join exactly (ASM-001/002/003/004). canvas.key-metrics is the real kill-criteria.json's three metric names verbatim. structure.distribution_channel_type/acquisition come from the real bet.json acquisition.ecosystem_channel (xero-app-store). premortem PM-001/PM-004/PM-005 map to ASM-004/ASM-003/ASM-001 respectively (the real bet's own untested assumptions); PM-002/PM-003 are explicitly waived with reasons tied to real facts (the rep-cadence miss and the ASM-004 dedup) rather than invented filler. No canvas field is marked validated/falsified: every real ASM in accrualflow's ledger is still 'untested'/'testing', and this artifact does not manufacture evidence status the real record does not have. fermi_inputs is DELIBERATELY OMITTED — the real bet was parked before that arithmetic was ever run; see business-model-fermi-illustrative.json for a clearly-labelled illustrative variant.",
+  "bet_id": "accrualflow",
+  "created": "2026-08-04T00:00:00+00:00",
+  "structure": {
+    "revenue_model": "subscription",
+    "distribution_channel_type": "partner_indirect",
+    "value_configuration": "value_chain",
+    "actor_types": [
+      { "name": "AU bookkeeping practice", "roles": ["buyer", "payer", "user"] },
+      { "name": "Xero (app-store ecosystem partner)", "roles": ["platform_intermediary"] }
+    ]
+  },
+  "canvas": {
+    "problem": {
+      "value": "AU bookkeepers/practices manage prepayment and accrual amortization schedules by hand in spreadsheets, error-prone across multiple client files.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "customer-segment": {
+      "value": "AU bookkeeping practices currently running spreadsheet prepayment schedules, reached via accountant-community channels.",
+      "status": "hypothesis",
+      "asm_ids": ["ASM-002"]
+    },
+    "value-proposition": {
+      "value": "Auto-post amortization journals from tagged invoices in Xero — removes the manual spreadsheet reconciliation step across a practice's whole client base.",
+      "status": "hypothesis",
+      "asm_ids": ["ASM-001"]
+    },
+    "solution": {
+      "value": "Tag an invoice as a prepayment/accrual in Xero; the app schedules and auto-posts the amortization journals for its term.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "channels": {
+      "value": "Xero App Store (ecosystem-partner distribution) — practices discover the app inside the platform they already use daily.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "revenue-streams": {
+      "value": "Per-practice SaaS subscription; a statements/reconciliation add-on planned as a second SKU once the core wedge validates.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "cost-structure": {
+      "value": "Hosting, Xero API usage, and support time — no paid headcount at this stage.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "key-metrics": {
+      "value": "smoke_signups, commitment_class_signals, paid_commitments — the bet's own pre-registered kill-criteria metrics, not a separate metric set invented for this stage.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "unfair-advantage": {
+      "value": "AU-specific focus plus multi-org practice pricing — the differentiation axis ASM-001/ASM-004 name as still untested against known incumbents.",
+      "status": "hypothesis",
+      "asm_ids": []
+    },
+    "pricing": {
+      "value": "USD 19 pre-order deposit at waitlist stage; ongoing per-practice subscription price not yet set.",
+      "status": "hypothesis",
+      "asm_ids": ["ASM-003"]
+    },
+    "competitive-position": {
+      "value": "A low-cost incumbent add-on module and a discovered direct competitor twin already operate in this ecosystem; whether a real differentiation axis (reconciliation, multi-org pricing, AU focus) survives contact with them is untested.",
+      "status": "hypothesis",
+      "asm_ids": ["ASM-004"]
+    }
+  },
+  "premortem": [
+    {
+      "id": "PM-001",
+      "statement": "A direct competitor twin already serves this niche in the same ecosystem, further along (private beta) and accountant-built.",
+      "asm_id": "ASM-004",
+      "waived": false,
+      "waiver_reason": null
+    },
+    {
+      "id": "PM-002",
+      "statement": "A low-cost incumbent add-on module already covers the core prepayment-posting need.",
+      "asm_id": null,
+      "waived": true,
+      "waiver_reason": "Same differentiation question as PM-001/ASM-004 (competitive-position) — tracked there rather than duplicating a second assumption for the same untested axis."
+    },
+    {
+      "id": "PM-003",
+      "statement": "Distribution is never actually attempted — the bet accumulates spend/time without a single Mom-Test conversation.",
+      "asm_id": null,
+      "waived": true,
+      "waiver_reason": "This is an execution-discipline risk, not a testable market hypothesis — covered by bet.py's rep-cadence check against the ledger, not the ASM traceability graph."
+    },
+    {
+      "id": "PM-004",
+      "statement": "The USD 19 pre-order deposit is too low a bar to be a meaningful commitment signal at n=40 waitlisted practices.",
+      "asm_id": "ASM-003",
+      "waived": false,
+      "waiver_reason": null
+    },
+    {
+      "id": "PM-005",
+      "statement": "AU bookkeepers do not perceive prepayment/accrual tracking as painful enough to switch tools away from spreadsheets.",
+      "asm_id": "ASM-001",
+      "waived": false,
+      "waiver_reason": null
+    }
+  ],
+  "vpc": {
+    "pains": [
+      {
+        "id": "PAIN-001",
+        "value": "Manual, spreadsheet-based prepayment/accrual amortization tracking across every client file in a practice.",
+        "status": "hypothesis",
+        "asm_ids": ["ASM-001"]
+      }
+    ],
+    "pain_relievers": [
+      {
+        "id": "REL-001",
+        "value": "Auto-post amortization journals from tagged invoices — the schedule and the posting both become automatic.",
+        "status": "hypothesis",
+        "asm_ids": [],
+        "addresses_pain_ids": ["PAIN-001"]
+      }
+    ]
+  }
+}

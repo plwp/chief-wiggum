@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/business-model.json",
+  "title": "Business Model (BMO structure + Lean Canvas hypothesis fields)",
+  "description": "The `/plan-bet` authoring-stage artifact (`bets/<bet-id>/business-model.json` in the portfolio repo, written by scripts/plan_bet.py — see docs/business-factory.md §3 Plan schema row, chief-wiggum#238). Schema donors are fixed by Decision 2 (chief-wiggum#238): `structure` carries Osterwalder 2004 BMO enums for fields with a closed, non-hypothesis-bearing classification; `canvas` substitutes Lean Canvas boxes for every hypothesis-bearing field, each typed `{value, status, asm_ids}` (status: hypothesis|validated|falsified). Two `canvas` element ids (`value-proposition`, `customer-segment`) plus `pricing` and `competitive-position` are the exact `depends_on_element` strings already in use by real bets' assumptions.json ledgers (templates/assumptions-schema.json) — that is the join key an ASM depends on, so these ids are load-bearing, not stylistic. `asm_ids` point at `ASM-NNN` entries in the SAME bet's `bets/<bet-id>/assumptions.json` (the two-segment ledger namespace, deliberately disjoint from chief_wiggum.trace_ids' three-segment stable-ID kinds — chief-wiggum#294); this schema does not itself validate that an asm_id resolves, `scripts/plan_bet.py check` does. This file is a GOALPOST artifact once `/architect` starts folding it into epics (Decision 1): content-hashed into the portfolio journal at `plan_bet.py author`; `plan_bet.py rebaseline` is the only sanctioned mutation path (same discipline as bet.json's envelope / kill-criteria.json).",
+  "type": "object",
+  "required": ["bet_id", "created", "structure", "canvas"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment": { "type": "string" },
+    "bet_id": { "type": "string", "minLength": 1, "description": "The bets/<bet_id>/ this business model belongs to." },
+    "created": { "type": "string", "description": "ISO timestamp the artifact was authored." },
+    "structure": { "$ref": "#/$defs/structure" },
+    "canvas": { "$ref": "#/$defs/canvas" },
+    "premortem": {
+      "type": "array",
+      "description": "Klein 2007 premortem failure modes (docs/business-factory.md §2.2 — the seeded-defect discipline applied to the plan itself). The premortem-coverage check (chief-wiggum#238 Decision 4) requires >=N entries, each either mapped to an ASM (asm_id set) or explicitly waived (waived=true with a non-empty waiver_reason). Absent entirely -> the check reports a finding naming zero coverage, never a silent pass.",
+      "items": { "$ref": "#/$defs/failure_mode" }
+    },
+    "vpc": {
+      "description": "Value Proposition Canvas pain<->reliever bipartite graph (chief-wiggum#238 Decision 2). The completeness check requires every declared pain to be addressed by >=1 reliever and every reliever to address >=1 real pain (no orphan pains, no solution-in-search-of-a-problem relievers).",
+      "$ref": "#/$defs/vpc"
+    },
+    "e3_value": {
+      "description": "Per-actor value-flow inputs (e3-value, Gordijn & Akkermans). Only consulted when structure.actor_types declares MORE THAN 2 distinct actors (chief-wiggum#238 Decision 5) -- a single- or dual-actor model (the common solo-SaaS shape) skips this check entirely, reported `inapplicable`, never a silent pass on missing data.",
+      "$ref": "#/$defs/e3_value"
+    },
+    "fermi_inputs": {
+      "description": "Maurya's Fermi/reverse-income-statement viability inputs (chief-wiggum#238 Decision 3). This is the ONE soundness gate in the whole authoring stage that may hard-block from day one, before any spend -- it gates authoring, not built work, and is therefore NOT behind the usual report-only-until-validated ramp (docs/gate-rollout.md).",
+      "$ref": "#/$defs/fermi_inputs"
+    }
+  },
+  "$defs": {
+    "hypothesis_field": {
+      "type": "object",
+      "required": ["value", "status", "asm_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "value": { "description": "The authored content of this field -- a string, a list, or a structured value, deliberately unconstrained here (the field's MEANING is fixed by which canvas box it is, not by a schema-level content type)." },
+        "status": {
+          "type": "string",
+          "enum": ["hypothesis", "validated", "falsified"],
+          "description": "Every hypothesis-bearing field carries a validation status (chief-wiggum#238 Decision 2). `validated`/`falsified` with an empty asm_ids is a finding -- a status change must cite the evidence that produced it, the same omission-evasion shape assumption.py's traceability check already catches for the ASM ledger itself."
+        },
+        "asm_ids": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^ASM-[0-9]{3,}$" },
+          "description": "ASM-NNN ids in this bet's assumptions.json this field's status rests on. May be empty while status=hypothesis (nothing tested yet)."
+        }
+      }
+    },
+    "structure": {
+      "type": "object",
+      "description": "BMO enums for structure (Decision 2): closed classification, never hypothesis-bearing (a business doesn't 'validate' its own revenue-model archetype -- it either operates that way or it doesn't). Grounded directly against the four real bets in the operator's portfolio (see chief-wiggum#238 report): accrualflow and confluence-doc-control both classify as partner_indirect/value_chain; gov-tender-channel and rabbitry both classify as owned_direct/value_shop|value_chain respectively.",
+      "required": ["revenue_model", "distribution_channel_type", "value_configuration", "actor_types"],
+      "additionalProperties": false,
+      "properties": {
+        "revenue_model": {
+          "type": "string",
+          "enum": ["asset_sale", "usage_fee", "subscription", "lending_renting_leasing", "licensing", "brokerage_fee", "advertising", "project_fee"],
+          "description": "Osterwalder's 2004/2010 revenue-stream archetypes (asset_sale..advertising). `project_fee` is an ADDITION beyond the canonical seven, grounded in a real portfolio bet (gov-tender-channel: a fixed-scope government-tender delivery fee fits none of the seven cleanly) -- flagged explicitly rather than mis-filed under asset_sale."
+        },
+        "distribution_channel_type": {
+          "type": "string",
+          "enum": ["owned_direct", "owned_indirect", "partner_direct", "partner_indirect"],
+          "description": "Osterwalder's channel-type 2x2 (owned vs partner, direct vs indirect). All four real portfolio bets classify cleanly: accrualflow/confluence-doc-control -> partner_indirect (an app-marketplace ecosystem mediates discovery); gov-tender-channel/rabbitry -> owned_direct (the operator responds/relates directly, no intermediary)."
+        },
+        "value_configuration": {
+          "type": "string",
+          "enum": ["value_chain", "value_shop", "value_network"],
+          "description": "Stabell & Fjeldstad 1998's typing, which Osterwalder's 2004 thesis adopts for the Value Configuration building block. value_chain = repeatable linear transformation (accrualflow, confluence-doc-control, rabbitry); value_shop = bespoke per-case problem-solving (gov-tender-channel: every tender is a distinct problem); value_network = intermediation between parties (not yet instanced in the portfolio)."
+        },
+        "customer_relationship_type": {
+          "type": "string",
+          "enum": ["personal_assistance", "dedicated_personal_assistance", "self_service", "automated_services", "communities", "co_creation"],
+          "description": "Optional -- Osterwalder's six canonical relationship types. Not required: every real portfolio bet so far is self_service|automated_services and the field adds no discriminating signal yet; kept as a completion of the named donor formalism rather than dropped."
+        },
+        "actor_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/actor" },
+          "description": "Distinct parties in the value network (e3-value). The e3-value per-actor viability check (Decision 5) triggers only when len(actor_types) > 2 -- grounded: confluence-doc-control names 3 (buying-team admin, Confluence end users, Atlassian-as-marketplace) and so WOULD trigger it; the other three real bets name <=2 and skip it."
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "required": ["name", "roles"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["buyer", "payer", "user", "platform_intermediary", "channel_partner", "supplier"] },
+          "description": "A single actor may hold several roles at once (the common single-sided-SaaS shape: one actor is buyer+payer+user)."
+        }
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "description": "Lean Canvas box substitutions for every hypothesis-bearing field (Decision 2), each a hypothesis_field. `customer-segment`, `value-proposition`, `pricing`, and `competitive-position` are the exact depends_on_element strings already used by real bets' assumptions.json ledgers (accrualflow ASM-001..004, rabbitry ASM-001) -- these four ids are load-bearing grounding, not naming taste. The remaining five (`problem`, `solution`, `channels`, `revenue-streams`, `cost-structure`, `key-metrics`, `unfair-advantage`) complete Lean Canvas's fixed nine-box grammar, the donor Decision 2 names -- not independently invented fields.",
+      "required": [
+        "problem", "customer-segment", "value-proposition", "solution", "channels",
+        "revenue-streams", "cost-structure", "key-metrics", "unfair-advantage",
+        "pricing", "competitive-position"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "problem": { "$ref": "#/$defs/hypothesis_field" },
+        "customer-segment": { "$ref": "#/$defs/hypothesis_field" },
+        "value-proposition": { "$ref": "#/$defs/hypothesis_field" },
+        "solution": { "$ref": "#/$defs/hypothesis_field" },
+        "channels": { "$ref": "#/$defs/hypothesis_field" },
+        "revenue-streams": { "$ref": "#/$defs/hypothesis_field" },
+        "cost-structure": { "$ref": "#/$defs/hypothesis_field" },
+        "key-metrics": { "$ref": "#/$defs/hypothesis_field" },
+        "unfair-advantage": { "$ref": "#/$defs/hypothesis_field" },
+        "pricing": { "$ref": "#/$defs/hypothesis_field" },
+        "competitive-position": { "$ref": "#/$defs/hypothesis_field" }
+      }
+    },
+    "failure_mode": {
+      "type": "object",
+      "required": ["id", "statement", "waived"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^PM-[0-9]{3,}$", "description": "Stable premortem-entry id, e.g. PM-001." },
+        "statement": { "type": "string", "minLength": 1, "description": "The plausible way this bet fails, stated concretely (Klein 2007: 'imagine it is 3 months from now and this failed -- why?')." },
+        "asm_id": {
+          "type": ["string", "null"],
+          "pattern": "^ASM-[0-9]{3,}$",
+          "description": "The assumption this failure mode was turned into, if any. Mutually informative with `waived`: a failure mode needs EITHER an asm_id OR an explicit waiver, never neither."
+        },
+        "waived": {
+          "type": "boolean",
+          "description": "True when the operator explicitly decided NOT to turn this failure mode into a testable assumption. A false waived with no asm_id is uncovered -- the premortem-coverage finding."
+        },
+        "waiver_reason": {
+          "type": ["string", "null"],
+          "description": "Required (non-empty) when waived=true -- an unexplained waiver is indistinguishable from a forgotten one."
+        }
+      }
+    },
+    "vpc": {
+      "type": "object",
+      "required": ["pains", "pain_relievers"],
+      "additionalProperties": false,
+      "properties": {
+        "pains": { "type": "array", "items": { "$ref": "#/$defs/vpc_pain" } },
+        "pain_relievers": { "type": "array", "items": { "$ref": "#/$defs/vpc_reliever" } }
+      }
+    },
+    "vpc_pain": {
+      "type": "object",
+      "required": ["id", "value", "status", "asm_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^PAIN-[0-9]{3,}$" },
+        "value": {},
+        "status": { "type": "string", "enum": ["hypothesis", "validated", "falsified"] },
+        "asm_ids": { "type": "array", "items": { "type": "string", "pattern": "^ASM-[0-9]{3,}$" } }
+      }
+    },
+    "vpc_reliever": {
+      "type": "object",
+      "required": ["id", "value", "status", "asm_ids", "addresses_pain_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^REL-[0-9]{3,}$" },
+        "value": {},
+        "status": { "type": "string", "enum": ["hypothesis", "validated", "falsified"] },
+        "asm_ids": { "type": "array", "items": { "type": "string", "pattern": "^ASM-[0-9]{3,}$" } },
+        "addresses_pain_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^PAIN-[0-9]{3,}$" },
+          "description": "The bipartite edge: which pains this reliever addresses. A reliever with no pains it addresses is a solution in search of a problem."
+        }
+      }
+    },
+    "e3_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "actor_flows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["actor"],
+            "additionalProperties": false,
+            "properties": {
+              "actor": { "type": "string", "minLength": 1, "description": "Must match a name in structure.actor_types." },
+              "revenue_usd": { "type": ["number", "null"], "description": "Estimated periodic revenue TO this actor from participating. Null/absent -> unresolved, never assumed zero." },
+              "cost_usd": { "type": ["number", "null"], "description": "Estimated periodic cost TO this actor from participating. Null/absent -> unresolved, never assumed zero." }
+            }
+          }
+        }
+      }
+    },
+    "fermi_inputs": {
+      "type": "object",
+      "required": ["msc_usd", "price_usd", "churn_assumption", "funnel_assumptions", "tam"],
+      "additionalProperties": false,
+      "properties": {
+        "msc_usd": { "type": "number", "exclusiveMinimum": 0, "description": "Minimum Success Criterion -- target steady-state revenue per period (Maurya), same period as price_usd." },
+        "price_usd": { "type": "number", "exclusiveMinimum": 0, "description": "Price per customer per period." },
+        "churn_assumption": { "type": "number", "minimum": 0, "exclusiveMaximum": 1, "description": "Assumed fractional churn per period (e.g. 0.05 = 5%/mo). 1.0 (certain churn) is malformed -- steady state is unreachable by construction." },
+        "funnel_assumptions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+          "description": "Ordered per-stage conversion rates (e.g. [visitor_to_signup, signup_to_paid]) -- multiplied together for the overall top-of-funnel-to-customer conversion."
+        },
+        "tam": { "type": "number", "exclusiveMinimum": 0, "description": "Total addressable market at the top of the funnel -- the reachable population the funnel_assumptions apply to." }
+      }
+    }
+  }
+}
