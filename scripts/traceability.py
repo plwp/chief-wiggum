@@ -11,6 +11,16 @@ Examples:
     # Mark a ticket's rows covered (in place)
     python3 scripts/traceability.py update docs/epics/x/traceability.md \
       --ticket 42 --status covered --ac "GET /health"
+
+    # Preview an update without writing (chief-wiggum#342)
+    python3 scripts/traceability.py update docs/epics/x/traceability.md \
+      --ticket 42 --status covered --dry-run
+
+Exit codes for ``update``: 0 on a successful write (or a dry-run preview of
+one), 1 on a usage/parse error (bad status, file not found), 2 when ZERO
+rows matched the ticket — the file is never written in that case
+(chief-wiggum#342), matching this repo's fail-closed discipline: "0 matched
+rows" must never be treated as "helpfully normalize whatever I did find".
 """
 
 from __future__ import annotations
@@ -41,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     p_update.add_argument("--status", required=True, choices=tr.STATUSES)
     p_update.add_argument("--ac", help="Narrow to rows whose AC contains this text")
     p_update.add_argument("--test", help="Narrow to rows whose test refs contain this text")
+    p_update.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would change without writing the file (chief-wiggum#342)",
+    )
 
     args = parser.parse_args(argv)
     path = Path(args.path)
@@ -48,26 +62,48 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: file not found: {path}", file=sys.stderr)
         return 1
 
-    matrix = tr.parse_matrix(path.read_text())
-
     if args.command == "audit":
+        matrix = tr.parse_matrix(path.read_text())
         print(json.dumps(tr.audit(matrix), indent=2))
-    elif args.command == "render":
+        return 0
+    if args.command == "render":
+        matrix = tr.parse_matrix(path.read_text())
         print(tr.render_markdown(matrix))
-    elif args.command == "update":
-        try:
-            n = tr.update_status(
-                matrix, ticket=args.ticket, status=args.status,
-                ac_contains=args.ac, test_contains=args.test,
-            )
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
-        if n == 0:
-            print(f"Warning: no rows matched ticket #{args.ticket}", file=sys.stderr)
-        # Rewrite only the table span, preserving surrounding prose.
-        path.write_text(tr.replace_table(path.read_text(), matrix))
-        print(f"OK: updated {n} row(s) to {args.status}")
+        return 0
+
+    # command == "update" — routed through tr.update_file (chief-wiggum#342),
+    # NOT the single-table parse_matrix/update_status/replace_table combo
+    # audit/render still use above: update_file is the only path that (a)
+    # never re-renders a non-canonical table and (b) never writes the file at
+    # all when zero rows matched, across every table in the document.
+    try:
+        new_text, n, warnings = tr.update_file(
+            path.read_text(), ticket=args.ticket, status=args.status,
+            ac_contains=args.ac, test_contains=args.test,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    for w in warnings:
+        print(f"Warning: {w}", file=sys.stderr)
+
+    if n == 0:
+        prefix = "DRY RUN: " if args.dry_run else ""
+        print(
+            f"{prefix}Error: no rows matched ticket #{args.ticket} — nothing written",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.dry_run:
+        print(f"DRY RUN: would update {n} row(s) to {args.status} (no file written)")
+        return 0
+
+    # new_text is guaranteed non-None here — update_file only returns None
+    # alongside n == 0, handled above.
+    path.write_text(new_text)
+    print(f"OK: updated {n} row(s) to {args.status}")
     return 0
 
 
