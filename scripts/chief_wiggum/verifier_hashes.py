@@ -37,6 +37,7 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chief_wiggum import languages as cw_languages
 from chief_wiggum.hashing import stable_hash
 from chief_wiggum.trace_ids import TRACE_RE, canonical_id
 
@@ -58,6 +59,44 @@ SKIP_PARTS = {
 # exists to prevent. Stated in the gate-validation record's authority boundary,
 # same as vendor/ exclusion in check_single_writer.
 DOC_EXTS = {".md", ".rst", ".txt"}
+
+# (#326) scan_file's non-.py branch used to `path.read_text(errors="replace")`
+# EVERY non-.py, non-doc file in the repo in full — no extension allow-list at
+# all — just to substring-check for "@cw-trace". Images/lockfiles/fixtures
+# dominated ratchet.py `score`'s I/O as a result. SCANNABLE_EXTS is a
+# DELIBERATELY GENEROUS allow-list: the union of every extension
+# config/languages.json recognizes at ALL — both BUILT-emitter languages
+# (all_known_extensions: tier-1 + generic tier) and "recognized but no
+# emitter" languages (unsupported_extensions: .c/.cpp/.php/.kt/.swift/...,
+# still curated and maintained, see config/languages.json's own docstring) —
+# plus DOC_EXTS (redundant with the early `path.suffix in DOC_EXTS` return
+# above, listed for completeness/clarity: markdown can never reach this
+# allow-list check anyway) and check_traceability's VERIFICATION_EXTS
+# (.rego/.yaml/.yml). Any extension OUTSIDE this set was already invisible to
+# check_traceability.py's own @cw-trace annotation scan (its SOURCE_EXTS
+# predicate is this same known+verification set) — so restricting THIS
+# scanner to the same universe is a consistency fix, not a new coverage gap:
+# an extension nobody in the system recognizes as source was never going to
+# host a meaningful verifies annotation in the first place. If a real repo
+# ever needs a language extending past this list, extend
+# config/languages.json's unsupported_extensions (curated, not exhaustive, by
+# its own docstring) rather than narrowing this set further.
+SCANNABLE_EXTS = (
+    frozenset(cw_languages.all_known_extensions())
+    | cw_languages.unsupported_extensions()
+    | {".rego", ".yaml", ".yml"}
+    | DOC_EXTS
+)
+
+# A file this large is not source code we expect a `@cw-trace verifies`
+# annotation to live in — generous enough (2 MB) that no real test/source
+# file is ever truncated in a way that would matter, while capping the I/O
+# cost of a pathological huge file that happens to carry a SCANNABLE_EXTS
+# extension (e.g. a generated fixture). Only the HEAD of an oversized file is
+# read; an annotation past this offset is not detected — an accepted,
+# documented boundary (mirrors chief_wiggum/review.py's diff truncation), not
+# a silent extension-based drop.
+MAX_NONPY_SCAN_BYTES = 2_000_000
 
 # An annotation comment placed immediately ABOVE a def (rather than inside the
 # body/docstring) still belongs to that function if the def starts within this
@@ -171,7 +210,22 @@ def scan_file(path: Path, relpath: str, scan: VerifierScan) -> None:
     if path.suffix in DOC_EXTS:
         return  # documentation — out of scope by design, see DOC_EXTS
     if path.suffix != ".py":
-        if "@cw-trace" in (text := path.read_text(errors="replace")) and _verifies_ids(text):
+        if path.suffix not in SCANNABLE_EXTS:
+            # (#326) not a plausible @cw-trace carrier by ANY known-language
+            # extension — never read at all. See SCANNABLE_EXTS's comment for
+            # why this allow-list is deliberately as generous as the rest of
+            # the system's own source-extension universe, not a new gap.
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        if size > MAX_NONPY_SCAN_BYTES:
+            with path.open("r", errors="replace") as fh:
+                text = fh.read(MAX_NONPY_SCAN_BYTES)
+        else:
+            text = path.read_text(errors="replace")
+        if "@cw-trace" in text and _verifies_ids(text):
             _bump(scan.unscanned, f"unsupported extension {path.suffix or '(none)'}")
         return
     text = path.read_text(errors="replace")

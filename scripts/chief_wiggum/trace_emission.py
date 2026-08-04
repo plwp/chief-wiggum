@@ -21,8 +21,11 @@ from pathlib import Path
 # canonical_id's home is chief_wiggum.trace_ids (#181: shared with the
 # definition-hashing module, so definition-hash keys and annotation targets
 # join on the same canonical form) — imported and re-exported here so
-# emission-side consumers get it from the single home.
-from chief_wiggum.trace_ids import ID_RE, TRACE_RE, canonical_id  # noqa: F401
+# emission-side consumers get it from the single home. DEFINE_RE is needed by
+# emit_epic_annotations below (#326: moved here from check_traceability.py so
+# chief_wiggum.epic_model can call it without importing the top-level
+# check_traceability script — check_traceability re-exports it unchanged).
+from chief_wiggum.trace_ids import DEFINE_RE, ID_RE, TRACE_RE, canonical_id  # noqa: F401
 
 # Directory names whose files are verification probes (k6/chaos experiments)
 # rather than product code — see classify_source_kind.
@@ -81,6 +84,42 @@ def classify_source_kind(rel: str, suffix: str) -> str:
         or "e2e" in parts
     )
     return "test" if is_test else "code"
+
+
+def emit_epic_annotations(rel: str, text: str) -> list[Annotation]:
+    """Per-file EMISSION: every ``@cw-trace`` annotation declared in one epic
+    doc's ``text``, attributed to the nearest stable ID declared above it.
+    Pure function of file content — no knowledge of the full defined-ID set
+    (that join is query-time, in ``check_traceability.build_report``).
+
+    A realizes/derive annotation is attributed to the nearest stable ID
+    *declared above it* in the same file, so it is tied to a real source.
+    Any kind that can be a link SOURCE qualifies (BUD-/EDG-/... declare
+    derive links the same way CTR-/INV- declare realizes — #166). BR is
+    only ever a link target, so a BR declaration RESETS attribution: an
+    annotation under a BR heading must not inherit an earlier contract
+    (that would let a stray realizes clear the BR's own orphan status).
+
+    Moved here from check_traceability.py (#326) so ``chief_wiggum.epic_model``
+    can call it inside the single epic-tree walk without importing the
+    top-level check_traceability script; check_traceability re-exports this
+    name unchanged (golden parity — existing ``check_traceability.emit_epic_annotations``
+    callers/tests are unaffected)."""
+    annotations: list[Annotation] = []
+    nearest_contract: str | None = None
+    for i, line in enumerate(text.splitlines(), start=1):
+        for dm in DEFINE_RE.finditer(line):
+            if kind_of(dm.group(1)) == "BR":
+                nearest_contract = None
+            else:
+                nearest_contract = canonical_id(dm.group(1))
+        for verb, ids in parse_annotations(line):
+            src_kind = kind_of(nearest_contract) if nearest_contract else "CTR"
+            for target in ids:
+                annotations.append(
+                    Annotation(verb, target, rel, i, src_kind, source_id=nearest_contract)
+                )
+    return annotations
 
 
 def emit_source_annotations(rel: str, text: str, suffix: str) -> list[Annotation]:

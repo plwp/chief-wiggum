@@ -72,7 +72,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from chief_wiggum.annotations import EMITS_TAG_RE, split_binding_names  # noqa: E402
+import emitters  # noqa: E402 — per-language emitter registry (#162), shared source pass (#326)
+from chief_wiggum.annotations import EmitSite  # noqa: E402
+
+# walk_source_files prunes submodules/nested git checkouts (#326) — this
+# scanner used to bypass it with its own raw rglob, so unlike
+# check_traceability.py/check_single_writer.py it never pruned them (a
+# correctness gap riding along with this perf fix, not just a cost one).
+from chief_wiggum.manifest import walk_source_files  # noqa: E402
 
 AUTHORITY = (
     "static mode proves an @cw-emits site exists in source for each telemetry "
@@ -109,19 +116,6 @@ class Binding:
     name: str
     nodes: list[str]
     source: str  # budget doc file it was declared in
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-@dataclass
-class EmitSite:
-    """A source-code site carrying an ``@cw-emits <name>`` annotation."""
-
-    name: str
-    file: str
-    line: int
-    text: str
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -231,29 +225,40 @@ def collect_bindings_from_files(paths: list[Path]) -> tuple[list[Binding], list[
 
 
 def scan_emit_sites(source_root: str | Path, exclude: list[str] | None = None) -> list[EmitSite]:
-    """Find every ``@cw-emits`` annotation across the source tree."""
+    """Find every ``@cw-emits`` annotation across the source tree.
+
+    Routes through the per-language emitter registry (#326) — the "emit_site"
+    fact kind ``check_traceability.py``'s "trace_annotation" and
+    ``check_single_writer.py``'s "write_site" already share — via
+    ``chief_wiggum.manifest.walk_source_files``, the same submodule-pruning
+    full-tree walk those two scanners use (this checker used to bypass it
+    with its own raw ``rglob``, so it never pruned a submodule — a
+    correctness gap, not just a cost one). ``SOURCE_EXTS`` stays EXACTLY the
+    same 9-extension set as before (every one of which already has a
+    tier-1 or generic-tier emitter, so the file universe this checker scans
+    is unchanged — golden parity, not a widening); ``SKIP_PARTS``/``exclude``
+    stay this module's own filter on top, applied identically to before."""
     root = Path(source_root)
     exclude = exclude or []
     sites: list[EmitSite] = []
     if not root.exists():
         return sites
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix not in SOURCE_EXTS:
+    for rel in walk_source_files(root):
+        suffix = Path(rel).suffix
+        if suffix not in SOURCE_EXTS:
             continue
-        if any(part in SKIP_PARTS for part in path.parts):
+        if any(part in SKIP_PARTS for part in Path(rel).parts):
             continue
-        rel = str(path.relative_to(root))
         if _excluded(rel, exclude):
             continue
+        path = root / rel
         try:
-            lines = path.read_text().splitlines()
+            text = path.read_text()
         except OSError:
             continue
-        for i, line in enumerate(lines):
-            for m in EMITS_TAG_RE.finditer(line):
-                for name in split_binding_names(m.group("names")):
-                    sites.append(EmitSite(name=name, file=rel, line=i + 1, text=line.strip()[:200]))
+        facts, _tier = emitters.emit(rel, text)
+        sites.extend(emitters.facts_of_kind(facts, "emit_site"))
     return sites
 
 

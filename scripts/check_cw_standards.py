@@ -57,12 +57,25 @@ class Finding:
         return f"  [{self.rule}] {self.message}"
 
 
-def _script_exists(rel: str, scripts_dir: Path) -> bool:
-    """A referenced scripts/<rel> exists, by exact path or basename anywhere under scripts/."""
+def _script_basenames(scripts_dir: Path) -> set[str]:
+    """Every ``*.py`` basename under ``scripts_dir`` — computed ONCE (#326) and
+    reused across every reference ``check()`` resolves, instead of
+    ``_script_exists`` re-globbing ``scripts/`` per reference (O(refs × files)
+    where O(files + refs) suffices)."""
+    return {p.name for p in scripts_dir.rglob("*.py")}
+
+
+def _script_exists(rel: str, scripts_dir: Path, basenames: set[str] | None = None) -> bool:
+    """A referenced scripts/<rel> exists, by exact path or basename anywhere
+    under scripts/. ``basenames`` (optional, #326): a precomputed
+    ``_script_basenames(scripts_dir)`` set, so a caller resolving many
+    references doesn't re-glob per call; omitted, this globs its own (the
+    still-correct, standalone behavior any direct caller relies on)."""
     if (scripts_dir / rel).is_file():
         return True
-    base = Path(rel).name
-    return any(p.name == base for p in scripts_dir.rglob("*.py"))
+    if basenames is None:
+        basenames = _script_basenames(scripts_dir)
+    return Path(rel).name in basenames
 
 
 def check(root: Path = ROOT, *, today: datetime.date | None = None) -> list[Finding]:
@@ -79,6 +92,7 @@ def check(root: Path = ROOT, *, today: datetime.date | None = None) -> list[Find
 
     # 2. no dangling skill -> script references
     if commands.is_dir():
+        basenames = _script_basenames(scripts)  # once, not per reference (#326)
         for md in sorted(commands.glob("*.md")):
             text = md.read_text(errors="ignore")
             refs: set[str] = set()
@@ -90,7 +104,7 @@ def check(root: Path = ROOT, *, today: datetime.date | None = None) -> list[Find
                     continue
                 refs.add(m.group(1))
             for ref in sorted(refs):
-                if not _script_exists(ref, scripts):
+                if not _script_exists(ref, scripts, basenames):
                     findings.append(Finding("dangling-script-ref",
                         f"{md.name} references scripts/{ref} which does not exist"))
 

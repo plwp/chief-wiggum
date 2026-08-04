@@ -11,6 +11,7 @@ benefit.
 
 from __future__ import annotations
 
+from chief_wiggum.annotations import emit_emit_sites
 from chief_wiggum.trace_emission import emit_source_annotations
 from chief_wiggum.write_emission import emit_write_sites
 
@@ -21,7 +22,7 @@ extensions: tuple[str, ...] = (".go",)
 
 
 def fact_kinds() -> tuple[str, ...]:
-    return ("write_site", "trace_annotation")
+    return ("write_site", "trace_annotation", "emit_site")
 
 
 def emit(path: str, content: str) -> list[Fact]:
@@ -30,4 +31,5 @@ def emit(path: str, content: str) -> list[Fact]:
         Fact("trace_annotation", a)
         for a in emit_source_annotations(path, content, ".go")
     ]
+    facts += [Fact("emit_site", s) for s in emit_emit_sites(path, content)]
     return facts
