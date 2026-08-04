@@ -595,11 +595,15 @@ def test_capture_diff_against_stale_local_main_is_polluted_but_remote_tracking_i
     already-merged commits; diffing against the freshly-fetched remote-tracking
     ref does not. Built entirely under tmp_path — no real-repo git operations.
     """
+    # --initial-branch pins the fixture to `main` regardless of the machine's
+    # init.defaultBranch: on a stock Linux git (default `master`) a plain bare
+    # init leaves HEAD on an unborn master, the clones then check out nothing,
+    # and every later `push origin main` dies with "src refspec does not match".
     bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", "--initial-branch=main", str(bare)], check=True)
 
     seed = tmp_path / "seed"
-    subprocess.run(["git", "init", "-q", str(seed)], check=True)
+    subprocess.run(["git", "init", "-q", "--initial-branch=main", str(seed)], check=True)
     _git(seed, "config", "user.name", "Ada")
     _git(seed, "config", "user.email", "ada@example.com")
     (seed / "README.md").write_text("seed\n")
