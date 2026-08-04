@@ -34,6 +34,12 @@ graph TD
 |----------|--------|
 | <!-- scenario 1 --> | PASS/FAIL |
 
+## Implementation Cost
+
+<!-- From `scripts/ticket_cost.py actual --repo <owner/repo> --ticket <n> --format markdown`
+     (pass --estimate if the issue carries a "Nominal cost" line).
+     If it reports Unmetered, keep that line — never replace it with $0. -->
+
 ## Review Checklist
 
 - [ ] Tests pass locally

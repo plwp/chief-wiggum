@@ -62,6 +62,14 @@ Using the template at `$CW_HOME/templates/issue.md`, fill in:
 
 - **Labels**: Suggest appropriate labels based on type and severity.
 
+- **Nominal cost**: After picking the Effort size, derive the estimate mechanically — never from intuition:
+
+  ```bash
+  python3 "$CW_HOME/scripts/ticket_cost.py" estimate --effort <S|M|L|XL>
+  ```
+
+  Stamp its output line verbatim into the template's `Nominal cost` field. An `UNRESOLVED (N prior ... tickets logged, need >=3)` answer is a valid value — leave it as-is; it self-calibrates as `/implement` records actuals on merged PRs (see `docs/ticket-cost.md`). Never replace UNRESOLVED with a guessed dollar figure.
+
 ### Step 3: Preview and confirm
 
 Show the user the full issue markdown and ask:

@@ -74,6 +74,13 @@ TICKET_TMP="$CW_TMP/$issue_number"
 mkdir -p "$TICKET_TMP"
 ```
 
+**Meter this build** (per-ticket implementation cost, `docs/ticket-cost.md`): enable telemetry so consults log their token cost, and stamp the build-start time — Step 11 slices the ledger from this stamp to price the PR's `## Implementation Cost` section:
+
+```bash
+export CW_TELEMETRY=1
+date +%s > "$TICKET_TMP/build-start-ts"
+```
+
 All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemini.md`, `approach-opus.md`, `implementation-plan.md`, `review-prompt.md`, `reviews/reviewer-*.md`, `impl-diff.txt`) go in `$TICKET_TMP`, not `$CW_TMP`. Shared session files (e.g., epic context) remain in `$CW_TMP`.
 
 **Load epic context** (if this ticket belongs to an epic):
@@ -817,7 +824,20 @@ If no browser-use or E2E setup exists at all, note it as a gap in the final summ
 
    Include at minimum a **Component Relationship Diagram** showing what was added/modified. Add a **Sequence Diagram** if data flow changed (pass `--mermaid-sequence` to `draft_pr.py`). Keep diagrams focused (max 15 nodes).
 
-3. Draft the PR body with the tested helper. It folds in the verification evidence and (when present) the review/UX/model-conformance manifests, themes the Mermaid diagram with the shared palette automatically, validates the required sections, and links the issue:
+3. **Price the build** (`docs/ticket-cost.md`). Fold this session's own token spend into the factory ledger — windowed to this ticket's build-start stamp so a multi-ticket session doesn't cross-bill — then render the measured actual:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
+  --repo "$owner_repo" --ticket "$issue_number" \
+  --since-ts "$(cat "$TICKET_TMP/build-start-ts")"
+python3 "$CW_HOME/scripts/ticket_cost.py" actual \
+  --repo "$owner_repo" --ticket "$issue_number" \
+  --format markdown > "$TICKET_TMP/implementation-cost.md"
+```
+
+   If the issue body carries a `Nominal cost: ~$X.XX` line (stamped by `/create-issue`), add `--estimate X.XX` to the `actual` call so the section shows estimate-vs-actual variance. If the output says **Unmetered**, keep it — that is absence of telemetry, never a $0 build.
+
+4. Draft the PR body with the tested helper. It folds in the verification evidence and (when present) the review/UX/model-conformance manifests plus the implementation-cost section, themes the Mermaid diagram with the shared palette automatically, validates the required sections, and links the issue:
 
 ```bash
 python3 "$CW_HOME/scripts/draft_pr.py" \
@@ -827,6 +847,7 @@ python3 "$CW_HOME/scripts/draft_pr.py" \
   --verification "$TICKET_TMP/verification.json" \
   --review "$TICKET_TMP/reviews/review-manifest.json" \
   --model-conformance "$TICKET_TMP/model-conformance.md" \
+  --implementation-cost "$TICKET_TMP/implementation-cost.md" \
   --base "$DEFAULT_BRANCH" --out "$TICKET_TMP/pr-body.md"
 ```
 
@@ -836,7 +857,14 @@ python3 "$CW_HOME/scripts/draft_pr.py" \
 gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/pr-body.md" --base "$DEFAULT_BRANCH"
 ```
 
-4. The helper links the original issue via `Closes #N` from `--issue`.
+5. The helper links the original issue via `Closes #N` from `--issue`.
+
+6. **Record the calibration point** so future `/create-issue` estimates ground in this build's actual. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure:
+
+```bash
+python3 "$CW_HOME/scripts/ticket_cost.py" record \
+  --repo "$owner_repo" --ticket "$issue_number" --effort "$effort"
+```
 
 ### Step 12: Verify CI green
 

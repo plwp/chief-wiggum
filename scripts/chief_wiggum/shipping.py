@@ -104,6 +104,7 @@ def build_pr_body(
     review: dict | None = None,
     ux: dict | None = None,
     model_conformance: str | None = None,
+    implementation_cost: str | None = None,
 ) -> str:
     """Assemble a PR body from the upstream manifests + issue context."""
     parts: list[str] = ["## Summary", "", summary or "<!-- what was implemented and why -->"]
@@ -131,6 +132,9 @@ def build_pr_body(
     review_line = _review_summary(review)
     if review_line:
         parts += ["", "## Review", "", review_line]
+
+    if implementation_cost:
+        parts += ["", "## Implementation Cost", "", implementation_cost.strip()]
 
     parts += [
         "", "## Review Checklist", "",
