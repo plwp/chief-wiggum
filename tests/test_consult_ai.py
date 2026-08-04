@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 import urllib.error
 from pathlib import Path
 
@@ -389,22 +390,45 @@ def test_consult_provider_threads_timeout_override_to_delegate(monkeypatch):
     assert received["timeout"] == 42
 
 
-def test_consult_provider_ignores_timeout_override_for_tool_providers(monkeypatch):
-    # Tool providers (codex, gemini-vertex, ...) already run well under any
-    # optional-slot budget; the override is delegate-specific and must not
-    # leak into their call signature.
+def test_consult_provider_threads_timeout_override_to_tool_providers(monkeypatch):
+    # chief-wiggum#330: timeout_override used to be dropped for tool
+    # providers entirely (only the claude-interactive delegate branch
+    # threaded it) — but codex/gemini/gemini-vertex/claude's own
+    # TOOL_TIMEOUTS entries (600-1200s) are all ABOVE the 300s optional cap,
+    # so an optional tool provider could hold a role's wall-clock to its
+    # full budget exactly like the delegate used to. Every consult_* tool
+    # function already accepts a `timeout` kwarg; consult_provider must pass
+    # timeout_override straight through on the tool branch too.
     provider = consult_ai.Provider(name="codex", type="tool", enabled=True, tool="codex")
     received = {}
 
-    def fake_codex(prompt, model=None, cwd=None):
-        received["called"] = True
+    def fake_codex(prompt, model=None, cwd=None, timeout=None):
+        received["timeout"] = timeout
         return "a substantive codex response", consult_ai.Usage()
 
     monkeypatch.setitem(consult_ai.TOOLS, "codex", fake_codex)
 
     consult_ai.consult_provider(provider, "prompt", None, None, timeout_override=42)
 
-    assert received["called"] is True
+    assert received["timeout"] == 42
+
+
+def test_consult_provider_tool_branch_passes_none_timeout_for_a_required_provider(monkeypatch):
+    # A required provider's timeout_override is None (its full budget) —
+    # confirms the threading is a straight pass-through, not something that
+    # invents a value when there isn't one.
+    provider = consult_ai.Provider(name="codex", type="tool", enabled=True, tool="codex")
+    received = {}
+
+    def fake_codex(prompt, model=None, cwd=None, timeout=None):
+        received["timeout"] = timeout
+        return "a substantive codex response", consult_ai.Usage()
+
+    monkeypatch.setitem(consult_ai.TOOLS, "codex", fake_codex)
+
+    consult_ai.consult_provider(provider, "prompt", None, None, timeout_override=None)
+
+    assert received["timeout"] is None
 
 
 def test_consult_provider_threads_ticket_into_delegate_session_naming(monkeypatch):
@@ -1494,6 +1518,64 @@ def test_vertex_usage_parse_exception_never_fails_the_consult(monkeypatch):
     text, usage = consult_ai.consult_gemini_vertex("prompt")
     assert text == "PONG"
     assert usage.usage_status == "unavailable"
+
+
+# --- real wall-clock deadline for the Vertex SDK call (chief-wiggum#330) -----
+#
+# consult_gemini_vertex used to accept `timeout` "for CLI signature parity"
+# and never enforce it — the call is a synchronous SDK request with no
+# subprocess to bound, so nothing stopped a hung client.models.generate_content()
+# from blocking the calling thread (and thus the whole quorum, since
+# gemini-vertex is REQUIRED in the `reviewer` role) forever.
+
+
+def test_consult_gemini_vertex_enforces_a_wall_clock_deadline(monkeypatch):
+    project_secret = {"GOOGLE_CLOUD_PROJECT": "proj", "GOOGLE_CLOUD_LOCATION": "global"}
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: project_secret.get(name))
+
+    class _FakeModels:
+        def generate_content(self, model, contents):
+            time.sleep(30)  # simulate a hang far longer than the deadline below
+            raise AssertionError("should never return — the deadline must fire first")
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            self.models = _FakeModels()
+
+    fake_genai = type("fake_genai_module", (), {"Client": _FakeClient})
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google", type("fake_google_module", (), {"genai": fake_genai}))
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        consult_ai.consult_gemini_vertex("prompt", timeout=1)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 10, f"consult_gemini_vertex did not honor its deadline ({elapsed}s elapsed)"
+
+
+def test_consult_gemini_vertex_returns_normally_well_within_its_deadline(monkeypatch):
+    # The deadline machinery must not interfere with an ordinary fast call.
+    project_secret = {"GOOGLE_CLOUD_PROJECT": "proj", "GOOGLE_CLOUD_LOCATION": "global"}
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: project_secret.get(name))
+
+    class _FakeModels:
+        def generate_content(self, model, contents):
+            resp = _FakeVertexResponse(usage_metadata=None)
+            resp.text = "PONG"
+            resp.model_version = model
+            return resp
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            self.models = _FakeModels()
+
+    fake_genai = type("fake_genai_module", (), {"Client": _FakeClient})
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google", type("fake_google_module", (), {"genai": fake_genai}))
+
+    text, usage = consult_ai.consult_gemini_vertex("prompt", timeout=30)
+    assert text == "PONG"
 
 
 # --- diff-scoped repo retrieval (chief-wiggum#319) ---------------------------

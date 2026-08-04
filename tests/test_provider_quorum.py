@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import dataclass
+
+import pytest
 
 import providers
 from providers import (
@@ -591,3 +595,199 @@ def test_shipped_config_declares_accepts_images_and_sends_images():
     # not just "the fields exist", but "the fields are consistent".
     report = detect_image_blind_providers(roles["design_critic"], providers_by_name)
     assert report.outcome == "pass"
+
+
+# --- quorum-level deadline (chief-wiggum#330) --------------------------------
+#
+# run_role_quorum's as_completed() used to have no timeout=, so a provider
+# call that hangs (ignoring its own individual budget — a bug elsewhere, or
+# simply a caller that never bounded it) could block the whole quorum call
+# forever. quorum_timeout bounds the CALLER's wait: any future still
+# unfinished at the deadline is reported as a failure rather than awaited.
+
+
+def test_run_role_quorum_abandons_a_hung_provider_at_the_quorum_deadline(tmp_path):
+    never = threading.Event()
+
+    def execute(provider):
+        if provider.name == "codex":
+            return SUBSTANTIVE
+        never.wait(30)  # simulates a provider call that ignores its own timeout
+        return SUBSTANTIVE
+
+    plan = _plan(["codex", "gemini-vertex"], [])
+    start = time.monotonic()
+    manifest = run_role_quorum(plan, execute, tmp_path, quorum_timeout=0.3, max_attempts=1)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"run_role_quorum did not return promptly ({elapsed}s)"
+    statuses = {r.name: r.status for r in manifest.results}
+    assert statuses["codex"] == "ok"
+    assert statuses["gemini-vertex"] == "failed"
+    gv_result = next(r for r in manifest.results if r.name == "gemini-vertex")
+    assert "deadline" in gv_result.error
+    never.set()  # let the background thread unblock so it doesn't linger
+
+
+def test_run_role_quorum_default_deadline_never_fires_on_ordinary_fast_execution(tmp_path):
+    # The default quorum_timeout is deliberately generous — every existing
+    # (fast, mocked) caller must be completely unaffected by its existence.
+    manifest = run_role_quorum(_plan(["codex"], ["gemini"]), lambda p: SUBSTANTIVE, tmp_path)
+    assert manifest.ok is True
+    assert all(r.status == "ok" for r in manifest.results)
+
+
+def test_run_role_quorum_quorum_timeout_none_means_unbounded(tmp_path):
+    # An explicit opt-out must still behave exactly like the pre-#330 code —
+    # no artificial cap when a caller asks for none.
+    manifest = run_role_quorum(
+        _plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path, quorum_timeout=None,
+    )
+    assert manifest.ok is True
+
+
+# --- classified, backed-off retries (chief-wiggum#330) -----------------------
+
+
+def test_retry_backs_off_between_attempts(tmp_path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(providers.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"codex": 0}
+
+    def execute(provider):
+        calls[provider.name] += 1
+        if calls[provider.name] < 2:
+            raise RuntimeError("transient")
+        return SUBSTANTIVE
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+
+    assert manifest.results[0].status == "ok"
+    assert len(sleeps) == 1  # one backoff, before the 2nd (successful) attempt
+    assert sleeps[0] > 0
+
+
+def test_retry_backoff_is_longer_after_a_rate_limit_than_a_plain_error(tmp_path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(providers.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"n": 0}
+
+    def execute(provider):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("HTTP 429: rate limit exceeded")
+        return SUBSTANTIVE
+
+    run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+    rate_limited_backoff = sleeps[0]
+
+    sleeps.clear()
+    calls["n"] = 0
+
+    def execute_plain(provider):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("connection reset")
+        return SUBSTANTIVE
+
+    run_role_quorum(_plan(["codex"], []), execute_plain, tmp_path, max_attempts=2)
+    plain_backoff = sleeps[0]
+
+    assert rate_limited_backoff > plain_backoff
+
+
+def test_classify_failure_recognizes_timeout_and_rate_limit_and_other():
+    assert providers.classify_failure(TimeoutError("x")) == "timeout"
+    assert providers.classify_failure(RuntimeError("HTTP 429 too many requests")) == "rate_limit"
+    assert providers.classify_failure(RuntimeError("connection reset by peer")) == "other"
+
+
+def test_classify_failure_recognizes_subprocess_timeout_expired():
+    import subprocess
+
+    exc = subprocess.TimeoutExpired(cmd=["x"], timeout=5)
+    assert providers.classify_failure(exc) == "timeout"
+
+
+def test_execute_opted_into_retry_context_receives_attempt_and_failure_kind(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    received: list[tuple[int, str | None]] = []
+
+    def execute(provider, attempt=1, previous_failure_kind=None):
+        received.append((attempt, previous_failure_kind))
+        if attempt == 1:
+            raise TimeoutError("slow")
+        return SUBSTANTIVE
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+
+    assert manifest.results[0].status == "ok"
+    assert received == [(1, None), (2, "timeout")]
+
+
+def test_execute_without_retry_context_is_unaffected(tmp_path, monkeypatch):
+    # Backward compatibility: a plain 1-arg execute (every existing caller
+    # and every other test in this file) must keep being called exactly as
+    # before — no attempt/previous_failure_kind ever forced onto it.
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    calls = {"codex": 0}
+
+    def execute(provider):
+        calls[provider.name] += 1
+        if calls[provider.name] < 2:
+            raise RuntimeError("transient")
+        return SUBSTANTIVE
+
+    manifest = run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=2)
+    assert manifest.results[0].status == "ok"
+    assert calls["codex"] == 2
+
+
+def test_execute_accepting_var_keyword_args_is_treated_as_retry_context_aware(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    received = []
+
+    def execute(provider, **kwargs):
+        received.append(kwargs)
+        return SUBSTANTIVE
+
+    run_role_quorum(_plan(["codex"], []), execute, tmp_path, max_attempts=1)
+    assert received[0].get("attempt") == 1
+
+
+# --- MIN_PROMPT_BYTES enforced inside run_role_quorum (chief-wiggum#330) -----
+#
+# consult_ai.py's own CLI already refused a truncated/empty prompt before
+# calling plan_role/run_role_quorum at all — but that guard only protects
+# ITS entry path. scripts/run_review.py builds its own (much larger,
+# assembled) prompt and calls providers.run_role_quorum directly, with no
+# equivalent guard — so a truncated assembled prompt there could still burn
+# a whole reviewer quorum's worth of provider calls (the #163 failure this
+# generalizes). Moving the floor into run_role_quorum covers every entry
+# path for free, and refuses BEFORE any provider task is submitted.
+
+
+def test_run_role_quorum_refuses_a_too_short_prompt_before_any_provider_runs(tmp_path):
+    called = []
+
+    def execute(provider):
+        called.append(provider.name)
+        return SUBSTANTIVE
+
+    with pytest.raises(providers.ShortPromptError):
+        run_role_quorum(_plan(["codex"], []), execute, tmp_path, prompt="short")
+
+    assert called == []  # refused before any provider was ever invoked
+
+
+def test_run_role_quorum_accepts_a_prompt_at_the_floor(tmp_path):
+    prompt = "x" * providers.MIN_PROMPT_BYTES
+    manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path, prompt=prompt)
+    assert manifest.ok is True
+
+
+def test_run_role_quorum_without_a_prompt_is_unaffected_by_the_floor(tmp_path):
+    # prompt=None means "the caller didn't ask" (pre-existing semantics for
+    # the blindness check too) — no floor to enforce.
+    manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path)
+    assert manifest.ok is True
