@@ -1,0 +1,33 @@
+# Wiring the AI Transparency Disclosure pattern
+
+Stamped by `/apply-pattern` (`ai-transparency-disclosure`, chief-wiggum#316). The
+config seam (`{{config_dir}}/ai-disclosure.config.json`) is stack-agnostic; the four
+steps below are not — they touch this app's actual UI framework and output-writing
+code, so a human/worker completes them once, then the protected-path rule (step 4)
+stops them from silently regressing.
+
+1. **First-interaction disclosure (INV-ATD-001).** For `{{conversational_surface}}`,
+   render `conversational_surfaces[0].disclosure_text` from the config at or before
+   the first exchange (a persistent header line in the chat UI, not a footer/about
+   page). Reachable means visible without the user taking an extra action.
+
+2. **Provenance marker (INV-ATD-002).** Every write path under
+   `{{synthetic_output_paths}}` must set `provenance_marker.field_name` (default
+   `generated_by_ai`) to `provenance_marker.field_value` on the SAME record as the
+   generated content — not a separate table that can drift out of sync.
+
+3. **Deployer disclosure config (INV-ATD-003).** For any feature performing emotion
+   recognition, biometric categorisation, deepfake publishing, or publishing
+   AI-generated public-interest text, wire the corresponding
+   `deployer_disclosure.*` block's `enabled_by_default` into that feature's runtime
+   check. If claiming the Art. 50(4) editorial-responsibility carve-out, set
+   `editorial_responsibility_carve_out_claimed: true` and fill in
+   `editorial_responsibility_basis` — never leave the claim implicit.
+
+4. **Protected paths (INV-ATD-004).** Add the disclosure component file(s) and the
+   provenance-marker write path(s) to this repo's `docs/quality/ratchet.json`
+   protected paths, so a later worker diff touching either is parked for human
+   review rather than silently merged. See `docs/ratchet.md`.
+
+Update `docs/compliance/ai-act.json`'s matching feature's `evidence[]` to point at
+the file(s)/line(s) where each step above actually landed.

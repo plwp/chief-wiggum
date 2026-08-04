@@ -414,6 +414,26 @@ Fix and re-validate until clean. The deeper consistency checks (dangling endpoin
 
 **What this proves, and what it doesn't.** `check_architecture.py` proves the DECLARED model in `architecture.json` is internally consistent. It does **not** prove the running code matches this model — that conformance/reflexion question is deliberately deferred (`#171`; see `docs/system-layer.md`). Declaring the model is cheap; treat it as a design-time contract the epic's `contracts.md`/`ui-spec.json` may reference by `ARC-`/`EDG-` id, not as a guarantee about deployed reality.
 
+#### 4j. EU AI Act classification (`docs/compliance/ai-act.json`) — chief-wiggum#316
+
+Standalone artifact, **independent of** `docs/compliance-requirements.md` (which stays scoped to the regulated-*data* posture and is cross-referenced, not replaced). Schema: `$CW_HOME/templates/ai-act-schema.json`. One record **per AI feature**, not per product — a product with no AI functionality gets an explicit empty `features: []`, never a missing file (the difference matters under Art. 6(4): absence of the file reads as "never assessed", not "assessed as not high-risk" — `check_ai_act.py` distinguishes them).
+
+**Check first**: `cat "$TARGET_REPO/docs/eu-scope.md" 2>/dev/null` (written by `/seed` Step 2.5, chief-wiggum#316) and `test -f "$TARGET_REPO/docs/compliance/ai-act.json"`.
+- If `docs/eu-scope.md` is absent (an established product `/seed` never ran the current form of, or a ticket added AI functionality without going back through `/seed`), determine `eu_scope` here instead of blocking — same three-value vocabulary (`in_scope`/`out_of_scope`/`TBD`), same requirement to name the Art. 2 limb relied on.
+- **Present**: read it, and only add/amend the features THIS epic's tickets introduce or change (a new chat assistant, a new recommendation surface, a scoring model). Leave existing feature records untouched.
+
+For every AI feature this epic's tickets introduce or change, from the epic's own contracts/ui-spec (never invented independently of what's actually being built), define per the schema: `feature_id` (stable `AIACT-<SLUG>-NNN`), `role` (`provider`|`deployer`|`both` — Art. 25: putting your name on a system makes you its provider), `tier` (`prohibited`|`high_risk_annex_i`|`high_risk_annex_iii`|`transparency_art50`|`minimal`), `performs_profiling` (**always required, explicit boolean** — profiling is always high-risk and voids any Art. 6(3) derogation regardless of the claimed tier), `annex_iii_area` (1–8, required iff `tier=high_risk_annex_iii`), `derogation_assessment` (required when a `high_risk_annex_iii` feature is claimed NOT high-risk — names one of the four Art. 6(3) conditions: `narrow_procedural_task` / `improves_completed_human_activity` / `detects_decision_patterns_without_replacing_human_review` / `preparatory_task` — this is the Art. 6(4) point: the assessment must exist NOW, before the epic ships, not be reconstructed later), `obligations[]` (article refs, e.g. `"Art. 50(1)"`), `evidence[]` (`@cw-trace` handles into the code/tests/screenshots that actually wire the obligation — never a re-serialized contract body), `legal_signoff[]` (`TBD:` markers for anything a lawyer must confirm).
+
+**A conversational agent, recommendation surface, or any other end-user-facing generative/inference feature defaults to `tier: transparency_art50`** unless the Annex III/Art. 5 screens below say otherwise — Art. 50(1) (tell the user they're talking to an AI) has no grace period, and skipping this because the product "doesn't hold regulated data" is exactly the wrong-trigger gap this ticket closes.
+
+**Screen against patterns adopted this epic**: if `apply_pattern.py --list-adopted` (Step 1) reports `engagement-instrumentation`, `referral-invite-loop`, or `grounded-sales-chat`, check that pattern's `ai_act` block (`patterns/registry.json`) for `escalates_tier_when` conditions this epic's actual usage triggers — e.g. `engagement-instrumentation` applied to WORKER monitoring (not end-user customers) lands in Annex III(4), and emotion inference layered on top in a workplace/education context is Art. 5(1)(f) **prohibited**, not high-risk.
+
+Validate with the gate immediately, report-only (never blocks Step 4, mirrors 4i's verifier-in-the-loop pattern):
+```bash
+python3 "$CW_HOME/scripts/check_ai_act.py" "$TARGET_REPO"
+```
+Fix any `fail`-severity finding (malformed feature, undeclared `eu_scope`, an Annex III tier with no named derogation condition, a `transparency_art50` tier with no Art. 50 obligation cited) before Step 6. A `prohibited`-tier hit is not a finding to document around — route the feature away from the prohibited practice before this epic ships it.
+
 ### Step 5: Formal model validation + multi-AI review
 
 The synthesised artifacts are the most critical output in the pipeline — every ticket inherits them. Validate mechanically first, then get a second opinion from external AIs.
@@ -576,6 +596,15 @@ git -C "$TARGET_REPO" add docs/system/architecture.json
 git -C "$TARGET_REPO" commit -m "arch: update docs/system/architecture.json for $EPIC_SLUG"
 ```
 (This can be folded into the same commit/push as the epic artifacts above if the installer step hasn't pushed yet.)
+
+**If Step 4j produced or updated `docs/compliance/ai-act.json`**, commit it the same way — also a once-per-product artifact (per feature, accumulating across epics), also outside `docs/epics/$EPIC_SLUG/`:
+```bash
+mkdir -p "$TARGET_REPO/docs/compliance"
+cp "$CW_TMP/ai-act.json" "$TARGET_REPO/docs/compliance/ai-act.json"
+cp "$CW_TMP/eu-scope.md" "$TARGET_REPO/docs/eu-scope.md" 2>/dev/null || true
+git -C "$TARGET_REPO" add docs/compliance/ai-act.json docs/eu-scope.md
+git -C "$TARGET_REPO" commit -m "arch: update docs/compliance/ai-act.json for $EPIC_SLUG"
+```
 
 **If `git push` fails** (e.g., branch protection rules forbid direct pushes to the default branch), fall back to creating a PR:
 ```bash

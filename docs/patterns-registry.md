@@ -102,6 +102,17 @@ Each specified pattern is a directory. Two files are the contract:
 Declaring **success metrics is mandatory**, not decorative — see
 [Success metrics make patterns improvable](#success-metrics-make-patterns-improvable).
 
+**Every registry entry also carries an `ai_act` block** (chief-wiggum#316):
+`risk_surface` (which article the pattern's own machinery can implicate — empty
+array if none), `obligations_stamped` (article refs the pattern's contract pack
+already satisfies, e.g. `ai-transparency-disclosure`'s Art. 50(1)-(4)), and
+`escalates_tier_when` (the condition under which adopting this pattern moves the
+HOST product's `docs/compliance/ai-act.json` tier — `null` if adopting it never
+does). This is how a pattern that can move a product across a risk boundary — e.g.
+`engagement-instrumentation` applied to worker monitoring lands in Annex III(4) —
+says so at adoption time instead of the operator discovering it later. See
+`docs/ai-act.md`.
+
 `registry.json` is a thin index over the directories so a workflow can list and
 filter patterns without opening each manifest. It also carries **candidates**
 (patterns mined but not yet fully specified) and **meta-disciplines** (recurring

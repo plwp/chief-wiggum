@@ -1,0 +1,19 @@
+{
+  "$comment": "Scaffold manifest for ai-transparency-disclosure. apply_pattern.py stamps each file into the target repo with parameters bound. Language-agnostic seam: a shared config record every conversational-surface/synthetic-output component reads at runtime, plus the wiring playbook for the app-specific UI/output code (which IS necessarily stack-specific and out of scope for a generic template). See docs/patterns-registry.md#scaffold-layout.",
+  "scaffold_version": 1,
+  "pattern": "ai-transparency-disclosure",
+  "files": [
+    {
+      "template": "ai_disclosure_config.json.tmpl",
+      "target": "{{config_dir}}/ai-disclosure.config.json",
+      "realizes": ["INV-ATD-001", "INV-ATD-002", "INV-ATD-003"],
+      "desc": "Single-source-of-truth disclosure config: the first-interaction disclosure copy for {{conversational_surface}}, the provenance-marker field name every synthetic-output write path must set, and the deployer-disclosure defaults for emotion/biometric/deepfake/public-interest-text features."
+    },
+    {
+      "template": "AI_DISCLOSURE_WIRING.md.tmpl",
+      "target": "docs/ai-disclosure-wiring.md",
+      "realizes": ["INV-ATD-001", "INV-ATD-002", "INV-ATD-003", "INV-ATD-004"],
+      "desc": "Playbook for wiring {{config_dir}}/ai-disclosure.config.json into the app's actual UI/output code, and for marking the disclosure component + provenance write path as protected paths in the ratchet config."
+    }
+  ]
+}

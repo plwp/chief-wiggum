@@ -295,6 +295,16 @@ If the repo has no `docs/tutorials/` (or no maintainer script), **skip and say s
 
 This is **report-only** — it never blocks the close (a stale tutorial is a follow-up, not a broken seam). Recommend `/tutorial-videos` to re-produce drifted ones and author the gaps, and **ticket the new-tutorial gaps** so they aren't lost. Do not attempt to record videos inside `/close-epic` — production needs a running instance and is its own workflow.
 
+### Step 2j2: EU AI Act check (report-only) — chief-wiggum#316
+
+Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 prohibitions, Art. 6(4) derogation documentation, Art. 50 transparency) — the Chapter III high-risk conformity pack is parked (deferred by the Digital Omnibus, harmonised standards don't exist yet):
+
+```bash
+python3 "$CW_HOME/scripts/check_ai_act.py" "$TARGET_REPO" --format text
+```
+
+**Report-only** (always exits 0 here, per `docs/gate-rollout.md` — this gate has no `--gate` wired into any workflow yet, and won't until a dry-run against a real shipped target and a `docs/quality/validation/check_ai_act.json` record exist per `docs/gate-validation.md`). Surface the finding count in the close report under `### EU AI Act`, distinguishing the four states: `pass` (all declared features clean), `findings` (a `fail`-severity hit — a `prohibited` tier, an undocumented Annex III derogation claim, an undeclared `eu_scope`, or a **missing artifact entirely** — Art. 6(4): absence is never a silent pass), `inapplicable` (the artifact exists with an explicit empty `features: []` — a genuine, recorded "no AI functionality here"), `error` (the artifact exists and could not be parsed). A `missing` classification_status on a product with an obvious AI feature (a chat widget, a recommendation surface) is worth flagging prominently in the close report even though it doesn't block — it means the Art. 6(4) assessment was never made, which the operator should fix before, not after, this epic ships.
+
 ### Step 2k: Remediation-epic acceptance — the inventory re-run (blocking)
 
 **Only for remediation epics** — epics whose ticket bodies carry `DEBT-` ids
@@ -656,6 +666,11 @@ Present the full epic close report:
 - Drifted tutorials this epic touched: [slugs] — re-produce with `/tutorial-videos` (or "none" / "no tutorial system")
 - New-tutorial gaps (nav destinations the epic shipped with no tutorial): [slugs/routes] — ticketed as [#N]
 - _Report-only; a stale tutorial is a follow-up, not a broken seam._
+
+### EU AI Act (report-only)
+- Classification status: [missing / recorded] — [N] feature(s) declared, outcome: [pass / findings / inapplicable / error]
+- Fail-severity findings: [list, or "none"] — [e.g. "AIACT-CHATBOT-001: annex_iii_undocumented_assessment"]
+- _Report-only; in-force layer (Art. 5/6(4)/50) only — the Chapter III conformity pack is parked. A `missing` status on an obviously-AI product is worth flagging even though it doesn't block._
 
 ### Multi-AI Analysis
 - Consensus risks: [areas both AIs flagged]
