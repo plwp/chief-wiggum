@@ -39,3 +39,13 @@ def isolate_quality_cache(tmp_path, monkeypatch):
     this, a test run would read and write the operator's REAL
     ``~/.chief-wiggum/cache/quality`` directory instead of a throwaway one."""
     monkeypatch.setenv("CW_QUALITY_CACHE_DIR", str(tmp_path / "quality-cache"))
+
+
+@pytest.fixture(autouse=True)
+def isolate_findings_cache(tmp_path, monkeypatch):
+    """Redirect the #327 per-file gate-findings cache
+    (``chief_wiggum/findings_cache.py``, used by ``check_traceability.py`` /
+    ``check_single_writer.py``) to a per-test path — same rationale as
+    ``isolate_quality_cache`` above: without this, a test run would read and
+    write the operator's REAL ``~/.chief-wiggum/cache/findings`` directory."""
+    monkeypatch.setenv("CW_FINDINGS_CACHE_DIR", str(tmp_path / "findings-cache"))
