@@ -277,8 +277,27 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
 
 **Orchestrator independent verification**: For each successfully completed ticket, the orchestrator must independently verify (not just trust the worker's report):
 1. Check out the ticket's branch in its worktree
-2. Run the full test suite
-3. Run linting
+2. **Verify the worker's own test-suite evidence instead of re-running the full suite from scratch** (chief-wiggum#322) — `/implement` Step 4/4b already ran the suite on this exact branch/worktree/commit via `run_verification.py` and wrote `$CW_TMP/$ticket_number/verify.json`. The distrust doctrine targets the worker's NARRATIVE ("tests pass" in prose), not this structured artifact (exit code, report path, junit case set) — verifying THAT is equally untrusting and nearly free. Trust the artifact only when it is BOTH fresh (written at or after the branch's last commit — a worker that committed further changes after verifying must be caught, not silently waved through on a stale green) and actually ran the test profile:
+   ```bash
+   VERIFY_JSON="$CW_TMP/$ticket_number/verify.json"
+   REUSE_OK=false
+   if [ -f "$VERIFY_JSON" ]; then
+     LAST_COMMIT_TS=$(git -C "$worktree" log -1 --format=%ct)
+     VERIFY_TS=$(python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$VERIFY_JSON")
+     TEST_STEPS=$(jq '[.steps[] | select(.profile=="test")] | length' "$VERIFY_JSON")
+     if [ "$VERIFY_TS" -ge "$LAST_COMMIT_TS" ] && [ "$(jq .ok "$VERIFY_JSON")" = "true" ] && [ "$TEST_STEPS" != "0" ]; then
+       REUSE_OK=true
+     fi
+   fi
+   if [ "$REUSE_OK" = "true" ]; then
+     echo "reusing #$ticket_number's own verify.json (fresh, ok, $TEST_STEPS test step(s)) — skipping a redundant re-run"
+   else
+     echo "no fresh/ok verify.json for #$ticket_number — falling back to a full re-run"
+     python3 "$CW_HOME/scripts/run_verification.py" --repo "$worktree" --profile test,lint,build --json > "$VERIFY_JSON"
+   fi
+   ```
+   The fallback re-run is never skipped when the artifact is missing, stale (older than the branch's last commit — e.g. the worker amended after verifying), or reports a non-passing/empty result; only a genuinely fresh, green, non-empty artifact is reused.
+3. Run linting (covered by the same `verify.json` when reused; run `golangci-lint run ./...` / `npx eslint` directly on the fallback path)
 4. Verify the branch has the expected commits
 5. **Protected-path guard** (if `$QUALITY_DIR/ratchet.json` exists — `QUALITY_DIR` resolved via `python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir`; see `docs/ratchet.md`) — workers must not move their own goalposts. Check the worker's diff against the protected pathset (contracts, invariants, integration-test specs, formal models, ratchet state):
    ```bash
@@ -336,13 +355,23 @@ done
 
 Run the integration check **on the staging branch, before promoting to main**:
 
-1. **Full test suite**: `go test ./...` / `npm test` / `pytest` — all must pass
-2. **Linting**: `golangci-lint run ./...` / `npx eslint` — zero high-severity findings
-3. **Build**: Verify the project compiles/builds cleanly
-4. **Smoke test**: If services can be started, start them and verify health endpoints respond
-5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists — `QUALITY_DIR` resolved via `python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir`; see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID:
+1. **Full test suite**, captured as structured evidence (chief-wiggum#284) rather than bare prose — this is the run item 5 below reuses instead of paying for the suite twice:
    ```bash
-   python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+   python3 "$CW_HOME/scripts/run_verification.py" --repo "$TARGET_REPO" --profile test,lint,build --json > "$CW_TMP/wave-$wave_number-verify.json"
+   ```
+   All steps must pass (`jq .ok "$CW_TMP/wave-$wave_number-verify.json"`).
+2. **Linting**: covered by the `lint` profile above (or `golangci-lint run ./...` / `npx eslint` directly) — zero high-severity findings
+3. **Build**: covered by the `build` profile above — verify the project compiles/builds cleanly
+4. **Smoke test**: If services can be started, start them and verify health endpoints respond
+5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists — `QUALITY_DIR` resolved via `python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir`; see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID. **Reuse item 1's run instead of re-executing the suite on the identical staging commit** (chief-wiggum#322, same pattern as `/implement` Step 4b): when item 1's JSON names a `report` for its `test`-profile step and the ratchet config has exactly one suite of the matching parser, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
+   ```bash
+   REPORT=$(python3 -c "import json; d=json.load(open('$CW_TMP/wave-$wave_number-verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
+   SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
+   if [ -n "$REPORT" ] && [ -n "$SUITE" ] && [ -f "$TARGET_REPO/$REPORT" ]; then
+     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --reuse-report "$SUITE=$TARGET_REPO/$REPORT"
+   else
+     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+   fi
    python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
    ```
    Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (same record-gated posture as `/implement` Step 8 and `/close-epic` Step 2f, chief-wiggum#208); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings in the wave log. A violation is a hard blocker exactly like a test failure: fix it on the staging branch (or drop the offending ticket's merge from the wave) before promoting. Never resolve a violation by editing the contract, a verifier test, or the journal — a deliberate revision is a journaled human act (`record --amend`/`--amend-verifier`). A `missing_tests` finding caused by a flaky/order-dependent case is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead.

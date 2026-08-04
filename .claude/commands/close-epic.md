@@ -186,10 +186,18 @@ Any writer of a controlled field whose enclosing symbol/file is **not** in `sanc
 
 ### Step 2f: Ratchet gate
 
-Resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`. If `$QUALITY_DIR/ratchet.json` exists (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID:
+Resolve `QUALITY_DIR=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | jq -r .quality_dir)`. If `$QUALITY_DIR/ratchet.json` exists (see `docs/ratchet.md`), the epic must close with the quality ratchet **held or advanced** — the high-water pass-set intact, no contract definition weakened or removed since the `/architect` baseline, and no verifier-test body rewritten behind its still-green test ID.
+
+**Reuse Step 1b's verification run instead of paying for the suite twice** (chief-wiggum#322, same pattern as `/implement` Step 4b) — `close_epic_audit.py` already ran `ver.verify(repo, ["test"])` on this exact `$TARGET_REPO` commit and recorded it in `close-epic-manifest.json`'s `verification.steps`. When that run named a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+REPORT=$(python3 -c "import json; d=json.load(open('$CW_TMP/close-epic/close-epic-manifest.json')); v=d.get('verification') or {}; print(next((s['report'] for s in v.get('steps', []) if s['profile']=='test' and s.get('report')), ''))")
+SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
+if [ -n "$REPORT" ] && [ -n "$SUITE" ] && [ -f "$TARGET_REPO/$REPORT" ]; then
+  python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --reuse-report "$SUITE=$TARGET_REPO/$REPORT"
+else
+  python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+fi
 python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
 python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
 ```
