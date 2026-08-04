@@ -92,6 +92,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # chief-wiggum#319: a reviewer quorum can report every required provider
+    # "ok" while one of them never read anything beyond its own prompt —
+    # surface that as loudly as any other quorum warning, independent of
+    # whether the review itself passes.
+    blindness = manifest.provider_manifest.get("blindness") or {}
+    for finding in blindness.get("findings", []):
+        print(f"Warning: {finding.get('message')}", file=sys.stderr)
+
     print(json.dumps(manifest.to_dict(), indent=2))
     return 0 if manifest.ok else 1
 

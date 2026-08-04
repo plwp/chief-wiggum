@@ -708,6 +708,12 @@ def run_review(
             providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default),
         ),
         out,
+        # chief-wiggum#319: the SHARED (pre-lens) prompt + lens map, so the
+        # quorum also runs the blindness check and surfaces it in
+        # provider_manifest/review-manifest.json — the same prompt every
+        # provider above was rendered from via prompt_for_provider.
+        prompt=prompt,
+        lenses=lenses,
     )
     response_paths = [r.path for r in quorum.results if r.path]
 

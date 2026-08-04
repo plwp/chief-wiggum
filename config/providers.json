@@ -4,63 +4,74 @@
     "codex": {
       "type": "tool",
       "tool": "codex",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": true
     },
     "gemini": {
       "type": "tool",
       "tool": "gemini",
-      "enabled": false
+      "enabled": false,
+      "reads_repo": true
     },
     "gemini-vertex": {
       "type": "tool",
       "tool": "gemini-vertex",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": true
     },
     "claude": {
       "type": "tool",
       "tool": "claude",
-      "enabled": false
+      "enabled": false,
+      "reads_repo": true
     },
     "claude-interactive": {
       "type": "delegate",
       "delegate": "claude-interactive",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": true
     },
     "opus": {
       "type": "tool",
       "tool": "claude",
       "model": "claude-opus-4-6",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": true
     },
     "deepseek": {
       "type": "tool",
       "tool": "openrouter",
       "model": "deepseek/deepseek-v4-pro",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": false
     },
     "kimi": {
       "type": "tool",
       "tool": "openrouter",
       "model": "moonshotai/kimi-k3",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": false
     },
     "glm": {
       "type": "tool",
       "tool": "openrouter",
       "model": "z-ai/glm-5.2",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": false
     },
     "qwen": {
       "type": "tool",
       "tool": "openrouter",
       "model": "qwen/qwen3.7-max",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": false
     },
     "minimax": {
       "type": "tool",
       "tool": "openrouter",
       "model": "minimax/minimax-m3",
-      "enabled": true
+      "enabled": true,
+      "reads_repo": false
     }
   },
   "roles": {
@@ -72,7 +83,8 @@
         "gemini-vertex",
         "claude-interactive"
       ],
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": true
     },
     "implementer": {
       "required": [
@@ -81,7 +93,8 @@
       "optional": [
         "claude-interactive"
       ],
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": true
     },
     "reviewer": {
       "required": [
@@ -96,7 +109,8 @@
         "claude-interactive": "adoption-cost",
         "gemini-vertex": "completeness"
       },
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": true
     },
     "architecture_critic": {
       "required": [
@@ -111,7 +125,8 @@
         "claude-interactive": "adoption-cost",
         "gemini-vertex": "completeness"
       },
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": true
     },
     "design_critic": {
       "required": [
@@ -121,7 +136,8 @@
         "codex",
         "claude-interactive"
       ],
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": false
     },
     "risky_diff_review": {
       "required": [
@@ -131,7 +147,8 @@
       "optional": [
         "claude-interactive"
       ],
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": true
     },
     "kill-review": {
       "required": [
@@ -146,7 +163,8 @@
         "opus": "steelman-the-kill",
         "claude-interactive": "is-recycle-better"
       },
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": false
     },
     "divergence": {
       "required": [
@@ -158,7 +176,8 @@
         "qwen",
         "minimax"
       ],
-      "optional_timeout_seconds": 300
+      "optional_timeout_seconds": 300,
+      "requires_repo_read": false
     }
   }
 }
