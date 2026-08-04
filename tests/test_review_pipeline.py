@@ -94,6 +94,109 @@ def test_checklist_and_epic_sections_appended():
     assert "## Empty" not in out
 
 
+# --- static-first ordering for prompt-prefix caching (chief-wiggum#332) -----
+#
+# A template carrying review.VOLATILE_MARKER splits into a STATIC part
+# (everything before the marker — task framing/review standard/output
+# format, none of which reference a template var) and a VOLATILE part
+# (ticket title/description/AC/comments/diff, after the marker). Checklist
+# and epic sections are appended to the STATIC part, not the end of the
+# whole prompt — so for two DIFFERENT tickets sharing the same
+# template/checklist/epic sections, everything up to the ticket content is
+# byte-identical, which is what lets a provider-side prompt-prefix cache
+# hit across tickets in the same epic/review role.
+
+STATIC_FIRST_TEMPLATE = f"""# Code Review Request
+
+Static framing paragraph that never varies by ticket.
+
+## Review Standard
+
+Static review standard text.
+
+{review.VOLATILE_MARKER}
+## Context
+
+Ticket: {{{{TICKET_TITLE}}}}
+Desc: {{{{TICKET_DESCRIPTION}}}}
+AC:
+{{{{ACCEPTANCE_CRITERIA}}}}
+
+## Diff
+
+```diff
+{{{{DIFF}}}}
+```
+"""
+
+
+def test_static_prefix_is_byte_stable_across_two_different_tickets():
+    checklist = LONG_CHECKLIST
+    epic_sections = [("Contracts", "REQUIRES x")]
+
+    prompt_a = review.assemble_review_prompt(
+        STATIC_FIRST_TEMPLATE, _ticket(title="Ticket A", body="Body A"), "diff A content",
+        checklist=checklist, epic_sections=epic_sections,
+    )
+    prompt_b = review.assemble_review_prompt(
+        STATIC_FIRST_TEMPLATE,
+        _ticket(title="A completely different ticket B", body="Totally different body"),
+        "an entirely different diff body",
+        checklist=checklist, epic_sections=epic_sections,
+    )
+
+    import os
+
+    common = os.path.commonprefix([prompt_a, prompt_b])
+    # The static framing, review standard, checklist, and epic section must
+    # all land in the shared prefix — well beyond a token boundary.
+    assert "Static framing paragraph" in common
+    assert "Static review standard text" in common
+    assert "REQUIRES x" in common
+    assert "# Checklist" in common
+    # And the two prompts must actually diverge afterward (not identical).
+    assert prompt_a != prompt_b
+    assert "Ticket A" not in common
+    assert "Ticket A" in prompt_a
+    assert "A completely different ticket B" in prompt_b
+
+
+def test_prompt_without_the_volatile_marker_still_assembles_all_content():
+    # Backward compatibility: a template with no marker at all (every
+    # pre-#332 template) is treated as entirely volatile — every
+    # substitution and appended section still lands somewhere in the output.
+    out = review.assemble_review_prompt(
+        TEMPLATE, _ticket(), "d", checklist=LONG_CHECKLIST,
+        epic_sections=[("Contracts", "REQUIRES x")],
+    )
+    assert "Ticket: Add thing" in out
+    assert "## Contracts" in out and "REQUIRES x" in out
+    assert "# Checklist" in out
+
+
+# --- comment thread capped like the diff (chief-wiggum#332) -----------------
+
+
+def test_comment_thread_is_capped_like_the_diff():
+    huge_comments = [
+        _comment(body="x" * 2000, created_at=f"2026-01-{i:02d}T00:00:00Z", id=i)
+        for i in range(1, 30)
+    ]
+    ticket = _ticket(comments=huge_comments)
+    out = review.assemble_review_prompt(
+        TEMPLATE_WITH_COMMENTS, ticket, "d", max_comments_bytes=2_000,
+    )
+    assert "truncated" in out
+    assert len(out.encode("utf-8")) < 2_000 * len(huge_comments)
+
+
+def test_comment_thread_under_the_cap_is_unaffected():
+    ticket = _ticket(comments=[_comment(body="short comment")])
+    out = review.assemble_review_prompt(TEMPLATE_WITH_COMMENTS, ticket, "d")
+    assert "short comment" in out
+    assert "truncated" not in out
+
+
 # --- diff truncation --------------------------------------------------------
 
 
