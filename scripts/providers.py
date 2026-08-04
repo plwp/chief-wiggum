@@ -6,7 +6,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,18 @@ class Provider:
     # entries share one tool with different models (e.g. `opus` = the claude
     # CLI pinned to the opus model). A caller's explicit --model still wins.
     model: str | None = None
+    # Does this provider's call path ever give it a chance to read the target
+    # repo (chief-wiggum#319)? True for every CLI/delegate that runs with a
+    # real ``cwd`` and its own file access (codex, gemini CLI's --yolo tool
+    # loop, claude/claude-interactive) — including ``gemini-vertex``, which
+    # now retrieves touched-file content for diff-bearing prompts (still no
+    # arbitrary repo browsing, so a measured call can legitimately come back
+    # blind — see ``detect_blind_providers``). False for a provider whose
+    # ENTIRE call path is a plain text completion with no file access under
+    # any circumstance (the openrouter-backed models) — declared explicitly
+    # here rather than inferred, so a role can tell a code-reading provider
+    # from a text-only one without re-deriving it from behavior.
+    reads_repo: bool = True
 
 
 @dataclass(frozen=True)
@@ -53,6 +65,21 @@ class Role:
     # full budget (1800s for claude-interactive). ``None`` falls back to
     # ``consult_ai.DEFAULT_OPTIONAL_TIMEOUT_SECONDS``.
     optional_timeout_seconds: int | None = None
+    # Does this role's job actually require a provider to have read the repo
+    # (chief-wiggum#319)? True for the roles that explore, implement, or
+    # review CODE (``explorer``, ``implementer``, ``reviewer``,
+    # ``architecture_critic``, ``risky_diff_review``) — a required or
+    # optional member of one of these that comes back having plainly only
+    # seen its own prompt is a silent quorum gap, not a quiet success.
+    # False for a role whose job was never repo-grounded in the first place:
+    # ``design_critic`` reviews rendered SCREENSHOTS (an image-reading gap is
+    # a separate, real defect, filed rather than fixed here — see the final
+    # report), ``kill-review`` evaluates a business-bet writeup, and
+    # ``divergence`` exists purely to widen textual distribution (see its
+    # own docstring below). Declared per role rather than inferred so a role
+    # that never needed repo-reading is never reported as if a provider
+    # failed it.
+    requires_repo_read: bool = True
 
 
 @dataclass(frozen=True)
@@ -134,6 +161,7 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
             tool=raw.get("tool"),
             delegate=raw.get("delegate"),
             model=raw.get("model"),
+            reads_repo=bool(raw.get("reads_repo", True)),
         )
     return providers
 
@@ -147,6 +175,7 @@ def roles_from_config(config: dict[str, Any]) -> dict[str, Role]:
             optional=tuple(raw.get("optional", [])),
             lenses=dict(raw.get("lenses", {})),
             optional_timeout_seconds=raw.get("optional_timeout_seconds"),
+            requires_repo_read=bool(raw.get("requires_repo_read", True)),
         )
     return roles
 
@@ -311,9 +340,16 @@ def validate_lenses(config: dict[str, Any], lenses: dict[str, Any]) -> list[str]
 # failed provider call, not a substantive response.
 INVALID_MARKERS = ("Timeout:", "Error:")
 
-# An ``execute`` callable runs a single provider and returns its response text.
-# It is injected so the quorum runner is testable without real provider calls.
-ExecuteFn = Callable[[Provider], str]
+# An ``execute`` callable runs a single provider and returns its response text
+# — OR, when the caller can supply it, a ``(text, usage)`` pair where ``usage``
+# is anything exposing ``.tokens_in``/``.tokens_out``/``.usage_status``/
+# ``.resolved_model`` (duck-typed against ``consult_ai.Usage`` so this module
+# never imports it — chief-wiggum#319). ``_run_one_provider`` accepts either
+# shape: existing callers (and every test) that return a bare string keep
+# working unchanged; ``consult_ai.consult_provider`` and the review pipeline
+# now return the pair, which is how per-provider token usage reaches the
+# manifest at all.
+ExecuteFn = Callable[[Provider], "str | tuple[str, object]"]
 
 
 @dataclass
@@ -325,6 +361,13 @@ class ProviderResult:
     attempts: int = 0
     error: str | None = None
     error_path: str | None = None
+    # Usage, threaded from whatever ``execute`` returned (chief-wiggum#319).
+    # ``None`` when the execute callable didn't supply usage (the plain-string
+    # contract) or the call failed — never fabricated, never zero-filled.
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    usage_status: str | None = None
+    resolved_model: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -335,13 +378,176 @@ class ProviderResult:
             "attempts": self.attempts,
             "error": self.error,
             "error_path": self.error_path,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "usage_status": self.usage_status,
+            "resolved_model": self.resolved_model,
         }
+
+
+# A provider's tokens_in may exceed the estimated size of its OWN prompt by up
+# to this factor and still count as "answered from the prompt alone, never
+# touched the repo" (chief-wiggum#319). Real repo reading — even one opened
+# file — inflates tokens_in by orders of magnitude (the ticket's own evidence:
+# 613k-1.1M vs ~1.3k-1.4k, a ~165:1 ratio); a small multiplier here is
+# generous headroom for SDK-added wrapping, not a real detection risk.
+BLIND_PROVIDER_MARGIN = 1.5
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    """Coarse, model-agnostic token estimate (~4 chars/token — the standard
+    rough heuristic for English prose/code) used ONLY as a floor-check
+    denominator, never for billing. Precision doesn't matter here: the gap
+    this is built to catch is two-plus orders of magnitude wide."""
+    return max(1, len(text) // 4)
+
+
+@dataclass
+class BlindnessFinding:
+    """One provider whose measured usage contradicts what the role required
+    of it (chief-wiggum#319) — either it answered from the prompt alone
+    (``kind="blind"``), or its usage could not be measured at all
+    (``kind="unmeasured"``), which is NOT the same as measured-and-fine and
+    must never be reported as a quiet pass."""
+
+    provider: str
+    kind: str  # "blind" | "unmeasured"
+    tokens_in: int | None
+    prompt_tokens_estimate: int | None
+    message: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class BlindnessReport:
+    """chief-wiggum#319: did every provider a role DECLARED needs repo
+    reading actually read anything beyond its own prompt? Follows the
+    established four-state gate vocabulary (chief-wiggum#289,
+    ``check_traceability.py`` is the reference): ``pass`` / ``findings`` /
+    ``inapplicable`` / ``error``. This is a REPORT, never a gate — it
+    surfaces into the existing consult/review manifest and never blocks a
+    quorum on its own.
+    """
+
+    role: str
+    requires_repo_read: bool
+    findings: list[BlindnessFinding] = field(default_factory=list)
+    providers_checked: int = 0
+    error: str | None = None
+
+    @property
+    def applicability(self) -> str:
+        if self.error:
+            return "error"
+        if not self.requires_repo_read:
+            return "inapplicable"
+        return "applicable"
+
+    @property
+    def outcome(self) -> str:
+        """The standard four-state gate outcome (#289): pass | findings |
+        inapplicable | error. Derived, never stored."""
+        if self.applicability in ("error", "inapplicable"):
+            return self.applicability
+        return "findings" if self.findings else "pass"
+
+    def to_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "requires_repo_read": self.requires_repo_read,
+            "applicability": self.applicability,
+            "outcome": self.outcome,
+            "providers_checked": self.providers_checked,
+            "error": self.error,
+            "findings": [f.to_dict() for f in self.findings],
+        }
+
+
+def detect_blind_providers(
+    role: Role,
+    providers_by_name: dict[str, Provider],
+    results: list[ProviderResult],
+    prompt_tokens_by_provider: dict[str, int],
+    *,
+    margin: float = BLIND_PROVIDER_MARGIN,
+) -> BlindnessReport:
+    """chief-wiggum#319: catch a quorum reporting healthy while a required
+    voice never opened a file — the review-layer shape of chief-wiggum#289
+    (absence-of-reading rendering as success).
+
+    Applies only when ``role.requires_repo_read`` — a role like
+    ``design_critic`` (reviews rendered screenshots) or ``divergence``
+    (exists to widen textual distribution) was never asked to read the repo,
+    so never touching it is not a finding, it's ``inapplicable``.
+
+    Within a repo-reading role, a provider declared text-only
+    (``provider.reads_repo is False``) is skipped too — it already told the
+    config it can't read files; that's not a silent surprise. Everything else
+    is measured per call, not assumed from a static label: a provider capable
+    of reading the repo under SOME conditions (e.g. ``gemini-vertex``'s
+    diff-scoped retrieval, chief-wiggum#319) that got nothing to retrieve on
+    THIS call is still reported blind on THIS call.
+
+    Two distinct findings, both loud, neither a pass:
+      - ``"blind"`` — ``tokens_in`` measured and within ``margin``x of the
+        provider's own prompt's estimated size: it answered from the prompt
+        alone, by definition (the ticket's own detection note).
+      - ``"unmeasured"`` — usage could not be measured at all. A provider that
+        cannot be measured is not the same as one measured and fine.
+    """
+    if not role.requires_repo_read:
+        return BlindnessReport(role=role.name, requires_repo_read=False)
+
+    findings: list[BlindnessFinding] = []
+    checked = 0
+    for result in results:
+        if result.status != "ok":
+            continue  # already visible as a quorum failure
+        provider = providers_by_name.get(result.name)
+        if provider is None or not provider.reads_repo:
+            continue  # declared text-only — not a surprise, nothing to detect
+        checked += 1
+        prompt_tokens = prompt_tokens_by_provider.get(result.name)
+        if result.tokens_in is None:
+            findings.append(BlindnessFinding(
+                provider=result.name, kind="unmeasured", tokens_in=None,
+                prompt_tokens_estimate=prompt_tokens,
+                message=(
+                    f"{result.name} is declared repo-reading and required by role "
+                    f"{role.name!r}, but its tokens_in could not be measured "
+                    f"(usage_status={result.usage_status!r}). A provider that cannot "
+                    "be measured is not the same as one measured and fine — do not "
+                    "count this voice as confirmed-informed."
+                ),
+            ))
+            continue
+        if prompt_tokens is not None and result.tokens_in <= prompt_tokens * margin:
+            findings.append(BlindnessFinding(
+                provider=result.name, kind="blind", tokens_in=result.tokens_in,
+                prompt_tokens_estimate=prompt_tokens,
+                message=(
+                    f"{result.name}'s tokens_in ({result.tokens_in}) is within {margin}x "
+                    f"of its own prompt's estimated size (~{prompt_tokens} tokens) in role "
+                    f"{role.name!r} — it answered from the prompt text alone, not the repo. "
+                    "A provider whose tokens_in is ~the prompt size did not read the repo, "
+                    "by definition (chief-wiggum#319)."
+                ),
+            ))
+    return BlindnessReport(
+        role=role.name, requires_repo_read=True, findings=findings, providers_checked=checked
+    )
 
 
 @dataclass
 class QuorumManifest:
     role: str
     results: list[ProviderResult] = field(default_factory=list)
+    # None when the caller didn't ask for the blindness check (no ``prompt``
+    # passed to ``run_role_quorum``) — distinct from a check that RAN and
+    # found nothing (chief-wiggum#319).
+    blindness: BlindnessReport | None = None
 
     @property
     def ok(self) -> bool:
@@ -353,12 +559,15 @@ class QuorumManifest:
         return [r.name for r in self.results if r.required and r.status != "ok"]
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "role": self.role,
             "ok": self.ok,
             "failed_required": self.failed_required,
             "results": [r.to_dict() for r in self.results],
         }
+        if self.blindness is not None:
+            d["blindness"] = self.blindness.to_dict()
+        return d
 
 
 def validate_output(text: str | None, *, min_bytes: int = 20) -> str | None:
@@ -396,16 +605,31 @@ def _run_one_provider(
     attempt = 0
     for attempt in range(1, attempts_allowed + 1):
         try:
-            text = execute(provider)
+            outcome = execute(provider)
         except Exception as exc:  # noqa: BLE001 - any provider failure is retryable
             last_error = f"execution failed: {exc}"
             continue
+        # ``execute`` may return a bare string (the original contract, still
+        # used by every pre-#319 caller/test) or a ``(text, usage)`` pair
+        # (consult_ai.consult_provider and the review pipeline, chief-wiggum#319).
+        # Usage is read duck-typed, never imported, so this module stays
+        # decoupled from consult_ai.Usage.
+        if isinstance(outcome, tuple):
+            text, usage = outcome
+        else:
+            text, usage = outcome, None
         problem = validate_output(text, min_bytes=min_bytes)
         if problem:
             last_error = problem
             continue
         ok_path.write_text(text)
-        return ProviderResult(provider.name, required, "ok", str(ok_path), attempt, None)
+        return ProviderResult(
+            provider.name, required, "ok", str(ok_path), attempt, None,
+            tokens_in=getattr(usage, "tokens_in", None),
+            tokens_out=getattr(usage, "tokens_out", None),
+            usage_status=getattr(usage, "usage_status", None),
+            resolved_model=getattr(usage, "resolved_model", None),
+        )
 
     err_path.write_text(last_error or "unknown error")
     return ProviderResult(
@@ -422,12 +646,23 @@ def run_role_quorum(
     min_bytes: int = 20,
     max_workers: int | None = None,
     write_manifest: bool = True,
+    prompt: str | None = None,
+    lenses: dict[str, Any] | None = None,
+    blindness_margin: float = BLIND_PROVIDER_MARGIN,
 ) -> QuorumManifest:
     """Run a role's providers concurrently with retries and output validation.
 
     Required and optional providers run in parallel. Required providers are
     retried up to ``max_attempts`` times; optional providers fail without
     blocking the quorum. A ``{role}-manifest.json`` records per-provider status.
+
+    ``prompt`` (chief-wiggum#319): the SHARED prompt every provider in this
+    role started from, BEFORE per-provider lens rendering — pass it (with
+    ``lenses`` when the role uses any) to also run the blindness check
+    (``detect_blind_providers``) and attach its ``BlindnessReport`` to the
+    manifest. Omitted (the default) means "the caller didn't ask" — the
+    manifest's ``blindness`` stays ``None``, distinct from a check that ran
+    and found nothing.
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -460,6 +695,25 @@ def run_role_quorum(
     # Deterministic order: required (config order) then optional.
     results.sort(key=lambda r: order.get(r.name, 1_000))
     manifest = QuorumManifest(plan.role.name, results)
+
+    if prompt is not None:
+        try:
+            providers_by_name = {p.name: p for p, _ in tasks}
+            prompt_tokens_by_provider = {
+                name: estimate_prompt_tokens(
+                    prompt_for_provider(plan.role, name, prompt, lenses or {})
+                )
+                for name in seen
+            }
+            manifest.blindness = detect_blind_providers(
+                plan.role, providers_by_name, results, prompt_tokens_by_provider,
+                margin=blindness_margin,
+            )
+        except Exception as exc:  # noqa: BLE001 - the check itself must never break the quorum
+            manifest.blindness = BlindnessReport(
+                role=plan.role.name, requires_repo_read=plan.role.requires_repo_read,
+                error=f"blindness check failed: {exc}",
+            )
 
     if write_manifest:
         (out / f"{plan.role.name}-manifest.json").write_text(

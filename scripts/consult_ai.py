@@ -533,6 +533,81 @@ def _parse_vertex_usage(response, requested_model: str) -> Usage:
     return Usage(tokens_in=tin, tokens_out=tout, usage_status="sdk-metadata", resolved_model=resolved)
 
 
+# chief-wiggum#319: consult_gemini_vertex is a single synchronous SDK call with
+# no tool loop, so it cannot browse the repo the way codex/claude's own exec
+# sandboxes can. What it CAN do reliably is retrieve exactly the files a
+# diff-review prompt is ABOUT: git always emits a `diff --git a/<path>
+# b/<path>` header per touched file, and every review-shaped prompt this
+# module's callers build (chief_wiggum.review.assemble_review_prompt's
+# {{DIFF}} substitution) embeds the literal diff. Extracting those paths and
+# reading each file's CURRENT full content from `cwd` gives gemini-vertex real
+# grounding for exactly the class of mistake chief-wiggum#319 documents (and
+# this repo's own #281 review corroborated: a false "pre-existing vs
+# introduced" attribution) — without pretending to a general repo-browsing
+# capability it doesn't have. A prompt with no diff header (an open-ended
+# exploration prompt, no bounded file set to retrieve) yields nothing and
+# falls back to prompt-only — never a guessed, unreliable file selection.
+_DIFF_GIT_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
+
+# Bounds so a huge diff can't blow the request past a usable size: at most
+# this many files, and at most this many bytes of any one file's content.
+MAX_RETRIEVED_FILES = 40
+MAX_RETRIEVED_FILE_BYTES = 60_000
+
+
+def _touched_files_from_diff(text: str) -> list[str]:
+    """Extract touched-file paths from a unified diff embedded in ``text``.
+
+    Deterministic and bounded to files the diff itself names — NOT a general
+    heuristic file-selector over an arbitrary prompt (that would be unreliable
+    for an open-ended prompt with no diff, exactly the trap chief-wiggum#319
+    warns against shipping). The post-image (``b/``) path is used — correct
+    for a modification or rename; for a deletion the file may no longer exist,
+    which ``_read_touched_files`` skips, never raises on.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _DIFF_GIT_HEADER_RE.finditer(text):
+        path = match.group(2)
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _read_touched_files(cwd: str | None, paths: list[str]) -> list[str]:
+    """Read each touched file's CURRENT full content from ``cwd``, best-effort.
+
+    Best-effort per file (CTR-fh-011 pattern applied to retrieval): a path
+    that no longer exists (deleted in the diff), isn't readable, resolves
+    outside ``cwd``, or decodes as binary is skipped, never raised — a
+    retrieval gap degrades the amount of context gemini-vertex gets, it never
+    fails the whole consult.
+    """
+    if not cwd:
+        return []
+    base = Path(cwd).resolve()
+    blocks: list[str] = []
+    for rel in paths[:MAX_RETRIEVED_FILES]:
+        candidate = (base / rel).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            continue  # path escapes cwd — never follow it
+        try:
+            content = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_RETRIEVED_FILE_BYTES:
+            content = (
+                encoded[:MAX_RETRIEVED_FILE_BYTES].decode("utf-8", errors="ignore")
+                + f"\n... [truncated at {MAX_RETRIEVED_FILE_BYTES} bytes]"
+            )
+        blocks.append(f"--- {rel} (current full content, chief-wiggum#319) ---\n{content}")
+    return blocks
+
+
 def consult_gemini_vertex(
     prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
 ) -> tuple[str, Usage]:
@@ -547,6 +622,16 @@ def consult_gemini_vertex(
     deadline was wired for it before this ticket either — a pre-existing gap,
     out of scope for #291 (which only threads the override chain through
     call sites that already had a real ``TOOL_TIMEOUTS`` read to replace).
+
+    chief-wiggum#319: this adapter used to call ``generate_content`` with
+    ``contents=prompt`` alone — ``cwd`` was accepted and never touched, so
+    every consult answered from the prompt text with zero repo access. It now
+    retrieves the CURRENT content of every file the prompt's embedded diff
+    touches (see ``_touched_files_from_diff``) and appends it to ``contents``.
+    This is bounded and diff-scoped, not general repo browsing: a prompt
+    carrying no diff (e.g. an open-ended exploration prompt) retrieves
+    nothing and this behaves exactly as before — an honest no-op, not a
+    pretended fix.
     """
     project = get_secret("GOOGLE_CLOUD_PROJECT")
     location = get_secret("GOOGLE_CLOUD_LOCATION") or "global"
@@ -562,7 +647,22 @@ def consult_gemini_vertex(
 
     requested_model = model or DEFAULT_VERTEX_MODEL
     client = genai.Client(vertexai=True, project=project, location=location)
-    response = client.models.generate_content(model=requested_model, contents=prompt)
+
+    touched = _touched_files_from_diff(prompt)
+    file_blocks = _read_touched_files(cwd, touched)
+    if file_blocks:
+        contents = (
+            prompt
+            + "\n\n---\nRepo context (chief-wiggum#319): the CURRENT full content of "
+              "every file touched by the diff above, read from the repo. Use it to "
+              "judge whether code shown in the diff is pre-existing or newly "
+              "introduced, and to see context beyond the diff hunk.\n\n"
+            + "\n\n".join(file_blocks)
+        )
+    else:
+        contents = prompt
+
+    response = client.models.generate_content(model=requested_model, contents=contents)
     text = response.text or ""
     # @cw-trace guards CTR-fh-010 CTR-fh-011 — response.usage_metadata is a
     # usage-bearing source by construction; parsing failures never fail the
@@ -907,7 +1007,7 @@ def _emit_consult_telemetry(
 def consult_provider(
     provider: Provider, prompt: str, model: str | None, cwd: str | None,
     *, ticket: str | None = None, timeout_override: int | None = None,
-) -> str:
+) -> tuple[str, Usage]:
     """Run one provider's consult.
 
     ``timeout_override`` (chief-wiggum#188) only affects the claude-interactive
@@ -915,6 +1015,12 @@ def consult_provider(
     OPTIONAL slot, so a hung/slow interactive session fails fast instead of
     holding the whole role's wall-clock to its full 1800s budget. Tool providers
     ignore it; their own ``TOOL_TIMEOUTS`` entries are already well under that.
+
+    Returns ``(text, usage)`` (chief-wiggum#319) — previously this discarded
+    ``usage`` after telemetry, so a role quorum (``providers.run_role_quorum``)
+    had no way to see per-provider ``tokens_in`` at all. Both callers
+    (``consult_ai.py --role`` and ``scripts/run_review.py``) now propagate the
+    pair straight into the quorum's ``ProviderResult``.
     """
     if provider.type == "tool":
         if not provider.tool or provider.tool not in TOOLS:
@@ -925,13 +1031,13 @@ def consult_provider(
         effective_model = model or provider.model
         text, usage = TOOLS[provider.tool](prompt, model=effective_model, cwd=cwd)
         _emit_consult_telemetry(provider.tool, effective_model, cwd, usage, ticket=ticket)
-        return text
+        return text, usage
     if provider.type == "delegate":
         if provider.delegate != "claude-interactive":
             raise ValueError(f"unsupported delegate provider: {provider.name}")
         text, usage = consult_claude_interactive(prompt, model=model, cwd=cwd, timeout=timeout_override)
         _emit_consult_telemetry("claude-interactive", model, cwd, usage, ticket=ticket)
-        return text
+        return text, usage
     raise ValueError(f"unsupported provider type: {provider.type}")
 
 
@@ -1053,7 +1159,7 @@ def main():
         # provider gets the identical shared prompt; a provider mapped to a lens
         # (config/providers.json role.lenses) additionally gets its charter
         # appended (chief-wiggum#163) — the shared body itself never changes.
-        def execute(provider: Provider) -> str:
+        def execute(provider: Provider) -> tuple[str, Usage]:
             provider_prompt = prompt_for_provider(plan.role, provider.name, prompt, lenses)
             # An optional provider's delegate call is capped to a much shorter
             # wall-clock than a required one (chief-wiggum#188): it's allowed to
@@ -1075,6 +1181,13 @@ def main():
             args.output_dir,
             max_attempts=args.max_attempts,
             min_bytes=args.min_bytes,
+            # chief-wiggum#319: the SHARED prompt (pre-lens) + lens map, so the
+            # quorum can also run the blindness check and attach it to the
+            # manifest. Passing the identical inputs prompt_for_provider was
+            # already called with above keeps the per-provider token estimate
+            # honest.
+            prompt=prompt,
+            lenses=lenses,
         )
         for result in manifest.results:
             if result.status == "ok":
@@ -1083,6 +1196,13 @@ def main():
                 print(f"Error: required provider {result.name} failed: {result.error}", file=sys.stderr)
             else:
                 print(f"Warning: optional provider {result.name} failed: {result.error}", file=sys.stderr)
+        # chief-wiggum#319: a quorum can report every required provider "ok"
+        # while one of them never read anything beyond its own prompt — report
+        # that loudly, on the same stderr stream as every other quorum warning,
+        # regardless of whether the overall quorum passes.
+        if manifest.blindness is not None:
+            for finding in manifest.blindness.findings:
+                print(f"Warning: {finding.message}", file=sys.stderr)
         if not manifest.ok:
             print(
                 f"Role {args.role} quorum failed: {', '.join(manifest.failed_required)}",

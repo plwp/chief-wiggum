@@ -128,6 +128,47 @@ def test_role_consult_writes_required_and_optional_outputs(tmp_path, monkeypatch
     assert (output_dir / "reviewer-gemini.md").read_text() == f"gemini: {PROMPT_TEXT}"
 
 
+def test_role_consult_prints_blind_provider_warning_and_writes_it_to_manifest(tmp_path, monkeypatch, capsys):
+    """chief-wiggum#319: a quorum where every required provider is "ok" must
+    still surface, loudly, that one of them answered from the prompt alone."""
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config(config)  # reviewer: required=[codex], optional=[gemini]; requires_repo_read defaults True
+
+    response_text = "A substantive response with several findings to report."
+
+    def fake_consult_provider(provider, prompt_text, model, cwd, ticket=None, timeout_override=None):
+        if provider.name == "gemini":
+            # tokens_in == exactly the prompt's own estimated size: the
+            # textbook "answered from the prompt alone" signature.
+            blind_tokens = len(prompt_text.strip()) // 4
+            return response_text, consult_ai.Usage(tokens_in=blind_tokens, usage_status="sdk-metadata")
+        return response_text, consult_ai.Usage(tokens_in=5_000_000, usage_status="provider-json")
+
+    monkeypatch.setattr(consult_ai, "consult_provider", fake_consult_provider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consult_ai.py", "--role", "reviewer", str(prompt),
+            "--config", str(config), "--output-dir", str(output_dir), "--min-bytes", "1",
+        ],
+    )
+
+    consult_ai.main()
+
+    captured = capsys.readouterr()
+    assert "did not read the repo" in captured.err
+    assert "gemini" in captured.err
+
+    manifest = json.loads((output_dir / "reviewer-manifest.json").read_text())
+    assert manifest["blindness"]["outcome"] == "findings"
+    assert manifest["blindness"]["findings"][0]["provider"] == "gemini"
+    assert manifest["ok"] is True  # blindness is a report, never a gate
+
+
 def test_role_consult_does_not_fail_when_optional_provider_is_disabled(tmp_path, monkeypatch):
     prompt = tmp_path / "prompt.md"
     prompt.write_text(PROMPT_TEXT)
@@ -1240,6 +1281,162 @@ def test_vertex_usage_parse_exception_never_fails_the_consult(monkeypatch):
     text, usage = consult_ai.consult_gemini_vertex("prompt")
     assert text == "PONG"
     assert usage.usage_status == "unavailable"
+
+
+# --- diff-scoped repo retrieval (chief-wiggum#319) ---------------------------
+#
+# consult_gemini_vertex used to call generate_content(contents=prompt) alone —
+# cwd was accepted and never touched, so every call answered from the prompt
+# text with zero repo access (the ticket's measured 165:1 tokens_in ratio vs
+# codex on the same consult). These tests assert on what is actually SENT to
+# the mocked SDK client — the one thing testable without live Vertex
+# credentials — for both the diff-bearing case (retrieval should attach real
+# file content) and the no-diff case (retrieval must NOT guess; it is an
+# honest no-op, not a pretended fix).
+
+
+def _diff_prompt(*paths: str) -> str:
+    """A minimal review-shaped prompt embedding a unified diff header per
+    path, matching what chief_wiggum.review.assemble_review_prompt's
+    {{DIFF}} substitution actually produces."""
+    header = "\n".join(f"diff --git a/{p} b/{p}\n@@ -1,1 +1,2 @@\n+touched" for p in paths)
+    return "Review this change for correctness.\n\n" + header
+
+
+def test_touched_files_from_diff_extracts_and_dedupes_paths():
+    text = (
+        "diff --git a/src/foo.py b/src/foo.py\n+x\n"
+        "diff --git a/src/bar.py b/src/bar.py\n+y\n"
+        "diff --git a/src/foo.py b/src/foo.py\n+z\n"  # duplicate header
+    )
+    assert consult_ai._touched_files_from_diff(text) == ["src/foo.py", "src/bar.py"]
+
+
+def test_touched_files_from_diff_returns_empty_for_a_diffless_prompt():
+    # An open-ended exploration prompt has no diff to bound retrieval from —
+    # must yield nothing, never a guessed file selection.
+    assert consult_ai._touched_files_from_diff("Explore this repo and report back.") == []
+
+
+def test_read_touched_files_reads_current_content_from_cwd(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("SENTINEL_CONTENT_1234")
+
+    blocks = consult_ai._read_touched_files(str(tmp_path), ["src/foo.py"])
+
+    assert len(blocks) == 1
+    assert "SENTINEL_CONTENT_1234" in blocks[0]
+    assert "src/foo.py" in blocks[0]
+
+
+def test_read_touched_files_skips_missing_file_without_raising(tmp_path):
+    # The diff's a/-side (or a delete) may name a path gone from the worktree.
+    blocks = consult_ai._read_touched_files(str(tmp_path), ["never/existed.py"])
+    assert blocks == []
+
+
+def test_read_touched_files_never_follows_a_path_that_escapes_cwd(tmp_path):
+    secret = tmp_path.parent / "outside_secret.txt"
+    secret.write_text("SHOULD_NEVER_BE_READ")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    blocks = consult_ai._read_touched_files(str(repo), ["../outside_secret.txt"])
+
+    assert blocks == []
+
+
+def test_read_touched_files_truncates_an_oversized_file(tmp_path):
+    big = "A" * (consult_ai.MAX_RETRIEVED_FILE_BYTES + 5_000)
+    (tmp_path / "big.py").write_text(big)
+
+    blocks = consult_ai._read_touched_files(str(tmp_path), ["big.py"])
+
+    assert len(blocks) == 1
+    assert "[truncated" in blocks[0]
+    assert len(blocks[0].encode("utf-8")) < len(big)
+
+
+def test_read_touched_files_caps_the_number_of_files_retrieved(tmp_path):
+    paths = []
+    for i in range(consult_ai.MAX_RETRIEVED_FILES + 10):
+        p = tmp_path / f"f{i}.py"
+        p.write_text(f"content {i}")
+        paths.append(f"f{i}.py")
+
+    blocks = consult_ai._read_touched_files(str(tmp_path), paths)
+
+    assert len(blocks) == consult_ai.MAX_RETRIEVED_FILES
+
+
+def _mock_vertex_sdk(monkeypatch, captured: dict):
+    """Patch consult_gemini_vertex's google.genai import + secrets so
+    generate_content's arguments can be inspected without live credentials."""
+    project_secret = {"GOOGLE_CLOUD_PROJECT": "proj", "GOOGLE_CLOUD_LOCATION": "global"}
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: project_secret.get(name))
+
+    class _FakeModels:
+        def generate_content(self, model, contents):
+            captured["model"] = model
+            captured["contents"] = contents
+            resp = _FakeVertexResponse(
+                usage_metadata=_FakeUsageMetadata(prompt_token_count=1, candidates_token_count=1),
+                model_version=model,
+            )
+            resp.text = "a response"
+            return resp
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            self.models = _FakeModels()
+
+    fake_genai = type("fake_genai_module", (), {"Client": _FakeClient})
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google", type("fake_google_module", (), {"genai": fake_genai}))
+
+
+def test_consult_gemini_vertex_attaches_touched_file_content_for_diff_bearing_prompt(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-010
+    (tmp_path / "app.py").write_text("SENTINEL_REPO_CONTENT_ABC123")
+    prompt = _diff_prompt("app.py")
+    captured: dict = {}
+    _mock_vertex_sdk(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=str(tmp_path))
+
+    # The real fix: contents sent to the SDK carries the file's CURRENT
+    # content, not just the prompt text (the pre-fix behavior, and the exact
+    # gap the ticket's tokens_in evidence measured).
+    assert "SENTINEL_REPO_CONTENT_ABC123" in captured["contents"]
+    assert prompt in captured["contents"]
+    assert len(captured["contents"]) > len(prompt)
+
+
+def test_consult_gemini_vertex_is_an_honest_noop_without_a_diff(tmp_path, monkeypatch):
+    # An open-ended prompt with no diff header has no bounded file set to
+    # retrieve — contents must be the prompt UNCHANGED, never a guess, even
+    # though cwd has real files sitting right there.
+    (tmp_path / "app.py").write_text("unrelated content that must not leak in")
+    prompt = "Explore this repo and report what you find."
+    captured: dict = {}
+    _mock_vertex_sdk(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=str(tmp_path))
+
+    assert captured["contents"] == prompt
+
+
+def test_consult_gemini_vertex_skips_retrieval_without_a_cwd(monkeypatch):
+    # No cwd at all (the pre-#319 call shape, e.g. a bare CLI invocation with
+    # no --cwd) — retrieval has nowhere to read from, so contents stays the
+    # prompt alone rather than raising.
+    prompt = _diff_prompt("app.py")
+    captured: dict = {}
+    _mock_vertex_sdk(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=None)
+
+    assert captured["contents"] == prompt
 
 
 # --- --ticket threading + telemetry emission (chief-wiggum#134) -------------
