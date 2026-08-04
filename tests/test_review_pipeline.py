@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -1034,3 +1035,62 @@ def test_run_review_honors_per_role_optional_timeout_on_review_path(tmp_path, mo
     )
 
     assert captured_timeouts["claude-interactive"] == 42 + 30
+
+
+# --- blindness detection surfaces through the review manifest (chief-wiggum#319) --
+
+
+def test_run_review_surfaces_blind_provider_in_the_manifest(tmp_path, monkeypatch):
+    """A reviewer quorum where every required provider is "ok" must still
+    report, in review-manifest.json, that one of them answered from the
+    prompt alone — the review-pipeline half of chief-wiggum#319."""
+    role = Role(
+        name="reviewer", required=("codex", "gemini-vertex"), optional=(),
+        requires_repo_read=True,
+    )
+    plan = RolePlan(
+        role=role,
+        required=(
+            Provider("codex", "tool", True, tool="codex"),
+            Provider("gemini-vertex", "tool", True, tool="gemini-vertex"),
+        ),
+        optional=(),
+        missing_required=(),
+        skipped_optional=(),
+    )
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: plan)
+
+    @dataclass
+    class _Usage:
+        tokens_in: int | None = None
+        tokens_out: int | None = None
+        usage_status: str = "provider-json"
+        resolved_model: str | None = None
+
+    def execute(provider, prompt, timeout_override=None):
+        text = "A substantive review with findings to report here."
+        if provider.name == "gemini-vertex":
+            blind_tokens = len(prompt.strip()) // 4
+            return text, _Usage(tokens_in=blind_tokens, usage_status="sdk-metadata")
+        return text, _Usage(tokens_in=2_000_000, usage_status="provider-json")
+
+    runner = _runner(
+        {
+            "rev-parse --show-toplevel": (0, str(tmp_path)),
+            "rev-parse --verify": (0, "abc"),
+            "diff": (0, "diff --git a b\n+added line"),
+        }
+    )
+
+    manifest = review.run_review(
+        _ticket(), tmp_path, "main", tmp_path / "out",
+        template=TEMPLATE, config={}, execute=execute, runner=runner,
+    )
+
+    assert manifest.ok is True  # blindness never blocks the quorum on its own
+    blindness = manifest.provider_manifest["blindness"]
+    assert blindness["outcome"] == "findings"
+    assert blindness["findings"][0]["provider"] == "gemini-vertex"
+
+    on_disk = json.loads((tmp_path / "out" / "review-manifest.json").read_text())
+    assert on_disk["provider_manifest"]["blindness"]["outcome"] == "findings"

@@ -462,8 +462,9 @@ def test_opus_provider_pins_claude_tool_to_opus_model(monkeypatch):
         return "ok", consult_ai.Usage(usage_status="unavailable")
 
     monkeypatch.setitem(consult_ai.TOOLS, "claude", fake_claude)
-    text = consult_ai.consult_provider(opus, "prompt body", None, None)
+    text, usage = consult_ai.consult_provider(opus, "prompt body", None, None)
     assert text == "ok"
+    assert usage.usage_status == "unavailable"
     assert seen["model"] == "claude-opus-4-6"
     # an explicit --model override still wins
     consult_ai.consult_provider(opus, "prompt body", "claude-opus-4-7", None)
