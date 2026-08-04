@@ -408,3 +408,27 @@ def test_presale_scaffold_stamps_honest_preorder(tmp_path):
     assert "DO NOT simulate" in js  # INV-PRE-004: money means money
     apply_pattern.apply_plan(plan, tmp_path, write=True)
     assert (tmp_path / "experiments/presale/README.md").is_file()
+
+
+def test_ai_transparency_disclosure_scaffold_stamps_with_params_bound(tmp_path):
+    """chief-wiggum#316: the Art. 50 contract pack stamps real scaffold code,
+    not just a docs/compliance/ai-act.json classification entry."""
+    plan = apply_pattern.build_plan(
+        "ai-transparency-disclosure",
+        {"config_dir": "config", "conversational_surface": "support-chat"},
+        now=FIXED_NOW)
+    assert plan.unresolved == []
+    targets = set(plan.scaffold_files)
+    assert targets == {
+        "config/ai-disclosure.config.json",
+        "docs/ai-disclosure-wiring.md",
+    }
+    config = plan.scaffold_files["config/ai-disclosure.config.json"]
+    assert "support-chat" in config
+    assert "generated_by_ai" in config
+    wiring = plan.scaffold_files["docs/ai-disclosure-wiring.md"]
+    assert "config/ai-disclosure.config.json" in wiring
+    assert "INV-ATD-004" in wiring  # protected-path step
+    apply_pattern.apply_plan(plan, tmp_path, write=True)
+    for rel in targets:
+        assert (tmp_path / rel).is_file(), rel
