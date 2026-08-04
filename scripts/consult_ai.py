@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -1005,8 +1006,62 @@ def consult_openrouter(
     return _parse_openrouter_payload(payload, model)
 
 
+def _delegate_session_name(ticket: str | None = None) -> str:
+    """Generate a unique, task-scoped tmux session name (chief-wiggum#331).
+
+    NEVER returns the shared ``cw-claude`` constant a fixed default would
+    reuse: every delegated consult gets its OWN session, so (a) it always
+    starts from EMPTY context — there is nothing to ``/clear``, the session
+    never existed before this call — and (b) two concurrent consults (e.g.
+    two tickets in a parallel `/implement-wave`) get two independent tmux
+    sessions that cannot queue behind each other on one REPL. A ``ticket``
+    is folded into the name (sanitized to tmux/shell-safe characters) purely
+    for human-legibility when debugging a stray session with ``tmux ls`` —
+    uniqueness itself comes from the uuid suffix, not the ticket.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    if ticket:
+        safe_ticket = re.sub(r"[^A-Za-z0-9_-]+", "-", str(ticket)).strip("-")
+        if safe_ticket:
+            return f"cw-claude-{safe_ticket}-{suffix}"
+    return f"cw-claude-{suffix}"
+
+
+def _stop_delegate_session(session: str) -> None:
+    """Best-effort teardown of a delegate's task-scoped tmux session
+    (chief-wiggum#331).
+
+    Every delegated consult now owns a UNIQUE session (see
+    ``_delegate_session_name``) — nothing else will ever attach to or reuse
+    it, so it must be torn down here rather than left to accumulate. Called
+    from a ``finally`` block in ``consult_claude_interactive`` so this runs
+    whether the consult succeeded, failed, or timed out — "no cw-claude*
+    session survives a completed workflow run" has to hold on every exit
+    path, not just the happy one.
+
+    Deliberately bypasses ``_run_capture`` (the process-group-aware runner
+    used for the actual delegate call) and calls ``subprocess.run`` directly:
+    a stop is a fire-and-forget cleanup, not a consult whose output/timeout
+    semantics need that machinery, and going through a separate seam keeps
+    this from being accidentally captured by tests that mock ``_run_capture``
+    to inspect the delegate CALL itself. Any failure (tmux not installed, the
+    session already gone, a transient error) is swallowed: a failure to stop
+    degrades to a stray tmux session — annoying, cleaned up by hand or a
+    later `/setup` — never a crashed, otherwise-successful consult.
+    """
+    script = Path(__file__).resolve().parents[1] / "skills" / "claude-interactive-delegate" / "scripts" / "claude_delegate.py"
+    try:
+        subprocess.run(
+            [sys.executable, str(script), "--session", session, "stop"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except Exception:
+        pass
+
+
 def consult_claude_interactive(
     prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+    *, ticket: str | None = None, session: str | None = None,
 ) -> tuple[str, Usage]:
     """Delegate to the interactive Claude tmux provider.
 
@@ -1025,11 +1080,24 @@ def consult_claude_interactive(
     by ``_run_one_provider`` exactly like any other optional-provider failure,
     so a shortened timeout still degrades to a clean, non-blocking skip.
 
+    chief-wiggum#331: every call now runs against a TASK-SCOPED tmux session
+    (``session``, or a fresh name derived from ``ticket``/a uuid when omitted)
+    rather than the one shared ``cw-claude`` session every previous consult
+    also used — that old default meant consult N was billed the ENTIRE
+    accumulated transcript of consults 1..N-1 as input tokens, and two
+    concurrent consults (a parallel `/implement-wave`) queued on the single
+    REPL, burning the whole optional budget waiting rather than answering.
+    A never-before-used session name starts with empty context by
+    construction (nothing to ``/clear``), and is torn down in the
+    ``finally`` below (``_stop_delegate_session``) so nothing lingers past
+    this one call — success, failure, or timeout alike.
+
     @cw-trace guards CTR-fh-010
     """
     if model:
         print("Warning: --model is ignored for claude-interactive", file=sys.stderr)
     script = Path(__file__).resolve().parents[1] / "skills" / "claude-interactive-delegate" / "scripts" / "claude_delegate.py"
+    session_name = session or _delegate_session_name(ticket)
     fd, prompt_name = tempfile.mkstemp(suffix=".md")
     os.close(fd)
     prompt_file = Path(prompt_name)
@@ -1039,6 +1107,8 @@ def consult_claude_interactive(
         cmd = [
             sys.executable,
             str(script),
+            "--session",
+            session_name,
             "submit",
             "--prompt-file",
             str(prompt_file),
@@ -1066,6 +1136,7 @@ def consult_claude_interactive(
         raise RuntimeError(f"claude-interactive completed without RESULT line: {stdout}")
     finally:
         prompt_file.unlink(missing_ok=True)
+        _stop_delegate_session(session_name)
 
 
 TOOLS = {
@@ -1146,7 +1217,12 @@ def consult_provider(
     if provider.type == "delegate":
         if provider.delegate != "claude-interactive":
             raise ValueError(f"unsupported delegate provider: {provider.name}")
-        text, usage = consult_claude_interactive(prompt, model=model, cwd=cwd, timeout=timeout_override)
+        # ticket (chief-wiggum#331) folds into the delegate's task-scoped tmux
+        # session name for legibility — uniqueness itself is guaranteed by
+        # _delegate_session_name's uuid suffix regardless.
+        text, usage = consult_claude_interactive(
+            prompt, model=model, cwd=cwd, timeout=timeout_override, ticket=ticket,
+        )
         _emit_consult_telemetry("claude-interactive", model, cwd, usage, ticket=ticket)
         return text, usage
     raise ValueError(f"unsupported provider type: {provider.type}")
