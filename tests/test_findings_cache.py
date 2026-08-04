@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from chief_wiggum import findings_cache as fc
 
-
 # --- load/store roundtrip ----------------------------------------------------
 
 

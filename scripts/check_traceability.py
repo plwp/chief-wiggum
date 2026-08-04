@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import date
@@ -60,7 +61,13 @@ import emitters  # noqa: E402
 # in-source `@cw-trace verifies`); a suspect entry (anchored-symbol hash drift)
 # does NOT satisfy coverage and is surfaced with the existing suspect links;
 # an unresolved entry is surfaced as a warning, never dropped.
-from chief_wiggum import external_links  # noqa: E402
+#
+# Per-file emission cache (#327): every gate-scanned file's annotations are
+# memoized keyed by (rel, blob_sha, scanner_hash) — see the module docstring
+# for why both halves of the key are load-bearing. Kept on ONE line (not
+# ruff's multi-line parenthesized form) — the CTR-fh-041 dep-completeness
+# test's regex parses `from chief_wiggum import ...` as a single line.
+from chief_wiggum import external_links, findings_cache  # noqa: E402
 
 # Grandfather waivers (#215 F5): `adopt.py grandfather` records pre-adoption
 # baseline findings in <meta root>/adoption/grandfathered.json — for THIS gate,
@@ -90,7 +97,12 @@ from chief_wiggum.hashing import (  # noqa: E402
     hash_epic_definitions,
     scanner_version,
 )
-from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
+from chief_wiggum.manifest import (  # noqa: E402
+    ManifestError,
+    build_manifest,
+    changed_paths,
+    walk_source_files,
+)
 
 # Decode-defensive bulk-source read (#282): a bare path.read_text() crashes
 # scan_source with UnicodeDecodeError on a UTF-16 (or otherwise non-UTF-8)
@@ -579,6 +591,18 @@ def _scan_source_and_unscanned(
     (``read_text_safe`` BOM-sniffs and falls back to a lossy decode rather
     than skipping), so this is genuinely "could not open this file", never a
     silent drop.
+
+    Per-file EMISSION is cached (#327), keyed by ``(rel, blob_sha,
+    scanner_hash)`` — never the CLAIM (the orphan/uncovered/untested/dangling
+    join against the defined-ID set, computed fresh in ``build_report`` over
+    every annotation returned here, cached or not). ``candidates`` is ALWAYS
+    the full walk (or the ``--changed-since`` set) — caching only decides
+    whether a given file's annotations are RECOMPUTED or SERVED from a prior
+    run, never whether the file is visited at all. The manifest that supplies
+    ``blob_sha`` requires git; a non-git ``--source`` (or a path the manifest
+    legitimately excludes, e.g. a gitignored-but-present file) degrades that
+    file to a live scan, exactly as before this cache existed — never a
+    dropped file.
     """
     root = Path(source_root)
     annotations: list[Annotation] = []
@@ -591,19 +615,42 @@ def _scan_source_and_unscanned(
         # walk_source_files prunes submodules/nested git checkouts, keeping the
         # full scan's file universe identical to the manifest's (--changed-since).
         candidates = walk_source_files(root)
+
+    manifest: dict[str, str] | None = None
+    scanner_hash: str | None = None
+    if not findings_cache.disabled():
+        try:
+            manifest = build_manifest(root)
+        except ManifestError:
+            manifest = None
+        if manifest is not None:
+            scanner_hash = _scanner_version()
+
     for rel in candidates:
         if not _file_predicate(rel):
             continue
         path = root / rel
+        blob_sha = manifest.get(rel) if manifest is not None else None
+        if blob_sha is not None and scanner_hash is not None:
+            cached = findings_cache.load(str(root), "check_traceability", rel, blob_sha, scanner_hash)
+            if cached is not None:
+                annotations.extend(Annotation(**d) for d in cached)
+                continue
         text, skip_reason = read_text_safe(path)
         if skip_reason is not None:
             unscanned.append({"file": rel, "reason": skip_reason})
             continue
         if path.suffix in VERIFICATION_EXTS:
-            annotations.extend(emit_source_annotations(rel, text, path.suffix))
+            file_annotations = emit_source_annotations(rel, text, path.suffix)
         else:
             facts, _tier = emitters.emit(rel, text)
-            annotations.extend(emitters.facts_of_kind(facts, "trace_annotation"))
+            file_annotations = emitters.facts_of_kind(facts, "trace_annotation")
+        annotations.extend(file_annotations)
+        if blob_sha is not None and scanner_hash is not None:
+            findings_cache.store(
+                str(root), "check_traceability", rel, blob_sha, scanner_hash,
+                [a.to_dict() for a in file_annotations],
+            )
     return annotations, unscanned
 
 
@@ -630,6 +677,12 @@ def _scanner_version() -> str:
         cw_dir / "manifest.py",
         cw_dir / "hashing.py",
         cw_dir / "languages.py",
+        # The per-file findings cache (#327) — finding-affecting by
+        # construction: a bug in HOW a cache hit is validated or served would
+        # change what a cached run reports vs a fresh scan, so any edit here
+        # must invalidate every previously-cached entry, not just the ones
+        # whose file content changed.
+        cw_dir / "findings_cache.py",
         # Decode-defensive bulk-source read (#282) — finding-affecting: a
         # decode-policy change here changes what a file's annotations look
         # like once read, or whether it lands in `unscanned` at all.
@@ -1125,6 +1178,14 @@ def main(argv: list[str] | None = None) -> int:
         "chief_wiggum deps) and exit",
     )
     parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable the per-file findings cache (#327) for this run — every candidate "
+        "file is re-emitted from scratch, even on an unchanged git blob. For the dual-run "
+        "zero-diff validation check; not needed for correctness in normal use (a stale "
+        "cache entry never serves — see chief_wiggum/findings_cache.py).",
+    )
+    parser.add_argument(
         "--links",
         metavar="PATH",
         help="Path to the trace-links.json sidecar (#169) used for suspect-link detection. "
@@ -1163,6 +1224,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.scanner_version:
         print(_scanner_version())
         return 0
+
+    if args.no_cache:
+        os.environ[findings_cache.NO_CACHE_ENV] = "1"
 
     if not args.epic_dir:
         print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
@@ -1250,7 +1314,6 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     try:  # factory telemetry; no-op unless enabled, never breaks the gate
-        import os
         _here = os.path.dirname(os.path.abspath(__file__))
         if _here not in sys.path:
             sys.path.insert(0, _here)

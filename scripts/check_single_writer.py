@@ -106,6 +106,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -125,6 +126,11 @@ import artifacts  # noqa: E402
 # regex tier -> skip-with-warning. Used by scan_writers/unsupported_extension_counts
 # below to surface files with NO emitter coverage instead of dropping them silently.
 import emitters  # noqa: E402
+
+# Per-file emission cache (#327): every gate-scanned file's write sites are
+# memoized keyed by (rel, blob_sha, scanner_hash) — see the module docstring
+# for why both halves of the key are load-bearing.
+from chief_wiggum import findings_cache  # noqa: E402
 
 # Adoption-grandfather waivers (#215 F5) — the shared reader both blocking
 # gates use; key grammar + expiry posture documented there.
@@ -147,7 +153,12 @@ from chief_wiggum.annotations import ATTR_RE, WRITES_TAG_RE  # noqa: E402, F401
 # prunes submodules/nested git checkouts from the FULL scan so both scan modes
 # agree on the file universe (the manifest never surfaces submodule blobs).
 from chief_wiggum.hashing import scanner_version  # noqa: E402
-from chief_wiggum.manifest import ManifestError, changed_paths, walk_source_files  # noqa: E402
+from chief_wiggum.manifest import (  # noqa: E402
+    ManifestError,
+    build_manifest,
+    changed_paths,
+    walk_source_files,
+)
 
 # Decode-defensive bulk-source read (#282): a bare path.read_text() crashes the
 # ENTIRE gate with UnicodeDecodeError on a UTF-16 (or otherwise non-UTF-8)
@@ -649,7 +660,20 @@ def _scan_writers_and_unscanned(
     (``read_text_safe`` BOM-sniffs and falls back to a lossy decode rather than
     skipping), so this is genuinely "could not open this file", never a silent
     drop. ``scanned`` is the count of files actually read: the measured
-    denominator (#289), so a zero-file scan cannot pass for a clean inventory.
+    denominator (#289), so a zero-file scan cannot pass for a clean inventory
+    — incremented identically whether a file's write sites were served from
+    the #327 cache or freshly emitted, so the denominator a cached run reports
+    is indistinguishable from an uncached one.
+
+    Per-file EMISSION (the field-agnostic write sites) is cached (#327), keyed
+    by ``(rel, blob_sha, scanner_hash)`` — never the CLAIM (``match_writers``
+    against each invariant, always computed fresh here over every site
+    returned, cached or not). ``candidates`` is ALWAYS the full walk (or the
+    ``--changed-since`` set); caching only decides whether a file's sites are
+    RECOMPUTED or SERVED, never whether the file is visited. The manifest that
+    supplies ``blob_sha`` requires git; a non-git ``--source`` (or a path the
+    manifest legitimately excludes) degrades that file to a live scan, exactly
+    as before this cache existed.
     """
     root = Path(source_root)
     exclude = exclude or []
@@ -666,6 +690,16 @@ def _scan_writers_and_unscanned(
         # full scan's file universe identical to the manifest's (--changed-since).
         candidates = walk_source_files(root)
 
+    manifest: dict[str, str] | None = None
+    scanner_hash: str | None = None
+    if not findings_cache.disabled():
+        try:
+            manifest = build_manifest(root)
+        except ManifestError:
+            manifest = None
+        if manifest is not None:
+            scanner_hash = _scanner_version()
+
     for rel in candidates:
         if Path(rel).suffix not in SOURCE_EXTS:
             continue
@@ -674,20 +708,32 @@ def _scan_writers_and_unscanned(
         if _excluded(rel, exclude):
             continue
         path = root / rel
-        text, skip_reason = read_text_safe(path)
-        if skip_reason is not None:
-            unscanned.append({"file": rel, "reason": skip_reason})
-            continue
+        blob_sha = manifest.get(rel) if manifest is not None else None
+        sites: list | None = None
+        if blob_sha is not None and scanner_hash is not None:
+            cached = findings_cache.load(str(root), "check_single_writer", rel, blob_sha, scanner_hash)
+            if cached is not None:
+                sites = [WriteSite(**d) for d in cached]
+        if sites is None:
+            text, skip_reason = read_text_safe(path)
+            if skip_reason is not None:
+                unscanned.append({"file": rel, "reason": skip_reason})
+                continue
+            # Route through the per-language emitter registry (#162) — the gate
+            # consumes the SAME dispatch path scripts/emitters exposes, so a
+            # per-language emitter can never drift from what the gate actually
+            # scans. Every SOURCE_EXTS extension has an emitter (a tier-1 language
+            # module or the generic regex tier), so tier is never "unsupported"
+            # here; genuinely unsupported extensions are counted separately by
+            # unsupported_extension_counts.
+            facts, _tier = emitters.emit(rel, text)
+            sites = emitters.facts_of_kind(facts, "write_site")
+            if blob_sha is not None and scanner_hash is not None:
+                findings_cache.store(
+                    str(root), "check_single_writer", rel, blob_sha, scanner_hash,
+                    [asdict(s) for s in sites],
+                )
         scanned += 1
-        # Route through the per-language emitter registry (#162) — the gate
-        # consumes the SAME dispatch path scripts/emitters exposes, so a
-        # per-language emitter can never drift from what the gate actually
-        # scans. Every SOURCE_EXTS extension has an emitter (a tier-1 language
-        # module or the generic regex tier), so tier is never "unsupported"
-        # here; genuinely unsupported extensions are counted separately by
-        # unsupported_extension_counts.
-        facts, _tier = emitters.emit(rel, text)
-        sites = emitters.facts_of_kind(facts, "write_site")
         if not sites:
             continue
         # Claim per invariant, then merge preserving the ORIGINAL ordering: line
@@ -769,6 +815,12 @@ def _scanner_version() -> str:
         cw_dir / "hashing.py",
         cw_dir / "write_emission.py",
         cw_dir / "languages.py",
+        # The per-file findings cache (#327) — finding-affecting by
+        # construction: a bug in HOW a cache hit is validated or served would
+        # change what a cached run reports vs a fresh scan, so any edit here
+        # must invalidate every previously-cached entry, not just the ones
+        # whose file content changed.
+        cw_dir / "findings_cache.py",
         # Decode-defensive bulk-source read (#282) — finding-affecting: a
         # decode-policy change here changes what a file's write sites look
         # like once read, or whether it lands in `unscanned` at all.
@@ -1160,12 +1212,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the hash-derived scanner version (source hash of this module + its "
         "chief_wiggum deps) and exit",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable the per-file findings cache (#327) for this run — every candidate "
+        "file is re-emitted from scratch, even on an unchanged git blob. For the dual-run "
+        "zero-diff validation check; not needed for correctness in normal use (a stale "
+        "cache entry never serves — see chief_wiggum/findings_cache.py).",
+    )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
     if args.scanner_version:
         print(_scanner_version())
         return 0
+
+    if args.no_cache:
+        os.environ[findings_cache.NO_CACHE_ENV] = "1"
 
     if not args.epic_dir:
         print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
@@ -1235,7 +1298,6 @@ def main(argv: list[str] | None = None) -> int:
         print(render_text(report))
 
     try:  # factory telemetry; no-op unless enabled, never breaks the gate
-        import os
         _here = os.path.dirname(os.path.abspath(__file__))
         if _here not in sys.path:
             sys.path.insert(0, _here)
