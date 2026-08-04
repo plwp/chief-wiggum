@@ -1439,6 +1439,201 @@ def test_consult_gemini_vertex_skips_retrieval_without_a_cwd(monkeypatch):
     assert captured["contents"] == prompt
 
 
+# --- chief-wiggum#321: design_critic's screenshots reach gemini-vertex as ---
+# --- real image bytes, not just filenames --------------------------------
+#
+# design_critic sends the SAME prompt every provider gets, but only NAMES the
+# screenshot files — a CLI tool provider with real filesystem access via cwd
+# can already open them itself (codex, claude-interactive); gemini-vertex's
+# call path is a single non-agentic SDK request with no tool loop, so before
+# this fix it never saw a single pixel. These tests assert on what is
+# actually SENT to the mocked SDK — the multimodal ``contents`` list must
+# carry real image Part objects with the real bytes, never a placeholder —
+# and that a prompt naming no images is an honest no-op, exactly like #319's
+# diff-less case.
+
+
+class _FakePart:
+    """Stand-in for ``google.genai.types.Part`` — records exactly what
+    ``from_bytes`` was called with so a test can assert on it without a real
+    SDK type."""
+
+    def __init__(self, data: bytes, mime_type: str):
+        self.data = data
+        self.mime_type = mime_type
+
+    @classmethod
+    def from_bytes(cls, *, data: bytes, mime_type: str) -> "_FakePart":
+        return cls(data, mime_type)
+
+
+def _mock_vertex_sdk_with_types(monkeypatch, captured: dict):
+    """Like ``_mock_vertex_sdk``, but the faked ``google.genai`` module also
+    exposes a ``types`` submodule with a fake ``Part.from_bytes`` — needed
+    only when a test expects the image-attachment path (``from google.genai
+    import types``) to actually resolve."""
+    project_secret = {"GOOGLE_CLOUD_PROJECT": "proj", "GOOGLE_CLOUD_LOCATION": "global"}
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: project_secret.get(name))
+
+    class _FakeModels:
+        def generate_content(self, model, contents):
+            captured["model"] = model
+            captured["contents"] = contents
+            resp = _FakeVertexResponse(
+                usage_metadata=_FakeUsageMetadata(prompt_token_count=1, candidates_token_count=1),
+                model_version=model,
+            )
+            resp.text = "a response"
+            return resp
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            self.models = _FakeModels()
+
+    fake_types = type("fake_types_module", (), {"Part": _FakePart})
+    fake_genai = type("fake_genai_module", (), {"Client": _FakeClient, "types": fake_types})
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google", type("fake_google_module", (), {"genai": fake_genai}))
+
+
+def test_image_paths_from_prompt_extracts_and_dedupes_named_screenshots():
+    text = (
+        "Critique these screenshots:\n"
+        "- calm-home.png\n"
+        "- calm-home.png\n"  # duplicate
+        "- directions/bold/pricing.jpg\n"
+        "Also see reference.PNG for the brand kit.\n"
+    )
+    assert consult_ai._image_paths_from_prompt(text) == [
+        "calm-home.png", "directions/bold/pricing.jpg", "reference.PNG",
+    ]
+
+
+def test_image_paths_from_prompt_returns_empty_for_an_image_less_prompt():
+    assert consult_ai._image_paths_from_prompt("Review this diff for correctness.") == []
+
+
+def test_read_touched_images_reads_bytes_and_mime_from_cwd(tmp_path):
+    png_bytes = b"\x89PNG\r\n\x1a\nSENTINEL_PIXELS"
+    (tmp_path / "shot.png").write_bytes(png_bytes)
+
+    images = consult_ai._read_touched_images(str(tmp_path), ["shot.png"])
+
+    assert images == [("shot.png", png_bytes, "image/png")]
+
+
+def test_read_touched_images_skips_missing_file_without_raising(tmp_path):
+    images = consult_ai._read_touched_images(str(tmp_path), ["never/existed.png"])
+    assert images == []
+
+
+def test_read_touched_images_never_follows_a_path_that_escapes_cwd(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "outside_secret.png").write_bytes(b"secret pixels")
+
+    images = consult_ai._read_touched_images(str(repo), ["../outside_secret.png"])
+
+    assert images == []
+
+
+def test_read_touched_images_drops_an_oversized_image_rather_than_truncating(tmp_path):
+    big = b"\x00" * (consult_ai.MAX_RETRIEVED_IMAGE_BYTES + 1)
+    (tmp_path / "huge.png").write_bytes(big)
+
+    images = consult_ai._read_touched_images(str(tmp_path), ["huge.png"])
+
+    assert images == []
+
+
+def test_read_touched_images_caps_the_number_of_images_retrieved(tmp_path):
+    paths = []
+    for i in range(consult_ai.MAX_RETRIEVED_IMAGES + 10):
+        name = f"shot{i}.png"
+        (tmp_path / name).write_bytes(b"x")
+        paths.append(name)
+
+    images = consult_ai._read_touched_images(str(tmp_path), paths)
+
+    assert len(images) == consult_ai.MAX_RETRIEVED_IMAGES
+
+
+def test_read_touched_images_ignores_a_non_image_extension(tmp_path):
+    (tmp_path / "notes.txt") .write_bytes(b"not an image")
+    images = consult_ai._read_touched_images(str(tmp_path), ["notes.txt"])
+    assert images == []
+
+
+def test_consult_gemini_vertex_attaches_real_image_bytes_for_a_prompt_naming_screenshots(tmp_path, monkeypatch):
+    # @cw-trace verifies CTR-fh-010
+    png_bytes = b"\x89PNG\r\n\x1a\nSENTINEL_PIXELS_XYZ"
+    (tmp_path / "calm-home.png").write_bytes(png_bytes)
+    prompt = "Critique this screenshot against WCAG AA: calm-home.png"
+    captured: dict = {}
+    _mock_vertex_sdk_with_types(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=str(tmp_path))
+
+    # contents must be a multimodal list: the text, plus a real image part
+    # carrying the ACTUAL bytes read from disk — never a filename-only stub.
+    contents = captured["contents"]
+    assert isinstance(contents, list)
+    assert contents[0] == prompt
+    image_parts = [p for p in contents[1:] if isinstance(p, _FakePart)]
+    assert len(image_parts) == 1
+    assert image_parts[0].data == png_bytes
+    assert image_parts[0].mime_type == "image/png"
+
+
+def test_consult_gemini_vertex_image_attachment_is_an_honest_noop_without_named_images(tmp_path, monkeypatch):
+    # A prompt naming no images (every non-design_critic role today) must
+    # behave EXACTLY as before this ticket — contents stays the plain prompt
+    # string, never a list, even though cwd has real image files sitting
+    # right there.
+    (tmp_path / "unrelated.png").write_bytes(b"must not leak in")
+    prompt = "Review this diff for correctness.\n\ndiff --git a/x.py b/x.py\n+y"
+    captured: dict = {}
+    _mock_vertex_sdk(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=str(tmp_path))
+
+    assert not isinstance(captured["contents"], list)
+
+
+def test_consult_gemini_vertex_image_attachment_noop_when_named_file_does_not_exist(tmp_path, monkeypatch):
+    # The prompt names a screenshot, but it isn't actually sitting under cwd
+    # (e.g. a stale reference) — best-effort retrieval finds nothing to
+    # attach, so contents stays the prompt alone rather than guessing.
+    prompt = "Critique this screenshot: missing.png"
+    captured: dict = {}
+    _mock_vertex_sdk(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=str(tmp_path))
+
+    assert captured["contents"] == prompt
+
+
+def test_consult_gemini_vertex_combines_diff_text_retrieval_and_image_retrieval(tmp_path, monkeypatch):
+    # The two retrieval paths (#319's diff-file text, #321's images) are
+    # independent and additive — a prompt that happens to carry both a diff
+    # header and an image filename gets both kinds of grounding.
+    (tmp_path / "app.py").write_text("SENTINEL_REPO_CONTENT_ABC123")
+    png_bytes = b"\x89PNG\r\nSENTINEL_PIXELS"
+    (tmp_path / "shot.png").write_bytes(png_bytes)
+    prompt = _diff_prompt("app.py") + "\nAlso see shot.png for the rendered result."
+    captured: dict = {}
+    _mock_vertex_sdk_with_types(monkeypatch, captured)
+
+    consult_ai.consult_gemini_vertex(prompt, cwd=str(tmp_path))
+
+    contents = captured["contents"]
+    assert isinstance(contents, list)
+    assert "SENTINEL_REPO_CONTENT_ABC123" in contents[0]
+    image_parts = [p for p in contents[1:] if isinstance(p, _FakePart)]
+    assert len(image_parts) == 1
+    assert image_parts[0].data == png_bytes
+
+
 # --- --ticket threading + telemetry emission (chief-wiggum#134) -------------
 
 

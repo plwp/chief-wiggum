@@ -9,19 +9,24 @@ import providers
 from providers import (
     BLIND_PROVIDER_MARGIN,
     BlindnessReport,
+    ImageBlindnessReport,
     Provider,
     ProviderResult,
     Role,
     RolePlan,
     detect_blind_providers,
+    detect_image_blind_providers,
     estimate_prompt_tokens,
     run_role_quorum,
     validate_output,
 )
 
 
-def _provider(name: str, *, reads_repo: bool = True) -> Provider:
-    return Provider(name=name, type="tool", enabled=True, tool=name, reads_repo=reads_repo)
+def _provider(name: str, *, reads_repo: bool = True, accepts_images: bool = True) -> Provider:
+    return Provider(
+        name=name, type="tool", enabled=True, tool=name,
+        reads_repo=reads_repo, accepts_images=accepts_images,
+    )
 
 
 def _plan(required: list[str], optional: list[str], *, requires_repo_read: bool = True) -> RolePlan:
@@ -415,3 +420,143 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
     for role_name in ("reviewer", "risky_diff_review"):
         assert "gemini-vertex" in roles[role_name].required
         assert roles[role_name].requires_repo_read is True
+
+
+# --- chief-wiggum#321: image-shaped blindness detection ---------------------
+
+
+def test_detect_image_blind_providers_inapplicable_when_role_never_sends_images():
+    role = Role(name="reviewer", required=("codex",), optional=(), sends_images=False)
+    providers_by_name = {"codex": _provider("codex")}
+
+    report = detect_image_blind_providers(role, providers_by_name)
+
+    assert report.outcome == "inapplicable"
+    assert report.findings == []
+
+
+def test_detect_image_blind_providers_flags_a_required_provider_that_cannot_accept_images():
+    # Reproduces #321's exact defect: design_critic's ONLY required provider
+    # is declared unable to receive images.
+    role = Role(
+        name="design_critic", required=("gemini-vertex",),
+        optional=("codex",), sends_images=True,
+    )
+    providers_by_name = {
+        "gemini-vertex": _provider("gemini-vertex", accepts_images=False),
+        "codex": _provider("codex", accepts_images=True),
+    }
+
+    report = detect_image_blind_providers(role, providers_by_name)
+
+    assert report.outcome == "findings"
+    assert len(report.findings) == 1
+    finding = report.findings[0]
+    assert finding.provider == "gemini-vertex"
+    assert finding.required is True
+    assert "gemini-vertex" in finding.message
+    assert "design_critic" in finding.message
+
+
+def test_detect_image_blind_providers_flags_an_optional_provider_too():
+    role = Role(
+        name="design_critic", required=("gemini-vertex",),
+        optional=("deepseek",), sends_images=True,
+    )
+    providers_by_name = {
+        "gemini-vertex": _provider("gemini-vertex", accepts_images=True),
+        "deepseek": _provider("deepseek", accepts_images=False),
+    }
+
+    report = detect_image_blind_providers(role, providers_by_name)
+
+    assert report.outcome == "findings"
+    assert report.findings[0].provider == "deepseek"
+    assert report.findings[0].required is False
+
+
+def test_detect_image_blind_providers_passes_when_every_provider_accepts_images():
+    role = Role(
+        name="design_critic", required=("gemini-vertex",),
+        optional=("codex",), sends_images=True,
+    )
+    providers_by_name = {
+        "gemini-vertex": _provider("gemini-vertex", accepts_images=True),
+        "codex": _provider("codex", accepts_images=True),
+    }
+
+    report = detect_image_blind_providers(role, providers_by_name)
+
+    assert report.outcome == "pass"
+    assert report.findings == []
+    assert report.providers_checked == 2
+
+
+def test_image_blindness_report_serializes_the_four_state_outcome():
+    report = ImageBlindnessReport(role="reviewer", sends_images=False)
+    d = report.to_dict()
+    assert d["applicability"] == "inapplicable"
+    assert d["outcome"] == "inapplicable"
+    assert d["findings"] == []
+
+
+def test_run_role_quorum_computes_image_blindness_without_needing_a_prompt(tmp_path):
+    # Unlike ``blindness`` (needs ``prompt`` for the token-floor estimate),
+    # image_blindness is a static declaration check — always populated.
+    role = Role(
+        name="design_critic", required=("gemini-vertex",),
+        optional=(), sends_images=True,
+    )
+    plan = RolePlan(
+        role=role,
+        required=(_provider("gemini-vertex", accepts_images=False),),
+        optional=(),
+        missing_required=(),
+        skipped_optional=(),
+    )
+
+    manifest = run_role_quorum(plan, lambda p: SUBSTANTIVE, tmp_path)
+
+    assert manifest.blindness is None  # no prompt was passed
+    assert manifest.image_blindness is not None
+    assert manifest.image_blindness.outcome == "findings"
+    assert manifest.image_blindness.findings[0].provider == "gemini-vertex"
+
+    data = json.loads((tmp_path / "design_critic-manifest.json").read_text())
+    assert data["image_blindness"]["outcome"] == "findings"
+    assert "blindness" not in data
+
+
+def test_run_role_quorum_image_blindness_inapplicable_for_a_non_image_role(tmp_path):
+    manifest = run_role_quorum(_plan(["codex"], []), lambda p: SUBSTANTIVE, tmp_path)
+    assert manifest.image_blindness is not None
+    assert manifest.image_blindness.outcome == "inapplicable"
+
+
+def test_shipped_config_declares_accepts_images_and_sends_images():
+    from pathlib import Path as _Path
+
+    config = providers.load_config(_Path(__file__).resolve().parents[1] / "config" / "providers.json")
+    providers_by_name = providers.providers_from_config(config)
+    roles = providers.roles_from_config(config)
+
+    text_only = {"deepseek", "kimi", "glm", "qwen", "minimax"}
+    for name in text_only:
+        assert providers_by_name[name].accepts_images is False, name
+    for name in ("codex", "gemini", "gemini-vertex", "claude", "claude-interactive", "opus"):
+        assert providers_by_name[name].accepts_images is True, name
+
+    assert roles["design_critic"].sends_images is True
+    for name in roles:
+        if name != "design_critic":
+            assert roles[name].sends_images is False, name
+
+    # The defect #321 fixes: design_critic's sole required provider must
+    # accept images now that it declares sends_images=True.
+    for name in roles["design_critic"].required:
+        assert providers_by_name[name].accepts_images is True, name
+
+    # And the structural check must actually pass on the shipped config —
+    # not just "the fields exist", but "the fields are consistent".
+    report = detect_image_blind_providers(roles["design_critic"], providers_by_name)
+    assert report.outcome == "pass"
