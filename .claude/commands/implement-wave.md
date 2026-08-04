@@ -45,11 +45,13 @@ CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$e
 eval "$CW_CTX"
 ```
 
-Load epic artifacts from `$EPIC_DIR/`:
+`$EPIC_DIR/` holds this epic's artifacts:
 - `contracts.md` — REQUIRES/ENSURES
 - `state-machines.md` — valid transitions
 - `invariants.md` — cross-cutting rules
 - `traceability.md` — AC to test mapping
+
+**Do NOT read these into your own context here (#333).** Confirm they EXIST (below) and stop there — a full context-load of these four docs at Step 1, only to re-derive the same facts per-file via `code_query.py` in Steps 4/6/8 (and again inside every worker's own `/implement` Step 1), is exactly the redundancy #333 removes. `code_query.py`'s doctrine ("a locator, not a content store") applies here just as it does in `/implement`.
 
 **If epic artifacts don't exist, STOP.** Run `/architect` first. Wave implementation without contracts is unsafe — parallel tickets will diverge on design decisions.
 
@@ -62,6 +64,7 @@ python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "$EPIC_S
 BLOCKED_TICKETS=$(jq -r '.blocked_tickets | join(",")' "$CW_TMP/inventory.json")
 HAS_FORMAL_MODELS=$(jq -r '.flags.HAS_FORMAL_MODELS' "$CW_TMP/inventory.json")
 ```
+`.flags.HAS_EPIC` existing (checked below) is what proves these files are present — that boolean, not a Read of the files, is Step 1's job. When `$HAS_FORMAL_MODELS == true`, every later step reaches the epic's facts via `code_query.py` (`orient`/`contract`/`state`/`show`); when it's `false` (prose-only epic), the first step that actually needs epic constraints (Step 4's approach-prompt assembly, per ticket, inside each worker) reads the relevant prose sections then — never eagerly here, and never once per ticket for facts every ticket in the epic shares.
 
 If `.flags.HAS_EPIC` is false, **STOP** (no contracts) — every wave run is always inside a named epic (`--epic` is required), so here `HAS_EPIC: false` always means `epic_status: missing` (chief-wiggum#286), never the standalone-ticket case `/implement` also has to consider. Each unresolved finding carries the tickets it blocks (from `derived_from` provenance); tickets in `blocked_tickets` must NOT be implemented on a guess — they are passed to the planner in Step 2 and re-checked in Step 4.
 
@@ -220,6 +223,22 @@ The shared `$CW_TMP/formal-test-artifacts/formal-artifacts-manifest.json` lists 
 
 These artifacts are shared across all tickets in the wave — each worker receives the same test plan and adapts the relevant portions for its ticket.
 
+#### 4a-prime: One epic-scoped codebase exploration, shared across the wave (#333)
+
+`/implement` Step 4 Phase A launches a "codebase deep-dive" explorer per ticket — fine for a single sequential `/implement` run. Run the same wave's tickets **concurrently**, and N tickets touching the same subsystem each independently pay for their own "very thorough" explore of ground that hasn't moved since the wave started — the formal-test-artifacts pattern above (generate once, every worker adapts) already exists for mechanical test artifacts and simply wasn't applied to codebase exploration.
+
+**Before any worker in this wave starts**, run ONE exploration, scoped to the union of what this wave's tickets touch (their descriptions/labels), and stamp it with the HEAD it was derived at — every worker in this wave branches its worktree from this SAME `$DEFAULT_BRANCH` commit (Step 3's `assert-main-pristine` already proved main is clean and on `$DEFAULT_BRANCH` before any worktree is created), so the stamp is provably still valid for all of them:
+
+```bash
+WAVE_HEAD=$(git -C "$TARGET_REPO" rev-parse HEAD)
+```
+
+Launch a single **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`), *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough". Seed it the same way `/implement` Step 4 now does (#333): pass `docs/quality/hotspots.json` if present, and instruct it to run `code_query.py orient` on the files this wave's tickets name before free-exploring. Write findings to `$CW_TMP/wave-$wave_number-codebase-context.md`, prefixed with a one-line stamp (`<!-- HEAD: $WAVE_HEAD -->`).
+
+Pass every worker in 4b the **path** to this file (not its content inlined into the prompt) plus instructions to use `code_query.py` for anything ticket-specific it doesn't cover — never re-launch its own from-scratch codebase deep-dive; a worker's own `/implement` Step 4 Phase A task 3 is satisfied by reading this shared file instead. If a worker's ticket needs depth the shared file doesn't have (a subsystem no other ticket in the wave touches), it may still explore that gap — the shared artifact covers the OVERLAP, not a hard ceiling on what any worker may read.
+
+**Freshness**: this artifact is valid for exactly this wave (it was derived at `$WAVE_HEAD`, the commit every worker's worktree branches from). Once this wave promotes to main (4g), HEAD moves — the next wave regenerates its own, it does NOT reuse a previous wave's file. Never reuse it across waves; never treat `/architect`'s own `$CW_TMP/codebase-context.md` (a DIFFERENT session's ephemeral temp file, not provably fresh here — see #333's write-up) as a substitute. `docs/quality/hotspots.json` is the one artifact safe to pull forward from `/architect` unconditionally: it is committed to the target repo (not session-ephemeral) and is explicitly a measured-history prior, not a point-in-time snapshot that goes stale.
+
 #### 4b: Launch parallel implementations
 
 For each ticket in the current wave (up to `--max-parallel`):
@@ -240,7 +259,8 @@ For each ticket in the current wave (up to `--max-parallel`):
 
    The worker prompt must include:
    - The full ticket details (title, body, acceptance criteria)
-   - The epic context (contracts, invariants, state machines, traceability)
+   - **The epic context, by reference, not by embedded copy (#333)**: `$EPIC_DIR`'s path, `$EPIC_SLUG`, and `$HAS_FORMAL_MODELS`. When `$HAS_FORMAL_MODELS == true`, instruct the worker to pull only what its own ticket touches via `code_query.py contract`/`state`/`orient` (each worker's own `/implement` Step 1 already does this — do not ALSO paste the full `contracts.md`/`invariants.md`/`state-machines.md`/`traceability.md` bodies into the prompt here, or every worker in the wave pays for the same unchanged documents a second time on top of what its own Step 1 already fetches). When it's `false` (prose-only epic), pass the epic doc paths and let the worker's own Step 1 read them once, per its own fallback rule.
+   - **The shared wave-scoped codebase exploration** (4a-prime): the path `$CW_TMP/wave-$wave_number-codebase-context.md` and an instruction to read it INSTEAD OF launching its own Step 4 Phase A codebase deep-dive from scratch, falling back to its own exploration only for ticket-specific gaps the shared file doesn't cover.
    - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the worker: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
    - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
      - Step 4: Consult 3 AIs on approach (Codex + Gemini as background processes, self as the third perspective), reconcile into plan
