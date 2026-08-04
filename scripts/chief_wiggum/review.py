@@ -700,13 +700,31 @@ def run_review(
     # hung/slow claude-interactive fails fast instead of stalling the review
     # quorum for 1800s (chief-wiggum#188) — the required/optional decision is the
     # same shared helper consult_ai.py's own --role path uses.
+    #
+    # chief-wiggum#330 AC3: this wrapping lambda ALWAYS declares `attempt`/
+    # `previous_failure_kind` (so providers._run_one_provider's retry-context
+    # detection sees it and threads them in on every retry), but only
+    # forwards them to the caller-supplied `execute` when THAT callable opts
+    # in (providers.execute_accepts_retry_context) — every existing 3-arg
+    # `execute(provider, prompt, timeout_override)` caller/test keeps
+    # working completely unchanged; only one (scripts/run_review.py's real
+    # execute) currently opts in, to reduce a required provider's retry
+    # budget after a timeout rather than repeating its full first budget.
+    execute_wants_retry_context = providers.execute_accepts_retry_context(execute)
+
+    def _execute_for_quorum(p, attempt: int = 1, previous_failure_kind: str | None = None):
+        provider_prompt = providers.prompt_for_provider(plan.role, p.name, prompt, lenses)
+        timeout_override = providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default)
+        if execute_wants_retry_context:
+            return execute(
+                p, provider_prompt, timeout_override,
+                attempt=attempt, previous_failure_kind=previous_failure_kind,
+            )
+        return execute(p, provider_prompt, timeout_override)
+
     quorum = providers.run_role_quorum(
         plan,
-        lambda p: execute(
-            p,
-            providers.prompt_for_provider(plan.role, p.name, prompt, lenses),
-            providers.optional_provider_timeout(plan.role, p.name, optional_timeout_default),
-        ),
+        _execute_for_quorum,
         out,
         # chief-wiggum#319: the SHARED (pre-lens) prompt + lens map, so the
         # quorum also runs the blindness check and surfaces it in

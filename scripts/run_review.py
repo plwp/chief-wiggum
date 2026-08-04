@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum import review  # noqa: E402
-from consult_ai import consult_provider  # noqa: E402
+from consult_ai import consult_provider, reduced_retry_timeout  # noqa: E402
 
 DEFAULT_TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "review-prompt.md"
 DEFAULT_CHECKLIST = Path(__file__).resolve().parents[1] / "templates" / "review-checklist.md"
@@ -69,9 +69,19 @@ def main(argv: list[str] | None = None) -> int:
         if p.exists():
             epic_sections.append((title, p.read_text()))
 
-    def execute(provider, prompt, timeout_override=None):
+    def execute(provider, prompt, timeout_override=None, *, attempt=1, previous_failure_kind=None):
         # timeout_override caps an OPTIONAL claude-interactive delegate so it
         # fails fast instead of stalling the review quorum at 1800s (#188).
+        #
+        # chief-wiggum#330 AC3: declaring attempt/previous_failure_kind opts
+        # this callable into providers.py's per-attempt retry context (see
+        # providers.execute_accepts_retry_context, threaded here via
+        # chief_wiggum.review.run_review's own opt-in wiring) — a retry that
+        # follows a TIMEOUT-classified failure gets a reduced budget instead
+        # of repeating the full one that just expired.
+        if attempt > 1 and previous_failure_kind == "timeout":
+            tool_name = provider.tool if provider.type == "tool" else "claude-interactive"
+            timeout_override = reduced_retry_timeout(tool_name, timeout_override)
         return consult_provider(
             provider, prompt, None, args.worktree, timeout_override=timeout_override
         )
