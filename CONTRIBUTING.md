@@ -4,7 +4,7 @@ External contributions are welcome — including AI-assisted and fully agent-aut
 
 ## The rules
 
-1. **Link an issue and meet its acceptance criteria.** The issue's ACs are the contract; a PR that ignores them will be closed however plausible the diff looks. No issue yet? Open one first (`templates/issue.md` shape: summary, concrete defect, acceptance criteria). PRs are re-authored or closed against the ACs, not against vibes.
+1. **Link an issue and meet its acceptance criteria.** The issue's ACs are the contract; a PR that ignores them will get changes requested however plausible the diff looks, and closed if it goes stale. No issue yet? Open one first (`templates/issue.md` shape: summary, concrete defect, acceptance criteria). PRs are reviewed against the ACs, not against vibes.
 
 2. **Run what you change — and show it.** Put evidence of execution in the PR body: the test run, a snippet smoke-tested against a fixture, the command and its output. "Looks right" is not evidence. These guidelines exist because a submitted shell snippet crashed on every invocation — it had never been executed once.
 
@@ -20,7 +20,9 @@ External contributions are welcome — including AI-assisted and fully agent-aut
 
 8. **Run the full suite before opening the PR.** `python3 -m pytest tests/` — CI runs it, but a PR opened red wastes the round-trip.
 
-## What gets a PR closed without deep review
+## What stops a PR at the door
+
+A PR that misses any of these gets a comment naming the specific gap and a changes-requested review — the diff itself won't be reviewed until the gap is addressed, and the PR is closed if it goes stale without movement:
 
 - No linked issue, or the linked issue's acceptance criteria are not met.
 - No evidence the change was ever executed.
