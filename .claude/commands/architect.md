@@ -65,7 +65,28 @@ else
   # No adoption record: heuristic over the RESOLVED meta root (sidecar-aware —
   # a sidecar-elected repo keeps its epics/ratchet state OUTSIDE the tree, so
   # probing the raw target tree would misread an established sidecar repo as new).
-  IS_NEW_PRODUCT=$([ ! -d "$META_ROOT/epics" ] && [ ! -f "$META_ROOT/quality/ratchet.json" ] && echo true || echo false)
+  IS_NEW_PRODUCT=$(python3 - << 'EOF'
+import os, json, sys
+meta_root = sys.argv[1]
+epics_exist = os.path.isdir(os.path.join(meta_root, "epics"))
+ratchet_path = os.path.join(meta_root, "quality", "ratchet.json")
+
+is_stub = False
+if os.path.isfile(ratchet_path):
+    try:
+        with open(ratchet_path, "r") as f:
+            data = json.load(f)
+            if "$comment" in data and "Ratchet config stub created by apply_pattern.py" in data["$comment"]:
+                is_stub = True
+    except Exception:
+        pass
+
+if not epics_exist and (not os.path.isfile(ratchet_path) or is_stub):
+    print("true")
+else:
+    print("false")
+EOF
+"$META_ROOT")
 fi
 ```
 
