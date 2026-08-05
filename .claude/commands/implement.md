@@ -95,6 +95,13 @@ mkdir -p "$TICKET_TMP"
 ```bash
 export CW_TELEMETRY=1
 date +%s > "$TICKET_TMP/build-start-ts"
+
+# Catch-up ingest: fold in any Claude Code turns from BEFORE this build started,
+# bounded by --until-ts so it can never consume this ticket's own turns (dedup is
+# by request id and tagging happens at first ingest — an unbounded catch-up here
+# would permanently strand this build's Claude layer untagged, chief-wiggum#345).
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
+  --since-days 7 --until-ts "$(cat "$TICKET_TMP/build-start-ts")" || true
 ```
 
 All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemini.md`, `approach-opus.md`, `implementation-plan.md`, `review-prompt.md`, `reviews/reviewer-*.md`, `impl-diff.txt`) go in `$TICKET_TMP`, not `$CW_TMP`. Shared session files (e.g., epic context) remain in `$CW_TMP`.
@@ -504,11 +511,12 @@ The worker should:
      --ticket-context "$TICKET_TMP/ticket.json" \
      --worktree "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH" \
      --output-dir "$TICKET_TMP/reviews" \
+     --ticket "$issue_number" \
      --epic-artifact "Contracts=$EPIC_DIR/contracts.md" \
      --epic-artifact "Invariants=$EPIC_DIR/invariants.md" \
      --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md"
    ```
-   (The last one is what actually puts the target's house rules in front of every provider — #264. `--epic-artifact` silently skips a path that doesn't exist, so it is safe to pass unconditionally when no authorities were recorded.)
+   (The last one is what actually puts the target's house rules in front of every provider — #264. `--epic-artifact` silently skips a path that doesn't exist, so it is safe to pass unconditionally when no authorities were recorded. `--ticket` is what makes the reviewer quorum's spend attribute to this ticket — without it the review consults land untagged and the PR's cost section shows a fraction of the real spend, chief-wiggum#345.)
    Outputs land in `$TICKET_TMP/reviews/`: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, and `review-manifest.json`. It refuses to run outside a git repo or when `--base` can't be resolved; a non-zero exit means a required provider never produced valid output (note the gap, proceed with available reviews).
 
 3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:
@@ -874,10 +882,14 @@ python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
   --since-ts "$(cat "$TICKET_TMP/build-start-ts")"
 python3 "$CW_HOME/scripts/ticket_cost.py" actual \
   --repo "$owner_repo" --ticket "$issue_number" \
+  --cwd-prefix "$(git rev-parse --show-toplevel)" \
+  --since-ts "$(cat "$TICKET_TMP/build-start-ts")" \
   --format markdown > "$TICKET_TMP/implementation-cost.md"
 ```
 
    If the issue body carries a `Nominal cost: ~$X.XX` line (stamped by `/create-issue`), add `--estimate X.XX` to the `actual` call so the section shows estimate-vs-actual variance. If the output says **Unmetered**, keep it — that is absence of telemetry, never a $0 build.
+
+   The output now carries a **Coverage** block naming which layers were captured and which were not (chief-wiggum#345). If it says UNCAPTURED, **do not hand-edit it away and never substitute "see ledger"** — an uncaptured layer is data the reader needs. Fix the gap if you can (re-run the ingest named in the coverage line), otherwise ship the honest coverage line.
 
 4. Draft the PR body with the tested helper. It folds in the verification evidence and (when present) the review/UX/model-conformance manifests plus the implementation-cost section, themes the Mermaid diagram with the shared palette automatically, validates the required sections, and links the issue:
 
@@ -890,6 +902,7 @@ python3 "$CW_HOME/scripts/draft_pr.py" \
   --review "$TICKET_TMP/reviews/review-manifest.json" \
   --model-conformance "$TICKET_TMP/model-conformance.md" \
   --implementation-cost "$TICKET_TMP/implementation-cost.md" \
+  --require-cost \
   --base "$DEFAULT_BRANCH" --out "$TICKET_TMP/pr-body.md"
 ```
 
@@ -901,11 +914,13 @@ gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/p
 
 5. The helper links the original issue via `Closes #N` from `--issue`.
 
-6. **Record the calibration point** so future `/create-issue` estimates ground in this build's actual. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure:
+6. **Record the calibration point** so future `/create-issue` estimates ground in this build's actual. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure. Pass the **same** `--cwd-prefix`/`--since-ts` pair used for the `actual` call above — `record` computes its own slice independently, and without the matching window flags it silently reverts to tag-match-only, journaling a consult-only "clean" sample into the estimator while the real windowed slice (Claude Code layers included) is far larger (chief-wiggum#345):
 
 ```bash
 python3 "$CW_HOME/scripts/ticket_cost.py" record \
-  --repo "$owner_repo" --ticket "$issue_number" --effort "$effort"
+  --repo "$owner_repo" --ticket "$issue_number" --effort "$effort" \
+  --cwd-prefix "$(git rev-parse --show-toplevel)" \
+  --since-ts "$(cat "$TICKET_TMP/build-start-ts")"
 ```
 
 ### Step 12: Verify CI green

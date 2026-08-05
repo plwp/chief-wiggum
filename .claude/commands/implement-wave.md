@@ -43,6 +43,14 @@ CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
   echo "workflow_context failed for $owner_repo" >&2; exit 1; }
 eval "$CW_CTX"
+
+# Per-ticket implementation costing (docs/ticket-cost.md, chief-wiggum#345): every
+# worker sets this itself too, but exporting it here means anything this wave
+# script consults directly (outside a worker's own /implement Step 1) is metered.
+export CW_TELEMETRY=1
+# Wave-level catch-up ingest: fold in Claude Code turns from BEFORE this wave
+# starts, so no worker's Step-11 slice has to recover them by cwd+window alone.
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 7 || true
 ```
 
 `$EPIC_DIR/` holds this epic's artifacts:
@@ -270,6 +278,7 @@ For each ticket in the current wave (up to `--max-parallel`):
      - Step 8: Apply review fixes, run full test suite, run linting, verify acceptance criteria
      - Step 9: UX sanity + design-fidelity gate for frontend tickets — render the app, capture screenshots to `$TICKET_TMP/ux-screenshots/`, review against the ui-spec design contract. Save the screenshots; the orchestrator attaches them to the wave report.
      - Step 10: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
+   - **Costing attribution** (chief-wiggum#345): if the worker's own `/implement` flow reaches its Step-11 transcript ingest, it MUST pass `--cwd-prefix "<its own worktree path>"` (never bare `--repo`) — every worker in this wave shares the same target repo, so a cwd-derived repo match alone would cross-bill a sibling ticket's spend onto this one. `ticket_cost.py actual` should get the matching `--cwd-prefix`/`--since-ts` pair for the same reason.
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
      - You are in a git worktree. Assert isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.

@@ -39,6 +39,16 @@ CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
 TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
+### Step 1b: Catch up the Claude-layer cost ingest
+
+`/reflect`'s own telemetry-health finding (Step 3, "Factory-log health") reads the ledger's `claude_code` layer as-is — a factory that ran on Claude Code but never had its transcripts ingested reads as "no AI cost logged", which is silence, not a measurement (chief-wiggum#345). Fold in a wide catch-up window before the analysis so the finding reflects reality:
+
+```bash
+python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 30 || true
+```
+
+30 days (wider than `/implement`'s 7-day catch-up) because `/reflect` looks back across a whole factory run, not one build.
+
 ### Step 2: Collect the evidence
 
 Fetch merged-PR history (review outcomes + bodies carry gate signal) and run the miner:

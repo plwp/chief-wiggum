@@ -55,6 +55,14 @@ def main(argv: list[str] | None = None) -> int:
             "every OTHER provider's unchanged output instead of re-paying it."
         ),
     )
+    parser.add_argument(
+        "--ticket",
+        help=(
+            "Issue number these review consults are for, so their spend "
+            "attributes to the ticket (chief-wiggum#345). Defaults to the "
+            "number in --ticket-context."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # CTR-fh-002: a production ticket.json missing the `comments` key entirely
@@ -67,6 +75,12 @@ def main(argv: list[str] | None = None) -> int:
     for w in caught:
         if issubclass(w.category, review.MissingCommentsWarning):
             print(f"Warning: {w.message}", file=sys.stderr)
+
+    # Every consult a workflow makes on behalf of ticket N must carry N. The
+    # ticket.json already knows the number, so the flag is an override, not a
+    # requirement — an un-passed flag must never silently drop the tag (#345).
+    ticket_id = args.ticket or (str(ticket.number) if ticket.number is not None else None)
+
     template = Path(args.template).read_text()
     checklist = Path(args.checklist).read_text() if Path(args.checklist).exists() else None
 
@@ -100,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
             tool_name = provider.tool if provider.type == "tool" else "claude-interactive"
             timeout_override = reduced_retry_timeout(tool_name, timeout_override)
         return consult_provider(
-            provider, prompt, None, args.worktree, timeout_override=timeout_override
+            provider, prompt, None, args.worktree,
+            ticket=ticket_id, timeout_override=timeout_override,
         )
 
     try:

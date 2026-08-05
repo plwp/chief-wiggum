@@ -40,3 +40,39 @@ clearly when it has none — never silently inherit a broken Claude assumption.
 This inventory is the basis for the deeper rewrites tracked in the Harness
 Generalization epic: harness-neutral worker contracts (#24) and portable skill
 packaging (#25).
+
+## Optional operator hooks CW does not ship
+
+Some harness capabilities would help a CW mechanism but are deliberately left
+as a documented, opt-in operator choice rather than a shipped default — they
+are harness-specific enough that shipping them would mean re-deriving an
+equivalent per harness for a marginal convenience gain.
+
+- **Claude Code `SessionEnd` hook, for automatic Claude-layer cost ingest**
+  (chief-wiggum#345). `factory_log.py ingest-claude-transcripts` already runs
+  as a catch-up step inside `/implement`, `/implement-wave`, and `/reflect`
+  (see `docs/ticket-cost.md`), which covers the ticket/build path without any
+  hook. An operator who wants EVERY session's turns ingested the moment it
+  ends — not just at the next workflow's catch-up step — can wire their own
+  `SessionEnd` hook to run the same command. CW does not install this for
+  three reasons: it is Claude Code-specific (the portability gate above
+  exists precisely to keep harness-only mechanisms out of adapter-neutral
+  prose); it would mutate the operator's own Claude Code settings, which no
+  chief-wiggum script does today (see "Secrets never touch env vars" and the
+  transcript-route rationale in `docs/factory-telemetry.md`); and it fires
+  *after* the workflow that would have used its output has already run, so it
+  adds nothing to the ticket-costing path itself. Example, for an operator who
+  wants it:
+  ```json
+  {
+    "hooks": {
+      "SessionEnd": [{
+        "hooks": [{
+          "type": "command",
+          "command": "python3 $HOME/repos/chief-wiggum/scripts/factory_log.py ingest-claude-transcripts --since-days 1"
+        }]
+      }]
+    }
+  }
+  ```
+  in `~/.claude/settings.json` — the operator's own file, never written by CW.

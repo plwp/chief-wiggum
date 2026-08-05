@@ -133,3 +133,15 @@ python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --scaffold
 ```
 
 The stack is auto-detected (Go / Python / Node — possibly several) from `go.mod`, `pyproject.toml`/`requirements.txt`/`setup.py`, and `package.json`. Commit the generated `.github/workflows/ci.yml` so CI runs on the next push.
+
+### Step 6b: Verify Claude-layer cost capture
+
+Per-ticket implementation costing (`docs/ticket-cost.md`) needs the full Claude Code layer ingested — orchestrator turns AND every delegated turn — not just consult spend; chief-wiggum#345 found this had silently never run. Check, then provision if needed:
+
+```bash
+python3 $CW_HOME/scripts/check_deps.py --for telemetry
+# If the Claude layer has never been ingested:
+python3 $CW_HOME/scripts/install_deps.py --tool telemetry-capture
+```
+
+The default route is the **transcript** ingest — zero-config and retroactive over whatever's already on disk at `~/.claude/projects/`; `install_deps.py --tool telemetry-capture` runs a bounded 7-day catch-up automatically. The OTEL console-exporter route is optional and suits headless (`claude -p`) runs only — it fights an interactive TUI session (`docs/factory-telemetry.md`). **`/setup` prints the OTEL env + wrapper snippet for operators who want it but never edits `~/.claude/settings.json` or a shell rc file — those stay the operator's own files.**
