@@ -471,6 +471,20 @@ def cmd_record(args) -> None:
             context_kwargs["record_video_size"] = viewport
         context = browser.new_context(**context_kwargs)
         context.add_init_script(CURSOR_OVERLAY_JS)
+        # Storyboards may click a "Copy to clipboard" affordance and wait for its
+        # UI to flip to a "Copied" confirmation. Headless Chromium denies
+        # navigator.clipboard.writeText() by default (NotAllowedError), which the
+        # app's own try/catch swallows silently — so without this grant the button
+        # text never changes and any wait_for on the confirmation state hangs until
+        # timeout. Grant write access up front, scoped to the storyboard's own
+        # origin when known.
+        try:
+            if base_url:
+                context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base_url)
+            else:
+                context.grant_permissions(["clipboard-read", "clipboard-write"])
+        except Exception as exc:  # pragma: no cover - browser/channel dependent
+            print(f"  warning: could not grant clipboard permissions: {exc}")
 
         # Setup pre-roll: actions that must happen (sign-in, seeding a route)
         # but should NOT appear in the tutorial. They run on a throwaway page;
