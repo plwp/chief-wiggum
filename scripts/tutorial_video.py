@@ -503,6 +503,28 @@ def cmd_record(args) -> None:
         t0 = time.monotonic()
         page.wait_for_timeout(SCENE_SETTLE * 1000)
 
+        # Route capture for render-closure drift detection: storyboards only
+        # NAME entry URLs — everything reached by clicking is invisible to any
+        # static reading of the storyboard, so the recorder is the one honest
+        # witness of which routes the video actually shows. A framenavigated
+        # listener (not post-action polling) catches redirects that resolve
+        # mid-wait or during a scene's visual hold. Concrete paths (with real
+        # ids) are recorded; consumers match them against route patterns.
+        visited_routes: list[str] = []
+
+        def _note_route(frame) -> None:
+            if frame != page.main_frame:
+                return
+            try:
+                from urllib.parse import urlsplit
+                path = urlsplit(frame.url).path or "/"
+            except Exception:
+                return
+            if path and (not visited_routes or visited_routes[-1] != path):
+                visited_routes.append(path)
+
+        page.on("framenavigated", _note_route)
+
         for scene in board["scenes"]:
             start = time.monotonic() - t0
             print(f"  scene {scene['id']} @ {start:.1f}s")
@@ -537,6 +559,16 @@ def cmd_record(args) -> None:
 
     (out_dir / "markers.json").write_text(json.dumps(markers, indent=2), encoding="utf-8")
     print(f"Markers: {out_dir / 'markers.json'}")
+    # Written NEXT TO THE STORYBOARD (not out_dir): the sidecar is production
+    # metadata about the recording that ships with the tutorial's other inputs,
+    # for drift scanners to resolve which routes the video renders. Ordered,
+    # consecutive-deduped. NEVER on dry-run: a dry run races async navigations
+    # (pace 0.1, holds skipped) and would overwrite a real recording's ground
+    # truth with a truncated, flaky list.
+    if visited_routes and not args.dry_run:
+        sidecar = Path(args.storyboard).resolve().parent / "visited_routes.json"
+        sidecar.write_text(json.dumps(visited_routes, indent=2) + "\n", encoding="utf-8")
+        print(f"Visited routes: {sidecar} ({len(visited_routes)} entries)")
     if args.dry_run:
         print("Dry run OK: every action executed against the live app.")
 
