@@ -190,11 +190,17 @@ def test_check_capture_absent_transcript_root_warns_never_fails(monkeypatch, tmp
     assert check_deps.warn_count == 1
 
 
-def test_check_capture_zero_claude_code_records_is_missing(capsys):
+def test_check_capture_zero_claude_code_records_is_missing(monkeypatch, tmp_path, capsys):
     """An empty Claude layer is exactly the silent failure this checker
     exists to catch: everything installs, every workflow runs, and the
-    ledger's Claude layer stays empty because no ingest ever happened."""
+    ledger's Claude layer stays empty because no ingest ever happened.
+
+    Must not depend on the real machine's ~/.claude/projects existing (true
+    on a dev Mac, false on CI) -- point the probe at a fake-but-present
+    transcript root, same hermetic discipline as the autouse CW_FACTORY_LOG
+    isolation."""
     _reset_dep_counts()
+    monkeypatch.setattr(factory_log, "DEFAULT_TRANSCRIPT_ROOT", tmp_path)
     check_deps.check_capture("factory-ledger", required=True)
     assert check_deps.fail_count == 1
     assert "ingest-claude-transcripts" in capsys.readouterr().out
@@ -226,7 +232,11 @@ def test_check_capture_factory_ledger_still_fails_when_root_present_but_never_in
 
 
 def test_check_capture_recent_records_is_ok(monkeypatch, tmp_path, capsys):
+    """Same hermetic requirement as the MISSING case above: point at a
+    fake-but-present transcript root rather than relying on the real
+    machine's ~/.claude/projects (absent on CI)."""
     _reset_dep_counts()
+    monkeypatch.setattr(factory_log, "DEFAULT_TRANSCRIPT_ROOT", tmp_path)
     log = tmp_path / "log.jsonl"
     monkeypatch.setenv("CW_FACTORY_LOG", str(log))
     factory_log._append({"ts": time.time(), "event": factory_log.CLAUDE_CODE,
