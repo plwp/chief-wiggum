@@ -65,11 +65,23 @@ else
   # No adoption record: heuristic over the RESOLVED meta root (sidecar-aware —
   # a sidecar-elected repo keeps its epics/ratchet state OUTSIDE the tree, so
   # probing the raw target tree would misread an established sidecar repo as new).
-  IS_NEW_PRODUCT=$([ ! -d "$META_ROOT/epics" ] && [ ! -f "$META_ROOT/quality/ratchet.json" ] && echo true || echo false)
+  # Ratchet history is CLASSIFIED, not probed by file existence (#356):
+  # apply_pattern.py writes a ratchet.json STUB as a side effect of /seed
+  # installing a pattern, so "the config file exists" is not "this repo has
+  # quality history". `ratchet.py state` (itself sidecar-aware) answers from
+  # the journal: absent/stub/unbaselined = no history; real = journaled
+  # baseline; invalid/error = unreadable — treated as ESTABLISHED so a broken
+  # state file never silently stamps DST invariants (flag it at Step 6 instead).
+  RATCHET_STATE=$(python3 "$CW_HOME/scripts/ratchet.py" state --repo "$TARGET_REPO" || echo error)
+  case "$RATCHET_STATE" in
+    absent|stub|unbaselined) RATCHET_HISTORY=false ;;
+    *)                       RATCHET_HISTORY=true ;;
+  esac
+  IS_NEW_PRODUCT=$([ ! -d "$META_ROOT/epics" ] && [ "$RATCHET_HISTORY" = false ] && echo true || echo false)
 fi
 ```
 
-The fallback is a **default the operator can override**, not a proof — a repo can be effectively greenfield despite a stray artifact. If the signal looks wrong for this repo, say so at the Step 6 checkpoint and let the user decide. The adoption record itself is not overridable by vibes: an adopted repo stamps NO DST-readiness invariants (the DST stamping condition below keys off `IS_NEW_PRODUCT`, hence off the record) — retrofitting determinism seams onto adopted code is a separate, deliberate decision. If `IS_NEW_PRODUCT` is `true`, Step 4b's structured model gains DST-readiness invariants (rendered into `invariants.md` via Step 4e) and Step 4f's ADR notes the clock/random/IO seam scaffolding (see below). Skip both for an established repo — retrofitting the invariants onto existing code is a separate, deliberate decision, not something to silently stamp in.
+The fallback is a **default the operator can override**, not a proof — a repo can be effectively greenfield despite a stray artifact. If the signal looks wrong for this repo, say so at the Step 6 checkpoint and let the user decide. If `RATCHET_STATE` came back `invalid` or `error`, that is itself a finding — report it at Step 6 explicitly (the default treated it as established rather than guessing "new", but a repo with an unreadable ratchet needs the operator's eyes, not a silent classification either way). The adoption record itself is not overridable by vibes: an adopted repo stamps NO DST-readiness invariants (the DST stamping condition below keys off `IS_NEW_PRODUCT`, hence off the record) — retrofitting determinism seams onto adopted code is a separate, deliberate decision. If `IS_NEW_PRODUCT` is `true`, Step 4b's structured model gains DST-readiness invariants (rendered into `invariants.md` via Step 4e) and Step 4f's ADR notes the clock/random/IO seam scaffolding (see below). Skip both for an established repo — retrofitting the invariants onto existing code is a separate, deliberate decision, not something to silently stamp in.
 
 `docs/domain-context.md` (written by `/seed` Step 2.5) is the **ground truth for data contracts**: canonical metric definitions, real schema names, source caveats, and mined use cases — each with citations. If the epic touches an existing data source and this file doesn't exist, run the `/seed` Step 2.5 ingestion now (semantic layer, schema introspection, transformation-repo history) before writing any data contract. Contracts authored from guessed table/column names are how query layers get built against names that don't exist.
 

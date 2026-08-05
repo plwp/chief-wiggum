@@ -79,6 +79,10 @@ Subcommands:
                 an explicit {"paths": [globs]} file (ticket-scoped, #216) or a
                 domain scope.json ({"include"/"exclude"}); --report-only prints
                 but exits 0
+    state       classify the ratchet state (absent|stub|unbaselined|real|
+                invalid) — "has this repo ever been ratcheted?" (#356); a
+                config with no journaled record is NOT history, however
+                complete it looks
 
 Exit codes: 0 = ok, 1 = gate violation, 2 = usage/config error,
 3 = no scorecard (run `score` first), 4 = journal tamper detected.
@@ -138,6 +142,14 @@ from chief_wiggum.verifier_hashes import scan_verifier_hashes  # noqa: E402
 
 CONFIG_NAME = "ratchet.json"
 JOURNAL_NAME = "ratchet-journal.jsonl"
+
+# The config apply_pattern.py writes when it registers protected paths before
+# any `init`/baseline exists. One shared literal (#356) so the writer
+# (apply_pattern._merge_ratchet) and the classifier (classify_state) cannot
+# drift into disagreeing about what a stub looks like. Byte-identical to the
+# marker already stamped into shipped repos — do not reword casually.
+STUB_COMMENT = ("Ratchet config stub created by apply_pattern.py; "
+                "run `ratchet.py init` to complete it.")
 HIGHWATER_NAME = "ratchet-highwater.json"
 SCORECARD_NAME = "ratchet-scorecard.json"
 DEFAULT_STATE_DIR = "docs/quality"
@@ -282,6 +294,50 @@ def load_config(repo: Path) -> Config:
         protected_paths=raw.get("protected_paths", list(DEFAULT_PROTECTED)),
         quality_tolerance=tol,
     )
+
+
+def classify_state(state_dir: Path) -> tuple[str, str]:
+    """Classify a quality dir's ratchet state (#356): has this repo ever been
+    ratcheted?
+
+    Returns ``(state, reason)`` where state is one of:
+
+    - ``absent``       — no config file
+    - ``stub``         — apply_pattern.py's side-effect config (self-identifying
+                         ``$comment``), no journaled baseline
+    - ``unbaselined``  — a config exists but nothing was ever journaled
+    - ``real``         — at least one journal record: real quality history
+    - ``invalid``      — config/journal unreadable; the CALLER decides what an
+                         error means (never conflated with any of the above —
+                         a gate that can't read its state must not report pass)
+
+    The high-water mark is DERIVED from the journal, so the journal — not the
+    config file's existence — is the honest history signal. Records are
+    line-counted, not chain-verified: a tampered chain is still history
+    (``check``/``load_journal`` fail closed on tamper; this only answers
+    whether history exists at all).
+    """
+    cfg_path = state_dir / CONFIG_NAME
+    journal_path = state_dir / JOURNAL_NAME
+    if not cfg_path.is_file():
+        return "absent", f"no config at {cfg_path}"
+    try:
+        raw = json.loads(cfg_path.read_text())
+        journal_records = 0
+        if journal_path.is_file():
+            journal_records = sum(
+                1 for line in journal_path.read_text().splitlines() if line.strip()
+            )
+    except (OSError, ValueError) as e:
+        return "invalid", f"unreadable ratchet state: {e}"
+    if not isinstance(raw, dict):
+        return "invalid", f"config at {cfg_path} is not a JSON object"
+    if journal_records:
+        return "real", f"{journal_records} journaled record(s)"
+    comment = raw.get("$comment", "")
+    if isinstance(comment, str) and STUB_COMMENT in comment:
+        return "stub", "apply_pattern.py config stub; no journaled baseline"
+    return "unbaselined", f"config exists but no record in {journal_path.name}"
 
 
 # ---- contract definition hashes (weakening detection) --------------------------
@@ -1591,6 +1647,18 @@ def cmd_init(args) -> int:
     return 0
 
 
+def cmd_state(args) -> int:
+    """One-word classification on stdout (reason on stderr), always exit 0 —
+    a classifier, not a gate: the caller maps states to consequences (#356:
+    /architect treats absent/stub/unbaselined as "no quality history" and
+    real/invalid as established, so an error never silently stamps DST)."""
+    state_dir = artifacts.Resolver.resolve(repo_root(args.repo)).quality_dir()
+    state, reason = classify_state(state_dir)
+    sys.stderr.write(f"ratchet: state={state} — {reason}\n")
+    print(state)
+    return 0
+
+
 def cmd_score(args) -> int:
     cfg = load_config(repo_root(args.repo))
     # One epic-tree walk for the whole `score` run (#326): previously
@@ -2291,6 +2359,13 @@ def main() -> int:
     common(sp)
     sp.add_argument("--force", action="store_true")
 
+    sp = sub.add_parser(
+        "state",
+        help="classify the ratchet state — absent|stub|unbaselined|real|invalid "
+             "(#356): a config with no journaled record is not real history",
+    )
+    common(sp)
+
     sp = sub.add_parser("score", help="run suites + hash contracts, write scorecard")
     common(sp)
     sp.add_argument("--no-tests", action="store_true", help="contract hashes only (cheap baseline)")
@@ -2398,7 +2473,7 @@ def main() -> int:
 
     args = p.parse_args()
     dispatch = {
-        "init": cmd_init, "score": cmd_score, "check": cmd_check,
+        "init": cmd_init, "state": cmd_state, "score": cmd_score, "check": cmd_check,
         "regressed": cmd_regressed, "record": cmd_record, "recent": cmd_recent,
         "highwater": cmd_highwater, "protected": cmd_protected, "pathset": cmd_pathset,
     }

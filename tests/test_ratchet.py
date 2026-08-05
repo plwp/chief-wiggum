@@ -2405,3 +2405,84 @@ def test_retire_case_permanent_via_real_cli_rejects_expiry(tmp_path):
     )
     assert proc.returncode == 2
     assert "expiry" in proc.stderr.lower()
+
+
+# ---- state classification (#356) ------------------------------------------------
+# A greenfield repo whose only ratchet.json is the apply_pattern.py stub must
+# not read as "real quality history" to /architect's new-product check — and
+# an error state must stay distinct from every classification.
+
+
+def _quality_dir(tmp_path):
+    d = tmp_path / "docs" / "quality"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_state_absent(tmp_path):
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "absent"
+
+
+def test_state_stub_marker(tmp_path):
+    (_quality_dir(tmp_path) / "ratchet.json").write_text(json.dumps(
+        {"$comment": ratchet.STUB_COMMENT, "protected_paths": []}))
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "stub"
+
+
+def test_state_unbaselined_real_config_no_journal(tmp_path):
+    """An init-style config that was never journaled is still not history."""
+    make_repo(tmp_path)
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "unbaselined"
+
+
+def test_state_real_when_journal_has_records(tmp_path):
+    make_repo(tmp_path)
+    (_quality_dir(tmp_path) / "ratchet-journal.jsonl").write_text(
+        json.dumps({"event": "baseline"}) + "\n")
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "real"
+
+
+def test_state_blank_journal_is_not_history(tmp_path):
+    make_repo(tmp_path)
+    (_quality_dir(tmp_path) / "ratchet-journal.jsonl").write_text("\n\n")
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "unbaselined"
+
+
+def test_state_corrupt_config_is_invalid_not_absent_or_real(tmp_path):
+    (_quality_dir(tmp_path) / "ratchet.json").write_text("{not json")
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "invalid"
+
+
+def test_state_non_object_config_is_invalid(tmp_path):
+    (_quality_dir(tmp_path) / "ratchet.json").write_text("[]")
+    state, _ = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "invalid"
+
+
+def test_apply_pattern_stub_classifies_as_stub(tmp_path):
+    """#356 AC: the stub apply_pattern.py actually writes and the classifier
+    can never drift into being indistinguishable — this exercises the real
+    writer (_merge_ratchet), not a copy of its output."""
+    import apply_pattern
+    content, added = apply_pattern._merge_ratchet(tmp_path, ["docs/patterns/**"])
+    assert content is not None and added
+    (_quality_dir(tmp_path) / "ratchet.json").write_text(content)
+    state, reason = ratchet.classify_state(_quality_dir(tmp_path))
+    assert state == "stub"
+    assert "apply_pattern" in reason
+
+
+def test_cmd_state_cli_word_on_stdout(tmp_path, capsys):
+    """/architect consumes exactly one word on stdout; reason goes to stderr."""
+    make_repo(tmp_path)
+    rc = ratchet.cmd_state(argparse.Namespace(repo=str(tmp_path)))
+    out = capsys.readouterr()
+    assert rc == 0
+    assert out.out.strip() == "unbaselined"
+    assert "ratchet: state=" in out.err
