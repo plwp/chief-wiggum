@@ -2185,8 +2185,10 @@ def test_openrouter_is_a_registered_tool_with_a_timeout():
 
 
 def test_shipped_provider_config_is_valid_including_openrouter_entries():
-    """The divergence role must resolve, and must NOT leak into the default roles —
-    these models are opt-in entropy, not the everyday quorum."""
+    """The divergence role must resolve, and its opt-in entropy providers must
+    NOT leak into the default roles. ``deepseek-flash`` is the one sanctioned
+    exception: it sits in the code quorum by explicit operator decision
+    (replacing gemini-vertex), for cost/speed — not as distribution entropy."""
     from pathlib import Path as _Path
 
     import providers as providers_mod
@@ -2206,10 +2208,11 @@ def test_shipped_provider_config_is_valid_including_openrouter_entries():
         if p.tool == "openrouter"
     }
     assert openrouter_names, "expected openrouter-backed providers"
+    entropy_only = openrouter_names - {"deepseek-flash"}
     for role_name, role in roles.items():
         if role_name == "divergence":
             continue
-        assert not (set(role.required) | set(role.optional)) & openrouter_names, (
+        assert not (set(role.required) | set(role.optional)) & entropy_only, (
             f"role {role_name} pulls in opt-in entropy providers"
         )
 

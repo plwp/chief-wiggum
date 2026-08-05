@@ -438,7 +438,7 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
     providers_by_name = providers.providers_from_config(config)
     roles = providers.roles_from_config(config)
 
-    text_only = {"deepseek", "kimi", "glm", "qwen", "minimax"}
+    text_only = {"deepseek", "deepseek-flash", "kimi", "glm", "qwen", "minimax"}
     for name in text_only:
         assert providers_by_name[name].reads_repo is False, name
     for name in ("codex", "gemini", "gemini-vertex", "claude", "claude-interactive", "opus"):
@@ -449,11 +449,17 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
     for name in ("explorer", "implementer", "reviewer", "architecture_critic", "risky_diff_review"):
         assert roles[name].requires_repo_read is True, name
 
-    # The two roles gemini-vertex is REQUIRED on both need repo reading —
-    # exactly the roles chief-wiggum#319's diff-scoped retrieval targets.
+    # The two roles deepseek-flash is REQUIRED on both need repo reading.
+    # deepseek-flash honestly declares reads_repo=False (openrouter call
+    # path, no filesystem), so workflows must inline the diff for it —
+    # same contract gemini-vertex had before the swap, minus its bespoke
+    # retrieval. gemini-vertex remains required only on design_critic,
+    # the one role that sends screenshots (openrouter providers are
+    # accepts_images=False, so they cannot fill that seat).
     for role_name in ("reviewer", "risky_diff_review"):
-        assert "gemini-vertex" in roles[role_name].required
+        assert "deepseek-flash" in roles[role_name].required
         assert roles[role_name].requires_repo_read is True
+    assert "gemini-vertex" in roles["design_critic"].required
 
 
 def test_shipped_config_declares_needs_inline_diff_correctly():
@@ -466,7 +472,7 @@ def test_shipped_config_declares_needs_inline_diff_correctly():
     config = providers.load_config(_Path(__file__).resolve().parents[1] / "config" / "providers.json")
     providers_by_name = providers.providers_from_config(config)
 
-    needs_inline = {"gemini-vertex", "deepseek", "kimi", "glm", "qwen", "minimax"}
+    needs_inline = {"gemini-vertex", "deepseek", "deepseek-flash", "kimi", "glm", "qwen", "minimax"}
     for name in needs_inline:
         assert providers_by_name[name].needs_inline_diff is True, name
     for name in ("codex", "gemini", "claude", "claude-interactive", "opus"):
@@ -591,7 +597,7 @@ def test_shipped_config_declares_accepts_images_and_sends_images():
     providers_by_name = providers.providers_from_config(config)
     roles = providers.roles_from_config(config)
 
-    text_only = {"deepseek", "kimi", "glm", "qwen", "minimax"}
+    text_only = {"deepseek", "deepseek-flash", "kimi", "glm", "qwen", "minimax"}
     for name in text_only:
         assert providers_by_name[name].accepts_images is False, name
     for name in ("codex", "gemini", "gemini-vertex", "claude", "claude-interactive", "opus"):

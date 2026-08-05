@@ -59,6 +59,15 @@
       "accepts_images": false,
       "needs_inline_diff": true
     },
+    "deepseek-flash": {
+      "type": "tool",
+      "tool": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "enabled": true,
+      "reads_repo": false,
+      "accepts_images": false,
+      "needs_inline_diff": true
+    },
     "kimi": {
       "type": "tool",
       "tool": "openrouter",
@@ -102,7 +111,7 @@
         "codex"
       ],
       "optional": [
-        "gemini-vertex",
+        "deepseek-flash",
         "claude-interactive"
       ],
       "optional_timeout_seconds": 300,
@@ -121,7 +130,7 @@
     "reviewer": {
       "required": [
         "codex",
-        "gemini-vertex"
+        "deepseek-flash"
       ],
       "optional": [
         "claude-interactive"
@@ -129,7 +138,7 @@
       "lenses": {
         "codex": "refute-soundness",
         "claude-interactive": "adoption-cost",
-        "gemini-vertex": "completeness"
+        "deepseek-flash": "completeness"
       },
       "optional_timeout_seconds": 300,
       "requires_repo_read": true
@@ -139,13 +148,13 @@
         "codex"
       ],
       "optional": [
-        "gemini-vertex",
+        "deepseek-flash",
         "claude-interactive"
       ],
       "lenses": {
         "codex": "refute-soundness",
         "claude-interactive": "adoption-cost",
-        "gemini-vertex": "completeness"
+        "deepseek-flash": "completeness"
       },
       "optional_timeout_seconds": 300,
       "requires_repo_read": true
@@ -165,7 +174,7 @@
     "risky_diff_review": {
       "required": [
         "codex",
-        "gemini-vertex"
+        "deepseek-flash"
       ],
       "optional": [
         "claude-interactive"
