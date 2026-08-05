@@ -147,7 +147,19 @@ longer ship with a hand-edited "see ledger" stub.
   issue carries a nominal figure) → `draft_pr.py --implementation-cost … --require-cost`
   renders the PR's `## Implementation Cost` section (with its Coverage block)
   and refuses to ship a stub. After the PR exists:
-  `ticket_cost.py record --effort <size>` journals the calibration point.
+  `ticket_cost.py record --effort <size> --cwd-prefix <worktree> --since-ts
+  <build-start>` journals the calibration point. **`record` computes its own
+  slice independently of `actual`** — it does not reuse `actual`'s output —
+  so it needs the SAME `--cwd-prefix`/`--since-ts` pair. Passing them (or
+  not) is not cosmetic: without them `record` silently reverts to
+  tag-match-only summarizing and journals a small consult-only "clean"
+  sample into the estimator, while the real windowed slice (Claude Code
+  layers included) is far larger — the exact understatement chief-wiggum#345
+  exists to fix, now leaking into the calibration/estimator loop if `record`
+  doesn't get the same flags as `actual`. A calibration recorded with the
+  window flags carries `"windowed": true` in the ledger, informational only
+  (the estimator doesn't filter on it) but useful for anyone auditing the
+  calibration history later.
 - **`/implement-wave`** — `export CW_TELEMETRY=1` and one wave-level catch-up
   ingest before the first wave starts; each worker's own transcript ingest and
   `ticket_cost.py actual` calls must pass `--cwd-prefix` pointed at their own

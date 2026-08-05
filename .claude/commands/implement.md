@@ -914,11 +914,13 @@ gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/p
 
 5. The helper links the original issue via `Closes #N` from `--issue`.
 
-6. **Record the calibration point** so future `/create-issue` estimates ground in this build's actual. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure:
+6. **Record the calibration point** so future `/create-issue` estimates ground in this build's actual. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure. Pass the **same** `--cwd-prefix`/`--since-ts` pair used for the `actual` call above — `record` computes its own slice independently, and without the matching window flags it silently reverts to tag-match-only, journaling a consult-only "clean" sample into the estimator while the real windowed slice (Claude Code layers included) is far larger (chief-wiggum#345):
 
 ```bash
 python3 "$CW_HOME/scripts/ticket_cost.py" record \
-  --repo "$owner_repo" --ticket "$issue_number" --effort "$effort"
+  --repo "$owner_repo" --ticket "$issue_number" --effort "$effort" \
+  --cwd-prefix "$(git rev-parse --show-toplevel)" \
+  --since-ts "$(cat "$TICKET_TMP/build-start-ts")"
 ```
 
 ### Step 12: Verify CI green

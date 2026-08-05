@@ -185,6 +185,58 @@ def test_record_calibration_always_writes_without_telemetry_env(tmp_path, monkey
     assert rec["estimate_usd"] == pytest.approx(3.2)
 
 
+def test_record_cli_with_window_flags_journals_the_windowed_slice(tmp_path, monkeypatch):
+    """`record` must accept the same --cwd-prefix/--since-ts/--until-ts flags as
+    `actual` and thread them into the SAME summarize path — otherwise a
+    calibration recorded via the CLI silently reverts to tag-match-only,
+    journaling a small "clean" consult-only sample while the real windowed
+    slice (claude_code layers included) is far larger. This is the exact
+    escape #345 exists to fix, now leaking into the calibration/estimator
+    loop itself if left unfixed (chief-wiggum#345, orchestrator-verification
+    finding)."""
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    wt = "/repos/app/.claude/worktrees/t42"
+    # Untagged claude_code turn, recoverable only by cwd+window -- the whole
+    # point of the read-time slice (#345 §3).
+    factory_log._append({"event": factory_log.CLAUDE_CODE, "query_source": "repl_main_thread",
+                         "tokens_in": 100, "tokens_out": 50, "cost_usd": 190.0,
+                         "cwd": wt, "ts": 100})
+    # Tagged consult -- the only thing a tag-match-only summarize would see.
+    factory_log._append({"event": factory_log.CONSULT, "provider": "codex", "repo": REPO,
+                         "ticket": TICKET, "tokens_in": 800, "tokens_out": 200, "cost_usd": 3.85})
+
+    monkeypatch.setattr("sys.argv", [
+        "ticket_cost.py", "record", "--repo", REPO, "--ticket", TICKET,
+        "--cwd-prefix", wt, "--since-ts", "50", "--until-ts", "200",
+    ])
+    assert ticket_cost.main() == 0
+
+    rec = json.loads(log.read_text().splitlines()[-1])
+    assert rec["event"] == ticket_cost.TICKET_COST
+    assert rec["actual_usd"] == pytest.approx(193.85)  # windowed: claude_code + consult
+
+
+def test_record_cli_without_window_flags_is_unchanged(tmp_path, monkeypatch):
+    """Backward compat: no window flags on the CLI -> the same tag-match-only
+    summarize as before this fix (a record's own --cwd-prefix/--since-ts/
+    --until-ts default to None, exactly like `actual`'s)."""
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    wt = "/repos/app/.claude/worktrees/t42"
+    factory_log._append({"event": factory_log.CLAUDE_CODE, "query_source": "repl_main_thread",
+                         "tokens_in": 100, "tokens_out": 50, "cost_usd": 190.0,
+                         "cwd": wt, "ts": 100})  # untagged: must NOT be picked up without a window
+    factory_log._append({"event": factory_log.CONSULT, "provider": "codex", "repo": REPO,
+                         "ticket": TICKET, "tokens_in": 800, "tokens_out": 200, "cost_usd": 3.85})
+
+    monkeypatch.setattr("sys.argv", ["ticket_cost.py", "record", "--repo", REPO, "--ticket", TICKET])
+    assert ticket_cost.main() == 0
+
+    rec = json.loads(log.read_text().splitlines()[-1])
+    assert rec["actual_usd"] == pytest.approx(3.85)  # consult only, exactly as before
+
+
 def test_record_then_estimate_closes_the_loop(tmp_path, monkeypatch):
     log = tmp_path / "log.jsonl"
     monkeypatch.setenv("CW_FACTORY_LOG", str(log))

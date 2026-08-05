@@ -374,13 +374,20 @@ def render_actual_markdown(summary: dict, estimate_usd: float | None = None,
 
 
 def record_calibration(summary: dict, effort: str | None = None,
-                       estimate_usd: float | None = None) -> dict:
+                       estimate_usd: float | None = None, *,
+                       windowed: bool = False) -> dict:
     """Journal one ``ticket_cost`` calibration event from a measured summary.
 
     Explicit act → always writes (``factory_log._append``, the same
     does-not-require-CW_TELEMETRY shape as the ingests). An unmetered ticket is
     still recorded — as ``actual_usd: None`` — so the calibration history shows
-    how often metering actually flowed, not just its successes."""
+    how often metering actually flowed, not just its successes.
+
+    ``windowed`` marks that ``summary`` was built with the read-time
+    cwd/since/until slice (``--cwd-prefix``/``--since-ts``/``--until-ts`` on
+    the CLI), not just the ticket tag — informational only (the estimator
+    doesn't filter on it), but it disambiguates a calibration history entry
+    for anyone reading the ledger later (chief-wiggum#345)."""
     rec = {
         "ts": time.time(),
         "event": TICKET_COST,
@@ -395,6 +402,8 @@ def record_calibration(summary: dict, effort: str | None = None,
         rec["effort"] = effort
     if estimate_usd is not None:
         rec["estimate_usd"] = estimate_usd
+    if windowed:
+        rec["windowed"] = True
     factory_log._append(rec)
     return rec
 
@@ -506,6 +515,23 @@ def main() -> int:
     r.add_argument("--effort", choices=EFFORTS,
                    help="The issue's Effort label; omit if unknown (recorded but "
                         "won't feed the estimator)")
+    # Same read-time window flags as `actual`, threaded into the SAME
+    # summarize path (chief-wiggum#345 orchestrator-verification finding): a
+    # calibration recorded without them silently reverts to tag-match-only,
+    # journaling a small "clean" consult-only sample into the estimator while
+    # the real windowed slice (claude_code layers included) is far larger —
+    # exactly the understatement this ticket exists to fix, now leaking into
+    # the calibration loop if `record` doesn't get the same flags as `actual`.
+    r.add_argument("--cwd-prefix", help="Also attribute claude_code turns whose cwd sits under "
+                                        "this path (worktree-precise read-time slicing) — pass "
+                                        "the same value given to `actual` for this ticket")
+    r.add_argument("--since-ts", type=float, help="Window start (epoch) for read-time slicing "
+                                                  "— pass the same value given to `actual`")
+    r.add_argument("--until-ts", type=float, help="Window end (epoch)")
+    r.add_argument("--transcript-root", help="Accepted for CLI-flag parity with `actual` (the "
+                                             "same argv template works for both subcommands); "
+                                             "`record` never runs the coverage evidence scan, "
+                                             "so this is otherwise unused")
     r.add_argument("--estimate", type=float,
                    help="The nominal estimate that was stamped on the issue")
 
@@ -530,8 +556,12 @@ def main() -> int:
             print(render_estimate_line(est))
         return 0
     if args.cmd == "record":
-        summary = summarize_ticket(records, args.repo, args.ticket)
-        rec = record_calibration(summary, effort=args.effort, estimate_usd=args.estimate)
+        summary = summarize_ticket(records, args.repo, args.ticket,
+                                   cwd_prefix=args.cwd_prefix, since=args.since_ts,
+                                   until=args.until_ts)
+        windowed = bool(args.cwd_prefix or args.since_ts is not None or args.until_ts is not None)
+        rec = record_calibration(summary, effort=args.effort, estimate_usd=args.estimate,
+                                 windowed=windowed)
         actual = (f"${rec['actual_usd']:.2f}" if rec["actual_usd"] is not None
                   else "UNMETERED")
         print(f"ticket_cost: recorded calibration for {args.repo}#{args.ticket} — "
