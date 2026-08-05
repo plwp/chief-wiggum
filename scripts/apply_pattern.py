@@ -44,7 +44,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import artifacts  # noqa: E402 — meta-location resolver (chief-wiggum#213)
 from check_patterns import cluster_entries  # noqa: E402
-from ratchet import DEFAULT_PROTECTED  # noqa: E402
+from ratchet import DEFAULT_PROTECTED, STUB_COMMENT  # noqa: E402
 
 ROOT = SCRIPTS.parent
 REGISTRY = ROOT / "patterns" / "registry.json"
@@ -309,7 +309,9 @@ def _merge_ratchet(target: Path, add: list[str]) -> tuple[str | None, list[str]]
         cfg = json.loads(path.read_text())
         existing = list(cfg.get("protected_paths", list(DEFAULT_PROTECTED)))
     else:
-        cfg = {"$comment": "Ratchet config stub created by apply_pattern.py; run `ratchet.py init` to complete it.",
+        # STUB_COMMENT is the marker ratchet.classify_state keys on (#356) —
+        # a stub must never read as real quality history to /architect.
+        cfg = {"$comment": STUB_COMMENT,
                "protected_paths": list(DEFAULT_PROTECTED)}
         existing = cfg["protected_paths"]
     added = [g for g in add if g not in existing]

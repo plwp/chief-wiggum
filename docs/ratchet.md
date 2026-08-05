@@ -424,6 +424,9 @@ parser (`go-test-json`, `junit-xml`, `trx`, or `pass-fail-lines`):
 
 ```bash
 python3 scripts/ratchet.py init --repo <target>        # starter config (autodetects go/pytest/dotnet)
+python3 scripts/ratchet.py state --repo <target>       # absent|stub|unbaselined|real|invalid — "was this repo
+                                                       # ever ratcheted?" (#356); the journal, not the config
+                                                       # file's existence, is the history signal
 python3 scripts/ratchet.py score                       # run suites + hash contracts + complexity/churn → scorecard
 python3 scripts/ratchet.py score --no-tests            # contract hashes only (cheap baseline)
 python3 scripts/ratchet.py score --no-quality          # skip the complexity/churn snapshot (no lizard)
