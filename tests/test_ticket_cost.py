@@ -240,6 +240,23 @@ def test_transcript_ingest_cwd_prefix_is_worktree_precise(tmp_path, monkeypatch)
     assert "ticket" not in recs["r2"]              # sibling worktree: not this ticket
 
 
+def test_transcript_ingest_cwd_prefix_does_not_cross_bill_a_lexical_sibling(tmp_path, monkeypatch):
+    """A bare `str.startswith` would match `.../t420` against prefix `.../t42`
+    — a sibling worktree, not a child of it. Reviewer finding (#345 fix-up):
+    cwd_prefix must be exact-or-true-child, never a lexical prefix match."""
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    root = tmp_path / "projects"
+    (root / "p").mkdir(parents=True)
+    wt = "/repos/app/.claude/worktrees/t42"
+    (root / "p" / "s.jsonl").write_text(
+        _turn("r1", cwd=wt) + "\n" + _turn("r2", cwd="/repos/app/.claude/worktrees/t420") + "\n")
+    factory_log.ingest_claude_transcripts(root, repo=REPO, ticket=TICKET, cwd_prefix=wt)
+    recs = {r["request_id"]: r for r in factory_log.read_log()}
+    assert recs["r1"]["ticket"] == TICKET
+    assert "ticket" not in recs["r2"]              # lexical sibling t420: not this ticket
+
+
 def test_transcript_ingest_ticket_without_guard_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
     with pytest.raises(ValueError):
@@ -279,6 +296,18 @@ def test_window_slice_and_tag_never_double_count():
     s = ticket_cost.summarize_ticket(records, REPO, TICKET, cwd_prefix=_WT, since=0, until=200)
     assert s["records"] == 1
     assert s["total_cost_usd"] == pytest.approx(2.0)
+
+
+def test_window_slicing_does_not_cross_bill_a_lexical_sibling_worktree():
+    """Same #345 fix-up as the ingest-tagging case: prefix `.../t42` must not
+    match cwd `.../t420` — a `startswith` on the raw strings would."""
+    records = [
+        _cc(ticket=None, repo=None, cwd=_WT, ts=100, cost=1.0),               # true match
+        _cc(ticket=None, repo=None, cwd=_WT + "0", ts=100, cost=50.0),        # t420: lexical sibling
+    ]
+    s = ticket_cost.summarize_ticket(records, REPO, TICKET, cwd_prefix=_WT, since=0, until=200)
+    assert s["records"] == 1
+    assert s["total_cost_usd"] == pytest.approx(1.0)
 
 
 # ---- coverage: the capture denominator (chief-wiggum#345 AC4) ---------------

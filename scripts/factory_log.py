@@ -481,6 +481,22 @@ def _repo_from_cwd(cwd: str | None) -> str | None:
     return name or None
 
 
+def cwd_matches_prefix(cwd: str | None, prefix: str | None) -> bool:
+    """Exact match or true PATH CHILD of ``prefix`` — never a lexical prefix
+    match. ``str.startswith`` alone would match ``.../t420`` against a prefix
+    of ``.../t42``: a sibling worktree, not a child of it, and exactly the
+    cross-billing chief-wiggum#345's review caught (a bare startswith let a
+    sibling worktree's spend tag/count/slice onto this ticket). Shared by the
+    three cwd_prefix call sites: ``ingest_claude_transcripts``,
+    ``count_transcript_turns``, and ``ticket_cost._in_window``.
+    """
+    if not cwd or not prefix:
+        return False
+    prefix = str(prefix).rstrip("/")
+    cwd = str(cwd)
+    return cwd == prefix or cwd.startswith(prefix + "/")
+
+
 def _iter_transcript_files(root: Path):
     """Every Claude Code transcript under ``root``.
 
@@ -693,7 +709,7 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
                 # cwd_prefix is given, else cwd-derived-repo match. `repo` may be
                 # owner/repo while the cwd only yields the basename.
                 if cwd_prefix is not None:
-                    tag = bool(cwd) and str(cwd).startswith(str(cwd_prefix).rstrip("/"))
+                    tag = cwd_matches_prefix(cwd, cwd_prefix)
                 else:
                     tag = bool(derived) and derived in (repo, str(repo).split("/")[-1])
                 if tag:
@@ -723,8 +739,14 @@ def count_transcript_turns(root: Path | None = None, *, since: float | None = No
     non-Claude harness, or a fresh machine): the caller must report ``unknown``,
     never ``captured`` and never ``$0``.
 
-    Bounded on purpose: with ``since`` set, files whose mtime precedes the window
-    are skipped without being read, so this stays cheap enough to run at PR time.
+    Bounded on purpose: with ``since`` set, whole FILES whose mtime precedes the
+    window are skipped without being read (a cheap pre-filter, sound for
+    append-only files — a stale mtime means every line predates it too), so
+    this stays cheap enough to run at PR time. The actual window membership is
+    still enforced per TURN once a file is read (symmetric with
+    ``ingest_claude_transcripts``'s own since/until checks), and a turn whose
+    timestamp can't be parsed is excluded whenever a window bound is active —
+    count only what can be confirmed to fall inside it.
     """
     root = Path(root) if root is not None else DEFAULT_TRANSCRIPT_ROOT
     if not root.is_dir():
@@ -779,16 +801,28 @@ def count_transcript_turns(root: Path | None = None, *, since: float | None = No
 
             cwd = e.get("cwd")
             if cwd_prefix is not None:
-                if not (cwd and str(cwd).startswith(str(cwd_prefix).rstrip("/"))):
+                if not cwd_matches_prefix(cwd, cwd_prefix):
                     continue
             elif repo is not None:
                 derived = _repo_from_cwd(cwd)
                 if not (derived and derived in (repo, str(repo).split("/")[-1])):
                     continue
 
+            # AC4 promises an IN-WINDOW denominator, so since/until are
+            # enforced per-turn here too (symmetric with the ingest's own
+            # since/until checks) — the mtime check above is only a cheap
+            # skip-whole-file pre-filter, not a substitute for this. A turn
+            # whose timestamp can't be parsed can't be placed in the window,
+            # so once a bound is active it is excluded, not counted on faith
+            # (chief-wiggum#345 review: count only what you can confirm).
             ts = _parse_iso_ts(e.get("timestamp"))
-            if until is not None and ts is not None and ts > until:
-                continue
+            if since is not None or until is not None:
+                if ts is None:
+                    continue
+                if since is not None and ts < since:
+                    continue
+                if until is not None and ts > until:
+                    continue
 
             bucket = "subagent" if (e.get("isSidechain") or "/subagents/" in str(f)) else "repl_main_thread"
             counts[bucket] += 1

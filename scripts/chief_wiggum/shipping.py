@@ -165,6 +165,22 @@ def validate_sections(body: str, required: tuple[str, ...] = REQUIRED_SECTIONS) 
     return missing
 
 
+# The shapes `ticket_cost.py actual --format markdown` genuinely renders
+# (scripts/ticket_cost.py: render_actual_markdown's cost-table branch,
+# render_actual_markdown's unmetered branch, render_coverage_markdown) —
+# never all three required at once, any one is sufficient. A hand-typed
+# stub like "see ledger" matches none of them (chief-wiggum#345 review:
+# draft_pr.py --require-cost accepted any non-empty string).
+_GENUINE_COST_MARKERS = ("| Layer |", "**Unmetered**", "**Coverage —")
+
+
+def looks_like_genuine_cost_output(text: str) -> bool:
+    """True when ``text`` carries a shape only ``ticket_cost.py`` itself
+    renders — used by ``draft_pr.py --require-cost`` to refuse a hand-typed
+    placeholder that happens to be non-empty."""
+    return any(marker in text for marker in _GENUINE_COST_MARKERS)
+
+
 def suggest_title(issue_title: str | None, *, issue: int | None = None, prefix: str = "feat") -> str:
     base = (issue_title or "update").strip()
     if issue is not None and f"#{issue}" not in base:

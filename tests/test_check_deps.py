@@ -200,6 +200,31 @@ def test_check_capture_zero_claude_code_records_is_missing(capsys):
     assert "ingest-claude-transcripts" in capsys.readouterr().out
 
 
+def test_check_capture_factory_ledger_degrades_when_no_transcript_root(monkeypatch, tmp_path):
+    """A harness with no ~/.claude/projects at all can never satisfy this
+    probe by running the ingest -- it is INAPPLICABLE, not missing. Must
+    downgrade to warn, never fail, the same way claude-transcripts already
+    does (chief-wiggum#345 reviewer finding: factory-ledger was unsatisfiable
+    on a non-Claude harness while its sibling correctly degraded)."""
+    _reset_dep_counts()
+    monkeypatch.setattr(factory_log, "DEFAULT_TRANSCRIPT_ROOT", tmp_path / "does-not-exist")
+    check_deps.check_capture("factory-ledger", required=True)
+    assert check_deps.fail_count == 0
+    assert check_deps.warn_count == 1
+
+
+def test_check_capture_factory_ledger_still_fails_when_root_present_but_never_ingested(
+        monkeypatch, tmp_path):
+    """Distinct from the inapplicable case above: a REAL Claude Code harness
+    (transcript root present) with zero ingested records is still an
+    actionable MISSING -- the operator can and should run the ingest."""
+    _reset_dep_counts()
+    monkeypatch.setattr(factory_log, "DEFAULT_TRANSCRIPT_ROOT", tmp_path)  # exists (tmp_path itself)
+    check_deps.check_capture("factory-ledger", required=True)
+    assert check_deps.fail_count == 1
+    assert check_deps.warn_count == 0
+
+
 def test_check_capture_recent_records_is_ok(monkeypatch, tmp_path, capsys):
     _reset_dep_counts()
     log = tmp_path / "log.jsonl"

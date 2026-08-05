@@ -96,8 +96,7 @@ def _in_window(r: dict, cwd_prefix: str | None, since: float | None,
     """
     if cwd_prefix is None:
         return False
-    cwd = r.get("cwd")
-    if not cwd or not str(cwd).startswith(str(cwd_prefix).rstrip("/")):
+    if not factory_log.cwd_matches_prefix(r.get("cwd"), cwd_prefix):
         return False
     ts = r.get("ts") or 0
     if since is not None and ts < since:

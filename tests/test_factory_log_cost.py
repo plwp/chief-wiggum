@@ -481,27 +481,57 @@ def test_count_transcript_turns_missing_root_is_not_scanned(tmp_path):
     # never crash, never claim zero as if it were a measured fact
 
 
-def test_count_transcript_turns_since_filters_by_file_mtime_not_turn_ts(monkeypatch, tmp_path):
-    """`since` is a CHEAP bound (plan §1e): whole FILES whose mtime precedes it
-    are skipped unread, so a bounded scan stays fast enough to run at PR time
-    -- this is a file-level filter, not a per-turn timestamp filter."""
+def test_count_transcript_turns_since_filters_by_turn_ts_with_mtime_as_cheap_prefilter(
+        monkeypatch, tmp_path):
+    """AC4 promises an IN-WINDOW denominator, so `since`/`until` must be
+    enforced per-turn (symmetric with ``ingest_claude_transcripts``) — the
+    file-mtime check is kept ONLY as a cheap skip-whole-file pre-filter
+    (sound for append-only files: an mtime that predates the window means
+    every line in the file predates it too), never a substitute for reading
+    a fresh file's actual turn timestamps. Reviewer finding on chief-wiggum#345."""
     monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
     root = tmp_path / "projects"
     proj = root / "p"
     proj.mkdir(parents=True)
 
-    old_file = proj / "old.jsonl"
-    old_file.write_text(_turn("old-turn", cwd="/repos/app") + "\n")
+    # Fresh-mtime file with two turns straddling the window: only the
+    # in-window turn's own timestamp should count, even though the FILE
+    # itself is fresh enough to pass the cheap pre-filter either way.
+    mixed_file = proj / "mixed.jsonl"
+    mixed_file.write_text(
+        _turn("in-window", cwd="/repos/app", ts="2026-08-04T12:00:00.000Z") + "\n"
+        + _turn("too-early", cwd="/repos/app", ts="2026-08-01T00:00:00.000Z") + "\n")
+
+    # Stale-mtime file: skipped UNREAD by the cheap pre-filter, even though it
+    # contains a turn whose own timestamp would otherwise be in-window --
+    # proves the mtime pre-filter still exists as a separate, cheaper gate.
+    stale_file = proj / "stale.jsonl"
+    stale_file.write_text(
+        _turn("stale-file-in-window-ts", cwd="/repos/app", ts="2026-08-04T12:00:00.000Z") + "\n")
     old_mtime = time.time() - 30 * 86400
-    os.utime(old_file, (old_mtime, old_mtime))
+    os.utime(stale_file, (old_mtime, old_mtime))
 
-    new_file = proj / "new.jsonl"
-    new_file.write_text(_turn("new-turn", cwd="/repos/app") + "\n")
-
-    since = time.time() - 7 * 86400
+    since = factory_log._parse_iso_ts("2026-08-02T00:00:00.000Z")
     result = factory_log.count_transcript_turns(root, since=since)
     assert result["scanned"] is True
-    assert result["repl_main_thread"] == 1  # only the recently-touched file counted
+    assert result["repl_main_thread"] == 1  # only "in-window"
+
+
+def test_count_transcript_turns_unparseable_ts_excluded_when_window_active(monkeypatch, tmp_path):
+    """A turn with no parseable timestamp can't be placed in the window, so it
+    must not silently count towards it once since/until is active — count
+    only what can be confirmed to fall inside the window."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text(
+        _turn("bad-ts", cwd="/repos/app", ts="not-a-timestamp") + "\n"
+        + _turn("good-ts", cwd="/repos/app", ts="2026-08-04T12:00:00.000Z") + "\n")
+
+    since = factory_log._parse_iso_ts("2026-08-01T00:00:00.000Z")
+    result = factory_log.count_transcript_turns(root, since=since)
+    assert result["repl_main_thread"] == 1  # only "good-ts"
 
 
 def test_count_transcript_turns_respects_repo_filter(monkeypatch, tmp_path):
@@ -514,5 +544,22 @@ def test_count_transcript_turns_respects_repo_filter(monkeypatch, tmp_path):
         + _turn("other-repo", cwd="/repos/other") + "\n")
 
     result = factory_log.count_transcript_turns(root, repo="app")
+    assert result["scanned"] is True
+    assert result["repl_main_thread"] == 1
+
+
+def test_count_transcript_turns_cwd_prefix_does_not_cross_bill_a_lexical_sibling(
+        monkeypatch, tmp_path):
+    """Same #345 fix-up as the ingest/ticket_cost sites: cwd_prefix `.../t42`
+    must not match cwd `.../t420` -- a bare `str.startswith` would."""
+    monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "log.jsonl"))
+    root = tmp_path / "projects"
+    proj = root / "p"
+    proj.mkdir(parents=True)
+    wt = "/repos/app/.claude/worktrees/t42"
+    (proj / "s.jsonl").write_text(
+        _turn("r1", cwd=wt) + "\n" + _turn("r2", cwd=wt + "0") + "\n")
+
+    result = factory_log.count_transcript_turns(root, cwd_prefix=wt)
     assert result["scanned"] is True
     assert result["repl_main_thread"] == 1

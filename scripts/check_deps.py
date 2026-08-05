@@ -232,6 +232,16 @@ def check_capture(name: str, required: bool = True):
             warn_count += 1
         return
     if name == "factory-ledger":
+        # No transcript root at all means this probe can never be satisfied by
+        # running the ingest — inapplicable (like claude-transcripts above),
+        # not an actionable MISSING. Check this BEFORE reading the ledger so a
+        # non-Claude harness never fails a probe it structurally cannot pass
+        # (chief-wiggum#345 review: the two probes must degrade the same way).
+        if not factory_log.DEFAULT_TRANSCRIPT_ROOT.is_dir():
+            print(f"{YELLOW}[OPTIONAL]{NC}  {name:<24s} no transcript root — capture "
+                  "inapplicable on this harness")
+            warn_count += 1
+            return
         records = [r for r in factory_log.read_log() if r.get("event") == factory_log.CLAUDE_CODE]
         if not records:
             print(f"{RED if required else YELLOW}[{'MISSING' if required else 'OPTIONAL'}]{NC}  "
