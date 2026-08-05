@@ -84,13 +84,44 @@ def _layer_of(r: dict) -> str:
     return "orchestrator" if r.get("query_source") == "repl_main_thread" else "subagents"
 
 
-def summarize_ticket(records: list[dict], repo: str, ticket: str) -> dict:
+def _in_window(r: dict, cwd_prefix: str | None, since: float | None,
+              until: float | None) -> bool:
+    """A claude_code record attributable to the slice by WHERE and WHEN it ran.
+
+    Complements the ticket tag rather than replacing it. The tag is applied at
+    first ingest and dedup makes it un-reapplicable, so a turn swept up by a
+    catch-up ingest (or by a concurrent worker's ingest) can never be tagged
+    afterwards — but its cwd and timestamp still say which build it belongs to.
+    Consult records carry no cwd; they rely on the call-time tag (#345 AC2).
+    """
+    if cwd_prefix is None:
+        return False
+    cwd = r.get("cwd")
+    if not cwd or not str(cwd).startswith(str(cwd_prefix).rstrip("/")):
+        return False
+    ts = r.get("ts") or 0
+    if since is not None and ts < since:
+        return False
+    if until is not None and ts > until:
+        return False
+    return True
+
+
+def summarize_ticket(records: list[dict], repo: str, ticket: str, *,
+                     cwd_prefix: str | None = None, since: float | None = None,
+                     until: float | None = None) -> dict:
     """Slice the ledger to one ticket and fold it into per-layer totals.
 
     ``status: "unmetered"`` (with every total ``None``) when nothing matches —
     absence of telemetry, not a $0 build. ``cost_partial`` is set when any
     matched record carries tokens but no priced cost, so a table with a dollar
-    total can never silently understate."""
+    total can never silently understate.
+
+    ``cwd_prefix``/``since``/``until`` add a READ-TIME window slice on top of
+    the ticket tag (never a replacement — a record matching either counts once,
+    see ``_in_window``): a turn a catch-up ingest swept up untagged, or one a
+    sibling ``/implement-wave`` worker ingested, can still be recovered by
+    where and when it ran (chief-wiggum#345)."""
     layers = {
         name: {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cache_tokens": 0,
                "cost_usd": 0.0, "unpriced_calls": 0}
@@ -99,7 +130,10 @@ def summarize_ticket(records: list[dict], repo: str, ticket: str) -> dict:
     providers: set[str] = set()
     matched = 0
     for r in records:
-        if r.get("event") not in _LAYERED_EVENTS or not _matches_ticket(r, repo, ticket):
+        if r.get("event") not in _LAYERED_EVENTS:
+            continue
+        if not (_matches_ticket(r, repo, ticket)
+                or _in_window(r, cwd_prefix, since, until)):
             continue
         matched += 1
         layer = layers[_layer_of(r)]
@@ -126,6 +160,149 @@ def summarize_ticket(records: list[dict], repo: str, ticket: str) -> dict:
             "cost_partial": partial, "consult_providers": sorted(providers)}
 
 
+# ---- coverage: the capture denominator (AC4) ----------------------------------
+
+COVERAGE_STATUSES = ("captured", "captured-partial", "uncaptured", "unknown")
+
+
+def _layer_coverage(calls: int, unpriced_calls: int, evidence_n: int | None,
+                    scanned: bool, *, fix: str | None) -> dict:
+    """One layer's coverage verdict, derived from evidence INDEPENDENT of the
+    slice being rendered (see ``coverage``'s docstring for the taxonomy)."""
+    if calls > 0:
+        if unpriced_calls:
+            return {"status": "captured-partial",
+                   "basis": f"{calls} calls, {unpriced_calls} unpriced", "fix": None}
+        return {"status": "captured", "basis": f"{calls} calls captured", "fix": None}
+    if not scanned:
+        return {"status": "unknown",
+               "basis": "no independent evidence available for this window", "fix": None}
+    if evidence_n:
+        return {"status": "uncaptured",
+               "basis": f"{evidence_n:,} transcript turns in window, 0 ingested", "fix": fix}
+    return {"status": "captured", "basis": "no turns in window", "fix": None}
+
+
+def coverage(summary: dict, records: list[dict], *, transcript_root=None,
+             since: float | None = None, until: float | None = None,
+             cwd_prefix: str | None = None) -> dict:
+    """Per-layer capture status for the rendered slice — the denominator.
+
+    A cost table that silently omits the layers it never saw invites a reader to
+    take a consult-only figure as the total (#345). Each layer's status is
+    derived from a source INDEPENDENT of the slice, and the four outcomes stay
+    distinct (the #289 taxonomy — "failed to observe" must never read as "pass"):
+
+      captured          — records present, every call priced
+      captured-partial  — records present, n of m calls unpriced (both printed)
+      uncaptured        — zero records AND independent evidence the layer ran
+      unknown           — zero records and no visible evidence source; never
+                          "captured", never $0
+
+    ``records`` is the FULL ledger slice (not just what matched the ticket) —
+    the consults check needs to see untagged same-repo consults to catch the
+    #381 fingerprint (a review quorum that ran but never attributed).
+    """
+    repo = summary.get("repo")
+    ticket = summary.get("ticket")
+    layers_in = summary.get("layers") or {}
+
+    # An unbounded scan of the whole transcript corpus at PR time is not worth
+    # its cost — with no window, the Claude layers report `unknown`, never a
+    # fabricated `captured`/`$0`.
+    if since is None:
+        evidence = {"scanned": False, "repl_main_thread": 0, "subagent": 0}
+    else:
+        evidence = factory_log.count_transcript_turns(
+            transcript_root, since=since, until=until, repo=repo, cwd_prefix=cwd_prefix)
+
+    fix_cmd = (f"factory_log.py ingest-claude-transcripts --repo {repo} "
+              f"--ticket {ticket} --since-ts <build-start>")
+    layers: dict[str, dict] = {}
+    for key, bucket in (("orchestrator", "repl_main_thread"), ("subagents", "subagent")):
+        layer = layers_in.get(key) or {"calls": 0, "unpriced_calls": 0}
+        layers[key] = _layer_coverage(layer.get("calls", 0), layer.get("unpriced_calls", 0),
+                                      evidence.get(bucket, 0), evidence["scanned"], fix=fix_cmd)
+
+    consult_layer = layers_in.get("consults") or {"calls": 0, "unpriced_calls": 0}
+    calls = consult_layer.get("calls", 0)
+    if calls > 0:
+        unpriced = consult_layer.get("unpriced_calls", 0)
+        if unpriced:
+            layers["consults"] = {"status": "captured-partial",
+                                  "basis": f"{calls} calls, {unpriced} unpriced", "fix": None}
+        else:
+            layers["consults"] = {"status": "captured", "basis": f"{calls} calls captured",
+                                  "fix": None}
+    elif since is None:
+        layers["consults"] = {"status": "unknown",
+                              "basis": "no window supplied — untagged-consult evidence not scanned",
+                              "fix": None}
+    else:
+        untagged = 0
+        for r in records:
+            if r.get("event") != factory_log.CONSULT or r.get("ticket") is not None:
+                continue
+            rrepo = r.get("repo")
+            if repo is not None and rrepo is not None and rrepo not in (repo, str(repo).split("/")[-1]):
+                continue
+            ts = r.get("ts") or 0
+            if ts < since or (until is not None and ts > until):
+                continue
+            untagged += 1
+        if untagged:
+            layers["consults"] = {
+                "status": "uncaptured",
+                "basis": (f"{untagged} untagged consult(s) in window for this repo — the "
+                         "review quorum's spend did not attribute"),
+                "fix": "pass --ticket to run_review.py / consult_ai.py",
+            }
+        else:
+            layers["consults"] = {"status": "captured", "basis": "no consult spend in window",
+                                  "fix": None}
+
+    captured_statuses = {"captured", "captured-partial"}
+    captured_layers = sum(1 for L in layers.values() if L["status"] in captured_statuses)
+    if captured_layers == 3:
+        top_status = "complete"
+    elif (layers["consults"]["status"] in captured_statuses
+          and layers["orchestrator"]["status"] not in captured_statuses
+          and layers["subagents"]["status"] not in captured_statuses):
+        top_status = "consults-only"
+    elif captured_layers > 0:
+        top_status = "partial"
+    elif any(L["status"] == "uncaptured" for L in layers.values()):
+        top_status = "uncaptured"
+    else:
+        top_status = "unknown"
+
+    return {"layers": layers, "captured_layers": captured_layers, "total_layers": 3,
+            "status": top_status}
+
+
+def render_coverage_markdown(cov: dict) -> str:
+    """Markdown table naming which layers were captured and which weren't — the
+    denominator that keeps a partial slice from being mistaken for the total
+    (chief-wiggum#345)."""
+    labels = {"orchestrator": "Orchestrator", "subagents": "Sub-agents", "consults": "Consults"}
+    status_labels = {
+        "captured": "captured",
+        "captured-partial": "captured (partial)",
+        "uncaptured": "UNCAPTURED",
+        "unknown": "unknown",
+    }
+    header = (f"**Coverage — {cov['captured_layers']} of {cov['total_layers']} "
+             "layers captured.**")
+    rows = ["| Layer | Status | Basis |", "|---|---|---|"]
+    for key in ("orchestrator", "subagents", "consults"):
+        layer = cov["layers"][key]
+        basis = layer["basis"]
+        if layer.get("fix"):
+            basis += f" — run `{layer['fix']}`"
+        rows.append(f"| {labels[key]} | {status_labels[layer['status']]} | {basis} |")
+    return header + "\n\n" + "\n".join(rows)
+
+
 def _fmt_tokens(n: int) -> str:
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
@@ -142,17 +319,25 @@ def _variance_line(estimate_usd: float, actual_usd: float) -> str:
             f"({pct:+.0f}%).")
 
 
-def render_actual_markdown(summary: dict, estimate_usd: float | None = None) -> str:
+def render_actual_markdown(summary: dict, estimate_usd: float | None = None,
+                           cov: dict | None = None) -> str:
     """Markdown body for the PR's ``## Implementation Cost`` section (no heading —
-    ``shipping.build_pr_body`` owns the heading, like Model Conformance)."""
+    ``shipping.build_pr_body`` owns the heading, like Model Conformance).
+
+    ``cov`` (from ``coverage()``) appends the layer-capture denominator above
+    the footnote — in BOTH branches, so a consult-only or fully-unmetered
+    slice still tells the reader which layers are known-missing (#345)."""
     if summary["status"] == "unmetered":
-        return (
+        md = (
             f"**Unmetered** — no cost records for {summary['repo']}#{summary['ticket']} "
             "in the factory ledger. That is absence of telemetry, not a $0 build: "
             "run `factory_log.py ingest-claude-transcripts --repo <owner/repo> "
             "--ticket <n>` (and set `CW_TELEMETRY=1` before consults) to meter the "
             "next one."
         )
+        if cov is not None:
+            md += "\n\n" + render_coverage_markdown(cov)
+        return md
     rows = [
         "| Layer | Calls | Tokens in | Cache | Tokens out | Cost |",
         "|---|---|---|---|---|---|",
@@ -172,6 +357,9 @@ def render_actual_markdown(summary: dict, estimate_usd: float | None = None) -> 
     lines = ["\n".join(rows), ""]
     if estimate_usd is not None:
         lines.append(_variance_line(estimate_usd, summary["total_cost_usd"]))
+        lines.append("")
+    if cov is not None:
+        lines.append(render_coverage_markdown(cov))
         lines.append("")
     note = ("Nominal model spend (tokens × `config/model_pricing.json`, cache-aware "
             "for Claude Code layers). Human time and CI excluded.")
@@ -255,11 +443,15 @@ def render_estimate_line(est: dict) -> str:
 # ---- CLI ---------------------------------------------------------------------
 
 
-def _print_summary(summary: dict, fmt: str, estimate_usd: float | None) -> None:
+def _print_summary(summary: dict, fmt: str, estimate_usd: float | None,
+                   cov: dict | None = None) -> None:
     if fmt == "json":
-        print(json.dumps(summary, indent=2))
+        out = dict(summary)
+        if cov is not None:
+            out["coverage"] = cov
+        print(json.dumps(out, indent=2))
     elif fmt == "markdown":
-        print(render_actual_markdown(summary, estimate_usd))
+        print(render_actual_markdown(summary, estimate_usd, cov=cov))
     else:
         if summary["status"] == "unmetered":
             print(f"ticket_cost: {summary['repo']}#{summary['ticket']} UNMETERED "
@@ -271,6 +463,14 @@ def _print_summary(summary: dict, fmt: str, estimate_usd: float | None) -> None:
                   f"{summary['records']} metered calls")
             if estimate_usd is not None:
                 print("  " + _variance_line(estimate_usd, summary["total_cost_usd"]))
+        if cov is not None:
+            for key, label in (("orchestrator", "orchestrator"), ("subagents", "subagents"),
+                               ("consults", "consults")):
+                layer = cov["layers"][key]
+                if layer["status"] not in ("captured", "captured-partial"):
+                    print(f"ticket_cost: coverage {cov['captured_layers']}/"
+                          f"{cov['total_layers']} layers — {label} "
+                          f"{layer['status'].upper()} ({layer['basis']})")
 
 
 def main() -> int:
@@ -284,6 +484,16 @@ def main() -> int:
     a.add_argument("--estimate", type=float,
                    help="The nominal estimate stamped on the issue, for the variance line")
     a.add_argument("--format", choices=["json", "markdown", "text"], default="text")
+    a.add_argument("--cwd-prefix", help="Also attribute claude_code turns whose cwd sits under "
+                                        "this path (worktree-precise read-time slicing)")
+    a.add_argument("--since-ts", type=float, help="Window start (epoch) for read-time slicing "
+                                                  "and for the coverage evidence scan")
+    a.add_argument("--until-ts", type=float, help="Window end (epoch)")
+    a.add_argument("--transcript-root", help="Transcript root for the coverage evidence scan "
+                                             "(default: ~/.claude/projects)")
+    a.add_argument("--exit-code-on-gap", action="store_true",
+                   help="Exit 3 when coverage is not complete (opt-in; the default stays "
+                        "report-only, exit 0)")
 
     e = sub.add_parser("estimate", help="Nominal estimate for an Effort class (p50 of calibrations)")
     e.add_argument("--effort", required=True, choices=EFFORTS)
@@ -304,9 +514,14 @@ def main() -> int:
     records = factory_log.read_log()
 
     if args.cmd == "actual":
-        summary = summarize_ticket(records, args.repo, args.ticket)
-        _print_summary(summary, args.format, args.estimate)
-        return 0
+        summary = summarize_ticket(records, args.repo, args.ticket,
+                                   cwd_prefix=args.cwd_prefix, since=args.since_ts,
+                                   until=args.until_ts)
+        transcript_root = Path(args.transcript_root) if args.transcript_root else None
+        cov = coverage(summary, records, transcript_root=transcript_root,
+                       since=args.since_ts, until=args.until_ts, cwd_prefix=args.cwd_prefix)
+        _print_summary(summary, args.format, args.estimate, cov=cov)
+        return 3 if (args.exit_code_on_gap and cov["status"] != "complete") else 0
     if args.cmd == "estimate":
         est = estimate_for_effort(records, args.effort, repo=args.repo,
                                   min_samples=args.min_samples)

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import factory_log
 from chief_wiggum import languages as cw_languages
 from keychain import has_secret
 
@@ -125,6 +128,17 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": set(),
         "secrets": set(),
     },
+    # Claude-layer cost CAPTURE, not a command/package/secret — whether the
+    # transcript ingest is provisioned and has actually run at least once
+    # (chief-wiggum#345). "capture" is a fourth requirement kind alongside
+    # cmds/pkgs/secrets; required_items()/is_required() default an absent
+    # "capture" key to an empty set, so every OTHER profile is untouched.
+    "telemetry": {
+        "cmds": set(),
+        "pkgs": set(),
+        "secrets": set(),
+        "capture": {"claude-transcripts", "factory-ledger"},
+    },
 }
 
 # A profile per BUILT language tier (#162), derived from config/languages.json's
@@ -197,6 +211,65 @@ def check_secret(name: str, required: bool = False):
             warn_count += 1
 
 
+def check_capture(name: str, required: bool = True):
+    """Report whether the Claude-layer cost capture is provisioned AND has run.
+
+    Not a command or a package — a *state* check. The failure this catches is
+    silent: everything installs, every workflow runs, and the ledger's Claude
+    layer stays empty because no ingest ever happened (chief-wiggum#345).
+    Absent on a non-Claude harness is INAPPLICABLE, not a failure — a check
+    that fails closed on a harness it doesn't apply to teaches operators to
+    ignore it.
+    """
+    global pass_count, fail_count, warn_count
+    if name == "claude-transcripts":
+        if factory_log.DEFAULT_TRANSCRIPT_ROOT.is_dir():
+            print(f"{GREEN}[OK]{NC}  {name:<24s} transcript root present")
+            pass_count += 1
+        else:
+            print(f"{YELLOW}[OPTIONAL]{NC}  {name:<24s} transcript root not present "
+                  "(non-Claude harness — capture inapplicable)")
+            warn_count += 1
+        return
+    if name == "factory-ledger":
+        records = [r for r in factory_log.read_log() if r.get("event") == factory_log.CLAUDE_CODE]
+        if not records:
+            print(f"{RED if required else YELLOW}[{'MISSING' if required else 'OPTIONAL'}]{NC}  "
+                  f"{name:<24s} 0 claude_code records — the Claude layer has never been "
+                  "ingested. Run: factory_log.py ingest-claude-transcripts --since-days 7")
+            if required:
+                fail_count += 1
+            else:
+                warn_count += 1
+            return
+        newest = max(r.get("ts") or 0 for r in records)
+        age_days = (time.time() - newest) / 86400
+        if age_days > 7:
+            print(f"{YELLOW}[OPTIONAL]{NC}  {name:<24s} stale (newest {age_days:.0f} days old)")
+            warn_count += 1
+        else:
+            age_h = (time.time() - newest) / 3600
+            print(f"{GREEN}[OK]{NC}  {name:<24s} {len(records)} claude_code records, "
+                  f"newest {age_h:.0f}h ago")
+            pass_count += 1
+        return
+    # An unknown probe name never silently passes.
+    print(f"{RED}[MISSING]{NC}  {name:<24s} unknown capture probe")
+    fail_count += 1
+
+
+def check_telemetry_env():
+    """CW_TELEMETRY (or CW_FACTORY_LOG) gates whether a consult's cost gets
+    logged at all — unset, every consult still runs, it just never meters
+    (silent, not broken). `/implement`/`/implement-wave` set this themselves,
+    so its absence here is advisory, never a failure."""
+    global warn_count
+    if not (os.environ.get("CW_TELEMETRY") or os.environ.get("CW_FACTORY_LOG")):
+        print(f"{YELLOW}[OPTIONAL]{NC}  CW_TELEMETRY not set — consult spend will not be "
+              "logged (/implement sets it itself)")
+        warn_count += 1
+
+
 # Map a provider (config/providers.json) to the dependency profile that installs it.
 PROVIDER_PROFILE = {
     "codex": "codex",
@@ -215,8 +288,8 @@ WORKFLOW_PROFILES = {
     "design": ["core", "browser-validation", "codex", "gemini"],
     "architect": ["core", "codex", "gemini"],
     "plan-epic": ["core"],
-    "implement": ["core", "browser-validation", "codex", "gemini"],
-    "implement-wave": ["core", "browser-validation", "codex", "gemini"],
+    "implement": ["core", "browser-validation", "codex", "gemini", "telemetry"],
+    "implement-wave": ["core", "browser-validation", "codex", "gemini", "telemetry"],
     "close-epic": ["core", "codex", "gemini"],
     "create-issue": ["core"],
     "ship": ["core"],
@@ -227,6 +300,7 @@ WORKFLOW_PROFILES = {
     "saas-gate": ["core"],
     "update": ["core"],
     "keep-going": ["core"],
+    "reflect": ["core", "telemetry"],
 }
 
 
@@ -275,7 +349,10 @@ def expand_profiles(profiles: list[str]) -> set[str]:
 def required_items(kind: str, profiles: list[str]) -> set[str]:
     required: set[str] = set()
     for profile in expand_profiles(profiles):
-        required.update(WORKFLOW_REQUIREMENTS[profile][kind])
+        # .get(kind, set()) rather than [kind]: only the "telemetry" profile
+        # declares a "capture" kind (chief-wiggum#345) — every other profile
+        # dict has no such key and must resolve to empty, not KeyError.
+        required.update(WORKFLOW_REQUIREMENTS[profile].get(kind, set()))
     return required
 
 
@@ -435,6 +512,11 @@ def main():
     check_secret("GEMINI_API_KEY", is_required("secrets", "GEMINI_API_KEY", workflows))
     check_secret("GOOGLE_CLOUD_PROJECT", is_required("secrets", "GOOGLE_CLOUD_PROJECT", workflows))
     check_secret("GOOGLE_CLOUD_LOCATION", is_required("secrets", "GOOGLE_CLOUD_LOCATION", workflows))
+
+    print("\n--- Telemetry capture (per-ticket costing) ---")
+    check_capture("claude-transcripts", is_required("capture", "claude-transcripts", workflows))
+    check_capture("factory-ledger", is_required("capture", "factory-ledger", workflows))
+    check_telemetry_env()
 
     print(f"\n=== Results: {pass_count} ok, {fail_count} missing, {warn_count} warnings ===")
 

@@ -224,6 +224,28 @@ sub-agent), `requestId`, and `cwd`. The ingest:
   All-zero usage lines are skipped, which makes dedup order-independent.
 - **attributes worktrees to their parent repo**, so a `<repo>/.claude/worktrees/<branch>`
   cwd doesn't register as a separate project.
+- **recurses through every sub-agent transcript, not just the top level**
+  (chief-wiggum#345). Claude Code writes the orchestrator's turns to
+  `<project>/<session>.jsonl`, but every sub-agent's turns to a deeper path —
+  `<project>/<session>/subagents/agent-<id>.jsonl`, and workflow sub-agents
+  deeper still (`.../subagents/workflows/<wf>/agent-<id>.jsonl`). Measured
+  against a real corpus: the sub-agent level carried **~75% of turn volume**
+  while an earlier two-level glob (`*/*.jsonl`) saw only the top level — the
+  sub-agent layer read $0 not because delegated work was free, but because it
+  was never looked at. Recursing is safe: request ids don't repeat across
+  levels, so widening the scan cannot double-count. **History ingested before
+  this fix under-reports the sub-agent layer and is not back-filled
+  silently** — re-run the ingest over the window you care about to pick it up.
+  `query_source` is derived from `isSidechain` OR the record living under a
+  `/subagents/` path (belt-and-braces, so an older record shape missing the
+  flag still lands in the right layer).
+- **records `cwd` and `agent_type` on every ingested record.** `cwd` lets
+  `ticket_cost.py` recover an untagged turn later by where it ran (read-time
+  window slicing, see [ticket-cost.md](ticket-cost.md)); `agent_type` is the
+  sub-agent TYPE name Claude Code stamps as `attributionAgent` (e.g.
+  `general-purpose`, `Explore`) — never message content, and deliberately
+  **not** stored in the `skill` field (`aggregate()`'s cost-by-loop join is
+  keyed by gate name and would be polluted by agent-type keys).
 
 Re-run it whenever you want the log current; `0 new` means up to date.
 
@@ -232,6 +254,16 @@ the ingest also accepts `--ticket` with an attribution guard (`--cwd-prefix` for
 worktree-precise tagging, else a cwd-derived repo match against `--repo`) and
 `--since-ts <epoch>` to window on a build-start stamp. Turns already ingested
 untagged can't be re-tagged (dedup keeps the first record), so tag at first ingest.
+
+`--until-ts <epoch>` bounds a CATCH-UP ingest so it can never consume an
+in-flight ticket's own turns — `/implement` Step 1 passes its own build-start
+stamp here before the build even begins, so an automatic catch-up can never
+strand this build's turns untagged (chief-wiggum#345).
+
+`count_transcript_turns()` (library-only, no CLI subcommand) answers "how many
+turns are visible in the corpus" WITHOUT ingesting them — the independent
+evidence `ticket_cost.py`'s coverage line uses to tell "nothing happened" apart
+from "nothing was captured" (see [ticket-cost.md](ticket-cost.md)).
 
 ### OTEL ingest (for an existing OTEL pipeline)
 
@@ -272,6 +304,15 @@ python3 "$CW_HOME/scripts/factory_log.py" aggregate --repo acme/app
 `aggregate` splits Claude Code cost by `query_source` (orchestrator vs subagent)
 and reports `cost_usd_total = consult_cost + claude_code_cost` — the nominal cost
 of a factory run end to end. `/reflect` surfaces it as a factory-log finding.
+
+**Nominal, not billed** — every dollar figure this log renders is list-price
+tokens × `config/model_pricing.json`, not what you were actually charged on a
+Claude Code subscription plan. The chief-wiggum#345 sub-agent ingest fix makes
+this total several times larger than anything reported before it (the
+sub-agent layer was previously invisible), which will read as alarming if you
+forget it's nominal. See [ticket-cost.md](ticket-cost.md)'s "Nominal, not
+billed" note and `build_cost.py`'s `plan_share_pct` for the number that
+actually reflects a fixed-plan budget.
 
 ## Ticket attribution (`scripts/ticket_cost.py`)
 

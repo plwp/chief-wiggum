@@ -278,8 +278,9 @@ def collect(repo: Path, commits_limit: int = 400, prs: list[dict] | None = None)
     else:
         findings.append(Finding("factory-logs", "info",
             "telemetry: no AI cost logged — if this factory ran on Claude Code, its own token "
-            "cost (usually the largest line item) has not been ingested. Run: "
-            "factory_log.py ingest-claude-transcripts"))
+            "cost (usually the largest line item) has not been ingested. /reflect's own "
+            "Step 1b catch-up ingest (--since-days 30) should have covered this; if it "
+            "still reads empty, re-run: factory_log.py ingest-claude-transcripts --since-days 30"))
 
     # What that cost is MADE of. Report-only: every finding here is something the
     # operator can act on and CW cannot (session shape, cache TTL, read width),

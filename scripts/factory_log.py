@@ -482,10 +482,21 @@ def _repo_from_cwd(cwd: str | None) -> str | None:
 
 
 def _iter_transcript_files(root: Path):
-    """Every Claude Code transcript under ``root`` (``<project>/<session>.jsonl``)."""
+    """Every Claude Code transcript under ``root``.
+
+    Claude Code writes the orchestrator's turns to ``<project>/<session>.jsonl``
+    but every SUB-AGENT's turns to a deeper path —
+    ``<project>/<session>/subagents/agent-<id>.jsonl``, and workflow sub-agents
+    deeper still (``.../subagents/workflows/<wf>/agent-<id>.jsonl``). A
+    ``*/*.jsonl`` glob sees only the first level, which is why the sub-agent
+    layer read $0 while carrying ~75% of the turn volume (chief-wiggum#345).
+    Recursing is safe: the record filter below (``type == "assistant"`` plus a
+    ``message.usage`` object) is what decides what counts, not the path shape,
+    and request ids do not repeat across levels.
+    """
     if not root.is_dir():
         return
-    yield from sorted(root.glob("*/*.jsonl"))
+    yield from sorted(root.rglob("*.jsonl"))
 
 
 def ingested_request_ids() -> set[str]:
@@ -519,7 +530,8 @@ def ingested_request_ids() -> set[str]:
 
 def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
                               since: float | None = None, ticket: str | None = None,
-                              cwd_prefix: str | None = None) -> int:
+                              cwd_prefix: str | None = None,
+                              until: float | None = None) -> int:
     """Fold Claude Code's own per-turn token usage into the factory log.
 
     This is the end-to-end cost half of the ledger. `factory_log` already records
@@ -561,6 +573,11 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
     same window would bleed in — pass ``cwd_prefix`` when that matters).
     Dedup is by request id, so already-ingested turns cannot be re-tagged by a
     later run: tag at first ingest.
+
+    ``until`` bounds a CATCH-UP ingest so it can never consume an in-flight
+    ticket's turns. Dedup is by request id and tagging happens at first
+    ingest, so an unbounded catch-up run during a build would permanently
+    strand that build's turns untagged.
     """
     root = Path(root) if root is not None else DEFAULT_TRANSCRIPT_ROOT
     if ticket is not None and repo is None and cwd_prefix is None:
@@ -595,6 +612,8 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
 
             ts = _parse_iso_ts(e.get("timestamp"))
             if since is not None and ts is not None and ts < since:
+                continue
+            if until is not None and ts is not None and ts > until:
                 continue
 
             tin = _coerce_token(usage.get("input_tokens")) or 0
@@ -632,7 +651,12 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
                 "event": CLAUDE_CODE,
                 "request_id": req,
                 "model": model,
-                "query_source": "subagent" if e.get("isSidechain") else "repl_main_thread",
+                # Belt-and-braces: `isSidechain` is the primary signal, but a
+                # sub-agent transcript living under a `/subagents/` path
+                # counts too, even on an older record shape that omits the
+                # flag (chief-wiggum#345).
+                "query_source": ("subagent" if (e.get("isSidechain") or "/subagents/" in str(f))
+                                 else "repl_main_thread"),
                 "tokens_in": tin,
                 "tokens_out": tout,
                 "cache_read": cache_read,
@@ -647,6 +671,19 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
             if e.get("sessionId"):
                 rec["session_id"] = e["sessionId"]
             cwd = e.get("cwd")
+            if cwd:
+                # Recorded so a turn can be attributed to a ticket at READ time
+                # (ticket_cost's cwd+window slice) as well as by the tag applied
+                # here — dedup is by request id, so a turn ingested untagged by a
+                # catch-up run could otherwise never be attributed (#345).
+                rec["cwd"] = str(cwd)
+            agent = e.get("attributionAgent")
+            if agent:
+                # The sub-agent TYPE (e.g. general-purpose, Explore) — a type
+                # name, never prompt content. Deliberately NOT stored in `skill`:
+                # aggregate()'s cost_by_loop join is keyed by gate name and would
+                # be polluted by agent-type keys.
+                rec["agent_type"] = str(agent)
             derived = _repo_from_cwd(cwd)
             attributed = repo or derived
             if attributed:
@@ -670,6 +707,93 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
                 seen.add(req)
                 n += 1
     return n
+
+
+def count_transcript_turns(root: Path | None = None, *, since: float | None = None,
+                          until: float | None = None, repo: str | None = None,
+                          cwd_prefix: str | None = None) -> dict:
+    """Count billable assistant turns visible in the transcript corpus, WITHOUT
+    ingesting them — the independent evidence behind ticket_cost's coverage line.
+
+    "Zero records in the ledger" cannot by itself distinguish *no work happened*
+    from *nothing was captured*; this answers the second half from a source other
+    than the ledger. Returns
+    ``{"scanned": bool, "repl_main_thread": int, "subagent": int}``.
+    ``scanned: False`` means the corpus was not readable (no transcript root — a
+    non-Claude harness, or a fresh machine): the caller must report ``unknown``,
+    never ``captured`` and never ``$0``.
+
+    Bounded on purpose: with ``since`` set, files whose mtime precedes the window
+    are skipped without being read, so this stays cheap enough to run at PR time.
+    """
+    root = Path(root) if root is not None else DEFAULT_TRANSCRIPT_ROOT
+    if not root.is_dir():
+        return {"scanned": False, "repl_main_thread": 0, "subagent": 0}
+
+    counts = {"repl_main_thread": 0, "subagent": 0}
+    for f in _iter_transcript_files(root):
+        if since is not None:
+            try:
+                if f.stat().st_mtime < since:
+                    continue
+            except OSError:
+                continue
+        try:
+            lines = f.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("type") != "assistant":
+                continue
+            msg = e.get("message")
+            if not isinstance(msg, dict):
+                continue
+            usage = msg.get("usage")
+            if not isinstance(usage, dict):
+                continue
+
+            model = msg.get("model")
+            if not model or model == "<synthetic>":
+                continue
+
+            tin = _coerce_token(usage.get("input_tokens")) or 0
+            tout = _coerce_token(usage.get("output_tokens")) or 0
+            cache_read = _coerce_token(usage.get("cache_read_input_tokens")) or 0
+            creation = usage.get("cache_creation")
+            creation = creation if isinstance(creation, dict) else {}
+            w5 = _coerce_token(creation.get("ephemeral_5m_input_tokens"))
+            w1 = _coerce_token(creation.get("ephemeral_1h_input_tokens"))
+            if w5 is None and w1 is None:
+                w5 = _coerce_token(usage.get("cache_creation_input_tokens")) or 0
+                w1 = 0
+            w5, w1 = w5 or 0, w1 or 0
+            if (tin + tout + cache_read + w5 + w1) == 0:
+                continue
+
+            cwd = e.get("cwd")
+            if cwd_prefix is not None:
+                if not (cwd and str(cwd).startswith(str(cwd_prefix).rstrip("/"))):
+                    continue
+            elif repo is not None:
+                derived = _repo_from_cwd(cwd)
+                if not (derived and derived in (repo, str(repo).split("/")[-1])):
+                    continue
+
+            ts = _parse_iso_ts(e.get("timestamp"))
+            if until is not None and ts is not None and ts > until:
+                continue
+
+            bucket = "subagent" if (e.get("isSidechain") or "/subagents/" in str(f)) else "repl_main_thread"
+            counts[bucket] += 1
+
+    return {"scanned": True, **counts}
 
 
 def _parse_iso_ts(value) -> float | None:
@@ -1282,6 +1406,9 @@ def main() -> int:
     it.add_argument("--cwd-prefix",
                     help="Only tag turns whose cwd starts with this path (worktree-precise "
                          "attribution for parallel /implement-wave workers)")
+    it.add_argument("--until-ts", type=float,
+                    help="Only ingest turns at/before this epoch timestamp — bounds a "
+                         "catch-up ingest so it cannot consume an in-flight ticket's turns")
 
     cr_ = sub.add_parser("cost-report",
                          help="What Claude Code session cost is made of (report-only, never a gate)")
@@ -1313,7 +1440,8 @@ def main() -> int:
             since = args.since_ts
         try:
             n = ingest_claude_transcripts(Path(args.root), repo=args.repo, since=since,
-                                          ticket=args.ticket, cwd_prefix=args.cwd_prefix)
+                                          ticket=args.ticket, cwd_prefix=args.cwd_prefix,
+                                          until=args.until_ts)
         except ValueError as exc:
             print(f"factory_log: {exc}", file=sys.stderr)
             return 2

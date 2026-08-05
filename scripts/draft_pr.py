@@ -48,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--implementation-cost",
                         help="Markdown text or file for the Implementation Cost section "
                              "(from scripts/ticket_cost.py actual --format markdown)")
+    parser.add_argument("--require-cost", action="store_true",
+                        help="Fail when the Implementation Cost section is missing or empty "
+                             "(chief-wiggum#345: PRs shipped with a 'see ledger' stub because "
+                             "the pipeline produced nothing usable at PR time)")
     parser.add_argument("--base")
     parser.add_argument("--out", help="Write the PR body to this file (else stdout)")
     parser.add_argument("--print-command", action="store_true", help="Also print the gh pr create command")
@@ -64,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
     impl_cost = args.implementation_cost
     if impl_cost and Path(impl_cost).exists():
         impl_cost = Path(impl_cost).read_text()
+
+    if args.require_cost and not (impl_cost or "").strip():
+        print("Error: --require-cost set but the Implementation Cost section is empty. "
+              "The Claude-layer ingest or the consult tagging did not produce a slice — "
+              "run `factory_log.py ingest-claude-transcripts` and re-run "
+              "`ticket_cost.py actual`. Do not hand-edit a placeholder into the PR.",
+              file=sys.stderr)
+        return 1
 
     body = shipping.build_pr_body(
         issue=args.issue,
