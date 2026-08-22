@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "observed_on": "2026-08-22",
+  "observation_kind": "read-only-compatibility-probe",
+  "provider_name": "openrouter-preview-worker",
+  "model": "stealth/ox-alpha",
+  "provider_capability_tier": "external-preview-tier",
+  "anonymous_preview": true,
+  "weights_license_evidence": null,
+  "harness": {
+    "name": "codex",
+    "version": "0.149.0"
+  },
+  "execution": {
+    "wire_api": "responses",
+    "sandbox": "read-only",
+    "ephemeral": true,
+    "task_class": "read two repository configuration files with shell tools; no edits",
+    "expected_marker": "OX_TOOL_PROBE_OK",
+    "observed_marker": "OX_TOOL_PROBE_OK",
+    "observed_provider_count": 12,
+    "shell_tool_call_observed": true,
+    "duration_ms": 25700
+  },
+  "usage": {
+    "status": "measured",
+    "input_tokens": 98628,
+    "output_tokens": 90,
+    "reasoning_output_tokens": 0
+  },
+  "model_resolution": {
+    "status": "unavailable",
+    "resolved_model": null,
+    "warning": "Harness had no model metadata and used fallback metadata."
+  },
+  "sanitized_evidence": {
+    "prompt_summary": "Read AGENTS.md and config/providers.json using shell tools; make no edits; return OX_TOOL_PROBE_OK and provider count.",
+    "config_summary": "Codex 0.149.0; OpenRouter Responses; read-only sandbox; ephemeral; ignored user config; configured preview model.",
+    "log_summary": "tool call completed; marker OX_TOOL_PROBE_OK; provider count 12; model metadata fallback warning.",
+    "prompt_sha256": "sha256:2ff2a33ca0232f9174af18c06b93920cb51276e6d4ca3d5de8d8be121c4365cb",
+    "config_sha256": "sha256:69650732bdb1598bd42e9b7ecb037f1ec6bc6e8fc63b43b6f7d6afa2181ed460",
+    "log_sha256": "sha256:53d1173301effcfdf49354454e54de02b5aad3fe0d7d9dffaaba619b4d5da02c"
+  },
+  "admission": {
+    "read_tools": "compatible",
+    "write_enabled": false,
+    "causal_identity_compliant": false,
+    "next_required_stage": "disposable-write-fixture"
+  },
+  "notes": [
+    "The unusually high input-token count requires a hard budget and repeated calibration.",
+    "This observation is compatibility evidence only; no write-enabled model call was made."
+  ]
+}

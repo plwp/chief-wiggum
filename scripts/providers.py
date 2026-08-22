@@ -114,7 +114,7 @@ def _retry_backoff_seconds(attempt: int, previous_failure_kind: str | None) -> f
     don't all land in lockstep; a ``rate_limit`` classified failure gets a
     multiplied delay on top of that schedule."""
     exponent = max(0, attempt - 2)
-    delay = min(RETRY_BACKOFF_CAP_SECONDS, RETRY_BACKOFF_BASE_SECONDS * (2 ** exponent))
+    delay = min(RETRY_BACKOFF_CAP_SECONDS, RETRY_BACKOFF_BASE_SECONDS * (2**exponent))
     if previous_failure_kind == "rate_limit":
         delay *= RETRY_BACKOFF_RATE_LIMIT_MULTIPLIER
     jitter = delay * 0.2 * random.random()
@@ -198,6 +198,23 @@ class Provider:
     # DOES read files) while still needing the diff inlined, because it has
     # no tool loop to fetch a pointed-to file with.
     needs_inline_diff: bool = True
+
+
+@dataclass(frozen=True)
+class ExecutionProvider:
+    """Typed configuration for a repository-capable delegate adapter."""
+
+    name: str
+    enabled: bool
+    execution_adapter: str
+    delegate: str
+    model: str
+    base_url: str
+    capability_tier: str
+    capabilities: tuple[str, ...]
+    anonymous_preview: bool = False
+    weights_license_evidence: str | None = None
+    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +348,27 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
     return providers
 
 
+def execution_providers_from_config(config: dict[str, Any]) -> dict[str, ExecutionProvider]:
+    providers: dict[str, ExecutionProvider] = {}
+    for name, raw in config.get("providers", {}).items():
+        if not raw.get("execution_adapter"):
+            continue
+        providers[name] = ExecutionProvider(
+            name=name,
+            enabled=bool(raw.get("enabled", False)),
+            execution_adapter=str(raw.get("execution_adapter", "")),
+            delegate=str(raw.get("delegate", "")),
+            model=str(raw.get("model", "")),
+            base_url=str(raw.get("base_url", "")),
+            capability_tier=str(raw.get("capability_tier", "")),
+            capabilities=tuple(str(item) for item in raw.get("capabilities", [])),
+            anonymous_preview=bool(raw.get("anonymous_preview", False)),
+            weights_license_evidence=raw.get("weights_license_evidence"),
+            max_input_tokens=raw.get("max_input_tokens"),
+        )
+    return providers
+
+
 def roles_from_config(config: dict[str, Any]) -> dict[str, Role]:
     roles: dict[str, Role] = {}
     for name, raw in config.get("roles", {}).items():
@@ -425,9 +463,12 @@ def validate_config(
     *,
     supported_tools: set[str] | None = None,
     supported_delegates: set[str] | None = None,
+    supported_execution_adapters: set[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     providers = providers_from_config(config)
+    execution_providers = execution_providers_from_config(config)
+    supported_execution_adapters = supported_execution_adapters or {"codex-responses"}
     for role_name, role in roles_from_config(config).items():
         for provider_name in role.required + role.optional:
             if provider_name not in providers:
@@ -453,7 +494,11 @@ def validate_config(
     for provider in providers.values():
         if provider.type == "tool" and not provider.tool:
             errors.append(f"provider {provider.name} has type=tool but no tool")
-        if supported_tools is not None and provider.type == "tool" and provider.tool not in supported_tools:
+        if (
+            supported_tools is not None
+            and provider.type == "tool"
+            and provider.tool not in supported_tools
+        ):
             errors.append(f"provider {provider.name} references unsupported tool {provider.tool}")
         if provider.type == "delegate" and not provider.delegate:
             errors.append(f"provider {provider.name} has type=delegate but no delegate")
@@ -461,12 +506,44 @@ def validate_config(
             supported_delegates is not None
             and provider.type == "delegate"
             and provider.delegate not in supported_delegates
+            and provider.name not in execution_providers
         ):
             errors.append(
                 f"provider {provider.name} references unsupported delegate {provider.delegate}"
             )
         if provider.type not in {"tool", "delegate"}:
             errors.append(f"provider {provider.name} has unsupported type {provider.type}")
+    for provider in execution_providers.values():
+        if provider.execution_adapter not in supported_execution_adapters:
+            errors.append(
+                f"execution provider {provider.name} references unsupported execution adapter "
+                f"{provider.execution_adapter}"
+            )
+        if provider.delegate != provider.execution_adapter:
+            errors.append(
+                f"execution provider {provider.name} delegate must match execution_adapter"
+            )
+        if not provider.model or not provider.base_url:
+            errors.append(f"execution provider {provider.name} requires model and base_url")
+        required = {"responses", "repo-read", "shell-tools", "workspace-write"}
+        missing = sorted(required - set(provider.capabilities))
+        if missing:
+            errors.append(
+                f"execution provider {provider.name} is missing capabilities: {', '.join(missing)}"
+            )
+        # @cw-trace realizes INV-dag-022
+        if not provider.weights_license_evidence and provider.capability_tier == "open-tier":
+            errors.append(
+                f"provider {provider.name} cannot use open-tier without weights/license evidence; "
+                "anonymous previews must use external-preview-tier"
+            )
+        if (
+            provider.max_input_tokens is None
+            or isinstance(provider.max_input_tokens, bool)
+            or not isinstance(provider.max_input_tokens, int)
+            or provider.max_input_tokens <= 0
+        ):
+            errors.append(f"execution provider {provider.name} has invalid max_input_tokens")
     return errors
 
 
@@ -486,9 +563,7 @@ def validate_role_lenses(role: Role, lenses: dict[str, Any]) -> list[str]:
                 "which is not a required or optional provider of that role"
             )
         if lens_name not in lenses:
-            errors.append(
-                f"role {role.name} references unknown lens {lens_name!r}"
-            )
+            errors.append(f"role {role.name} references unknown lens {lens_name!r}")
     return errors
 
 
@@ -677,30 +752,38 @@ def detect_blind_providers(
         checked += 1
         prompt_tokens = prompt_tokens_by_provider.get(result.name)
         if result.tokens_in is None:
-            findings.append(BlindnessFinding(
-                provider=result.name, kind="unmeasured", tokens_in=None,
-                prompt_tokens_estimate=prompt_tokens,
-                message=(
-                    f"{result.name} is declared repo-reading and required by role "
-                    f"{role.name!r}, but its tokens_in could not be measured "
-                    f"(usage_status={result.usage_status!r}). A provider that cannot "
-                    "be measured is not the same as one measured and fine — do not "
-                    "count this voice as confirmed-informed."
-                ),
-            ))
+            findings.append(
+                BlindnessFinding(
+                    provider=result.name,
+                    kind="unmeasured",
+                    tokens_in=None,
+                    prompt_tokens_estimate=prompt_tokens,
+                    message=(
+                        f"{result.name} is declared repo-reading and required by role "
+                        f"{role.name!r}, but its tokens_in could not be measured "
+                        f"(usage_status={result.usage_status!r}). A provider that cannot "
+                        "be measured is not the same as one measured and fine — do not "
+                        "count this voice as confirmed-informed."
+                    ),
+                )
+            )
             continue
         if prompt_tokens is not None and result.tokens_in <= prompt_tokens * margin:
-            findings.append(BlindnessFinding(
-                provider=result.name, kind="blind", tokens_in=result.tokens_in,
-                prompt_tokens_estimate=prompt_tokens,
-                message=(
-                    f"{result.name}'s tokens_in ({result.tokens_in}) is within {margin}x "
-                    f"of its own prompt's estimated size (~{prompt_tokens} tokens) in role "
-                    f"{role.name!r} — it answered from the prompt text alone, not the repo. "
-                    "A provider whose tokens_in is ~the prompt size did not read the repo, "
-                    "by definition (chief-wiggum#319)."
-                ),
-            ))
+            findings.append(
+                BlindnessFinding(
+                    provider=result.name,
+                    kind="blind",
+                    tokens_in=result.tokens_in,
+                    prompt_tokens_estimate=prompt_tokens,
+                    message=(
+                        f"{result.name}'s tokens_in ({result.tokens_in}) is within {margin}x "
+                        f"of its own prompt's estimated size (~{prompt_tokens} tokens) in role "
+                        f"{role.name!r} — it answered from the prompt text alone, not the repo. "
+                        "A provider whose tokens_in is ~the prompt size did not read the repo, "
+                        "by definition (chief-wiggum#319)."
+                    ),
+                )
+            )
     return BlindnessReport(
         role=role.name, requires_repo_read=True, findings=findings, providers_checked=checked
     )
@@ -808,17 +891,19 @@ def detect_image_blind_providers(
         if provider.accepts_images:
             continue
         required = name in role.required
-        findings.append(ImageBlindnessFinding(
-            provider=name,
-            required=required,
-            message=(
-                f"{name} is a {'required' if required else 'optional'} provider "
-                f"of role {role.name!r}, which sends images, but {name} is "
-                "declared unable to accept images (provider.accepts_images="
-                "False) — it critiques a written description of the images, "
-                "never the rendered pixels (chief-wiggum#321)."
-            ),
-        ))
+        findings.append(
+            ImageBlindnessFinding(
+                provider=name,
+                required=required,
+                message=(
+                    f"{name} is a {'required' if required else 'optional'} provider "
+                    f"of role {role.name!r}, which sends images, but {name} is "
+                    "declared unable to accept images (provider.accepts_images="
+                    "False) — it critiques a written description of the images, "
+                    "never the rendered pixels (chief-wiggum#321)."
+                ),
+            )
+        )
     return ImageBlindnessReport(
         role=role.name, sends_images=True, findings=findings, providers_checked=checked
     )
@@ -906,7 +991,9 @@ def _run_one_provider(
             time.sleep(_retry_backoff_seconds(attempt, last_failure_kind))
         try:
             if retry_context_aware:
-                outcome = execute(provider, attempt=attempt, previous_failure_kind=last_failure_kind)
+                outcome = execute(
+                    provider, attempt=attempt, previous_failure_kind=last_failure_kind
+                )
             else:
                 outcome = execute(provider)
         except Exception as exc:  # noqa: BLE001 - any provider failure is retryable
@@ -928,7 +1015,12 @@ def _run_one_provider(
             continue
         ok_path.write_text(text)
         return ProviderResult(
-            provider.name, required, "ok", str(ok_path), attempt, None,
+            provider.name,
+            required,
+            "ok",
+            str(ok_path),
+            attempt,
+            None,
             tokens_in=getattr(usage, "tokens_in", None),
             tokens_out=getattr(usage, "tokens_out", None),
             usage_status=getattr(usage, "usage_status", None),
@@ -1005,7 +1097,9 @@ def run_role_quorum(
     # required and optional, must not run twice and clobber its own file).
     tasks: list[tuple[Provider, bool]] = []
     seen: set[str] = set()
-    for provider, required in [(p, True) for p in plan.required] + [(p, False) for p in plan.optional]:
+    for provider, required in [(p, True) for p in plan.required] + [
+        (p, False) for p in plan.optional
+    ]:
         if provider.name in seen:
             continue
         seen.add(provider.name)
@@ -1019,7 +1113,13 @@ def run_role_quorum(
         future_map = {
             pool.submit(
                 _run_one_provider,
-                provider, required, execute, out, plan.role.name, max_attempts, min_bytes,
+                provider,
+                required,
+                execute,
+                out,
+                plan.role.name,
+                max_attempts,
+                min_bytes,
             ): (provider, required)
             for provider, required in tasks
         }
@@ -1041,10 +1141,16 @@ def run_role_quorum(
                 if fut.done():
                     results.append(fut.result())
                     continue
-                results.append(ProviderResult(
-                    provider.name, required, "failed", None, 0,
-                    f"abandoned: quorum deadline of {quorum_timeout}s exceeded",
-                ))
+                results.append(
+                    ProviderResult(
+                        provider.name,
+                        required,
+                        "failed",
+                        None,
+                        0,
+                        f"abandoned: quorum deadline of {quorum_timeout}s exceeded",
+                    )
+                )
         finally:
             # wait=False: don't block returning on a task that ignored its
             # own timeout — see the TimeoutError branch's comment above.
@@ -1062,7 +1168,8 @@ def run_role_quorum(
         manifest.image_blindness = detect_image_blind_providers(plan.role, providers_by_name)
     except Exception as exc:  # noqa: BLE001 - the check itself must never break the quorum
         manifest.image_blindness = ImageBlindnessReport(
-            role=plan.role.name, sends_images=plan.role.sends_images,
+            role=plan.role.name,
+            sends_images=plan.role.sends_images,
             error=f"image blindness check failed: {exc}",
         )
 
@@ -1078,6 +1185,7 @@ def run_role_quorum(
             # false-flags a legitimately-smaller-prompt provider).
             def _prompt_body_for(name: str) -> str:
                 return prompt[name] if isinstance(prompt, dict) else prompt
+
             prompt_tokens_by_provider = {
                 name: estimate_prompt_tokens(
                     prompt_for_provider(plan.role, name, _prompt_body_for(name), lenses or {})
@@ -1086,12 +1194,16 @@ def run_role_quorum(
                 if not isinstance(prompt, dict) or name in prompt
             }
             manifest.blindness = detect_blind_providers(
-                plan.role, providers_by_name, results, prompt_tokens_by_provider,
+                plan.role,
+                providers_by_name,
+                results,
+                prompt_tokens_by_provider,
                 margin=blindness_margin,
             )
         except Exception as exc:  # noqa: BLE001 - the check itself must never break the quorum
             manifest.blindness = BlindnessReport(
-                role=plan.role.name, requires_repo_read=plan.role.requires_repo_read,
+                role=plan.role.name,
+                requires_repo_read=plan.role.requires_repo_read,
                 error=f"blindness check failed: {exc}",
             )
 

@@ -11,7 +11,72 @@ def test_default_provider_config_is_valid():
 
     assert providers.validate_config(config) == []
     roles = providers.roles_from_config(config)
-    assert {"explorer", "implementer", "reviewer", "architecture_critic", "design_critic", "risky_diff_review"} <= set(roles)
+    assert {
+        "explorer",
+        "implementer",
+        "reviewer",
+        "architecture_critic",
+        "design_critic",
+        "risky_diff_review",
+    } <= set(roles)
+
+
+def test_default_config_has_disabled_external_preview_execution_provider():
+    config = providers.load_config()
+    execution = providers.execution_providers_from_config(config)
+
+    provider = execution["openrouter-preview-worker"]
+    assert not provider.enabled
+    assert provider.execution_adapter == "codex-responses"
+    assert provider.capability_tier == "external-preview-tier"
+    assert all(
+        "openrouter-preview-worker" not in raw.get("required", []) + raw.get("optional", [])
+        for raw in config["roles"].values()
+    )
+
+
+def test_anonymous_preview_without_license_must_be_external_preview_tier():
+    config = {
+        "providers": {
+            "preview": {
+                "type": "delegate",
+                "delegate": "codex-responses",
+                "execution_adapter": "codex-responses",
+                "model": "configured/model",
+                "enabled": False,
+                "base_url": "https://example.invalid/api/v1",
+                "capability_tier": "open-tier",
+                "capabilities": ["responses", "shell-tools"],
+                "anonymous_preview": True,
+                "weights_license_evidence": None,
+            }
+        },
+        "roles": {},
+    }
+
+    errors = providers.validate_config(config)
+    assert any("external-preview-tier" in error for error in errors)
+
+
+def test_open_tier_without_license_evidence_is_rejected_when_preview_flag_omitted():
+    config = {
+        "providers": {
+            "unproven": {
+                "type": "delegate",
+                "delegate": "codex-responses",
+                "execution_adapter": "codex-responses",
+                "model": "configured/model",
+                "enabled": False,
+                "base_url": "https://example.invalid/api/v1",
+                "capability_tier": "open-tier",
+                "capabilities": ["responses", "repo-read", "shell-tools", "workspace-write"],
+                "weights_license_evidence": None,
+            }
+        },
+        "roles": {},
+    }
+
+    assert any("cannot use open-tier" in error for error in providers.validate_config(config))
 
 
 def test_role_plan_separates_required_optional_and_disabled():
@@ -62,7 +127,9 @@ def test_validate_config_flags_unknown_role_provider():
         "roles": {"reviewer": {"required": ["codex"], "optional": ["missing"]}},
     }
 
-    assert providers.validate_config(config) == ["role reviewer references unknown provider missing"]
+    assert providers.validate_config(config) == [
+        "role reviewer references unknown provider missing"
+    ]
 
 
 def test_validate_config_can_flag_unknown_backend_names():
@@ -151,7 +218,9 @@ def test_prompt_for_provider_raises_for_unknown_lens():
 def test_validate_lenses_flags_unknown_lens_name():
     config = {
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
-        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "missing-lens"}}},
+        "roles": {
+            "reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "missing-lens"}}
+        },
     }
     errors = providers.validate_lenses(config, {"refute-soundness": {}})
     assert any("unknown lens" in e for e in errors)
@@ -160,7 +229,13 @@ def test_validate_lenses_flags_unknown_lens_name():
 def test_validate_lenses_flags_provider_not_in_role():
     config = {
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
-        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"gemini": "refute-soundness"}}},
+        "roles": {
+            "reviewer": {
+                "required": ["codex"],
+                "optional": [],
+                "lenses": {"gemini": "refute-soundness"},
+            }
+        },
     }
     errors = providers.validate_lenses(config, {"refute-soundness": {}})
     assert any("not a required or optional provider" in e for e in errors)
@@ -169,7 +244,13 @@ def test_validate_lenses_flags_provider_not_in_role():
 def test_validate_lenses_passes_for_well_formed_role():
     config = {
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
-        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "refute-soundness"}}},
+        "roles": {
+            "reviewer": {
+                "required": ["codex"],
+                "optional": [],
+                "lenses": {"codex": "refute-soundness"},
+            }
+        },
     }
     assert providers.validate_lenses(config, {"refute-soundness": {}}) == []
 
@@ -189,7 +270,9 @@ def test_role_loads_optional_timeout_seconds_from_config():
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
         "roles": {
             "reviewer": {
-                "required": ["codex"], "optional": [], "optional_timeout_seconds": 300,
+                "required": ["codex"],
+                "optional": [],
+                "optional_timeout_seconds": 300,
             }
         },
     }
@@ -212,7 +295,9 @@ def test_validate_config_rejects_malformed_optional_timeout_seconds(bad_value):
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
         "roles": {
             "reviewer": {
-                "required": ["codex"], "optional": [], "optional_timeout_seconds": bad_value,
+                "required": ["codex"],
+                "optional": [],
+                "optional_timeout_seconds": bad_value,
             }
         },
     }
@@ -225,7 +310,9 @@ def test_validate_config_accepts_well_formed_optional_timeout_seconds():
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
         "roles": {
             "reviewer": {
-                "required": ["codex"], "optional": [], "optional_timeout_seconds": 300,
+                "required": ["codex"],
+                "optional": [],
+                "optional_timeout_seconds": 300,
             }
         },
     }

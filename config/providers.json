@@ -103,6 +103,27 @@
       "reads_repo": false,
       "accepts_images": false,
       "needs_inline_diff": true
+    },
+    "openrouter-preview-worker": {
+      "type": "delegate",
+      "delegate": "codex-responses",
+      "execution_adapter": "codex-responses",
+      "model": "stealth/ox-alpha",
+      "base_url": "https://openrouter.ai/api/v1",
+      "enabled": false,
+      "reads_repo": true,
+      "accepts_images": false,
+      "needs_inline_diff": false,
+      "capability_tier": "external-preview-tier",
+      "capabilities": [
+        "responses",
+        "repo-read",
+        "shell-tools",
+        "workspace-write"
+      ],
+      "anonymous_preview": true,
+      "weights_license_evidence": null,
+      "max_input_tokens": 120000
     }
   },
   "roles": {
