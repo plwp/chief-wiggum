@@ -1,9 +1,19 @@
 """Versioned dynamic-DAG contracts and pure validators."""
 
+from .admission import (
+    AdmissionController,
+    AdmissionDecision,
+    AdmissionPolicy,
+    AdmissionReason,
+    AdmissionStore,
+    LivenessFailure,
+)
 from .canonical import canonical_json_bytes, validate_canonical_bytes
 from .compatibility import ProjectionResult, dependency_block_to_intent_graph, project_legacy_waves
 from .errors import ContractViolation, ErrorCode
+from .evidence import CollectorContext, EvidenceClass, Observation, collect_all
 from .journal import Decision, GraphJournal, JournalError, Snapshot
+from .proposers import REASON_CODES, ModelProposalRejected, parse_model_proposal
 from .schemas import SCHEMA_VERSION, load_authority_matrix, schema_catalog, validate_record
 from .semantics import (
     LEGAL_TRANSITIONS,
@@ -14,7 +24,20 @@ from .semantics import (
 )
 
 __all__ = [
+    "AdmissionController",
+    "AdmissionDecision",
+    "AdmissionPolicy",
+    "AdmissionReason",
+    "AdmissionStore",
+    "CollectorContext",
     "ContractViolation",
+    "EvidenceClass",
+    "LivenessFailure",
+    "ModelProposalRejected",
+    "Observation",
+    "REASON_CODES",
+    "collect_all",
+    "parse_model_proposal",
     "ErrorCode",
     "Decision",
     "GraphJournal",
