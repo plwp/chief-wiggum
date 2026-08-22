@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/graph-manifest.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "graph_id", "snapshot_digest", "schedule_hash", "audit_state_hash", "journal_seq", "graph_revision"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "graph_manifest"}, "graph_id": {"$ref": "vocabulary.schema.json#/$defs/graph_id"}, "snapshot_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "schedule_hash": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "audit_state_hash": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "journal_seq": {"type": "integer", "minimum": 0}, "graph_revision": {"type": "integer", "minimum": 0}}
+}

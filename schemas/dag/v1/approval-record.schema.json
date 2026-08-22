@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/approval-record.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "approval_id", "mutation_id", "envelope_digest", "base_revision", "authority_matrix_digest", "approver", "decision"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "approval_record"}, "approval_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "mutation_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "envelope_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "base_revision": {"type": "integer", "minimum": 0}, "authority_matrix_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "approver": {"$ref": "vocabulary.schema.json#/$defs/actor"}, "decision": {"enum": ["approved", "rejected", "expired", "stale"]}}
+}

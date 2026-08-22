@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/schedulable-edge.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "edge_id", "source", "target", "kind", "derived_from"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "schedulable_edge"}, "edge_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "source": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "target": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "kind": {"enum": ["depends_on", "ordered_after"]}, "derived_from": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}}}
+}

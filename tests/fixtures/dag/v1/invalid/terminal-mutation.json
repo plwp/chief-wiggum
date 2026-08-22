@@ -1,0 +1,4 @@
+{
+  "expected_code": "TERMINAL_STATE_IMMUTABLE",
+  "operation": {"from_state": "succeeded", "op_id": "OPR-dag-001", "operation_type": "transition_node", "target_ref": "EXN-dag-001", "to_state": "ready"}
+}

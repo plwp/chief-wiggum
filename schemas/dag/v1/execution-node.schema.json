@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/dag/v1/execution-node.schema.json",
+  "type": "object",
+  "required": ["schema_version", "record_type", "execution_node_id", "intent_node_id", "node_type", "role", "lifecycle_state", "attempt", "candidate", "approval_state", "lease_state", "control_state", "compiled_from"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "execution_node"},
+    "execution_node_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "intent_node_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "node_type": {"$ref": "vocabulary.schema.json#/$defs/node_type"}, "role": {"$ref": "vocabulary.schema.json#/$defs/role"}, "lifecycle_state": {"$ref": "vocabulary.schema.json#/$defs/lifecycle_state"},
+    "attempt": {"type": "object", "required": ["attempt_id", "outcome"], "additionalProperties": false, "properties": {"attempt_id": {"type": ["string", "null"], "pattern": "^ATM-[a-z0-9][a-z0-9-]*-[0-9]{3,}$"}, "outcome": {"$ref": "vocabulary.schema.json#/$defs/attempt_outcome"}}},
+    "candidate": {"type": "object", "required": ["group_id", "disposition"], "additionalProperties": false, "properties": {"group_id": {"type": ["string", "null"], "pattern": "^CND-[a-z0-9][a-z0-9-]*-[0-9]{3,}$"}, "disposition": {"$ref": "vocabulary.schema.json#/$defs/candidate_disposition"}}},
+    "approval_state": {"$ref": "vocabulary.schema.json#/$defs/approval_state"}, "lease_state": {"$ref": "vocabulary.schema.json#/$defs/lease_state"}, "control_state": {"$ref": "vocabulary.schema.json#/$defs/control_state"},
+    "compiled_from": {"type": "object", "required": ["intent_node_id", "intent_graph_digest"], "additionalProperties": false, "properties": {"intent_node_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "intent_graph_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}}}
+  }
+}

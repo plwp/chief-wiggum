@@ -1,0 +1,8 @@
+{
+  "valid_utf8_hex": "7b2261223a317d0a",
+  "invalid": [
+    {"name": "crlf", "hex": "7b2261223a317d0d0a", "expected_code": "CANONICAL_ENCODING_VIOLATION"},
+    {"name": "float", "hex": "7b2261223a312e357d0a", "expected_code": "CANONICAL_ENCODING_VIOLATION"},
+    {"name": "duplicate-key", "hex": "7b2261223a312c2261223a317d0a", "expected_code": "DUPLICATE_JSON_KEY"}
+  ]
+}

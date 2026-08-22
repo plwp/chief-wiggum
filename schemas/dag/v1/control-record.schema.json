@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/control-record.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "control_id", "graph_id", "state", "actor", "reason_code"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "control_record"}, "control_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "graph_id": {"$ref": "vocabulary.schema.json#/$defs/graph_id"}, "state": {"$ref": "vocabulary.schema.json#/$defs/control_state"}, "actor": {"$ref": "vocabulary.schema.json#/$defs/actor"}, "reason_code": {"$ref": "vocabulary.schema.json#/$defs/reason_code"}}
+}

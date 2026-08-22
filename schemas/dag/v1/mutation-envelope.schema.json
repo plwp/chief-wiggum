@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/mutation-envelope.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "graph_id", "base_revision", "mutation_id", "idempotency_key", "actor", "authority_class", "operations", "reason_code", "evidence_refs", "expected_effect", "budget_delta", "requires_approval"], "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "mutation_envelope"}, "graph_id": {"$ref": "vocabulary.schema.json#/$defs/graph_id"}, "base_revision": {"type": "integer", "minimum": 0}, "mutation_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "idempotency_key": {"type": "string", "minLength": 1}, "actor": {"$ref": "vocabulary.schema.json#/$defs/actor"}, "authority_class": {"enum": ["automatic", "human"]}, "operations": {"type": "array", "minItems": 1, "items": {"$ref": "vocabulary.schema.json#/$defs/operation"}}, "reason_code": {"$ref": "vocabulary.schema.json#/$defs/reason_code"}, "evidence_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}}, "expected_effect": {"type": "string", "minLength": 1}, "budget_delta": {"$ref": "vocabulary.schema.json#/$defs/budget_delta"}, "requires_approval": {"type": "boolean"}
+  }
+}

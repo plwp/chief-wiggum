@@ -1,0 +1,4 @@
+{
+  "expected_code": "DANGLING_EVIDENCE_REFERENCE",
+  "patch": {"path": "/schedulable_edges/0/derived_from/0", "value": "EVD-dag-999"}
+}

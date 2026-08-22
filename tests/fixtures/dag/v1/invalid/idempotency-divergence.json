@@ -1,0 +1,6 @@
+{
+  "expected_code": "IDEMPOTENCY_KEY_DIVERGENT",
+  "idempotency_key": "idem:dag-duplicate",
+  "prior_target": "EVD-dag-001",
+  "incoming_target": "EVD-dag-999"
+}

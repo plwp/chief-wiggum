@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/dag/v1/intent-edge.schema.json",
+  "type": "object",
+  "required": ["schema_version", "record_type", "edge_id", "source", "target", "kind", "actor", "reason_code"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "intent_edge"},
+    "edge_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "source": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "target": {"$ref": "vocabulary.schema.json#/$defs/stable_id"},
+    "source_ticket": {"type": "integer", "minimum": 1}, "target_ticket": {"type": "integer", "minimum": 1},
+    "kind": {"const": "depends_on"}, "actor": {"$ref": "vocabulary.schema.json#/$defs/actor"}, "reason_code": {"$ref": "vocabulary.schema.json#/$defs/reason_code"}
+  }
+}

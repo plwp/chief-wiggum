@@ -1,0 +1,4 @@
+{
+  "history_mutation_id": "MUT-dag-000",
+  "operation": {"compensates_mutation_id": "MUT-dag-000", "op_id": "OPR-dag-002", "operation_type": "compensate", "replacement_ref": "EXN-dag-002", "target_ref": "EXN-dag-001"}
+}

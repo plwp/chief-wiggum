@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/evidence-record.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "evidence_id", "evidence_type", "source_ref", "content_digest", "observed_at", "status"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "evidence_record"}, "evidence_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "evidence_type": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}, "source_ref": {"type": "string", "minLength": 1}, "content_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "observed_at": {"type": "string", "format": "date-time"}, "status": {"$ref": "vocabulary.schema.json#/$defs/evidence_state"}}
+}

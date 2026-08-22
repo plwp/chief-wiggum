@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/graph-snapshot.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "graph_id", "graph_revision", "authority_matrix_version", "intent_nodes", "intent_edges", "execution_nodes", "schedulable_edges", "relations", "evidence_records", "approval_records", "lease_records", "control_records", "mutations"], "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "graph_snapshot"}, "graph_id": {"$ref": "vocabulary.schema.json#/$defs/graph_id"}, "graph_revision": {"type": "integer", "minimum": 0}, "authority_matrix_version": {"$ref": "vocabulary.schema.json#/$defs/version"},
+    "intent_nodes": {"type": "array", "items": {"$ref": "intent-node.schema.json"}}, "intent_edges": {"type": "array", "items": {"$ref": "intent-edge.schema.json"}}, "execution_nodes": {"type": "array", "items": {"$ref": "execution-node.schema.json"}}, "schedulable_edges": {"type": "array", "items": {"$ref": "schedulable-edge.schema.json"}}, "relations": {"type": "array", "items": {"$ref": "relation.schema.json"}}, "evidence_records": {"type": "array", "items": {"$ref": "evidence-record.schema.json"}}, "approval_records": {"type": "array", "items": {"$ref": "approval-record.schema.json"}}, "lease_records": {"type": "array", "items": {"$ref": "lease-record.schema.json"}}, "control_records": {"type": "array", "items": {"$ref": "control-record.schema.json"}}, "mutations": {"type": "array", "items": {"$ref": "mutation-envelope.schema.json"}}
+  }
+}

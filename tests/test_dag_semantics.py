@@ -3,7 +3,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-
 from chief_wiggum.dag import (
     ErrorCode,
     canonical_json_bytes,
@@ -13,7 +12,6 @@ from chief_wiggum.dag import (
     validate_snapshot,
     validate_transition,
 )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "dag" / "v1"
@@ -64,12 +62,19 @@ def test_schedulable_cycle_is_invalid_but_non_scheduling_cycle_is_valid():
 def test_dangling_node_and_evidence_references_are_typed():
     snapshot = _snapshot()
     snapshot["schedulable_edges"][0]["target"] = "EXN-dag-999"
-    snapshot["schedulable_edges"][0]["derived_from"] = ["EVD-dag-999"]
+    fixture = json.loads((FIXTURES / "invalid" / "dangling-evidence.json").read_text())
+    snapshot["schedulable_edges"][0]["derived_from"] = [fixture["patch"]["value"]]
     codes = {error.code for error in validate_snapshot(snapshot)}
     assert {ErrorCode.DANGLING_NODE_REFERENCE, ErrorCode.DANGLING_EVIDENCE_REFERENCE} <= codes
 
 
-def _envelope(operation: dict, *, authority: str = "automatic", mutation_id: str = "MUT-dag-001") -> dict:
+def _envelope(
+    operation: dict,
+    *,
+    authority: str = "automatic",
+    mutation_id: str = "MUT-dag-001",
+    idempotency_key: str = "idem:dag-001",
+) -> dict:
     return {
         "actor": "actor:collector",
         "authority_class": authority,
@@ -78,7 +83,7 @@ def _envelope(operation: dict, *, authority: str = "automatic", mutation_id: str
         "evidence_refs": ["EVD-dag-001"],
         "expected_effect": "graph_revision:+1",
         "graph_id": "GRF-dag-001",
-        "idempotency_key": "idem:dag-001",
+        "idempotency_key": idempotency_key,
         "mutation_id": mutation_id,
         "operations": [operation],
         "reason_code": "EV_HUMAN_DECISION" if authority == "human" else "EV_DEP_DISCOVERED",
@@ -98,35 +103,36 @@ def test_each_approval_required_operation_rejects_automatic_authority(operation_
     assert ErrorCode.AUTHORITY_APPROVAL_REQUIRED in {error.code for error in errors}
 
 
+def test_representative_automatic_authority_fixture_is_rejected():
+    fixture = json.loads((FIXTURES / "invalid" / "automatic-approval.json").read_text())
+    errors = validate_mutation(_snapshot(), _envelope(fixture["operation"]))
+    assert ErrorCode(fixture["expected_code"]) in {error.code for error in errors}
+
+
 def test_terminal_mutation_is_invalid_and_compensating_event_is_valid():
-    terminal_transition = {
-        "from_state": "succeeded",
-        "op_id": "OPR-dag-001",
-        "operation_type": "transition_node",
-        "target_ref": "EXN-dag-001",
-        "to_state": "ready",
-    }
+    invalid = json.loads((FIXTURES / "invalid" / "terminal-mutation.json").read_text())
+    terminal_transition = invalid["operation"]
     errors = validate_mutation(_snapshot(), _envelope(terminal_transition))
-    assert ErrorCode.TERMINAL_STATE_IMMUTABLE in {error.code for error in errors}
+    assert ErrorCode(invalid["expected_code"]) in {error.code for error in errors}
 
     prior = _envelope({"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": "EVD-dag-001"}, mutation_id="MUT-dag-000")
-    compensation = {
-        "compensates_mutation_id": "MUT-dag-000",
-        "op_id": "OPR-dag-002",
-        "operation_type": "compensate",
-        "replacement_ref": "EXN-dag-002",
-        "target_ref": "EXN-dag-001",
-    }
-    assert validate_mutation(_snapshot(), _envelope(compensation, authority="human"), history=[prior]) == ()
+    valid = json.loads((FIXTURES / "valid" / "compensating-event.json").read_text())
+    compensation = valid["operation"]
+    envelope = _envelope(compensation, authority="human", idempotency_key="idem:dag-compensation")
+    assert validate_mutation(_snapshot(), envelope, history=[prior]) == ()
 
 
 def test_duplicate_idempotency_key_with_different_payload_is_invalid():
-    prior = _envelope({"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": "EVD-dag-001"})
+    fixture = json.loads((FIXTURES / "invalid" / "idempotency-divergence.json").read_text())
+    prior = _envelope(
+        {"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": fixture["prior_target"]},
+        idempotency_key=fixture["idempotency_key"],
+    )
     incoming = deepcopy(prior)
     incoming["mutation_id"] = "MUT-dag-002"
-    incoming["operations"][0]["target_ref"] = "EVD-dag-999"
+    incoming["operations"][0]["target_ref"] = fixture["incoming_target"]
     errors = validate_mutation(_snapshot(), incoming, history=[prior])
-    assert ErrorCode.IDEMPOTENCY_KEY_DIVERGENT in {error.code for error in errors}
+    assert ErrorCode(fixture["expected_code"]) in {error.code for error in errors}
 
 
 def test_attempt_outcome_and_candidate_disposition_are_orthogonal():
@@ -141,6 +147,7 @@ def test_canonical_encoding_is_nfc_integer_only_sorted_and_lf_terminated():
     encoded = canonical_json_bytes(record)
     assert encoded == '{"count":1,"label":"é","record_type":"evidence_record","schema_version":"1.0.0"}\n'.encode()
     assert validate_canonical_bytes(encoded) == ()
-    assert ErrorCode.CANONICAL_ENCODING_VIOLATION in {error.code for error in validate_canonical_bytes(b'{"b":1,"a":2}\r\n')}
-    assert ErrorCode.CANONICAL_ENCODING_VIOLATION in {error.code for error in validate_canonical_bytes(b'{"a":1.5}\n')}
-    assert ErrorCode.DUPLICATE_JSON_KEY in {error.code for error in validate_canonical_bytes(b'{"a":1,"a":1}\n')}
+    cases = json.loads((FIXTURES / "canonical-cases.json").read_text())
+    for case in cases["invalid"]:
+        codes = {error.code for error in validate_canonical_bytes(bytes.fromhex(case["hex"]))}
+        assert ErrorCode(case["expected_code"]) in codes, case["name"]

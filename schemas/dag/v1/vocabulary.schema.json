@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/dag/v1/vocabulary.schema.json",
+  "$defs": {
+    "version": {"const": "1.0.0"},
+    "stable_id": {"type": "string", "pattern": "^[A-Z]{3}-[a-z0-9][a-z0-9-]*-[0-9]{3,}$"},
+    "graph_id": {"type": "string", "pattern": "^GRF-[a-z0-9][a-z0-9-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "role": {"type": "string", "pattern": "^role:[a-z][a-z0-9._-]*$"},
+    "actor": {"type": "string", "pattern": "^actor:[a-z][a-z0-9._-]*$"},
+    "node_type": {"enum": ["plan", "implementation", "candidate", "verification", "review", "integration", "retry", "decision", "escalation"]},
+    "lifecycle_state": {"enum": ["proposed", "admitted", "ready", "running", "succeeded", "failed", "blocked", "superseded", "cancelled"]},
+    "attempt_outcome": {"enum": ["pending", "running", "succeeded", "failed", "cancelled", "expired"]},
+    "candidate_disposition": {"enum": ["not_candidate", "pending", "eligible", "eliminated", "promoted", "superseded"]},
+    "approval_state": {"enum": ["not_required", "pending", "approved", "rejected", "expired", "stale"]},
+    "lease_state": {"enum": ["unclaimed", "active", "released", "expired", "revoked"]},
+    "control_state": {"enum": ["active", "pause_requested", "paused", "cancel_requested", "cancelled"]},
+    "evidence_state": {"enum": ["raw", "validated", "admitted", "superseded", "retracted", "unavailable", "malformed", "unscanned"]},
+    "reason_code": {"enum": ["EV_DEP_DECLARED", "EV_DEP_DISCOVERED", "EV_PATH_CONFLICT", "EV_GATE_FAILED", "EV_PROVIDER_UNAVAILABLE", "EV_LEASE_EXPIRED", "EV_BUDGET_EXCEEDED", "EV_CANDIDATE_PROMOTED", "EV_HUMAN_DECISION", "EV_COMPENSATING_EVENT"]},
+    "operation_type": {"enum": ["add_intent_node", "remove_intent_node", "add_intent_edge", "remove_intent_edge", "add_execution_node", "add_schedulable_edge", "remove_schedulable_edge", "add_relation", "transition_node", "record_evidence", "approve_mutation", "acquire_lease", "release_lease", "set_control", "promote_candidate", "compensate"]},
+    "budget_delta": {
+      "type": "object",
+      "required": ["unit", "value"],
+      "additionalProperties": false,
+      "properties": {"unit": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"}, "value": {"type": "integer"}}
+    },
+    "operation": {
+      "type": "object",
+      "required": ["op_id", "operation_type", "target_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "op_id": {"$ref": "#/$defs/stable_id"},
+        "operation_type": {"$ref": "#/$defs/operation_type"},
+        "target_ref": {"type": "string", "minLength": 1},
+        "replacement_ref": {"type": "string", "minLength": 1},
+        "compensates_mutation_id": {"$ref": "#/$defs/stable_id"},
+        "from_state": {"$ref": "#/$defs/lifecycle_state"},
+        "to_state": {"$ref": "#/$defs/lifecycle_state"},
+        "value": {}
+      },
+      "allOf": [
+        {"if": {"properties": {"operation_type": {"const": "transition_node"}}}, "then": {"required": ["from_state", "to_state"]}},
+        {"if": {"properties": {"operation_type": {"const": "compensate"}}}, "then": {"required": ["compensates_mutation_id", "replacement_ref"]}}
+      ]
+    }
+  }
+}

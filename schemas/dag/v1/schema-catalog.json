@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "records": {
+    "intent_node": "intent-node.schema.json",
+    "intent_edge": "intent-edge.schema.json",
+    "intent_graph": "intent-graph.schema.json",
+    "execution_node": "execution-node.schema.json",
+    "schedulable_edge": "schedulable-edge.schema.json",
+    "relation": "relation.schema.json",
+    "evidence_record": "evidence-record.schema.json",
+    "approval_record": "approval-record.schema.json",
+    "lease_record": "lease-record.schema.json",
+    "control_record": "control-record.schema.json",
+    "mutation_envelope": "mutation-envelope.schema.json",
+    "graph_snapshot": "graph-snapshot.schema.json",
+    "graph_manifest": "graph-manifest.schema.json"
+  }
+}

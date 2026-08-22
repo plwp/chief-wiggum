@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/relation.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "relation_id", "source", "target", "kind"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "relation"}, "relation_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "source": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "target": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "kind": {"enum": ["supersedes", "retry_of", "candidate_of", "verifies", "derived_from", "conflicts_with"]}}
+}

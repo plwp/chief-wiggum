@@ -1,7 +1,29 @@
 {
-  "approval_records": [],
+  "approval_records": [
+    {
+      "approval_id": "APR-dag-001",
+      "approver": "actor:maintainer",
+      "authority_matrix_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "base_revision": 1,
+      "decision": "approved",
+      "envelope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "mutation_id": "MUT-dag-001",
+      "record_type": "approval_record",
+      "schema_version": "1.0.0"
+    }
+  ],
   "authority_matrix_version": "1.0.0",
-  "control_records": [],
+  "control_records": [
+    {
+      "actor": "actor:maintainer",
+      "control_id": "CTL-dag-001",
+      "graph_id": "GRF-dag-001",
+      "reason_code": "EV_HUMAN_DECISION",
+      "record_type": "control_record",
+      "schema_version": "1.0.0",
+      "state": "active"
+    }
+  ],
   "evidence_records": [
     {
       "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -84,8 +106,38 @@
       "source_ref": "ticket:#134"
     }
   ],
-  "lease_records": [],
-  "mutations": [],
+  "lease_records": [
+    {
+      "attempt_id": "ATM-dag-001",
+      "epoch": 1,
+      "execution_node_id": "EXN-dag-001",
+      "fencing_token": "fence:dag-001",
+      "lease_id": "LSE-dag-001",
+      "record_type": "lease_record",
+      "schema_version": "1.0.0",
+      "state": "released"
+    }
+  ],
+  "mutations": [
+    {
+      "actor": "actor:collector",
+      "authority_class": "automatic",
+      "base_revision": 0,
+      "budget_delta": {"unit": "tokens", "value": 0},
+      "evidence_refs": ["EVD-dag-001"],
+      "expected_effect": "evidence:recorded",
+      "graph_id": "GRF-dag-001",
+      "idempotency_key": "idem:snapshot-001",
+      "mutation_id": "MUT-dag-001",
+      "operations": [
+        {"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": "EVD-dag-001"}
+      ],
+      "reason_code": "EV_DEP_DISCOVERED",
+      "record_type": "mutation_envelope",
+      "requires_approval": false,
+      "schema_version": "1.0.0"
+    }
+  ],
   "record_type": "graph_snapshot",
   "relations": [],
   "schedulable_edges": [

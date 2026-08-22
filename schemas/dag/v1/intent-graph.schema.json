@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/dag/v1/intent-graph.schema.json",
+  "type": "object",
+  "required": ["schema_version", "record_type", "graph_id", "source_ref", "source_digest", "has_dependency_block", "source_warnings", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "intent_graph"}, "graph_id": {"$ref": "vocabulary.schema.json#/$defs/graph_id"},
+    "source_ref": {"type": "string", "minLength": 1}, "source_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "has_dependency_block": {"type": "boolean"},
+    "source_warnings": {"type": "array", "items": {"type": "string"}}, "nodes": {"type": "array", "items": {"$ref": "intent-node.schema.json"}}, "edges": {"type": "array", "items": {"$ref": "intent-edge.schema.json"}}
+  }
+}

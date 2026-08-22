@@ -2,8 +2,11 @@ import json
 from pathlib import Path
 
 from chief_wiggum import github, planning
-from chief_wiggum.dag import dependency_block_to_intent_graph, project_legacy_waves
-
+from chief_wiggum.dag import (
+    dependency_block_to_intent_graph,
+    project_legacy_waves,
+    validate_record,
+)
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "dag" / "v1" / "compatibility" / "factory-hardening.json"
 SIX_FIELDS = ["waves", "gated", "skipped", "warnings", "integration_risks", "gate_reasons"]
@@ -23,6 +26,7 @@ def test_real_historical_epic_round_trips_to_exact_six_field_wave_plan():
     )
     result = project_legacy_waves(intent, gated=fixture["gated"])
 
+    assert validate_record(intent, "intent_graph") == ()
     assert result.exit_code == 0
     assert list(result.plan) == SIX_FIELDS
     assert result.plan == oracle.to_dict()
