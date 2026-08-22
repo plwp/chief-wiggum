@@ -13,7 +13,9 @@ unit-testable with mocked subprocess calls.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -27,7 +29,7 @@ class GitSafetyError(RuntimeError):
 
 def _git(args: list[str], cwd: str | Path, runner: Runner) -> subprocess.CompletedProcess:
     return runner(
-        ["git", *args],
+        [os.environ.get("CW_WAVE_REAL_GIT", "git"), *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -122,6 +124,228 @@ def assert_worktree(
             f"refusing to operate on the main checkout: worktree {wt_root} == main {main_root}"
         )
     return wt_root
+
+
+# --- parallel-worker Git command guard (#376) -------------------------------
+
+_WAVE_GIT_SAFE_GLOBAL_FLAGS = {
+    "--glob-pathspecs",
+    "--icase-pathspecs",
+    "--literal-pathspecs",
+    "--no-optional-locks",
+    "--no-pager",
+    "--no-replace-objects",
+    "--noglob-pathspecs",
+    "--paginate",
+}
+_WAVE_GIT_FORBIDDEN_GLOBAL_OPTIONS = {
+    "--bare",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+    "-c",
+}
+_WAVE_GIT_FORBIDDEN_SUBCOMMANDS = {"stash", "update-ref"}
+
+
+def _stash_safety_error() -> GitSafetyError:
+    return GitSafetyError(
+        "git stash is forbidden for parallel workers because refs/stash is shared "
+        "by every worktree; preserve intended ticket files with a worktree-local "
+        "WIP commit instead"
+    )
+
+
+def _references_stash(token: str) -> bool:
+    """Recognize a stash ref both directly and inside fetch/push refspecs."""
+    return any(
+        component.lstrip("+-^ ").startswith("refs/stash")
+        for component in token.split(":")
+    )
+
+
+def validate_wave_git_args(
+    args: Iterable[str], worktree: str | Path
+) -> tuple[list[str], Path, str]:
+    """Validate worker-controlled Git arguments before any Git command executes.
+
+    Returns normalized arguments, the effective cwd after Git's repeated ``-C``
+    options, and the subcommand. Repository/config routing is deliberately
+    rejected: it could escape the declared worktree or smuggle ``stash`` through
+    an inline alias. Configured aliases are checked separately against the real
+    repository by :func:`assert_wave_git_command`.
+    """
+    normalized = list(args)
+    if normalized and normalized[0] == "--":
+        normalized = normalized[1:]
+    if not normalized:
+        raise GitSafetyError("wave-git requires a Git subcommand after --")
+
+    for token in normalized:
+        if token == "stash" or _references_stash(token):
+            raise _stash_safety_error()
+
+    effective_cwd = Path(worktree).resolve()
+    index = 0
+    subcommand = ""
+    while index < len(normalized):
+        token = normalized[index]
+        if token == "-C":
+            if index + 1 >= len(normalized):
+                raise GitSafetyError("git -C requires a path")
+            destination = Path(normalized[index + 1])
+            effective_cwd = (
+                destination if destination.is_absolute() else effective_cwd / destination
+            ).resolve()
+            index += 2
+            continue
+        if token.startswith("-C") and token != "-C":
+            destination = Path(token[2:])
+            effective_cwd = (
+                destination if destination.is_absolute() else effective_cwd / destination
+            ).resolve()
+            index += 1
+            continue
+        if token in _WAVE_GIT_SAFE_GLOBAL_FLAGS:
+            index += 1
+            continue
+        if token in _WAVE_GIT_FORBIDDEN_GLOBAL_OPTIONS or any(
+            token.startswith(f"{option}=")
+            for option in _WAVE_GIT_FORBIDDEN_GLOBAL_OPTIONS
+            if option.startswith("--")
+        ):
+            raise GitSafetyError(
+                f"wave-git forbids repository/config routing option {token!r}"
+            )
+        if token == "--":
+            index += 1
+            if index >= len(normalized):
+                raise GitSafetyError("wave-git requires a Git subcommand after --")
+            subcommand = normalized[index]
+            break
+        if token.startswith("-"):
+            raise GitSafetyError(f"wave-git does not allow global Git option {token!r}")
+        subcommand = token
+        break
+
+    if not subcommand:
+        raise GitSafetyError("wave-git requires a Git subcommand after --")
+    if subcommand in _WAVE_GIT_FORBIDDEN_SUBCOMMANDS:
+        raise _stash_safety_error()
+    return normalized, effective_cwd, subcommand
+
+
+def active_git_hooks(
+    repo: str | Path, *, runner: Runner = subprocess.run
+) -> list[Path]:
+    """Return executable hooks Git would run from the repository's hooks path."""
+    result = _git(
+        ["rev-parse", "--path-format=absolute", "--git-path", "hooks"], repo, runner
+    )
+    if result.returncode != 0:
+        raise GitSafetyError(
+            f"cannot resolve Git hooks path: {(result.stderr or '').strip()}"
+        )
+    hooks_dir = Path(result.stdout.strip())
+    if not hooks_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in hooks_dir.iterdir()
+        if path.is_file()
+        and not path.name.endswith(".sample")
+        and os.access(path, os.X_OK)
+    )
+
+
+# @cw-trace guards INV-dag-013
+def assert_wave_git_command(
+    args: Iterable[str],
+    worktree: str | Path,
+    main_checkout: str | Path,
+    *,
+    runner: Runner = subprocess.run,
+) -> tuple[list[str], Path, Path]:
+    """Validate a wave-worker Git command and return its argv and worktree root."""
+    invocation_cwd = Path(worktree).resolve()
+    declared_root = assert_worktree(invocation_cwd, main_checkout, runner=runner)
+    normalized, effective_cwd, subcommand = validate_wave_git_args(args, invocation_cwd)
+    effective_root = worktree_root(effective_cwd, runner=runner).resolve()
+    if effective_root != declared_root:
+        raise GitSafetyError(
+            f"wave-git must remain in the declared worker worktree {declared_root}; "
+            f"the command resolves to {effective_root}"
+        )
+
+    hooks = active_git_hooks(effective_cwd, runner=runner)
+    if hooks:
+        names = ", ".join(path.name for path in hooks)
+        raise GitSafetyError(
+            "wave-git refuses execution while active Git hooks are present "
+            f"({names}); fan-out cannot prove that hooks avoid shared refs/stash"
+        )
+
+    alias = _git(["config", "--get", f"alias.{subcommand}"], effective_cwd, runner)
+    if alias.returncode == 0:
+        raise GitSafetyError(
+            f"Git aliases are forbidden in wave-git (subcommand {subcommand!r}); "
+            "spell out the built-in command so stash cannot be hidden"
+        )
+    if alias.returncode != 1:
+        raise GitSafetyError(
+            f"cannot inspect Git alias {subcommand!r}: {(alias.stderr or '').strip()}"
+        )
+    return normalized, invocation_cwd, declared_root
+
+
+def wave_git_environment(
+    main_checkout: str | Path,
+    worktree: str | Path,
+    *,
+    environ: dict[str, str] | None = None,
+    runner: Runner = subprocess.run,
+) -> dict[str, str]:
+    """Return environment overrides that route raw/nested Git through wave-git."""
+    declared_root = assert_worktree(worktree, main_checkout, runner=runner)
+    source_env = os.environ if environ is None else environ
+    real_git = source_env.get("CW_WAVE_REAL_GIT") or shutil.which(
+        "git", path=source_env.get("PATH")
+    )
+    if not real_git:
+        raise GitSafetyError("cannot locate the real Git executable for wave-git")
+    scripts_dir = Path(__file__).resolve().parents[1]
+    shim_dir = scripts_dir / "wave-git-bin"
+    return {
+        "CW_WAVE_MAIN": str(Path(main_checkout).resolve()),
+        "CW_WAVE_WORKTREE_ROOT": str(declared_root),
+        "CW_WAVE_REAL_GIT": str(Path(real_git).resolve()),
+        "CW_WAVE_GIT_SAFETY": str(scripts_dir / "git_safety.py"),
+        "PATH": f"{shim_dir}{os.pathsep}{source_env.get('PATH', '')}",
+    }
+
+
+def run_wave_git(
+    args: Iterable[str],
+    worktree: str | Path,
+    main_checkout: str | Path,
+    *,
+    runner: Runner = subprocess.run,
+) -> int:
+    """Run an allowed wave-worker Git command, preserving Git's exit status."""
+    normalized, invocation_cwd, _ = assert_wave_git_command(
+        args, worktree, main_checkout, runner=runner
+    )
+    child_env = os.environ.copy()
+    child_env.update(
+        wave_git_environment(main_checkout, worktree, runner=runner)
+    )
+    real_git = child_env["CW_WAVE_REAL_GIT"]
+    result = runner(
+        [real_git, *normalized], cwd=str(invocation_cwd), env=child_env
+    )
+    return result.returncode
 
 
 def assert_main_pristine(

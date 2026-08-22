@@ -1,0 +1,311 @@
+{
+  "id": "dynamic_dag_execution_control",
+  "initial": "received",
+  "states": {
+    "received": {
+      "on": {
+        "validate": {
+          "target": "validated",
+          "guard": "GRD-dag-001",
+          "actions": [
+            {
+              "type": "bind_payload_hash"
+            },
+            {
+              "type": "record_policy_hash"
+            }
+          ]
+        },
+        "reject_invalid": {
+          "target": "failed",
+          "actions": [
+            {
+              "type": "journal_typed_rejection"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Untrusted proposal received as inert data."
+      }
+    },
+    "validated": {
+      "on": {
+        "queue_approval": {
+          "target": "pending_approval",
+          "guard": "GRD-dag-002",
+          "actions": [
+            {
+              "type": "bind_approval_scope"
+            }
+          ]
+        },
+        "admit_validated": {
+          "target": "admitted",
+          "guard": "GRD-dag-003",
+          "actions": [
+            {
+              "type": "commit_graph_event"
+            }
+          ]
+        },
+        "reject_policy": {
+          "target": "failed",
+          "actions": [
+            {
+              "type": "journal_typed_rejection"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Schema and semantic validation succeeded at the named base revision."
+      }
+    },
+    "pending_approval": {
+      "on": {
+        "approve_and_revalidate": {
+          "target": "validated",
+          "guard": "GRD-dag-004",
+          "actions": [
+            {
+              "type": "record_human_actor"
+            },
+            {
+              "type": "set_approval_status_approved"
+            },
+            {
+              "type": "revalidate_current_revision"
+            }
+          ]
+        },
+        "reject_or_expire": {
+          "target": "failed",
+          "actions": [
+            {
+              "type": "journal_human_rejection_or_expiry"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Privileged operation awaits an approval bound to exact proposal, policy and base hashes."
+      }
+    },
+    "admitted": {
+      "on": {
+        "claim_ready": {
+          "target": "claimed",
+          "guard": "GRD-dag-005",
+          "actions": [
+            {
+              "type": "allocate_epoch"
+            },
+            {
+              "type": "append_dispatch_outbox"
+            }
+          ]
+        },
+        "cancel_before_dispatch": {
+          "target": "cancelled",
+          "guard": "GRD-dag-011",
+          "actions": [
+            {
+              "type": "journal_operator_control"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Proposal is committed; readiness is derived from current journal facts."
+      }
+    },
+    "claimed": {
+      "on": {
+        "worker_started": {
+          "target": "running",
+          "guard": "GRD-dag-006",
+          "actions": [
+            {
+              "type": "ack_dispatch_outbox"
+            }
+          ]
+        },
+        "lease_expired_before_start": {
+          "target": "expired",
+          "guard": "GRD-dag-012",
+          "actions": [
+            {
+              "type": "fence_epoch"
+            },
+            {
+              "type": "create_retry_if_budgeted"
+            }
+          ]
+        },
+        "dispatch_failed_permanently": {
+          "target": "failed",
+          "guard": "GRD-dag-013",
+          "actions": [
+            {
+              "type": "fence_epoch"
+            },
+            {
+              "type": "record_immutable_outcome"
+            }
+          ]
+        },
+        "revoke_before_start": {
+          "target": "cancelled",
+          "guard": "GRD-dag-014",
+          "actions": [
+            {
+              "type": "fence_epoch"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "A fenced lease and dispatch outbox record are committed atomically."
+      }
+    },
+    "running": {
+      "on": {
+        "publish_success": {
+          "target": "succeeded",
+          "guard": "GRD-dag-007",
+          "actions": [
+            {
+              "type": "record_immutable_outcome"
+            }
+          ]
+        },
+        "publish_failure": {
+          "target": "failed",
+          "guard": "GRD-dag-015",
+          "actions": [
+            {
+              "type": "record_immutable_outcome"
+            },
+            {
+              "type": "create_retry_if_budgeted"
+            }
+          ]
+        },
+        "pause_or_block_at_safe_boundary": {
+          "target": "blocked_safe",
+          "guard": "GRD-dag-008",
+          "actions": [
+            {
+              "type": "release_or_revoke_lease"
+            },
+            {
+              "type": "journal_block_evidence"
+            }
+          ]
+        },
+        "lease_expired": {
+          "target": "expired",
+          "guard": "GRD-dag-016",
+          "actions": [
+            {
+              "type": "fence_epoch"
+            },
+            {
+              "type": "create_retry_if_budgeted"
+            }
+          ]
+        },
+        "cancel_at_safe_boundary": {
+          "target": "cancelled",
+          "guard": "GRD-dag-009",
+          "actions": [
+            {
+              "type": "fence_epoch"
+            },
+            {
+              "type": "record_immutable_outcome"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Worker is executing with the current lease epoch."
+      }
+    },
+    "blocked_safe": {
+      "on": {
+        "unblock_and_reclaim": {
+          "target": "claimed",
+          "guard": "GRD-dag-010",
+          "actions": [
+            {
+              "type": "allocate_epoch"
+            },
+            {
+              "type": "append_dispatch_outbox"
+            }
+          ]
+        },
+        "cancel_blocked": {
+          "target": "cancelled",
+          "guard": "GRD-dag-017",
+          "actions": [
+            {
+              "type": "record_immutable_outcome"
+            }
+          ]
+        },
+        "liveness_failure": {
+          "target": "failed",
+          "actions": [
+            {
+              "type": "record_blocking_set"
+            }
+          ]
+        }
+      },
+      "meta": {
+        "description": "Worker reached a durable safe boundary and its lease is inactive; retry or unblocking creates a new claim."
+      }
+    },
+    "succeeded": {
+      "type": "final",
+      "meta": {
+        "description": "Immutable successful attempt outcome; candidate disposition may later be promoted or superseded without changing it."
+      }
+    },
+    "failed": {
+      "type": "final",
+      "meta": {
+        "description": "Immutable failed attempt outcome; any retry is a new node linked by retry_of."
+      }
+    },
+    "cancelled": {
+      "type": "final",
+      "meta": {
+        "description": "Worker is quiescent, lease fenced/released and cancellation outcome is immutable."
+      }
+    },
+    "expired": {
+      "type": "final",
+      "meta": {
+        "description": "Lease expiry ended this attempt; late outputs are fenced and a retry is a new node."
+      }
+    }
+  },
+  "context": {
+    "graph_revision": null,
+    "journal_seq": null,
+    "ready": null,
+    "lease_epoch": null,
+    "approval_status": null,
+    "attempt_outcome": null,
+    "candidate_disposition": null,
+    "evidence_status": null,
+    "control_status": null,
+    "fencing_token": null,
+    "schedule_hash": null,
+    "audit_state_hash": null
+  }
+}

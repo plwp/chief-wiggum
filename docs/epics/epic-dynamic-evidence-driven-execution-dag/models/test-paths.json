@@ -1,0 +1,475 @@
+{
+  "paths": [
+    {
+      "target": "validated",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        }
+      ],
+      "length": 1
+    },
+    {
+      "target": "failed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "queue_approval",
+          "next_state": "pending_approval"
+        },
+        {
+          "state": "pending_approval",
+          "event": "reject_or_expire",
+          "next_state": "failed"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "failed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "publish_failure",
+          "next_state": "failed"
+        }
+      ],
+      "length": 5
+    },
+    {
+      "target": "failed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "pause_or_block_at_safe_boundary",
+          "next_state": "blocked_safe"
+        },
+        {
+          "state": "blocked_safe",
+          "event": "liveness_failure",
+          "next_state": "failed"
+        }
+      ],
+      "length": 6
+    },
+    {
+      "target": "failed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "dispatch_failed_permanently",
+          "next_state": "failed"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "failed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "reject_policy",
+          "next_state": "failed"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "failed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "reject_invalid",
+          "next_state": "failed"
+        }
+      ],
+      "length": 1
+    },
+    {
+      "target": "pending_approval",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "queue_approval",
+          "next_state": "pending_approval"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "admitted",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        }
+      ],
+      "length": 2
+    },
+    {
+      "target": "claimed",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "cancelled",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "pause_or_block_at_safe_boundary",
+          "next_state": "blocked_safe"
+        },
+        {
+          "state": "blocked_safe",
+          "event": "cancel_blocked",
+          "next_state": "cancelled"
+        }
+      ],
+      "length": 6
+    },
+    {
+      "target": "cancelled",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "cancel_at_safe_boundary",
+          "next_state": "cancelled"
+        }
+      ],
+      "length": 5
+    },
+    {
+      "target": "cancelled",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "revoke_before_start",
+          "next_state": "cancelled"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "cancelled",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "cancel_before_dispatch",
+          "next_state": "cancelled"
+        }
+      ],
+      "length": 3
+    },
+    {
+      "target": "running",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "expired",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "lease_expired",
+          "next_state": "expired"
+        }
+      ],
+      "length": 5
+    },
+    {
+      "target": "expired",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "lease_expired_before_start",
+          "next_state": "expired"
+        }
+      ],
+      "length": 4
+    },
+    {
+      "target": "succeeded",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "publish_success",
+          "next_state": "succeeded"
+        }
+      ],
+      "length": 5
+    },
+    {
+      "target": "blocked_safe",
+      "steps": [
+        {
+          "state": "received",
+          "event": "validate",
+          "next_state": "validated"
+        },
+        {
+          "state": "validated",
+          "event": "admit_validated",
+          "next_state": "admitted"
+        },
+        {
+          "state": "admitted",
+          "event": "claim_ready",
+          "next_state": "claimed"
+        },
+        {
+          "state": "claimed",
+          "event": "worker_started",
+          "next_state": "running"
+        },
+        {
+          "state": "running",
+          "event": "pause_or_block_at_safe_boundary",
+          "next_state": "blocked_safe"
+        }
+      ],
+      "length": 5
+    }
+  ],
+  "summary": {
+    "total_paths": 19,
+    "states_covered": 11,
+    "states_total": 11,
+    "transitions_covered": 19,
+    "shortest_paths_count": 11
+  }
+}

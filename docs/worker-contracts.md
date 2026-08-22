@@ -83,6 +83,21 @@ scope / isolation / stop) is what another harness implements.
   checkout; never `gh pr create`/`merge` (the orchestrator owns shipping).
 - **Isolation**: required — operate in a dedicated git worktree and assert it is
   not the main checkout with `scripts/git_safety.py assert-worktree`.
+- **Parallel-worker Git safety**: `git stash` and direct access to
+  `refs/stash` are forbidden because that ref is shared by every worktree in a
+  repository. Before its first Git operation, a wave worker MUST activate the
+  mechanical guard with
+  `eval "$(python3 "$CW_HOME/scripts/git_safety.py" wave-git-env --main "$TARGET_REPO" --worktree "$PWD")"`.
+  The resulting `git` shim (and the explicit `wave-git ... -- <git arguments>`
+  form) guards every worker command and child-process invocation. The guard
+  refuses aliases, repository/config routing, and active Git hooks because any
+  of them could hide or redirect a stash operation. Before a planned pause,
+  cancellation, or blocked handoff, stage only the intended ticket files and
+  create a worktree-local
+  WIP commit on the worker's own branch; generate its disclosure trailer with
+  `scripts/ai_disclosure.py` like every other commit. A raw `git` command before
+  the guarded environment is active is not an accepted wave-worker execution
+  path.
 - **Commit incrementally**: commit after each meaningful unit (failing tests
   written → commit; implementation green → commit; review fixes applied →
   commit) — not one squashed commit at the end. The rationale is resilience,
