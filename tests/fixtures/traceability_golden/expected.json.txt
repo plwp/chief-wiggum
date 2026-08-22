@@ -45,7 +45,8 @@
       "file": "order.py",
       "line": 6,
       "source_kind": "code",
-      "source_id": null
+      "source_id": null,
+      "origin": "source"
     }
   ],
   "invalid_links": [
@@ -56,6 +57,7 @@
       "line": 3,
       "source_kind": "code",
       "source_id": null,
+      "origin": "source",
       "reason": "verifies cannot originate from code"
     }
   ],
