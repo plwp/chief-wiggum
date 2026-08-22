@@ -7,7 +7,12 @@
       "enabled": true,
       "reads_repo": true,
       "accepts_images": true,
-      "needs_inline_diff": false
+      "needs_inline_diff": false,
+      "cost_tier": 4,
+      "vendor_family": "openai",
+      "supports_tools": true,
+      "context_window": 400000,
+      "latency_class": "standard"
     },
     "gemini": {
       "type": "tool",
@@ -15,7 +20,12 @@
       "enabled": false,
       "reads_repo": true,
       "accepts_images": true,
-      "needs_inline_diff": false
+      "needs_inline_diff": false,
+      "cost_tier": 3,
+      "vendor_family": "google",
+      "supports_tools": true,
+      "context_window": 1000000,
+      "latency_class": "standard"
     },
     "gemini-vertex": {
       "type": "tool",
@@ -23,7 +33,12 @@
       "enabled": true,
       "reads_repo": true,
       "accepts_images": true,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 3,
+      "vendor_family": "google",
+      "supports_tools": false,
+      "context_window": 1000000,
+      "latency_class": "standard"
     },
     "claude": {
       "type": "tool",
@@ -31,7 +46,12 @@
       "enabled": false,
       "reads_repo": true,
       "accepts_images": true,
-      "needs_inline_diff": false
+      "needs_inline_diff": false,
+      "cost_tier": 4,
+      "vendor_family": "anthropic",
+      "supports_tools": true,
+      "context_window": 200000,
+      "latency_class": "standard"
     },
     "claude-interactive": {
       "type": "delegate",
@@ -39,7 +59,12 @@
       "enabled": true,
       "reads_repo": true,
       "accepts_images": true,
-      "needs_inline_diff": false
+      "needs_inline_diff": false,
+      "cost_tier": 5,
+      "vendor_family": "anthropic",
+      "supports_tools": true,
+      "context_window": 200000,
+      "latency_class": "slow"
     },
     "opus": {
       "type": "tool",
@@ -48,7 +73,12 @@
       "enabled": true,
       "reads_repo": true,
       "accepts_images": true,
-      "needs_inline_diff": false
+      "needs_inline_diff": false,
+      "cost_tier": 5,
+      "vendor_family": "anthropic",
+      "supports_tools": true,
+      "context_window": 200000,
+      "latency_class": "standard"
     },
     "deepseek": {
       "type": "tool",
@@ -57,7 +87,12 @@
       "enabled": true,
       "reads_repo": false,
       "accepts_images": false,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 2,
+      "vendor_family": "deepseek",
+      "supports_tools": false,
+      "context_window": 128000,
+      "latency_class": "standard"
     },
     "deepseek-flash": {
       "type": "tool",
@@ -66,7 +101,12 @@
       "enabled": true,
       "reads_repo": false,
       "accepts_images": false,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 1,
+      "vendor_family": "deepseek",
+      "supports_tools": false,
+      "context_window": 128000,
+      "latency_class": "fast"
     },
     "kimi": {
       "type": "tool",
@@ -75,7 +115,12 @@
       "enabled": true,
       "reads_repo": false,
       "accepts_images": false,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 2,
+      "vendor_family": "moonshot",
+      "supports_tools": false,
+      "context_window": 128000,
+      "latency_class": "standard"
     },
     "glm": {
       "type": "tool",
@@ -84,7 +129,12 @@
       "enabled": true,
       "reads_repo": false,
       "accepts_images": false,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 2,
+      "vendor_family": "zai",
+      "supports_tools": false,
+      "context_window": 128000,
+      "latency_class": "standard"
     },
     "qwen": {
       "type": "tool",
@@ -93,7 +143,12 @@
       "enabled": true,
       "reads_repo": false,
       "accepts_images": false,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 2,
+      "vendor_family": "alibaba",
+      "supports_tools": false,
+      "context_window": 128000,
+      "latency_class": "standard"
     },
     "minimax": {
       "type": "tool",
@@ -102,7 +157,12 @@
       "enabled": true,
       "reads_repo": false,
       "accepts_images": false,
-      "needs_inline_diff": true
+      "needs_inline_diff": true,
+      "cost_tier": 2,
+      "vendor_family": "minimax",
+      "supports_tools": false,
+      "context_window": 128000,
+      "latency_class": "standard"
     },
     "openrouter-preview-worker": {
       "type": "delegate",
@@ -123,7 +183,11 @@
       ],
       "anonymous_preview": true,
       "weights_license_evidence": null,
-      "max_input_tokens": 120000
+      "max_input_tokens": 120000,
+      "cost_tier": 3,
+      "vendor_family": "anonymous-preview",
+      "supports_tools": true,
+      "latency_class": "standard"
     }
   },
   "roles": {
