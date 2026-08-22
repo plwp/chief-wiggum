@@ -280,7 +280,22 @@ def _assert_record_backed_by_live_trials(gate, corpus_name, executors, outcome, 
             f"{gate} trial {trial['seed_id']}: passed flag disagrees with result vs expected")
 
 
-def _assert_clean_run_backed_by_live_execution(gate, corpus_name, script, findings_of, coverage_of, tmp_path):
+def _assert_clean_run_backed_by_live_execution(gate, corpus_name, script, findings_of,
+                                              gate_module, tmp_path):
+    """The record's clean-corpus run must match a live one.
+
+    Findings are counted TWICE on purpose: once here from the CLI's JSON, and
+    once by the gate's own in-process replay. That redundancy is the cross-check
+    that catches a replay helper which miscounts — the #281/#289 finding classes
+    are easy to drop from a sum, and a replay that drops them reports a green 0
+    while the gate is firing.
+
+    Coverage is taken from the gate's `replay_clean_corpus` and NOT recomputed
+    here. It has no second definition to check against — these tests used to
+    guess at the shape, which is how they ended up asserting a shape that
+    `gate_validation_designer.py revalidate` would never write. One definition,
+    living in the gate, is the only way the tool and the suite can agree.
+    """
     record = _record(gate)
     digest = gv.corpus_digest(FIXTURES / corpus_name)
     runs = record["clean_corpus_runs"]
@@ -292,9 +307,17 @@ def _assert_clean_run_backed_by_live_execution(gate, corpus_name, script, findin
     live_findings = findings_of(report)
     assert live_findings == 0
     assert run["findings"] == live_findings
-    live_coverage = coverage_of(report)
-    assert run["coverage"] == live_coverage, (
-        f"{gate} clean-corpus coverage {run['coverage']} does not match live {live_coverage}")
+
+    replayed = gate_module.replay_clean_corpus()
+    assert replayed["findings"] == live_findings, (
+        f"{gate}: the gate's replay counts {replayed['findings']} findings but the CLI "
+        f"reports {live_findings} — the replay's counting rule has drifted")
+    assert replayed["passed"] is True
+    assert run["coverage"] == replayed["coverage"], (
+        f"{gate} clean-corpus coverage {run['coverage']} does not match live "
+        f"{replayed['coverage']} — re-run `gate_validation_designer.py revalidate`")
+    assert any(v for v in replayed["coverage"].values()), (
+        f"{gate} clean-corpus coverage is all-zero — the run scanned nothing")
 
 
 # --- check_single_writer -------------------------------------------------------
@@ -307,11 +330,12 @@ def test_sw_record_trials_are_backed_by_live_executions(tmp_path):
 
 
 def test_sw_clean_corpus_run_is_backed_by_live_execution(tmp_path):
+    import check_single_writer as sw  # noqa: PLC0415
+
     _assert_clean_run_backed_by_live_execution(
         "check_single_writer", "single_writer_clean", "check_single_writer.py",
         findings_of=lambda r: r["counts"]["violations"] + r["counts"]["malformed"],
-        coverage_of=lambda r: {"invariants_checked": r["counts"]["invariants"],
-                                "writers_found": r["counts"]["writers"]},
+        gate_module=sw,
         tmp_path=tmp_path)
 
 
@@ -377,18 +401,12 @@ def test_tr_clean_corpus_run_is_backed_by_live_execution(tmp_path):
                 + c["untested_contracts"] + c["dangling"] + c["invalid_links"]
                 + c["malformed_ids"] + c["unparsed_artifacts"])
 
-    def coverage_of(r):
-        # The JSON report doesn't expose an annotation count, so derive it with
-        # the gate's own scanners — never hand-assert coverage evidence.
-        import check_traceability as ct  # noqa: PLC0415
-        corpus = FIXTURES / "traceability_clean"
-        scanned = len(ct.scan_epic_annotations(corpus / "epic")) + len(ct.scan_source(corpus / "src"))
-        return {"annotations_scanned": scanned, "defined_ids": r["counts"]["defined"]}
+    import check_traceability as ct  # noqa: PLC0415
 
     _assert_clean_run_backed_by_live_execution(
         "check_traceability", "traceability_clean", "check_traceability.py",
         findings_of=findings_of,
-        coverage_of=coverage_of,
+        gate_module=ct,
         tmp_path=tmp_path)
 
 

@@ -6,6 +6,7 @@
     "boundary": 0,
     "grandfathered": 0,
     "malformed": 0,
+    "blind": 0,
     "unscanned": 0,
     "unparsed_artifacts": 0
   },
@@ -17,6 +18,7 @@
   },
   "soundness_ok": true,
   "coverage_ok": false,
+  "blind": [],
   "invariants": [
     {
       "id": "INV-bil-001",

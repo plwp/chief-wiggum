@@ -173,6 +173,57 @@ resolves `<meta root>/adoption/grandfathered.json` (written by
 again, labeled **EXPIRED grandfather**. See [adopt.md](adopt.md) and
 `chief_wiggum.grandfather`.
 
+## Coverage `blind`: no parseable writer is not a pass (#377)
+
+A single-write-path invariant names a `controls_field`. The checker then goes
+looking for every writer of it. If it finds **zero**, that used to render as a
+warning inside an otherwise-green run — outcome `pass`, exit `0`.
+
+That is the [fail-open shape](gate-rollout.md) in miniature. "I found no second
+writer" and "I could not see any writer at all, including the sanctioned one"
+are different facts, and only the first is evidence of anything. A field whose
+only writer is a Redis Lua script, a stored procedure, or an ORM the emitters
+do not parse produced the same green output as a field that is genuinely
+governed by one code path.
+
+So a field with a declared `controls_field` and no parseable writer is now
+reported as **`blind`**, distinct from `pass`:
+
+```
+## Coverage
+- Coverage BLIND fields: 1
+
+coverage BLIND for provider.contact_binding (INV-bil-002): no parseable writer —
+may be Lua/stored-proc
+```
+
+`blind` is **report-only** today, per [gate-rollout.md](gate-rollout.md): a new
+blocking behaviour ships report-only and earns authority from a validation
+record, not from being obviously right. `--gate coverage` still exits on
+unsanctioned writers only. What changed is that the operator can now tell the
+two states apart, and `outcome` no longer claims a pass it did not earn.
+
+### Redis write commands in embedded scripts
+
+The concrete case that surfaced this: inline Lua in a Go file.
+
+```go
+const bindScript = `redis.call('HSET', KEYS[1], 'contact_binding', ARGV[1])`
+```
+
+The emitter matched writes with `\bSET\b`, which does not match `HSET` — there
+is no word boundary between `H` and `SET`. Every hash, sorted-set and set write
+was invisible. Redis write commands are now recognized explicitly
+(`REDIS_WRITE_COMMANDS`, writes only — `GET`/`HGET` are not writes), emitted as
+`KIND_SCRIPT`, and the command name itself is never emitted as a field token.
+
+**Scope**: standalone `.lua` files are still in `unsupported_extensions`, so
+they are surfaced as a coverage gap rather than scanned. Promoting `.lua` to the
+generic tier is not a free change — the external-links subsystem uses it as a
+canonical unscannable language — and needs its own design pass, tracked in
+#413. The reported incident is inline Lua in a scanned host file, which this
+covers.
+
 ## Infra extension: terraform drift as sanctioned-writer enforcement (#165)
 
 The single-writer idiom above inventories *code* writers of a field. Some

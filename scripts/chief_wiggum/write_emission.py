@@ -34,7 +34,12 @@ def _is_test_path(rel: str) -> bool:
 # check_single_writer.py), not baked into the regex. Kind indices (0-3) mirror
 # the four write shapes documented in check_single_writer's module docstring
 # and drive `persistence_only` filtering in match_writers.
-KIND_ASSIGN, KIND_STRUCT, KIND_QUOTED, KIND_SQL = range(4)
+KIND_ASSIGN, KIND_STRUCT, KIND_QUOTED, KIND_SQL, KIND_SCRIPT = range(5)
+# KIND_SCRIPT (chief-wiggum#377): a field written from inside an embedded
+# script rather than by host-language code — a Redis Lua `redis.call('HSET',
+# ..., 'field', ...)`, and by the same shape a stored procedure. Kept as its
+# own kind rather than folded into KIND_QUOTED so a report can say HOW a
+# field is written, which is what makes the blind case nameable.
 
 # The token classes are wider than `\w+` on purpose: the pre-split scanner
 # built its regexes from `re.escape(leaf_token)`, so a controlled field whose
@@ -63,13 +68,37 @@ SQL_FIELD_RE = re.compile(r"\b([\w-]+)\s*=")
 # treat KIND_QUOTED (quoted-literal) as a write when the surrounding lines look
 # like a mutation. KIND_ASSIGN and KIND_STRUCT are writes on their own.
 MUTATION_CONTEXT_RE = re.compile(
-    r"\$set|UpdateOne|UpdateMany|UpdateByID|FindOneAndUpdate|bson\.[ME]|SET\b|UPDATE\b",
+    r"\$set|UpdateOne|UpdateMany|UpdateByID|FindOneAndUpdate|bson\.[ME]|SET\b|UPDATE\b"
+    r"|redis\.(?:call|pcall)|\bH(?:SET|MSET|SETNX|INCRBY)\b|\bZADD\b|\bSADD\b",
     re.IGNORECASE,
 )
 
 # A bson/Mongo QUERY operator on the same line means the `"field":` there is a FILTER
 # clause (which document to match), not a `$set` value (what to write). e.g.
 # `bson.M{"plan": bson.M{"$exists": false}}` selects rows, it doesn't write plan. Skip it.
+# Redis commands that WRITE. Read commands (HGET/GET/HGETALL) are deliberately
+# absent: a script that reads a field is not a writer of it, and counting reads
+# would turn the single-writer gate into noise.
+REDIS_WRITE_COMMANDS = (
+    "SET", "SETNX", "SETEX", "PSETEX", "GETSET", "MSET", "MSETNX",
+    "HSET", "HSETNX", "HMSET", "HDEL", "HINCRBY", "HINCRBYFLOAT",
+    "ZADD", "ZINCRBY", "SADD", "SREM", "LPUSH", "RPUSH", "LSET",
+    "INCRBY", "INCRBYFLOAT", "APPEND", "SETRANGE",
+)
+_REDIS_CMD_ALTERNATION = "|".join(REDIS_WRITE_COMMANDS)
+
+# `redis.call('HSET', KEYS[1], 'field', ARGV[1])` — the inline-Lua form found in
+# Go/Python/TS string literals, which is how the reported service writes its
+# single-write-path fields.
+REDIS_CALL_RE = re.compile(
+    r"""\bredis\.(?:call|pcall)\s*\(\s*['"](?:""" + _REDIS_CMD_ALTERNATION + r""")['"]""",
+    re.IGNORECASE,
+)
+# A bare command in a standalone .lua script or a redis-cli style line.
+REDIS_BARE_RE = re.compile(
+    r"(?:^|[\s;(])(?:" + _REDIS_CMD_ALTERNATION + r")\s+\S", re.IGNORECASE
+)
+
 FILTER_OPERATOR_RE = re.compile(
     r"\$(?:exists|in|nin|ne|eq|gt|gte|lt|lte|regex|or|and|not|nor|type|all|elemMatch|size)\b"
 )
@@ -79,6 +108,7 @@ FILTER_OPERATOR_RE = re.compile(
 _COMMENT_MARKERS = {
     ".go": ("//",), ".ts": ("//",), ".tsx": ("//",), ".js": ("//",), ".jsx": ("//",),
     ".java": ("//",), ".rs": ("//",), ".cs": ("//",), ".py": ("#",), ".rb": ("#",),
+    ".lua": ("--",),
 }
 
 
@@ -230,7 +260,13 @@ def emit_write_sites(path: str, text: str) -> list[WriteSite]:
             candidates.append((KIND_ASSIGN, m.group(1)))
         for m in STRUCT_RE.finditer(line):
             candidates.append((KIND_STRUCT, m.group(2)))
+        is_redis_write = bool(REDIS_CALL_RE.search(line) or REDIS_BARE_RE.search(line))
         for m in QUOTED_RE.finditer(line):
+            if is_redis_write:
+                # The KIND_SCRIPT pass below owns this line: it knows to skip
+                # the command name itself, and emitting from both passes would
+                # double-count one write and report "HSET" as a field.
+                break
             # A bare quoted literal only counts as a write in a mutation context
             # (this line or either of the two lines above) and NOT when the same
             # line carries a query operator (a filter clause, not a $set value).
@@ -244,6 +280,15 @@ def emit_write_sites(path: str, text: str) -> list[WriteSite]:
             if FILTER_OPERATOR_RE.search(line):
                 continue
             candidates.append((KIND_QUOTED, m.group(1)))
+        if is_redis_write:
+            # Every quoted token on the line is a candidate field name. The
+            # command name itself is quoted in the redis.call form, so it is
+            # skipped explicitly rather than reported as a field.
+            for m in QUOTED_RE.finditer(line):
+                token = m.group(1)
+                if token.upper() in REDIS_WRITE_COMMANDS:
+                    continue
+                candidates.append((KIND_SCRIPT, token))
         for set_m in SQL_SET_KEYWORD_RE.finditer(line):
             tail = line[set_m.end():]
             semi = tail.find(";")

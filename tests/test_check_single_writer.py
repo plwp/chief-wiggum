@@ -288,14 +288,20 @@ def test_graceful_when_no_metadata(tmp_path):
     assert report.warnings and report.soundness_ok and report.coverage_ok
 
 
-def test_no_writer_found_warns(tmp_path):
+def test_no_writer_found_is_reported_blind_not_pass(tmp_path):
+    """#377: a field nobody appears to write is not a field with one writer —
+    it is a field the instrument could not measure, and the outcome says so."""
     epic = _write_billing_epic(tmp_path)
     src = tmp_path / "src"
     src.mkdir()
     (src / "unrelated.go").write_text("func f() { x := 1; _ = x }\n")
     report = sw.check(epic, src)
-    assert any("no writer found" in w for w in report.warnings)
-    assert report.coverage_ok  # no writer means no violation
+    assert any("coverage BLIND" in w for w in report.warnings)
+    assert report.blind, "the blind field must be enumerated, not only warned about"
+    assert report.outcome == "blind", "a blind field must not render as a pass"
+    # Report-only for now (docs/gate-rollout.md): it says more, it does not
+    # yet block.
+    assert report.coverage_ok
 
 
 # --- language coverage metadata (#162) ---------------------------------------
