@@ -1065,6 +1065,129 @@ def render_markdown(report: TraceReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- gate-validation replay protocol (chief-wiggum#410, extended in #377) -----
+#
+# Third gate to implement this. Same collapse as the other two: the seed
+# executors lived only in tests/test_gate_validation_retroactive.py, so
+# `revalidate` could not reach them and any change to a hashed dependency meant
+# hand-authoring the record.
+
+GV_CORPUS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / \
+    "gate_validation" / "traceability_clean"
+
+
+def _gv_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _seed_direct(corpus: Path) -> None:
+    """The guards annotation is removed entirely."""
+    _gv_write(corpus / "src" / "order.py", "def create_order(req):\n    ...\n")
+
+
+def _seed_omission(corpus: Path) -> None:
+    """Guards intact, but INV-order-003 silently dropped from `verifies`."""
+    _gv_write(corpus / "src" / "test_create_order.py",
+              "# @cw-trace verifies CTR-order-001\ndef test_create_order():\n    ...\n")
+
+
+def _seed_config_indirection(corpus: Path) -> None:
+    """A decoy `guards` annotation on an unrelated no-op. The checker trusts
+    annotation PRESENCE, not semantic truthfulness — a certified NON-coverage
+    boundary, so this legitimately expects no-fire."""
+    _gv_write(corpus / "src" / "order.py", (
+        "def create_order(req):\n    ...\n\n\n"
+        "# @cw-trace guards CTR-order-001 INV-order-003\n"
+        "def unrelated_noop():\n    ...\n"
+    ))
+
+
+def _seed_sampling_gap(corpus: Path) -> None:
+    """A decoy `verifies` in an unscanned extension must not count."""
+    _gv_write(corpus / "src" / "test_create_order.py",
+              "def test_create_order():\n    ...\n")
+    _gv_write(corpus / "src" / "notes.txt",
+              "# @cw-trace verifies CTR-order-001 INV-order-003\n(decoy — unscanned)\n")
+
+
+def _seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the code (#281): every ID is re-authored
+    into an unparseable two-segment shape, so the scanner sees nothing. Before
+    #281 that reported a green `inapplicable` pass."""
+    _gv_write(corpus / "epic" / "contracts.md", (
+        "### CTR-001 — valid date range\n"
+        "<!-- @cw-trace realizes BR-001 -->\n\n"
+        "REQUIRES: start_date <= end_date\n"
+        "ENSURES: order.total > 0\n"
+    ))
+    _gv_write(corpus / "epic" / "invariants.md", (
+        "- **BR-001**: orders must have a positive total\n"
+        "- **INV-003**: order status never regresses\n"
+    ))
+
+
+SEED_EXECUTORS = {
+    "tr-direct-01": _seed_direct,
+    "tr-omission-01": _seed_omission,
+    "tr-config-indirection-01": _seed_config_indirection,
+    "tr-sampling-gap-01": _seed_sampling_gap,
+    "tr-instrument-broken-01": _seed_instrument_broken,
+}
+
+
+def _gv_findings(report) -> int:
+    """Total finding count.
+
+    malformed_ids and unparsed_artifacts MUST be in this sum. They are the #281
+    finding classes, and a harness that omits them reports "not-fired" while the
+    gate is firing correctly — reproducing the very bug the gate now catches,
+    inside the machinery that certifies it.
+    """
+    counts = report.counts
+    return (counts["orphan_business_rules"] + counts["uncovered_contracts"]
+            + counts["untested_contracts"] + counts["dangling"]
+            + counts["invalid_links"] + counts["malformed_ids"]
+            + counts["unparsed_artifacts"])
+
+
+def replay_seeded_trial(seed: dict) -> str:
+    """Re-run one seeded trial against a throwaway copy of the pinned corpus."""
+    import shutil
+    import tempfile
+
+    seed_id = str(seed.get("seed_id", ""))
+    if seed_id not in SEED_EXECUTORS:
+        raise KeyError(f"no seed executor for {seed_id!r}")
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        shutil.copytree(GV_CORPUS, corpus)
+        SEED_EXECUTORS[seed_id](corpus)
+        report = check(corpus / "epic", corpus / "src")
+    return "fired" if _gv_findings(report) > 0 else "not-fired"
+
+
+def replay_clean_corpus() -> dict:
+    """Re-run the clean corpus, deriving coverage from the live run."""
+    import shutil
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        shutil.copytree(GV_CORPUS, corpus)
+        report = check(corpus / "epic", corpus / "src")
+    counts = report.counts
+    return {
+        "repo": "tests/fixtures/gate_validation/traceability_clean",
+        "findings": _gv_findings(report),
+        # Derived from the report's own `measured` block rather than guessed
+        # key names — my first attempt invented keys, every count came back
+        # zero, and revalidate correctly REFUSED to write the record.
+        "coverage": dict(report.to_dict().get("measured") or {}),
+        "passed": _gv_findings(report) == 0,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Traceability graph checker (TIM/DbC)")
     parser.add_argument(

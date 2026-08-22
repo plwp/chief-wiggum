@@ -315,6 +315,14 @@ class SingleWriterReport:
     # file is visible (with its path) but never flips soundness_ok/coverage_ok
     # by itself — a repo full of binary-ish files must not become unusable.
     unscanned: list[dict] = field(default_factory=list)
+    # #377: controlled fields for which NO writer could be parsed anywhere.
+    # Previously this was only a warning, so the gate exited 0 and a green was
+    # mistaken for assurance — the reported incident was a close-epic pass where
+    # every writer listed was a test fixture and one field had none at all,
+    # because both were written from Redis Lua the scanner could not see. A
+    # field nobody appears to write is not a field with one writer; it is a
+    # field the instrument cannot measure, and that must be nameable.
+    blind: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     # #289: a DECLARED metadata source (state-machines.json / invariants.md)
     # that exists with content and could not be read or parsed at all. Distinct
@@ -352,7 +360,13 @@ class SingleWriterReport:
             return "error"
         if self.applicability == "inapplicable":
             return "inapplicable"
-        return "pass" if (self.soundness_ok and self.coverage_ok) else "findings"
+        if not (self.soundness_ok and self.coverage_ok):
+            return "findings"
+        # Report-only for now, per docs/gate-rollout.md: a NEW blocking
+        # behaviour ships report-only and is validated before it blocks. So
+        # `blind` changes what the gate SAYS, not yet what it exits. It is
+        # still not "pass" — that is the whole point.
+        return "blind" if self.blind else "pass"
 
     @property
     def measured(self) -> dict:
@@ -370,6 +384,7 @@ class SingleWriterReport:
             "boundary": len(self.boundary),
             "grandfathered": len(self.grandfathered),
             "malformed": len(self.malformed),
+            "blind": len(self.blind),
             "unscanned": len(self.unscanned),
             "unparsed_artifacts": len(self.unparsed_artifacts),
         }
@@ -402,6 +417,7 @@ class SingleWriterReport:
             "measured": self.measured,
             "soundness_ok": self.soundness_ok,
             "coverage_ok": self.coverage_ok,
+            "blind": self.blind,
             "invariants": self.invariants,
             "writers": self.writers,
             "violations": self.violations,
@@ -1082,9 +1098,20 @@ def check(
             written_ids = {w.invariant_id for w in writers}
             for inv in invariants:
                 if inv.id not in written_ids:
+                    report.blind.append({
+                        "invariant_id": inv.id,
+                        "field": inv.controls_field,
+                        "sanctioned_writers": list(inv.sanctioned_writers),
+                        "reason": (
+                            "no parseable writer found; the field may be written "
+                            "from an embedded script (Redis Lua, stored procedure) "
+                            "or by a mechanism this scanner does not model"
+                        ),
+                    })
                     report.warnings.append(
-                        f"{inv.id}: no writer found for {inv.controls_field} — "
-                        f"sanctioned writer(s) {inv.sanctioned_writers} may be missing or misnamed"
+                        f"coverage BLIND for {inv.controls_field} ({inv.id}): no parseable "
+                        f"writer — may be Lua/stored-proc; sanctioned writer(s) "
+                        f"{inv.sanctioned_writers} may be missing or misnamed"
                     )
         # Coverage metadata (#162): a recognized-but-unsupported-language file is
         # NEVER silently dropped — surfaced as an explicit warning, same as any
@@ -1106,6 +1133,136 @@ def check(
 # --- rendering / CLI --------------------------------------------------------
 
 
+# --- gate-validation replay protocol (chief-wiggum#410, extended in #377) -----
+#
+# The second gate to implement this. The seed executors previously lived only in
+# tests/test_gate_validation_retroactive.py, so `revalidate` could not reach
+# them and a record had to be hand-authored after any change to this scanner.
+# Same collapse as the slop gate: the knowledge now lives in the gate, and both
+# the test suite and the tool drive it.
+
+GV_CORPUS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / \
+    "gate_validation" / "single_writer_clean"
+
+
+def _gv_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _seed_direct(corpus: Path) -> None:
+    """A second, unsanctioned writer of the controlled field."""
+    _gv_write(corpus / "src" / "internal" / "admin" / "handlers.go", (
+        "package admin\n\n"
+        "// ChangePlan is a LEGACY admin control — a SECOND writer of provider.stripe_plan.\n"
+        "func ChangePlan(c *mongo.Collection, id ID, newPlan string) {\n"
+        '\tc.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"plan": newPlan}})\n'
+        "}\n"
+    ))
+
+
+def _seed_omission(corpus: Path) -> None:
+    """The write hides in a nested anonymous closure — no enclosing named func."""
+    _gv_write(corpus / "src" / "internal" / "db" / "leak.go", (
+        "package db\n\n"
+        "func doStuff() {\n"
+        "\tfunc() {\n"
+        "\t\tp.ActiveOwnerCount = p.ActiveOwnerCount - 1\n"
+        "\t}()\n"
+        "}\n"
+    ))
+
+
+def _seed_config_indirection(corpus: Path) -> None:
+    """The write goes through a generically-named wrapper, not the sanctioned symbol."""
+    _gv_write(corpus / "src" / "internal" / "wrappers" / "generic.go", (
+        "package wrappers\n\n"
+        "func SetField(c *mongo.Collection, id ID, newPlan string) {\n"
+        '\tc.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"stripe_plan": newPlan}})\n'
+        "}\n"
+    ))
+
+
+def _seed_sampling_gap(corpus: Path) -> None:
+    """The write lives under vendor/, a certified NON-coverage boundary."""
+    _gv_write(corpus / "src" / "vendor" / "thirdparty" / "patch.go", (
+        "package thirdparty\n\n"
+        "func Patch(c *mongo.Collection, id ID, v string) {\n"
+        '\tc.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"stripe_plan": v}})\n'
+        "}\n"
+    ))
+
+
+def _seed_instrument_broken(corpus: Path) -> None:
+    """The INSTRUMENT is broken, not the code (#289): metadata intact, source
+    tree emptied. Before #289 that reported applicable/coverage_ok/exit 0 — a
+    gate that scanned nothing and called it clean."""
+    src = corpus / "src"
+    for path in sorted(src.rglob("*")):
+        if path.is_file():
+            path.unlink()
+    (src / "README.txt").write_text("no scannable source here\n")
+
+
+SEED_EXECUTORS = {
+    "sw-instrument-broken-01": _seed_instrument_broken,
+    "sw-direct-01": _seed_direct,
+    "sw-omission-01": _seed_omission,
+    "sw-config-indirection-01": _seed_config_indirection,
+    "sw-sampling-gap-01": _seed_sampling_gap,
+}
+
+
+def _gv_outcome(corpus: Path) -> str:
+    """fired / not-fired for a prepared corpus.
+
+    `applicability == "error"` MUST count as fired (#289): a harness that only
+    sums violations reports "not-fired" for a broken instrument while the gate
+    is correctly erroring — the very bug the error state exists to catch,
+    reproduced inside the machinery that certifies it.
+    """
+    report = check(corpus / "epic", corpus / "src")
+    if report.applicability == "error":
+        return "fired"
+    return "fired" if report.violations else "not-fired"
+
+
+def replay_seeded_trial(seed: dict) -> str:
+    """Re-run one seeded trial against a throwaway copy of the pinned corpus."""
+    import shutil
+    import tempfile
+
+    seed_id = str(seed.get("seed_id", ""))
+    if seed_id not in SEED_EXECUTORS:
+        raise KeyError(f"no seed executor for {seed_id!r}")
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        shutil.copytree(GV_CORPUS, corpus)
+        SEED_EXECUTORS[seed_id](corpus)
+        return _gv_outcome(corpus)
+
+
+def replay_clean_corpus() -> dict:
+    """Re-run the clean corpus, deriving coverage from the live run."""
+    import shutil
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        shutil.copytree(GV_CORPUS, corpus)
+        report = check(corpus / "epic", corpus / "src")
+    return {
+        "repo": "tests/fixtures/gate_validation/single_writer_clean",
+        "findings": len(report.violations),
+        "coverage": {
+            "source_files_scanned": report.source_files_scanned,
+            "invariants_checked": len(report.invariants),
+            "writers_found": len(report.writers),
+        },
+        "passed": not report.violations and report.applicability == "applicable",
+    }
+
+
 def render_text(report: SingleWriterReport) -> str:
     c = report.counts
     lines = [
@@ -1122,6 +1279,9 @@ def render_text(report: SingleWriterReport) -> str:
         f"- Outcome: {report.outcome.upper()}",
         f"- Soundness (metadata well-formed): {'OK' if report.soundness_ok else 'FINDINGS'}",
         f"- Coverage (no unsanctioned writer): {'OK' if report.coverage_ok else 'FINDINGS'}",
+        f"- Coverage BLIND fields: {len(report.blind)}"
+        + ("" if not report.blind else
+           "  <- a green here is NOT assurance; see warnings"),
     ]
     if report.applicability == "inapplicable":
         lines.append(
