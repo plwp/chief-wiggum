@@ -1,0 +1,26 @@
+{
+  "schema": "hotspots/1",
+  "generated_at": "2026-08-22T05:08:48.960237+00:00",
+  "git_sha": "bbd44104ebad8e7e361fbaa600deb674f45b564f",
+  "dirty": false,
+  "no_merges": true,
+  "normalization": "max",
+  "complexity_source": "absent",
+  "authority": "ranks files by historical change-frequency x current complexity from git history at bbd44104ebad8e7e361fbaa600deb674f45b564f; high rank is a risk prior, not a defect finding; absence of rank is not evidence of health (young files have no history).",
+  "inputs": {
+    "churn": "scripts/quality/churn.py",
+    "complexity": "scripts/quality/complexity.py",
+    "coupling": "scripts/quality/process.py"
+  },
+  "window_days": 162,
+  "method": "score = norm_churn x norm_complexity per file; churn = added+deleted lines over the window (scripts/quality/churn.py, no_merges=True); complexity = sum of per-function cyclomatic complexity via lizard (scripts/quality/complexity.py); each normalized 0..1 by the max across analyzed files; change-coupling from scripts/quality/process.py (co_changes>=min_co, confidence=co_changes/min(commits_a,commits_b)).",
+  "params": {
+    "coupling_min_co": 4,
+    "coupled_with_top_n": 5,
+    "top_n": 200,
+    "decile_count": 10,
+    "trend_threshold": 0.15
+  },
+  "hotspots": [],
+  "note": "lizard not found \u2014 complexity scores unavailable; hotspot ranking requires both churn and complexity (pip install lizard)"
+}

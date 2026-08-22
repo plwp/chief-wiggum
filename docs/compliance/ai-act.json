@@ -1,0 +1,17 @@
+{
+  "eu_scope": "TBD",
+  "eu_scope_reason": "TBD: legal sign-off on Article 2(1)(c) is required because Chief Wiggum is operated from Australia but generated code and text may be used in the Union; this records uncertainty rather than silently claiming territorial exclusion.",
+  "features": [
+    {
+      "feature_id": "AIACT-DAG-001",
+      "role": "both",
+      "tier": "transparency_art50",
+      "annex_iii_area": null,
+      "performs_profiling": false,
+      "derogation_assessment": null,
+      "obligations": ["Art. 50(1)", "Art. 50(2)"],
+      "evidence": ["docs/ai-act-posture.md", "chief_wiggum.ai_disclosure.COMMIT_TRAILER", "chief_wiggum.ai_disclosure.DISCLOSURE_LINE"],
+      "legal_signoff": ["TBD: confirm whether Article 50(2) applies to generated code, issue text and experiment reports and whether universal disclosure fully discharges the obligation.", "TBD: confirm whether offering model-configurable agentic execution makes Chief Wiggum a provider, deployer, or both for this feature under Article 25."]
+    }
+  ]
+}

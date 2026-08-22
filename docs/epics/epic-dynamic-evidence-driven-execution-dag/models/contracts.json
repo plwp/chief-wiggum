@@ -1,0 +1,192 @@
+{
+  "entities": [
+    {
+      "name": "GraphJournal",
+      "description": "Per-graph canonical transactional event store. Tracker intent, task directories, snapshots, factory telemetry and static plans are imports, outboxes or projections, never competing execution truth.",
+      "fields": [
+        {"name": "graph_id", "type": "string", "required": "always", "source_of_truth": "transactional SQLite graph_events database", "immutable": true},
+        {"name": "journal_seq", "type": "nonnegative-int64", "required": "always", "source_of_truth": "SQLite INTEGER PRIMARY KEY sequence", "immutable": true, "notes": "Advances for every durable event, including normalized rejection decisions and evidence; maximum is SQLite signed 64-bit."},
+        {"name": "graph_revision", "type": "nonnegative-int64", "required": "always", "source_of_truth": "accepted graph/control mutation projection", "notes": "Advances only for accepted state affecting readiness, authority, routing, leases, budgets, candidates or topology; maximum is SQLite signed 64-bit."},
+        {"name": "previous_record_hash", "type": "sha256", "required": "always", "source_of_truth": "preceding committed graph event", "immutable": true, "notes": "The genesis record uses 64 lowercase zero hex characters."},
+        {"name": "schedule_hash", "type": "sha256", "required": "always", "source_of_truth": "canonical scheduling projection", "immutable": true, "notes": "Covers nodes, schedulable edges, outcomes, controls, leases, resources, budgets, provider-policy snapshot and logical-time observations."},
+        {"name": "audit_state_hash", "type": "sha256", "required": "always", "source_of_truth": "canonical complete materialized projection", "immutable": true, "notes": "Additionally covers relations, evidence provenance, decisions, routing and candidate disposition."},
+        {"name": "payload", "type": "object", "required": "always", "source_of_truth": "schema-validated and redacted event payload", "immutable": true, "notes": "Arbitrary raw tool output and credentials are prohibited; redactor version and policy hash are pinned."}
+      ],
+      "operations": [
+        {
+          "name": "Commit Graph Event",
+          "method": "POST",
+          "path": "/dag/graphs/:graph_id/events",
+          "preconditions": [
+            {"id": "CTR-dag-001", "description": "The caller holds the exclusive SQLite write transaction and the envelope base revision equals the current graph revision.", "expression": "tx.exclusive and envelope.base_revision == graph.graph_revision"},
+            {"id": "CTR-dag-002", "description": "The envelope is bounded, version-recognized and safely decodable into either a mutation candidate or a typed rejection envelope before the transaction commits.", "expression": "bounded(envelope_bytes) and known_major_version and decodable_to_candidate_or_rejection(envelope)"}
+          ],
+          "postconditions": [
+            {"id": "CTR-dag-003", "description": "Exactly one hash-chained event commits atomically and accepted graph effects become visible together.", "expression": "committed(event) and atomic(event, projection)"},
+            {"id": "CTR-dag-004", "description": "Rejected decisions advance journal_seq but not graph_revision; accepted state changes advance both exactly once.", "expression": "decision.rejected implies revision_unchanged and decision.accepted implies graph_revision == old_revision + 1"}
+          ],
+          "error_cases": [
+            {"status": 409, "condition": "base revision is stale", "body": "STALE_BASE"},
+            {"status": 422, "condition": "schema, authority, cycle, evidence, terminal-state or semantic validation fails", "body": "typed rejection reason"},
+            {"status": 503, "condition": "exclusive writer transaction cannot be acquired", "body": "JOURNAL_WRITER_UNAVAILABLE"},
+            {"status": 500, "condition": "transaction durability cannot be established", "body": "JOURNAL_DURABILITY_FAILURE"}
+          ],
+          "invariants_touched": ["INV-dag-001", "INV-dag-002", "INV-dag-003", "INV-dag-004"],
+          "derived_from": [{"type": "ticket", "ref": "#385", "description": "Atomic CAS, replay, crash recovery and hashing"}]
+        },
+        {
+          "name": "Import Tracker Intent",
+          "method": "POST",
+          "path": "/dag/graphs/:graph_id/intent/import",
+          "preconditions": [
+            {"id": "CTR-dag-005", "description": "The tracker adapter reports capability and scan status and supplies a source revision/hash; malformed or unavailable input is not interpreted as an empty graph.", "expression": "source.status in ('observed','degraded','unavailable','malformed') and source.digest != null"}
+          ],
+          "postconditions": [
+            {"id": "CTR-dag-006", "description": "Human intent remains tracker/ratchet authoritative and is imported one-way as immutable version-bound facts.", "expression": "intent.authority == 'tracker-or-ratchet' and not execution_writes_tracker"}
+          ],
+          "error_cases": [{"status": 422, "condition": "source status or digest is absent", "body": "INTENT_SOURCE_UNVERIFIED"}],
+          "invariants_touched": ["INV-dag-005"],
+          "derived_from": [{"type": "ticket", "ref": "#384", "description": "Intent/execution separation and compatibility mapping"}, {"type": "ticket", "ref": "#386", "description": "Loud degraded sources"}]
+        },
+        {
+          "name": "Project Static Waves",
+          "method": "GET",
+          "path": "/dag/graphs/:graph_id/project/waves",
+          "preconditions": [{"id": "CTR-dag-007", "description": "Intent compilation has a verified source status and ticket-level projection is possible.", "expression": "intent.scan_status == 'observed' and ticket_projection_defined(graph)"}],
+          "postconditions": [{"id": "CTR-dag-008", "description": "The projection is byte-equivalent to plan_waves.py for all six fields waves, gated, skipped, warnings, integration_risks and gate_reasons, with exit 0 success, 1 invalid input and 2 cycle.", "expression": "keys(result) == {'waves','gated','skipped','warnings','integration_risks','gate_reasons'} and exit_code in (0,1,2)"}],
+          "error_cases": [{"status": 503, "condition": "intent scan is unavailable, degraded, malformed or unscanned", "body": "STATIC_INTENT_UNRESOLVED"}, {"status": 422, "condition": "ticket projection is undefined or dependency input is invalid/corrupt", "body": "exit 1"}, {"status": 409, "condition": "cycle exists across projected dependency nodes", "body": "exit 2"}],
+          "invariants_touched": ["INV-dag-006"],
+          "derived_from": [{"type": "acceptance_criterion", "ref": "#385-wave-projection-parity", "description": "Exact static compatibility"}, {"type": "acceptance_criterion", "ref": "#387-static-mode", "description": "Static scheduler fallback"}]
+        }
+      ],
+      "invariants": [
+        {"id": "CTR-dag-009", "description": "A complete well-formed record with a bad hash or any mid-journal corruption fails closed; recovery discards only an uncommitted partial tail transaction.", "expression": "corrupt_committed_record implies fail_closed"}
+      ],
+      "derived_from": [{"type": "ticket", "ref": "#385"}, {"type": "observed_fact", "ref": "architect-consult-codex", "description": "CAS requires serialized durable commit; SQLite selected over bespoke JSONL"}]
+    },
+    {
+      "name": "ExecutionControl",
+      "description": "Execution node, mutation approval, lease, attempt outcome, candidate disposition and evidence lifecycle facts from which readiness is derived.",
+      "fields": [
+        {"name": "node_id", "type": "string", "required": "always", "source_of_truth": "GraphJournal admitted node-created event", "immutable": true},
+        {"name": "attempt_outcome", "type": "enum[pending,running,succeeded,failed,cancelled,expired]", "required": "always", "source_of_truth": "GraphJournal attempt events", "notes": "Outcome is terminal and orthogonal to candidate disposition."},
+        {"name": "candidate_disposition", "type": "enum[not_candidate,pending,eligible,eliminated,promoted,superseded]", "required": "always", "source_of_truth": "GraphJournal candidate-group events"},
+        {"name": "lease_epoch", "type": "nonnegative-int64", "required": "conditional", "required_when": "attempt_outcome == running", "source_of_truth": "scheduler claim event", "immutable": false},
+        {"name": "ready", "type": "boolean", "required": "always", "source_of_truth": "pure derived readiness predicate", "immutable": false, "notes": "Never independently mutated or journaled as authority."},
+        {"name": "evidence_status", "type": "enum[raw,validated,admitted,superseded,retracted,unavailable,malformed,unscanned]", "required": "always", "source_of_truth": "evidence lifecycle projection"},
+        {"name": "control_status", "type": "enum[active,pause_requested,paused,cancel_requested,cancelled,waiting_human,quiescent_failed]", "required": "always", "source_of_truth": "operator and scheduler events"}
+      ],
+      "operations": [
+        {
+          "name": "Derive Ready Set",
+          "method": "GET",
+          "path": "/dag/graphs/:graph_id/ready",
+          "preconditions": [{"id": "CTR-dag-010", "description": "All decision inputs are from the pinned journal projection, including logical ticks, provider health, budgets, policy, leases and resources.", "expression": "all(inputs in journal_projection for inputs in readiness_inputs)"}],
+          "postconditions": [{"id": "CTR-dag-011", "description": "A node is ready iff admitted, nonterminal, all schedulable predecessors succeeded, no active block/control constraint exists, resources and provider capabilities are claimable, and retry/budget limits allow dispatch.", "expression": "ready(n) == admitted(n) and nonterminal(n) and all(pred_succeeded(p) for p in predecessors(n)) and no_block(n) and resources_claimable(n) and provider_eligible(n) and budget_allows(n)"}],
+          "error_cases": [{"status": 503, "condition": "a required readiness input is unavailable or unscanned", "body": "READINESS_INPUT_UNRESOLVED"}],
+          "invariants_touched": ["INV-dag-007", "INV-dag-008"],
+          "derived_from": [{"type": "ticket", "ref": "#387", "description": "Continuous ready-set scheduler"}]
+        },
+        {
+          "name": "Acquire Fenced Lease and Dispatch",
+          "method": "POST",
+          "path": "/dag/nodes/:node_id/dispatch",
+          "preconditions": [{"id": "CTR-dag-012", "description": "The node is currently ready, the next lease epoch is atomically allocated, and all shared mutable resources are claimable.", "expression": "ready(node) and epoch == prior_epoch + 1 and resources_claimable(node)"}],
+          "postconditions": [{"id": "CTR-dag-013", "description": "Claim acquisition and dispatch-request outbox event commit atomically before process launch; every result and Git action must present the current fencing token.", "expression": "atomic(claim, dispatch_outbox) and all_effects_present_current_epoch"}],
+          "error_cases": [{"status": 409, "condition": "node no longer ready or resource/lease collision", "body": "CLAIM_CONFLICT"}, {"status": 412, "condition": "stale worker presents an older lease epoch", "body": "STALE_FENCE"}],
+          "state_transition": "admitted → claimed → running",
+          "invariants_touched": ["INV-dag-009", "INV-dag-010"],
+          "derived_from": [{"type": "ticket", "ref": "#387", "description": "Lease, crash-resume and dispatch safety"}]
+        },
+        {
+          "name": "Promote Candidate",
+          "method": "POST",
+          "path": "/dag/candidate-groups/:group_id/promote",
+          "preconditions": [{"id": "CTR-dag-014", "description": "All candidates have terminal attempt outcomes, the chosen candidate succeeded and passed the frozen independent verifier, isolation is proven, and the group has no winner.", "expression": "all_terminal(group) and chosen.outcome == 'succeeded' and verifier_passed(chosen, group.verifier_hash) and isolation_proven(group) and group.winner == null"}],
+          "postconditions": [{"id": "CTR-dag-015", "description": "One atomic event marks exactly one candidate promoted and all other eligible candidates superseded without changing immutable attempt outcomes.", "expression": "count(disposition == 'promoted') == 1 and outcomes_unchanged"}],
+          "error_cases": [{"status": 409, "condition": "winner already exists, graph revision is stale, or candidates are not all terminal", "body": "CANDIDATE_WINNER_CONFLICT"}, {"status": 412, "condition": "verifier hash, independence, identity blinding or isolation proof fails", "body": "CANDIDATE_SAFETY_FAILED"}, {"status": 422, "condition": "chosen candidate did not succeed/pass hard gates or all candidates failed hard gates", "body": "NO_ELIGIBLE_CANDIDATE"}],
+          "invariants_touched": ["INV-dag-011", "INV-dag-012", "INV-dag-013"],
+          "derived_from": [{"type": "ticket", "ref": "#389", "description": "Verifier-blind promotion"}, {"type": "ticket", "ref": "#376", "description": "Shared Git ref isolation prerequisite"}]
+        },
+        {
+          "name": "Apply Operator Control",
+          "method": "POST",
+          "path": "/dag/graphs/:graph_id/control",
+          "preconditions": [{"id": "CTR-dag-016", "description": "An authenticated runtime operator supplies identity, exact action, non-empty reason and the current base revision.", "expression": "operator.authenticated and action in ('pause','resume','cancel') and reason != '' and base_revision == current_revision"}],
+          "postconditions": [{"id": "CTR-dag-017", "description": "The action is journaled; a running worker pauses or cancels only after a safe commit boundary and lease release/revocation.", "expression": "journaled(action) and terminal_control implies worker_quiescent and lease_inactive"}],
+          "error_cases": [{"status": 400, "condition": "action is unknown or reason is empty", "body": "INVALID_OPERATOR_CONTROL"}, {"status": 401, "condition": "operator identity is absent", "body": "OPERATOR_UNAUTHORIZED"}, {"status": 409, "condition": "base revision is stale", "body": "STALE_BASE"}, {"status": 409, "condition": "safe boundary not yet reached", "body": "CONTROL_PENDING_SAFE_BOUNDARY"}],
+          "invariants_touched": ["INV-dag-014"],
+          "derived_from": [{"type": "ticket", "ref": "#390", "description": "Safe operator controls"}]
+        }
+      ],
+      "derived_from": [{"type": "ticket", "ref": "#384"}, {"type": "ticket", "ref": "#387"}, {"type": "ticket", "ref": "#389"}, {"type": "ticket", "ref": "#390"}]
+    },
+    {
+      "name": "ProviderExecutionDecision",
+      "description": "Model-agnostic capability routing and agentic worker execution record; provider roles remain configuration, not hard-coded workflow branches.",
+      "fields": [
+        {"name": "execution_adapter", "type": "string", "required": "always", "source_of_truth": "versioned provider policy snapshot", "immutable": true},
+        {"name": "consult_adapter", "type": "string", "required": "optional", "source_of_truth": "versioned provider policy snapshot", "immutable": true},
+        {"name": "capability_tier", "type": "enum[frontier-tier,micro-tier,open-tier,external-preview-tier]", "required": "always", "source_of_truth": "provider configuration with evidence", "immutable": true},
+        {"name": "independence_group", "type": "string", "required": "always", "source_of_truth": "provider policy snapshot", "immutable": true},
+        {"name": "resolved_model", "type": "string", "required": "conditional", "required_when": "provider exposes resolved identity", "source_of_truth": "worker event stream", "immutable": true},
+        {"name": "metadata", "type": "object", "required": "always", "source_of_truth": "shared delegate protocol schema", "immutable": true, "notes": "Contains no credentials, raw secrets or absolute home paths."}
+      ],
+      "operations": [
+        {
+          "name": "Route Execution",
+          "method": "POST",
+          "path": "/dag/nodes/:node_id/route",
+          "preconditions": [{"id": "CTR-dag-018", "description": "Required capabilities, budget, health observations, objective escalation evidence and provider policy are pinned by digest.", "expression": "all(hash_pinned(x) for x in (requirements, budget, health, evidence, policy))"}],
+          "postconditions": [{"id": "CTR-dag-019", "description": "Selection is deterministic, cheapest capable first, escalation requires an objective trigger, and the author and verifier independence groups differ.", "expression": "deterministic(selection) and cheapest_capable_first and (escalated implies objective_trigger) and author.independence_group != verifier.independence_group"}],
+          "error_cases": [{"status": 422, "condition": "any decision input is not content-hash pinned", "body": "ROUTING_INPUT_UNPINNED"}, {"status": 409, "condition": "no independent verifier or capable fallback exists", "body": "NO_INDEPENDENT_VERIFIER_OR_PROVIDER"}, {"status": 402, "condition": "node or graph budget cannot fund the route", "body": "BUDGET_EXCEEDED"}],
+          "invariants_touched": ["INV-dag-015", "INV-dag-016", "INV-dag-017"],
+          "derived_from": [{"type": "ticket", "ref": "#388", "description": "Evidence-based provider routing"}]
+        },
+        {
+          "name": "Run Agentic OpenRouter Worker",
+          "method": "POST",
+          "path": "/delegates/openrouter/tasks/:task_id/run",
+          "preconditions": [{"id": "CTR-dag-020", "description": "Execution is in a verified non-main worktree with workspace-write sandbox; a trusted orchestrator resolves the key through a command-backed helper outside the model-controlled workspace.", "expression": "assert_worktree() and not_main_checkout and sandbox == 'workspace-write' and credential_helper_not_invokable_by_model"}],
+          "postconditions": [{"id": "CTR-dag-021", "description": "Success atomically publishes schema-valid metadata, result, log and DONE; failure publishes ERROR with one stable reason; DONE and ERROR are mutually exclusive.", "expression": "success implies files == required_success_files and xor(exists(DONE), exists(ERROR))"}],
+          "error_cases": [{"status": 401, "condition": "credential missing or helper boundary unsafe", "body": "CREDENTIAL_UNAVAILABLE"}, {"status": 412, "condition": "main checkout or unsupported tool/model behavior", "body": "UNSAFE_WORKTREE_OR_CAPABILITY"}, {"status": 408, "condition": "worker timeout", "body": "WORKER_TIMEOUT"}, {"status": 502, "condition": "non-zero exit, malformed stream or missing result", "body": "WORKER_PROTOCOL_ERROR"}],
+          "invariants_touched": ["INV-dag-018", "INV-dag-019"],
+          "derived_from": [{"type": "ticket", "ref": "#392", "description": "Generic OpenRouter coding worker"}]
+        }
+      ],
+      "invariants": [{"id": "CTR-dag-022", "description": "Any anonymous preview without recorded public weights and license evidence is classified external-preview-tier, never open-tier; specific slugs remain configuration/manifest data only.", "expression": "anonymous_preview(provider) and not public_weights_license_evidence(provider) implies provider.tier == 'external-preview-tier'"}],
+      "derived_from": [{"type": "ticket", "ref": "#388"}, {"type": "ticket", "ref": "#392"}, {"type": "observed_fact", "ref": "ox-live-probe-2026-08-22", "description": "Codex Responses tool call succeeded but model metadata fell back and input usage was unusually high"}]
+    },
+    {
+      "name": "ExperimentRun",
+      "description": "Pre-registered, immutable, budget-matched comparison of orchestration and provider-policy factors with causal claims limited to the randomized factors actually crossed.",
+      "fields": [
+        {"name": "preregistration_hash", "type": "sha256", "required": "always", "source_of_truth": "ratchet-bound pre-registration committed before runs", "immutable": true},
+        {"name": "orchestration_arm", "type": "enum[static,dynamic]", "required": "always", "source_of_truth": "run manifest", "immutable": true},
+        {"name": "provider_policy_arm", "type": "enum[current,cheap-first,micro-first,external-preview-first]", "required": "always", "source_of_truth": "run manifest", "immutable": true},
+        {"name": "corpus_version", "type": "string", "required": "always", "source_of_truth": "immutable corpus manifest", "immutable": true},
+        {"name": "verifier_hash", "type": "sha256", "required": "always", "source_of_truth": "run manifest", "immutable": true},
+        {"name": "assignment_record_hash", "type": "sha256", "required": "always", "source_of_truth": "preregistered deterministic blocked-randomization assignment log", "immutable": true},
+        {"name": "raw_result_hash", "type": "sha256", "required": "always", "source_of_truth": "content-addressed immutable result", "immutable": true},
+        {"name": "decision", "type": "enum[go,hold,rollback]", "required": "conditional", "required_when": "analysis complete", "source_of_truth": "journaled experiment decision"}
+      ],
+      "operations": [
+        {
+          "name": "Execute Registered Arm",
+          "method": "POST",
+          "path": "/experiments/:experiment_id/runs",
+          "preconditions": [{"id": "CTR-dag-023", "description": "Pre-registration predates all runs and fixes corpus strata, factorial cells, deterministic blocked-randomization/interleaving algorithm, assignment unit/log, budgets, tools, sandbox, verifier, seeds, stopping rules, non-inferiority margin, gap formula and degenerate cases.", "expression": "preregistered_at < first_run_at and arm_policy_frozen and assignment_matches_preregistered_randomizer"}],
+          "postconditions": [{"id": "CTR-dag-024", "description": "Every run publishes an immutable manifest and raw result bound to the ratchet journal; headline slices include N and confidence intervals and retain protocol violations and negative results.", "expression": "immutable(manifest, raw_results) and ratchet_bound and all(headline.has_n_and_ci) and negative_results_retained"}],
+          "error_cases": [{"status": 412, "condition": "pre-registration, randomized assignment/interleaving, contamination, budget matching, verifier freeze or manifest completeness fails", "body": "EXPERIMENT_PROTOCOL_VIOLATION"}],
+          "invariants_touched": ["INV-dag-020", "INV-dag-021", "INV-dag-022"],
+          "derived_from": [{"type": "ticket", "ref": "#391", "description": "Controlled ablation and rollout evidence"}]
+        }
+      ],
+      "invariants": [{"id": "CTR-dag-025", "description": "The primary design is a crossed orchestration × provider-policy factorial where feasible; if cells are missing or observational, report associations only and do not attribute a model effect to the DAG or a DAG effect to the model.", "expression": "causal_claims <= randomized_crossed_factors"}],
+      "derived_from": [{"type": "ticket", "ref": "#391"}]
+    }
+  ],
+  "derived_from": [
+    {"type": "ticket", "ref": "#376"}, {"type": "ticket", "ref": "#384"}, {"type": "ticket", "ref": "#385"}, {"type": "ticket", "ref": "#386"}, {"type": "ticket", "ref": "#387"}, {"type": "ticket", "ref": "#388"}, {"type": "ticket", "ref": "#389"}, {"type": "ticket", "ref": "#390"}, {"type": "ticket", "ref": "#391"}, {"type": "ticket", "ref": "#392"}
+  ]
+}
