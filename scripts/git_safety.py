@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -73,6 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     p_wave_git.add_argument("--main", required=True, help="Path to the main checkout")
     p_wave_git.add_argument("--worktree", default=".", help="Declared worker worktree")
     p_wave_git.add_argument("git_args", nargs=argparse.REMAINDER, help="Git arguments after --")
+
+    p_wave_env = sub.add_parser(
+        "wave-git-env",
+        help="Print shell exports that route raw and nested Git through wave-git",
+    )
+    p_wave_env.add_argument("--main", required=True, help="Path to the main checkout")
+    p_wave_env.add_argument("--worktree", default=".", help="Declared worker worktree")
 
     p_ff = sub.add_parser("can-fast-forward", help="Exit 0 if base can fast-forward to branch")
     p_ff.add_argument("--repo", default=".")
@@ -119,6 +127,10 @@ def main(argv: list[str] | None = None) -> int:
             print("OK: working tree is clean")
         elif args.command == "wave-git":
             return gitops.run_wave_git(args.git_args, args.worktree, args.main)
+        elif args.command == "wave-git-env":
+            guarded = gitops.wave_git_environment(args.main, args.worktree)
+            for name, value in guarded.items():
+                print(f"export {name}={shlex.quote(value)}")
         elif args.command == "can-fast-forward":
             if not gitops.can_fast_forward(args.repo, args.base, args.branch):
                 print(f"{args.base} cannot fast-forward to {args.branch}", file=sys.stderr)

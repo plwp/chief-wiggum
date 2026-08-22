@@ -283,11 +283,11 @@ For each ticket in the current wave (up to `--max-parallel`):
      - Do NOT create or merge pull requests. Return the branch name and a summary.
      - You are in a git worktree. Assert isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.
      - **Bootstrap the guarded Git path before any other Git action**: run
-       `python3 "$CW_HOME/scripts/git_safety.py" wave-git --main "$TARGET_REPO" --worktree "$PWD" -- status --short`.
-       Use that `wave-git` command in place of raw `git` for every subsequent
-       worker Git operation. It is the mechanical guard that keeps the command
-       in this worktree and rejects aliases/config routing that could bypass the
-       safety boundary.
+       `eval "$(python3 "$CW_HOME/scripts/git_safety.py" wave-git-env --main "$TARGET_REPO" --worktree "$PWD")"`,
+       then `git status --short` to prove the shim is active. Every subsequent
+       worker Git operation and child-process invocation now routes through
+       `wave-git`. The guard keeps commands in this worktree and rejects active
+       hooks, aliases, and config routing that could bypass the safety boundary.
      - **Never run `git stash` or access `refs/stash` directly.** The stash ref
        is shared by every sibling worktree, so a push/pop can consume another
        ticket's work. Before a planned pause, cancellation, or blocked return,

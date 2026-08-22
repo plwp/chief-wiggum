@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from chief_wiggum import gitops
 
-
 ROOT = Path(__file__).resolve().parents[1]
 GIT_SAFETY = ROOT / "scripts" / "git_safety.py"
 
@@ -81,6 +80,15 @@ def _wave_git(
     )
 
 
+def _guarded_env(
+    main: Path, worktree: Path, env: dict[str, str]
+) -> dict[str, str]:
+    return {
+        **env,
+        **gitops.wave_git_environment(main, worktree, environ=env),
+    }
+
+
 def test_sibling_worktrees_really_share_the_stash_stack(sibling_worktrees):
     """Characterize the live failure: A pops B's newer repository-global entry."""
     main, worker_a, worker_b, env = sibling_worktrees
@@ -99,6 +107,7 @@ def test_sibling_worktrees_really_share_the_stash_stack(sibling_worktrees):
     assert "worker-b" not in remaining
 
 
+# DERIVED: model
 # @cw-trace verifies INV-dag-013
 def test_wave_guard_refuses_stash_without_touching_ref_or_dirty_work(sibling_worktrees):
     main, worker_a, worker_b, env = sibling_worktrees
@@ -142,6 +151,9 @@ def test_guarded_wip_commits_are_recoverable_on_independent_branches(sibling_wor
         ["--no-pager", "stash", "pop"],
         ["-C", "subdir", "stash", "push"],
         ["update-ref", "refs/stash", "HEAD"],
+        ["update-ref", "--stdin"],
+        ["fetch", ".", "+HEAD:refs/stash"],
+        ["push", "origin", "+refs/stash:refs/stash"],
         ["-c", "alias.save=stash", "save"],
     ],
 )
@@ -183,9 +195,80 @@ def test_wave_git_allows_subdirectory_and_propagates_git_exit(sibling_worktrees)
     allowed = _wave_git(main, worker_a, "-C", "nested", "status", "--short", env=env)
     assert allowed.returncode == 0
 
+    expected = subprocess.run(
+        ["git", "show", "missing-ref"],
+        cwd=worker_a,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
     failed = _wave_git(main, worker_a, "show", "missing-ref", env=env)
-    assert failed.returncode not in (0, 1, 2)
-    assert "unknown revision" in failed.stderr or "bad revision" in failed.stderr
+    assert failed.returncode == expected.returncode
+    assert failed.stderr == expected.stderr
+
+
+def test_wave_git_preserves_relative_pathspecs_from_declared_subdirectory(sibling_worktrees):
+    main, worker_a, _, env = sibling_worktrees
+    nested = worker_a / "nested"
+    nested.mkdir()
+    (worker_a / "same.txt").write_text("root\n")
+    (nested / "same.txt").write_text("nested\n")
+
+    result = _wave_git(main, nested, "add", "same.txt", env=env)
+
+    assert result.returncode == 0
+    staged = _git(worker_a, "diff", "--cached", "--name-only", env=env).stdout.splitlines()
+    assert staged == ["nested/same.txt"]
+
+
+def test_wave_git_environment_intercepts_raw_git_stash(sibling_worktrees):
+    main, worker_a, _, env = sibling_worktrees
+    (worker_a / "a.txt").write_text("dirty\n")
+    guarded = _guarded_env(main, worker_a, env)
+
+    result = subprocess.run(
+        ["git", "stash", "push"],
+        cwd=worker_a,
+        capture_output=True,
+        text=True,
+        env=guarded,
+    )
+
+    assert result.returncode == 1
+    assert "refs/stash is shared" in result.stderr
+    assert _git(worker_a, "diff", "--", "a.txt", env=env).stdout
+
+
+def test_wave_guard_refuses_active_hooks_that_could_stash(sibling_worktrees):
+    main, worker_a, _, env = sibling_worktrees
+    hooks = main / ".git" / "hooks"
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\ngit stash push -m unsafe-hook\n")
+    hook.chmod(0o755)
+    (worker_a / "a.txt").write_text("staged\n")
+    _git(worker_a, "add", "a.txt", env=env)
+    (worker_a / "b.txt").write_text("unstaged\n")
+    before_ref = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "refs/stash"],
+        cwd=main,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout
+
+    result = _wave_git(main, worker_a, "commit", "-m", "guard the hook", env=env)
+
+    assert result.returncode != 0
+    assert "active Git hooks" in result.stderr
+    after_ref = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "refs/stash"],
+        cwd=main,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout
+    assert after_ref == before_ref
+    assert _git(worker_a, "diff", "--", "b.txt", env=env).stdout
 
 
 def test_worker_contract_and_both_harness_views_require_guarded_wip_commits():
