@@ -14,6 +14,43 @@ def test_default_provider_config_is_valid():
     assert {"explorer", "implementer", "reviewer", "architecture_critic", "design_critic", "risky_diff_review"} <= set(roles)
 
 
+def test_default_config_has_disabled_external_preview_execution_provider():
+    config = providers.load_config()
+    execution = providers.execution_providers_from_config(config)
+
+    provider = execution["openrouter-preview-worker"]
+    assert not provider.enabled
+    assert provider.execution_adapter == "codex-responses"
+    assert provider.capability_tier == "external-preview-tier"
+    assert all(
+        "openrouter-preview-worker" not in raw.get("required", []) + raw.get("optional", [])
+        for raw in config["roles"].values()
+    )
+
+
+def test_anonymous_preview_without_license_must_be_external_preview_tier():
+    config = {
+        "providers": {
+            "preview": {
+                "type": "delegate",
+                "delegate": "codex-responses",
+                "execution_adapter": "codex-responses",
+                "model": "configured/model",
+                "enabled": False,
+                "base_url": "https://example.invalid/api/v1",
+                "capability_tier": "open-tier",
+                "capabilities": ["responses", "shell-tools"],
+                "anonymous_preview": True,
+                "weights_license_evidence": None,
+            }
+        },
+        "roles": {},
+    }
+
+    errors = providers.validate_config(config)
+    assert any("external-preview-tier" in error for error in errors)
+
+
 def test_role_plan_separates_required_optional_and_disabled():
     config = {
         "providers": {
