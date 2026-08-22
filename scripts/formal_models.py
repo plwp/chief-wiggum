@@ -697,8 +697,20 @@ def generate_guards_python(contracts: dict) -> str:
 def generate_guards_go(contracts: dict) -> str:
     """Generate Go guard clause templates from contract preconditions."""
     lines = [
+        # chief-wiggum#380: this file is a TEMPLATE, not compilable Go —
+        # signatures carry contract argument names and bodies are pseudocode.
+        # Without the constraint, `go build ./...` picks it up on a Go target
+        # and fails with syntax errors, so every re-render silently
+        # reintroduced a build break. The blank line after the constraint is
+        # required: Go only honours a build tag separated from the package
+        # clause by one.
+        "//go:build ignore",
+        "",
         "// Auto-generated guard clauses from formal contracts.",
         "// Generated from formal model. Do not edit by hand.",
+        "//",
+        "// This is a generated TEMPLATE, not compilable Go. The build",
+        "// constraint above keeps it out of `go build ./...`.",
         "",
         "package handlers",
         "",

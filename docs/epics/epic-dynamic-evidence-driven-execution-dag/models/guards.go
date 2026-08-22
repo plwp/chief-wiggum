@@ -1,5 +1,10 @@
+//go:build ignore
+
 // Auto-generated guard clauses from formal contracts.
 // Generated from formal model. Do not edit by hand.
+//
+// This is a generated TEMPLATE, not compilable Go. The build
+// constraint above keeps it out of `go build ./...`.
 
 package handlers
 
