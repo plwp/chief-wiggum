@@ -2150,6 +2150,7 @@ def test_openrouter_raises_on_error_object_in_200_response(monkeypatch):
 
 def test_openrouter_key_is_sent_as_header_not_env(monkeypatch):
     """CLAUDE.md secret policy: fetched at call time, passed to the request, never env."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-secret")
     captured = {}
 

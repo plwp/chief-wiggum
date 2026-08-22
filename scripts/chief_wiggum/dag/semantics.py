@@ -84,10 +84,23 @@ def _duplicates(records: Sequence[Mapping[str, Any]], key: str) -> set[str]:
     return duplicates
 
 
-def validate_snapshot(snapshot: Mapping[str, Any]) -> tuple[ContractViolation, ...]:
-    errors = list(validate_record(snapshot, "graph_snapshot"))
-    if errors:
-        return tuple(errors)
+def validate_snapshot(
+    snapshot: Mapping[str, Any], *, schema: bool = True
+) -> tuple[ContractViolation, ...]:
+    """Validate a graph snapshot.
+
+    `schema=False` skips the whole-snapshot JSON Schema pass and runs only the
+    referential, identity and acyclicity checks. It is for callers that already
+    schema-validated every record on the way in (the journal validates each
+    operation's `value` through the mutation-envelope schema), where
+    re-validating all N records to admit one more is quadratic and redundant.
+    Such a caller must still guarantee the snapshot's own shape.
+    """
+    errors: list[ContractViolation] = []
+    if schema:
+        errors = list(validate_record(snapshot, "graph_snapshot"))
+        if errors:
+            return tuple(errors)
     execution_ids = {node.get("execution_node_id") for node in snapshot.get("execution_nodes", [])}
     intent_ids = {node.get("intent_node_id") for node in snapshot.get("intent_nodes", [])}
     evidence_ids = {record.get("evidence_id") for record in snapshot.get("evidence_records", [])}
@@ -166,10 +179,18 @@ def validate_mutation(
     envelope: Mapping[str, Any],
     *,
     history: Sequence[Mapping[str, Any]] = (),
+    snapshot_validated: bool = False,
 ) -> tuple[ContractViolation, ...]:
-    snapshot_errors = validate_snapshot(snapshot)
-    if snapshot_errors:
-        return snapshot_errors
+    """Validate one envelope against a snapshot.
+
+    `snapshot_validated=True` asserts the caller already validated this exact
+    snapshot, so the pre-state pass is skipped. The journal sets it only for a
+    state its own fold produced and post-validated.
+    """
+    if not snapshot_validated:
+        snapshot_errors = validate_snapshot(snapshot)
+        if snapshot_errors:
+            return snapshot_errors
     errors = list(validate_record(envelope, "mutation_envelope"))
     if errors:
         return tuple(errors)
