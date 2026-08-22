@@ -411,6 +411,15 @@ PATH_LIKE = re.compile(r":\d+|\.(go|ts|tsx|js|py|rb|java)\b")
 
 SCANNED_SUFFIXES = (".json", ".md", ".py", ".sh", ".yaml", ".yml", ".toml")
 
+# Path prefixes every whole-tree scan skips.
+#   docs/quality/ - append-only ratchet journal, never edited even to anonymize.
+#   .claude/worktrees/ - transient worktree checkouts of OTHER branches. They are
+#     untracked working state, not this repo's public surface, and scanning them
+#     makes the guard fail for anyone with a worktree open while reporting an
+#     exposure that does not exist on any branch. (chief-wiggum#396: deleting the
+#     worktrees "fixed" the failure locally but shipped nothing, so it recurred.)
+EXCLUDED_TREES = ("docs/quality/", ".claude/worktrees/")
+
 
 def _scan_for_private_names(root, exclude=(), suffixes=SCANNED_SUFFIXES):
     """Walk `root` for text-ish files and flag any line matching PRIVATE_NAME.
@@ -449,7 +458,7 @@ def test_docs_and_workflow_commands_name_no_private_repos():
     offenders = []
     for tree in ("docs", ".claude/commands", "skills"):
         offenders += _scan_for_private_names(SCRIPTS.parent / tree,
-                                               exclude=("docs/quality/",))
+                                               exclude=EXCLUDED_TREES)
     assert offenders == [], "\n".join(offenders)
 
 
@@ -474,7 +483,7 @@ def test_whole_public_tree_names_no_private_repos():
         root = repo_root / tree
         if not root.exists():
             continue
-        offenders += _scan_for_private_names(root, exclude=("docs/quality/",))
+        offenders += _scan_for_private_names(root, exclude=EXCLUDED_TREES)
     offenders = [o for o in offenders
                  if not o.startswith("tests/test_check_patterns.py")]
     assert offenders == [], (
