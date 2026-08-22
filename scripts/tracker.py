@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -101,6 +102,108 @@ class IssueDraft:
 
 
 VALID_STATES = ("open", "closed")
+
+# --- dependency verb group (chief-wiggum#371) --------------------------------
+
+# Capability names for feature detection. A caller asks what a backend can do
+# rather than probing with try/except, so an unsupported verb is a planned
+# branch instead of an exception path.
+CAP_DEPENDENCIES = "dependencies"   # link / unlink / deps
+CAP_READY = "ready"                 # ready()
+CAP_CLAIM = "claim"                 # claim / release, with real mutual exclusion
+
+
+class UnsupportedCapability(NotImplementedError):
+    """A backend cannot honour a verb.
+
+    Raised rather than returning a falsy no-op: a claim that silently fails to
+    exclude is worse than no claim at all, because two workers then believe
+    they hold it.
+    """
+
+
+@dataclass
+class Dependencies:
+    """Edges in both directions for one issue."""
+
+    blocked_by: list[str] = field(default_factory=list)
+    blocks: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {"blocked_by": list(self.blocked_by), "blocks": list(self.blocks)}
+
+
+class DependencyCycle(ValueError):
+    """A link that would make ready() unsatisfiable for the whole cycle."""
+
+
+_BLOCKED_BY_RE = re.compile(
+    r"<!--\s*BLOCKED-BY\s*\n(?P<body>.*?)\n?-->", re.DOTALL | re.IGNORECASE
+)
+_BLOCKED_BY_HEADER = "<!-- BLOCKED-BY"
+
+
+def parse_blocked_by_block(body: str | None) -> list[str]:
+    """Read the per-issue BLOCKED-BY block from an issue body.
+
+    Deliberately distinct from the milestone-level DEPENDENCIES block in
+    chief_wiggum.github: that one describes a whole epic's graph in one place,
+    this one records the edges of a single issue. Parsing one with the other's
+    reader would silently mix epic-wide and per-issue scope.
+
+    Format, one ref per line inside an HTML comment::
+
+        <!-- BLOCKED-BY
+        acme/app#42
+        -->
+    """
+    if not body:
+        return []
+    match = _BLOCKED_BY_RE.search(body)
+    if not match:
+        return []
+    refs = []
+    for line in match.group("body").splitlines():
+        candidate = line.strip().lstrip("-").strip()
+        if candidate:
+            refs.append(candidate)
+    return refs
+
+
+def write_blocked_by_block(body: str, blockers: list[str]) -> str:
+    """Replace (or remove) the BLOCKED-BY block, leaving the rest of the body."""
+    stripped = _BLOCKED_BY_RE.sub("", body or "").rstrip()
+    if not blockers:
+        return stripped
+    block = _BLOCKED_BY_HEADER + "\n" + "\n".join(blockers) + "\n-->"
+    return (stripped + "\n\n" + block).lstrip("\n")
+
+
+def _would_cycle(
+    ref: str, blocker: str, blocked_by_of: Callable[[str], list[str]]
+) -> list[str] | None:
+    """Return the path if adding ref -> blocker closes a cycle.
+
+    Checked at link time rather than discovered at schedule time: a cycle makes
+    every node in it permanently unready, and ready() returning a silently
+    shorter list is the failure mode this prevents.
+    """
+    # No special case for ref == blocker: the walk below starts at `blocker`
+    # and its first comparison already matches, so a separate self-link branch
+    # would be unreachable.
+    stack = [(blocker, [ref, blocker])]
+    seen = set()
+    while stack:
+        node, path = stack.pop()
+        if node == ref:
+            return path
+        if node in seen:
+            continue
+        seen.add(node)
+        for parent in blocked_by_of(node):
+            stack.append((parent, path + [parent]))
+    return None
+
 
 
 def _validate_update_fields(fields: dict[str, Any]) -> None:
@@ -336,6 +439,82 @@ class GithubBackend:
         for ref in refs:
             self.update(ref, {"epic": epic_name})
 
+    # --- dependency verb group (chief-wiggum#371) ---------------------------
+
+    @staticmethod
+    def capabilities() -> frozenset[str]:
+        """Dependencies and readiness are emulated; claim is NOT supported.
+
+        GitHub offers no compare-and-set on assignee, so an assignee-based
+        claim cannot exclude two workers racing for the same issue. A claim
+        that does not exclude is worse than none, because both workers then
+        proceed believing they hold it, so this backend declines the verb
+        instead of emulating it.
+        """
+        return frozenset({CAP_DEPENDENCIES, CAP_READY})
+
+    def _blocked_by(self, ref: str) -> list[str]:
+        return parse_blocked_by_block(self.get(ref).body)
+
+    def _blocked_by_or_empty(self, ref: str) -> list[str]:
+        """Edges of a possibly-absent issue, for cycle traversal. See LocalBackend."""
+        try:
+            return self._blocked_by(ref)
+        except Exception:  # noqa: BLE001 - an unreadable issue has no edges
+            return []
+
+    def link(self, ref: str, blocked_by: str) -> None:
+        cycle = _would_cycle(ref, blocked_by, self._blocked_by_or_empty)
+        if cycle is not None:
+            raise DependencyCycle(
+                "link would create a dependency cycle: " + " -> ".join(cycle)
+            )
+        issue = self.get(ref)
+        blockers = parse_blocked_by_block(issue.body)
+        if blocked_by in blockers:
+            return
+        blockers.append(blocked_by)
+        self.update(ref, {"body": write_blocked_by_block(issue.body, blockers)})
+
+    def unlink(self, ref: str, blocked_by: str) -> None:
+        issue = self.get(ref)
+        blockers = [item for item in parse_blocked_by_block(issue.body) if item != blocked_by]
+        self.update(ref, {"body": write_blocked_by_block(issue.body, blockers)})
+
+    def deps(self, ref: str) -> Dependencies:
+        blocked_by = self._blocked_by(ref)
+        blocks = [
+            issue.ref for issue in self.list()
+            if ref in parse_blocked_by_block(issue.body)
+        ]
+        return Dependencies(blocked_by=blocked_by, blocks=sorted(blocks))
+
+    def ready(self, query: str | dict[str, Any] | None = None) -> list[Issue]:
+        everything = self.list()
+        states = {issue.ref: issue.state for issue in everything}
+        result = []
+        for issue in everything:
+            if issue.state != "open" or not _matches_query(issue, query):
+                continue
+            blockers = parse_blocked_by_block(issue.body)
+            if any(states.get(blocker) == "open" for blocker in blockers):
+                continue
+            result.append(issue)
+        return result
+
+    def claim(self, ref: str, agent_id: str) -> bool:
+        raise UnsupportedCapability(
+            "the github backend cannot claim atomically: GitHub has no"
+            " compare-and-set on assignee, so an emulated claim would let two"
+            " workers both believe they won. Use the wave lock, or a backend"
+            " that reports CAP_CLAIM."
+        )
+
+    def release(self, ref: str, agent_id: str) -> bool:
+        raise UnsupportedCapability(
+            "the github backend does not support claim, so there is nothing to release"
+        )
+
     def members(self, epic_name: str) -> list[Issue]:
         return self.list(query={"epic": epic_name})
 
@@ -486,6 +665,114 @@ class LocalBackend:
     def members(self, epic_name: str) -> list[Issue]:
         return [issue for issue in self.list() if issue.epic == epic_name]
 
+    # --- dependency verb group (chief-wiggum#371) ---------------------------
+
+    @staticmethod
+    def capabilities() -> frozenset[str]:
+        """Local supports everything: it owns its storage and its filesystem."""
+        return frozenset({CAP_DEPENDENCIES, CAP_READY, CAP_CLAIM})
+
+    def _blocked_by(self, ref: str) -> list[str]:
+        path = self._resolve_path(ref)
+        data, _ = _parse_frontmatter(path.read_text())
+        return [str(item) for item in (data.get("blocked_by") or [])]
+
+    def _write_blocked_by(self, ref: str, blockers: list[str]) -> None:
+        path = self._resolve_path(ref)
+        data, full_body = _parse_frontmatter(path.read_text())
+        data["blocked_by"] = blockers
+        path.write_text(_dump_frontmatter(data) + "\n\n" + full_body.lstrip("\n"))
+
+    def _blocked_by_or_empty(self, ref: str) -> list[str]:
+        """Edges of a possibly-absent issue, for cycle traversal.
+
+        A ref that cannot be read has no edges. This mirrors ready()'s rule
+        that a blocker which does not exist does not block, so linking to a
+        not-yet-created issue is allowed rather than crashing the walk.
+        """
+        try:
+            return self._blocked_by(ref)
+        except (FileNotFoundError, ValueError):
+            return []
+
+    def link(self, ref: str, blocked_by: str) -> None:
+        """Record that `ref` is blocked by `blocked_by`."""
+        self._resolve_path(ref)
+        cycle = _would_cycle(ref, blocked_by, self._blocked_by_or_empty)
+        if cycle is not None:
+            raise DependencyCycle(
+                "link would create a dependency cycle: " + " -> ".join(cycle)
+            )
+        blockers = self._blocked_by(ref)
+        if blocked_by not in blockers:
+            blockers.append(blocked_by)
+            self._write_blocked_by(ref, blockers)
+
+    def unlink(self, ref: str, blocked_by: str) -> None:
+        blockers = [item for item in self._blocked_by(ref) if item != blocked_by]
+        self._write_blocked_by(ref, blockers)
+
+    def deps(self, ref: str) -> Dependencies:
+        self._resolve_path(ref)
+        blocks = [
+            issue.ref for issue in self.list()
+            if ref in self._blocked_by(issue.ref)
+        ]
+        return Dependencies(blocked_by=self._blocked_by(ref), blocks=sorted(blocks))
+
+    def ready(self, query: str | dict[str, Any] | None = None) -> list[Issue]:
+        """Open issues with no OPEN blocker.
+
+        A blocker that no longer exists does not block: a deleted issue would
+        otherwise wedge its dependants forever with nothing to close.
+        """
+        issues = self.list(query)
+        states = {issue.ref: issue.state for issue in self.list()}
+        result = []
+        for issue in issues:
+            if issue.state != "open":
+                continue
+            if any(states.get(blocker) == "open" for blocker in self._blocked_by(issue.ref)):
+                continue
+            result.append(issue)
+        return result
+
+    def _claim_path(self, ref: str) -> Path:
+        issue_path = self._resolve_path(ref)
+        return issue_path.with_suffix(".claim")
+
+    def claim(self, ref: str, agent_id: str) -> bool:
+        """Atomically claim an issue. True if this agent now holds it.
+
+        Exclusion comes from O_EXCL, not from a read-then-write: two workers
+        racing here must not both be told they won.
+        """
+        claim_path = self._claim_path(ref)
+        try:
+            handle = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            # Re-claiming what you already hold is idempotent, not a failure.
+            return claim_path.read_text().strip() == agent_id
+        with os.fdopen(handle, "w") as stream:
+            stream.write(agent_id)
+        self.update(ref, {"assignee": agent_id})
+        return True
+
+    def release(self, ref: str, agent_id: str) -> bool:
+        """Release a claim. False if this agent does not hold it."""
+        claim_path = self._claim_path(ref)
+        if not claim_path.exists():
+            return False
+        if claim_path.read_text().strip() != agent_id:
+            return False
+        claim_path.unlink()
+        self.update(ref, {"assignee": None})
+        return True
+
+    def claimant(self, ref: str) -> str | None:
+        claim_path = self._claim_path(ref)
+        return claim_path.read_text().strip() if claim_path.exists() else None
+
 
 Backend = GithubBackend | LocalBackend
 
@@ -623,6 +910,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p_members.add_argument("target")
     p_members.add_argument("epic")
 
+    p_caps = sub.add_parser(
+        "capabilities", help="Print which optional verb groups a backend supports"
+    )
+    p_caps.add_argument("target")
+
+    p_link = sub.add_parser("link", help="Record that REF is blocked by BLOCKER")
+    p_link.add_argument("ref")
+    p_link.add_argument("blocker")
+    p_link.add_argument("--remove", action="store_true", help="Remove the edge instead")
+
+    p_deps = sub.add_parser("deps", help="Show dependency edges in both directions")
+    p_deps.add_argument("ref")
+
+    p_ready = sub.add_parser("ready", help="List open issues with no open blocker")
+    p_ready.add_argument("target")
+    p_ready.add_argument("--query", help="Substring filter over title/body")
+
+    p_claim = sub.add_parser("claim", help="Atomically claim an issue for an agent")
+    p_claim.add_argument("ref")
+    p_claim.add_argument("agent_id")
+    p_claim.add_argument("--release", action="store_true", help="Release instead of claim")
+
     return parser
 
 
@@ -677,6 +986,40 @@ def main(argv: list[str] | None = None) -> int:
             scheme, ident = parse_ref(args.refs[0])
             backend = _backend_for_ref(scheme, ident, repo_root)
             backend.group(args.refs, args.epic)
+
+        elif args.command == "capabilities":
+            backend = get_tracker(args.target, repo_root=repo_root)
+            caps = sorted(getattr(backend, "capabilities", lambda: frozenset())())
+            print(json.dumps({"backend": type(backend).__name__, "capabilities": caps}, indent=2))
+
+        elif args.command == "link":
+            scheme, ident = parse_ref(args.ref)
+            backend = _backend_for_ref(scheme, ident, repo_root)
+            if args.remove:
+                backend.unlink(args.ref, args.blocker)
+            else:
+                backend.link(args.ref, args.blocker)
+            print(json.dumps(backend.deps(args.ref).to_dict(), indent=2))
+
+        elif args.command == "deps":
+            scheme, ident = parse_ref(args.ref)
+            backend = _backend_for_ref(scheme, ident, repo_root)
+            print(json.dumps(backend.deps(args.ref).to_dict(), indent=2))
+
+        elif args.command == "ready":
+            backend = get_tracker(args.target, repo_root=repo_root)
+            issues = backend.ready(args.query)
+            print(json.dumps([issue.to_dict() for issue in issues], indent=2))
+
+        elif args.command == "claim":
+            scheme, ident = parse_ref(args.ref)
+            backend = _backend_for_ref(scheme, ident, repo_root)
+            if args.release:
+                held = backend.release(args.ref, args.agent_id)
+            else:
+                held = backend.claim(args.ref, args.agent_id)
+            print(json.dumps({"ref": args.ref, "agent_id": args.agent_id, "held": held}, indent=2))
+            return 0 if held else 1
 
         elif args.command == "members":
             backend = get_tracker(args.target, repo_root=repo_root)
