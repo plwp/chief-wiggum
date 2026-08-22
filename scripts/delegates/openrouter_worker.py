@@ -57,11 +57,7 @@ def _git_sha(repo: Path) -> str:
 
 
 def _sanitize_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
-    allowed = {
-        name: os.environ[name]
-        for name in ("PATH", "LANG", "LC_ALL", "TMPDIR")
-        if name in os.environ
-    }
+    allowed = {name: os.environ[name] for name in ("PATH", "LANG", "LC_ALL") if name in os.environ}
     for name, value in (extra or {}).items():
         upper = name.upper()
         if any(marker in upper for marker in ("KEY", "TOKEN", "SECRET", "CREDENTIAL")):
@@ -87,15 +83,21 @@ def _harness_version(command: str, environment: dict[str, str]) -> str | None:
 class _OneShotBroker:
     """Single-use owner-only Unix socket; it has no keychain capability."""
 
-    def __init__(self, directory: Path, secret: str):
+    def __init__(self, directory: Path, secret: str, timeout_seconds: int):
         self.socket_path = directory / "auth.sock"
+        self.state_path = directory / ".auth-state"
         self.capability = secrets.token_urlsafe(32)
         self._secret = secret
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server.bind(str(self.socket_path))
         os.chmod(self.socket_path, 0o600)
         self._server.listen(1)
-        self._server.settimeout(5)
+        self._server.settimeout(timeout_seconds)
+        self.consumed = False
+        task_protocol.atomic_write(
+            self.state_path,
+            json.dumps({"socket": str(self.socket_path), "capability": self.capability}).encode(),
+        )
         self._thread = threading.Thread(target=self._serve, daemon=True)
 
     def start(self) -> None:
@@ -108,6 +110,7 @@ class _OneShotBroker:
                 request = connection.recv(4096).decode(errors="replace")
                 if secrets.compare_digest(request, self.capability):
                     connection.sendall(self._secret.encode())
+                    self.consumed = True
         except (OSError, TimeoutError):
             pass
         finally:
@@ -117,18 +120,33 @@ class _OneShotBroker:
                 self.socket_path.unlink()
             except FileNotFoundError:
                 pass
+            try:
+                self.state_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def join(self) -> None:
-        self._thread.join(timeout=6)
+        self._thread.join(timeout=2)
+
+    def close(self) -> None:
+        try:
+            self._server.close()
+        except OSError:
+            pass
+        self.join()
 
 
 _AUTH_HELPER = """#!/usr/bin/env python3
-import socket, sys
+import json, pathlib, socket, sys
+try:
+    state = json.loads(pathlib.Path(__file__).with_name(".auth-state").read_text())
+except (OSError, ValueError):
+    raise SystemExit(2)
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     sock.settimeout(2)
-    sock.connect(sys.argv[1])
-    sock.sendall(sys.argv[2].encode())
+    sock.connect(state["socket"])
+    sock.sendall(state["capability"].encode())
     value = sock.recv(1024)
     if not value:
         raise SystemExit(3)
@@ -229,8 +247,91 @@ def _usage(events: list[dict], limit: int | None) -> dict:
 def _publish_failure(
     paths: task_protocol.TaskPaths, reason: str, detail: str | None = None, log: bytes | None = None
 ) -> WorkerResult:
+    # @cw-trace ensures CTR-dag-021
     task_protocol.publish_error(paths, reason=reason, detail=detail, log=log)
     return WorkerResult("error", reason)
+
+
+def _publish_failure_with_metadata(
+    paths: task_protocol.TaskPaths,
+    reason: str,
+    metadata: dict,
+    log: bytes,
+    detail: str | None = None,
+) -> WorkerResult:
+    failure_metadata = {**metadata, "status": "error", "reason_code": reason}
+    try:
+        task_protocol.publish_error(
+            paths,
+            reason=reason,
+            detail=detail,
+            log=log,
+            metadata=failure_metadata,
+            schema=json.loads(SCHEMA.read_text()),
+        )
+    except task_protocol.MetadataValidationError:
+        return _publish_failure(paths, "METADATA_INVALID")
+    return WorkerResult("error", reason)
+
+
+def _execution_metadata(
+    *,
+    paths: task_protocol.TaskPaths,
+    provider: ExecutionProvider,
+    harness_command: str,
+    harness_version: str | None,
+    sandbox: str,
+    start_sha: str,
+    end_sha: str,
+    started_at: str,
+    started: float,
+    exit_status: int,
+    prompt: str,
+    result: str | None,
+    log: bytes,
+    events: list[dict],
+    tool_behavior: str,
+) -> dict:
+    resolved = _resolved_model(events)
+    provider_public = {
+        "name": provider.name,
+        "adapter": provider.execution_adapter,
+        "model": provider.model,
+        "base_url": provider.base_url,
+        "tier": provider.capability_tier,
+        "capabilities": provider.capabilities,
+        "max_input_tokens": provider.max_input_tokens,
+    }
+    return {
+        "schema_version": 1,
+        "task_id": paths.task_id,
+        "status": "done",
+        "reason_code": None,
+        "harness": {"name": Path(harness_command).name, "version": harness_version},
+        "execution_adapter": provider.execution_adapter,
+        "provider_name": provider.name,
+        "provider_capability_tier": provider.capability_tier,
+        "requested_model": provider.model,
+        "resolved_model": resolved,
+        "model_resolution_status": "observed" if resolved else "unavailable",
+        "sandbox": sandbox,
+        "tool_behavior": tool_behavior,
+        "worktree_start_sha": start_sha,
+        "worktree_end_sha": end_sha,
+        "started_at": started_at,
+        "completed_at": _utc_now(),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "exit_status": exit_status,
+        "usage": _usage(events, provider.max_input_tokens),
+        "prompt_sha256": task_protocol.sha256_digest(prompt.encode()),
+        "provider_config_sha256": task_protocol.sha256_digest(
+            json.dumps(provider_public, sort_keys=True).encode()
+        ),
+        "result_sha256": task_protocol.sha256_digest(result.encode()) if result else None,
+        "log_sha256": task_protocol.sha256_digest(log),
+        "redaction_policy_version": REDACTION_POLICY_VERSION,
+        "adapter_version": ADAPTER_VERSION,
+    }
 
 
 def run_task(
@@ -248,6 +349,7 @@ def run_task(
 ) -> WorkerResult:
     """Run one configured coding delegate and publish one terminal result."""
     try:
+        # @cw-trace guards CTR-dag-020
         worktree = gitops.assert_worktree(worktree, main_checkout)
     except (gitops.GitSafetyError, subprocess.SubprocessError):
         return _publish_failure(paths, "UNSAFE_WORKTREE")
@@ -257,6 +359,7 @@ def run_task(
         provider.execution_adapter != "codex-responses"
         or not provider.model
         or not provider.base_url
+        or provider.max_input_tokens is None
     ):
         return _publish_failure(paths, "PROVIDER_CONFIG_INVALID")
     required_capabilities = REQUIRED_CAPABILITIES - (
@@ -275,28 +378,55 @@ def run_task(
     except (OSError, subprocess.SubprocessError):
         return _publish_failure(paths, "HARNESS_UNAVAILABLE")
 
+    try:
+        prompt = paths.prompt.read_text()
+    except OSError:
+        return _publish_failure(paths, "MISSING_PROMPT")
+    try:
+        start_sha = _git_sha(worktree)
+    except subprocess.SubprocessError:
+        return _publish_failure(paths, "GIT_UNAVAILABLE")
+    for env_name, config_key in (
+        ("GIT_AUTHOR_NAME", "user.name"),
+        ("GIT_AUTHOR_EMAIL", "user.email"),
+        ("GIT_COMMITTER_NAME", "user.name"),
+        ("GIT_COMMITTER_EMAIL", "user.email"),
+    ):
+        value = subprocess.run(
+            ["git", "config", "--get", config_key],
+            cwd=worktree,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        if value:
+            environment[env_name] = value
     secret = secret_loader()
     if not secret:
         return _publish_failure(paths, "CREDENTIAL_UNAVAILABLE")
-    prompt = paths.prompt.read_text()
     started_at = _utc_now()
     started = time.monotonic()
-    start_sha = _git_sha(worktree)
 
-    with tempfile.TemporaryDirectory(prefix="cw-openrouter-worker-") as temporary_name:
+    try:
+        temporary_context = tempfile.TemporaryDirectory(prefix="cw-openrouter-worker-")
+    except OSError:
+        return _publish_failure(paths, "CREDENTIAL_BOUNDARY_UNSAFE")
+    with temporary_context as temporary_name:
         temporary = Path(temporary_name)
-        os.chmod(temporary, 0o700)
-        helper = temporary / "auth-helper"
-        helper.write_text(_AUTH_HELPER)
-        helper.chmod(0o700)
-        last_message = temporary / "last-message.md"
-        codex_home = temporary / "codex-home"
-        codex_home.mkdir(mode=0o700)
-        broker = _OneShotBroker(temporary, secret)
+        try:
+            os.chmod(temporary, 0o700)
+            helper = temporary / "auth-helper"
+            helper.write_text(_AUTH_HELPER)
+            helper.chmod(0o700)
+            last_message = temporary / "last-message.md"
+            codex_home = temporary / "codex-home"
+            codex_home.mkdir(mode=0o700)
+            broker = _OneShotBroker(temporary, secret, timeout_seconds)
+        except OSError:
+            return _publish_failure(paths, "CREDENTIAL_BOUNDARY_UNSAFE")
         broker.start()
 
         provider_key = "cw_openrouter"
-        auth_args = [str(broker.socket_path), broker.capability]
+        auth_args: list[str] = []
         argv = [
             harness_command,
             "exec",
@@ -341,20 +471,28 @@ def run_task(
                 start_new_session=True,
             )
         except OSError:
+            broker.close()
             return _publish_failure(paths, "HARNESS_UNAVAILABLE")
         try:
             stdout, stderr = process.communicate(prompt.encode(), timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             _kill_process_group(process)
             stdout, stderr = process.communicate()
+            broker.close()
             log, _, _ = _event_log(stdout, stderr, secret=secret)
             return _publish_failure(paths, "WORKER_TIMEOUT", log=log)
-        broker.join()
+        broker.close()
+
+        if not broker.consumed:
+            log, _, _ = _event_log(stdout, stderr, secret=secret)
+            return _publish_failure(
+                paths, "CREDENTIAL_BOUNDARY_UNSAFE", "pre-turn auth was not consumed", log
+            )
 
         # Active canary: if auth was never consumed, or remained reusable, this
         # call succeeds and the write-enabled result is rejected.
         canary = subprocess.run(
-            [str(helper), *auth_args], capture_output=True, timeout=3, env=_sanitize_environment()
+            [str(helper)], capture_output=True, timeout=3, env=_sanitize_environment()
         )
         if canary.returncode == 0 or canary.stdout:
             return _publish_failure(paths, "CREDENTIAL_BOUNDARY_UNSAFE")
@@ -362,73 +500,63 @@ def run_task(
         log, events, malformed = _event_log(stdout, stderr, secret=secret)
         if secret.encode() in stdout or secret.encode() in stderr:
             return _publish_failure(paths, "SECRET_EXPOSURE_DETECTED", log=log)
-        if process.returncode != 0:
-            return _publish_failure(
-                paths, "HARNESS_EXIT_NONZERO", f"exit {process.returncode}", log
-            )
-        if malformed:
-            return _publish_failure(paths, "MALFORMED_EVENT_STREAM", log=log)
-        if any(event.get("type") == "error" for event in events):
-            return _publish_failure(paths, "HARNESS_REPORTED_ERROR", log=log)
-        if not any(event.get("type") == "turn.completed" for event in events):
-            return _publish_failure(paths, "MALFORMED_EVENT_STREAM", "missing terminal event", log)
-        if not any(
+        try:
+            result = last_message.read_text() if last_message.exists() else None
+        except OSError:
+            result = None
+        tool_observed = any(
             event.get("type") == "item.completed"
             and isinstance(event.get("item"), dict)
             and event["item"].get("type") == "command_execution"
             for event in events
-        ):
-            return _publish_failure(paths, "UNSUPPORTED_CAPABILITY", "no tool call observed", log)
-        if not last_message.exists() or not last_message.read_text().strip():
-            return _publish_failure(paths, "MISSING_RESULT", log=log)
-        result = last_message.read_text()
-        if secret in result:
-            return _publish_failure(paths, "SECRET_EXPOSURE_DETECTED", log=log)
-
-        usage = _usage(events, provider.max_input_tokens)
-        if usage["within_limit"] is False:
-            return _publish_failure(paths, "USAGE_LIMIT_EXCEEDED", log=log)
-        resolved = _resolved_model(events)
-        provider_public = {
-            "name": provider.name,
-            "adapter": provider.execution_adapter,
-            "model": provider.model,
-            "base_url": provider.base_url,
-            "tier": provider.capability_tier,
-            "capabilities": provider.capabilities,
-            "max_input_tokens": provider.max_input_tokens,
-        }
-        metadata = {
-            "schema_version": 1,
-            "task_id": paths.task_id,
-            "status": "done",
-            "reason_code": None,
-            "harness": {"name": Path(harness_command).name, "version": harness_version},
-            "execution_adapter": provider.execution_adapter,
-            "provider_name": provider.name,
-            "provider_capability_tier": provider.capability_tier,
-            "requested_model": provider.model,
-            "resolved_model": resolved,
-            "model_resolution_status": "observed" if resolved else "unavailable",
-            "sandbox": sandbox,
-            "tool_behavior": "observed",
-            "worktree_start_sha": start_sha,
-            "worktree_end_sha": _git_sha(worktree),
-            "started_at": started_at,
-            "completed_at": _utc_now(),
-            "duration_ms": int((time.monotonic() - started) * 1000),
-            "exit_status": process.returncode,
-            "usage": usage,
-            "prompt_sha256": task_protocol.sha256_digest(prompt.encode()),
-            "provider_config_sha256": task_protocol.sha256_digest(
-                json.dumps(provider_public, sort_keys=True).encode()
-            ),
-            "result_sha256": task_protocol.sha256_digest(result.encode()),
-            "log_sha256": task_protocol.sha256_digest(log),
-            "redaction_policy_version": REDACTION_POLICY_VERSION,
-            "adapter_version": ADAPTER_VERSION,
-        }
+        )
         try:
+            end_sha = _git_sha(worktree)
+        except subprocess.SubprocessError:
+            return _publish_failure(paths, "GIT_UNAVAILABLE", log=log)
+        metadata = _execution_metadata(
+            paths=paths,
+            provider=provider,
+            harness_command=harness_command,
+            harness_version=harness_version,
+            sandbox=sandbox,
+            start_sha=start_sha,
+            end_sha=end_sha,
+            started_at=started_at,
+            started=started,
+            exit_status=process.returncode,
+            prompt=prompt,
+            result=result,
+            log=log,
+            events=events,
+            tool_behavior="observed" if tool_observed else "not-observed",
+        )
+        if process.returncode != 0:
+            return _publish_failure_with_metadata(
+                paths, "HARNESS_EXIT_NONZERO", metadata, log, f"exit {process.returncode}"
+            )
+        if malformed:
+            return _publish_failure_with_metadata(paths, "MALFORMED_EVENT_STREAM", metadata, log)
+        if any(event.get("type") == "error" for event in events):
+            return _publish_failure_with_metadata(paths, "HARNESS_REPORTED_ERROR", metadata, log)
+        if not any(event.get("type") == "turn.completed" for event in events):
+            return _publish_failure_with_metadata(
+                paths, "MALFORMED_EVENT_STREAM", metadata, log, "missing terminal event"
+            )
+        if not tool_observed:
+            metadata["tool_behavior"] = "unsupported"
+            return _publish_failure_with_metadata(
+                paths, "UNSUPPORTED_CAPABILITY", metadata, log, "no tool call observed"
+            )
+        if not result or not result.strip():
+            return _publish_failure_with_metadata(paths, "MISSING_RESULT", metadata, log)
+        if secret in result:
+            return _publish_failure_with_metadata(paths, "SECRET_EXPOSURE_DETECTED", metadata, log)
+
+        if metadata["usage"]["within_limit"] is False:
+            return _publish_failure_with_metadata(paths, "USAGE_LIMIT_EXCEEDED", metadata, log)
+        try:
+            # @cw-trace ensures CTR-dag-021
             task_protocol.publish_success(
                 paths,
                 result=result,

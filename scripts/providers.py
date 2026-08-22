@@ -463,9 +463,12 @@ def validate_config(
     *,
     supported_tools: set[str] | None = None,
     supported_delegates: set[str] | None = None,
+    supported_execution_adapters: set[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     providers = providers_from_config(config)
+    execution_providers = execution_providers_from_config(config)
+    supported_execution_adapters = supported_execution_adapters or {"codex-responses"}
     for role_name, role in roles_from_config(config).items():
         for provider_name in role.required + role.optional:
             if provider_name not in providers:
@@ -503,14 +506,23 @@ def validate_config(
             supported_delegates is not None
             and provider.type == "delegate"
             and provider.delegate not in supported_delegates
-            and provider.name not in execution_providers_from_config(config)
+            and provider.name not in execution_providers
         ):
             errors.append(
                 f"provider {provider.name} references unsupported delegate {provider.delegate}"
             )
         if provider.type not in {"tool", "delegate"}:
             errors.append(f"provider {provider.name} has unsupported type {provider.type}")
-    for provider in execution_providers_from_config(config).values():
+    for provider in execution_providers.values():
+        if provider.execution_adapter not in supported_execution_adapters:
+            errors.append(
+                f"execution provider {provider.name} references unsupported execution adapter "
+                f"{provider.execution_adapter}"
+            )
+        if provider.delegate != provider.execution_adapter:
+            errors.append(
+                f"execution provider {provider.name} delegate must match execution_adapter"
+            )
         if not provider.model or not provider.base_url:
             errors.append(f"execution provider {provider.name} requires model and base_url")
         required = {"responses", "repo-read", "shell-tools", "workspace-write"}
@@ -519,17 +531,15 @@ def validate_config(
             errors.append(
                 f"execution provider {provider.name} is missing capabilities: {', '.join(missing)}"
             )
-        if (
-            provider.anonymous_preview
-            and not provider.weights_license_evidence
-            and provider.capability_tier != "external-preview-tier"
-        ):
+        # @cw-trace realizes INV-dag-022
+        if not provider.weights_license_evidence and provider.capability_tier == "open-tier":
             errors.append(
-                f"anonymous preview provider {provider.name} without weights/license evidence "
-                "must use external-preview-tier"
+                f"provider {provider.name} cannot use open-tier without weights/license evidence; "
+                "anonymous previews must use external-preview-tier"
             )
-        if provider.max_input_tokens is not None and (
-            isinstance(provider.max_input_tokens, bool)
+        if (
+            provider.max_input_tokens is None
+            or isinstance(provider.max_input_tokens, bool)
             or not isinstance(provider.max_input_tokens, int)
             or provider.max_input_tokens <= 0
         ):

@@ -54,7 +54,12 @@
     },
     "prompt_sha256": {"$ref": "#/$defs/digest"},
     "provider_config_sha256": {"$ref": "#/$defs/digest"},
-    "result_sha256": {"$ref": "#/$defs/digest"},
+    "result_sha256": {
+      "oneOf": [
+        {"$ref": "#/$defs/digest"},
+        {"type": "null"}
+      ]
+    },
     "log_sha256": {"$ref": "#/$defs/digest"},
     "redaction_policy_version": {"type": "integer", "minimum": 1},
     "adapter_version": {"type": "integer", "minimum": 1}

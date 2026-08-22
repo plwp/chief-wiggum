@@ -28,7 +28,7 @@ last_message = args[args.index("--output-last-message") + 1]
 Path = __import__("pathlib").Path
 Path(capture).write_text(json.dumps({
     "argv": args, "prompt": prompt,
-    "env_names": sorted(os.environ),
+    "environment": dict(os.environ),
     "first_ok": first.returncode == 0 and bool(first.stdout.strip()),
     "second_ok": second.returncode == 0 or bool(second.stdout.strip()),
 }))
@@ -135,7 +135,7 @@ def test_success_uses_responses_workspace_write_and_one_shot_auth(
     assert capture["prompt"] == "Make a harmless edit"
     assert capture["first_ok"] is True
     assert capture["second_ok"] is False
-    assert "SHOULD_BE_SECRET_TOKEN" not in capture["env_names"]
+    assert "SHOULD_BE_SECRET_TOKEN" not in capture["environment"]
     assert "seeded-super-secret" not in json.dumps(capture)
     assert "seeded-super-secret" not in durable
     metadata = json.loads(paths.metadata.read_text())
@@ -154,6 +154,7 @@ def test_main_checkout_refused_before_secret_or_harness(
     paths = task_protocol.create_task(tmp_path / "tasks", "task-1", "do it")
     called = []
 
+    # @cw-trace verifies CTR-dag-020
     result = openrouter_worker.run_task(
         paths=paths,
         provider=provider,
@@ -190,6 +191,11 @@ def test_failures_publish_stable_exclusive_error(
     assert result.reason_code == reason
     assert paths.error.exists() and not paths.done.exists()
     assert json.loads(paths.error.read_text())["reason"] == reason
+    if mode == "high-usage":
+        metadata = json.loads(paths.metadata.read_text())
+        assert metadata["status"] == "error"
+        assert metadata["reason_code"] == "USAGE_LIMIT_EXCEEDED"
+        assert metadata["usage"]["input_tokens"] == 2000
 
 
 def test_missing_key_fails_closed(tmp_path, git_paths, fake_harness, provider):
@@ -200,10 +206,137 @@ def test_missing_key_fails_closed(tmp_path, git_paths, fake_harness, provider):
     assert paths.error.exists() and not paths.done.exists()
 
 
+def test_missing_prompt_publishes_stable_error(tmp_path, git_paths, fake_harness, provider):
+    main, worktree = git_paths
+    paths = task_protocol.create_task(tmp_path / "tasks", "task-1")
+    result = openrouter_worker.run_task(
+        paths=paths,
+        provider=provider,
+        worktree=worktree,
+        main_checkout=main,
+        timeout_seconds=10,
+        harness_command=str(fake_harness),
+    )
+
+    assert result.reason_code == "MISSING_PROMPT"
+    assert paths.error.exists() and not paths.done.exists()
+
+
 def test_disabled_provider_is_not_admitted(tmp_path, git_paths, fake_harness, provider):
     disabled = ExecutionProvider(**{**provider.__dict__, "enabled": False})
     paths, _, result = run_worker(tmp_path, git_paths, fake_harness, disabled)
     assert result.reason_code == "PROVIDER_DISABLED"
+    assert paths.error.exists() and not paths.done.exists()
+
+
+def test_provider_without_budget_is_invalid_before_secret(
+    tmp_path, git_paths, fake_harness, provider
+):
+    main, worktree = git_paths
+    paths = task_protocol.create_task(tmp_path / "tasks", "task-1", "do it")
+    unbounded = ExecutionProvider(**{**provider.__dict__, "max_input_tokens": None})
+    called = []
+    result = openrouter_worker.run_task(
+        paths=paths,
+        provider=unbounded,
+        worktree=worktree,
+        main_checkout=main,
+        timeout_seconds=10,
+        harness_command=str(fake_harness),
+        secret_loader=lambda: called.append(True) or "secret",
+    )
+
+    assert result.reason_code == "PROVIDER_CONFIG_INVALID"
+    assert called == []
+
+
+def test_invalid_success_metadata_becomes_stable_error(
+    tmp_path, git_paths, fake_harness, provider, monkeypatch
+):
+    def reject(*args, **kwargs):
+        raise task_protocol.MetadataValidationError("bad metadata")
+
+    monkeypatch.setattr(task_protocol, "publish_success", reject)
+    paths, _, result = run_worker(tmp_path, git_paths, fake_harness, provider)
+
+    assert result.reason_code == "METADATA_INVALID"
+    assert paths.error.exists() and not paths.done.exists()
+
+
+def test_read_only_probe_uses_read_only_sandbox(tmp_path, git_paths, fake_harness, provider):
+    main, worktree = git_paths
+    paths = task_protocol.create_task(tmp_path / "tasks", "task-1", "Inspect only")
+    capture = tmp_path / "capture.json"
+    result = openrouter_worker.run_task(
+        paths=paths,
+        provider=provider,
+        worktree=worktree,
+        main_checkout=main,
+        timeout_seconds=10,
+        harness_command=str(fake_harness),
+        secret_loader=lambda: "seeded-super-secret",
+        extra_env={"CW_FAKE_CAPTURE": str(capture)},
+        sandbox="read-only",
+    )
+
+    assert result.status == "done"
+    invocation = json.loads(capture.read_text())["argv"]
+    assert invocation[invocation.index("--sandbox") + 1] == "read-only"
+    assert json.loads(paths.metadata.read_text())["sandbox"] == "read-only"
+
+
+def test_harness_unavailable_is_stable_error(tmp_path, git_paths, provider):
+    main, worktree = git_paths
+    paths = task_protocol.create_task(tmp_path / "tasks", "task-1", "do it")
+    result = openrouter_worker.run_task(
+        paths=paths,
+        provider=provider,
+        worktree=worktree,
+        main_checkout=main,
+        timeout_seconds=10,
+        harness_command=str(tmp_path / "not-installed"),
+    )
+
+    assert result.reason_code == "HARNESS_UNAVAILABLE"
+    assert paths.error.exists() and not paths.done.exists()
+
+
+def test_capability_mismatch_refuses_before_secret(tmp_path, git_paths, fake_harness, provider):
+    main, worktree = git_paths
+    paths = task_protocol.create_task(tmp_path / "tasks", "task-1", "do it")
+    incapable = ExecutionProvider(
+        **{**provider.__dict__, "capabilities": ("responses", "repo-read", "workspace-write")}
+    )
+    called = []
+    result = openrouter_worker.run_task(
+        paths=paths,
+        provider=incapable,
+        worktree=worktree,
+        main_checkout=main,
+        timeout_seconds=10,
+        harness_command=str(fake_harness),
+        secret_loader=lambda: called.append(True) or "secret",
+    )
+
+    assert result.reason_code == "UNSUPPORTED_CAPABILITY"
+    assert called == []
+
+
+def test_reusable_auth_canary_fails_closed(
+    tmp_path, git_paths, fake_harness, provider, monkeypatch
+):
+    original_run = openrouter_worker.subprocess.run
+
+    def canary_leaks(argv, *args, **kwargs):
+        if str(argv[0]).endswith("auth-helper"):
+            return subprocess.CompletedProcess(argv, 0, b"still-secret", b"")
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(openrouter_worker.subprocess, "run", canary_leaks)
+    paths, _, result = run_worker(tmp_path, git_paths, fake_harness, provider)
+
+    # @cw-trace verifies INV-dag-019
+    assert result.reason_code == "CREDENTIAL_BOUNDARY_UNSAFE"
     assert paths.error.exists() and not paths.done.exists()
 
 

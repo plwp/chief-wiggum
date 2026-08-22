@@ -53,6 +53,23 @@ def test_invalid_metadata_never_publishes_done(tmp_path):
     assert task_protocol.completion_status(paths).state == "pending"
 
 
+def test_mismatched_artifact_digest_never_publishes_done(tmp_path):
+    paths = task_protocol.create_task(tmp_path, "worker-1")
+    metadata = {
+        "status": "done",
+        "result_sha256": "sha256:" + "0" * 64,
+        "log_sha256": task_protocol.sha256_digest(b"{}\n"),
+    }
+
+    with pytest.raises(task_protocol.MetadataValidationError, match="result_sha256"):
+        task_protocol.publish_success(
+            paths, result="answer", log=b"{}\n", metadata=metadata, schema=SCHEMA
+        )
+
+    assert task_protocol.completion_status(paths).state == "pending"
+    assert not paths.result.exists()
+
+
 def test_error_is_terminal_and_success_cannot_overwrite_it(tmp_path):
     paths = task_protocol.create_task(tmp_path, "worker-1")
     task_protocol.publish_error(paths, reason="HARNESS_EXIT_NONZERO", detail="exit 3")

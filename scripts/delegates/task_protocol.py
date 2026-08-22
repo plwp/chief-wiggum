@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 DEFAULT_TASK_ROOT = Path.home() / ".chief-wiggum" / "delegates"
 
@@ -181,7 +181,10 @@ def publish_success(
     metadata: dict[str, Any],
     schema: dict[str, Any],
 ) -> None:
-    errors = sorted(Draft202012Validator(schema).iter_errors(metadata), key=lambda e: list(e.path))
+    errors = sorted(
+        Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(metadata),
+        key=lambda e: list(e.path),
+    )
     if errors:
         raise MetadataValidationError(errors[0].message)
     result_bytes = result.encode()
@@ -205,10 +208,22 @@ def publish_error(
     detail: str | None = None,
     log: bytes | None = None,
     metadata: dict[str, Any] | None = None,
+    schema: dict[str, Any] | None = None,
 ) -> None:
     record = {"reason": reason}
     if detail:
         record["detail"] = detail[:500]
+    if metadata is not None and schema is not None:
+        errors = sorted(
+            Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(metadata),
+            key=lambda error: list(error.path),
+        )
+        if errors:
+            raise MetadataValidationError(errors[0].message)
+        if metadata.get("status") != "error" or metadata.get("reason_code") != reason:
+            raise MetadataValidationError("error metadata status/reason does not match sentinel")
+        if log is not None and metadata.get("log_sha256") != sha256_digest(log):
+            raise MetadataValidationError("log_sha256 does not match log bytes")
     with _terminal_lock(paths):
         if log is not None:
             atomic_write(paths.log, log)

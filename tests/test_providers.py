@@ -58,6 +58,27 @@ def test_anonymous_preview_without_license_must_be_external_preview_tier():
     assert any("external-preview-tier" in error for error in errors)
 
 
+def test_open_tier_without_license_evidence_is_rejected_when_preview_flag_omitted():
+    config = {
+        "providers": {
+            "unproven": {
+                "type": "delegate",
+                "delegate": "codex-responses",
+                "execution_adapter": "codex-responses",
+                "model": "configured/model",
+                "enabled": False,
+                "base_url": "https://example.invalid/api/v1",
+                "capability_tier": "open-tier",
+                "capabilities": ["responses", "repo-read", "shell-tools", "workspace-write"],
+                "weights_license_evidence": None,
+            }
+        },
+        "roles": {},
+    }
+
+    assert any("cannot use open-tier" in error for error in providers.validate_config(config))
+
+
 def test_role_plan_separates_required_optional_and_disabled():
     config = {
         "providers": {
