@@ -21,6 +21,10 @@ Examples:
     # Is the working tree clean?
     python3 scripts/git_safety.py is-clean
 
+    # Run Git for a parallel worker while refusing shared refs/stash access
+    python3 scripts/git_safety.py wave-git --main "$TARGET_REPO" \
+      --worktree "$PWD" -- status --short
+
     # Sweep merged-ticket worktrees after a wave promotes (#329) — never
     # touches the main worktree, a parked (unmerged) branch, or a branch
     # named with --keep.
@@ -61,6 +65,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clean = sub.add_parser("is-clean", help="Exit 0 if the working tree is clean")
     p_clean.add_argument("--repo", default=".")
+
+    p_wave_git = sub.add_parser(
+        "wave-git",
+        help="Run Git in an isolated wave worktree; refuse stash and refs/stash",
+    )
+    p_wave_git.add_argument("--main", required=True, help="Path to the main checkout")
+    p_wave_git.add_argument("--worktree", default=".", help="Declared worker worktree")
+    p_wave_git.add_argument("git_args", nargs=argparse.REMAINDER, help="Git arguments after --")
 
     p_ff = sub.add_parser("can-fast-forward", help="Exit 0 if base can fast-forward to branch")
     p_ff.add_argument("--repo", default=".")
@@ -105,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("Working tree is not clean", file=sys.stderr)
                 return 1
             print("OK: working tree is clean")
+        elif args.command == "wave-git":
+            return gitops.run_wave_git(args.git_args, args.worktree, args.main)
         elif args.command == "can-fast-forward":
             if not gitops.can_fast_forward(args.repo, args.base, args.branch):
                 print(f"{args.base} cannot fast-forward to {args.branch}", file=sys.stderr)

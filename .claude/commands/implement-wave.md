@@ -282,6 +282,19 @@ For each ticket in the current wave (up to `--max-parallel`):
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
      - You are in a git worktree. Assert isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.
+     - **Bootstrap the guarded Git path before any other Git action**: run
+       `python3 "$CW_HOME/scripts/git_safety.py" wave-git --main "$TARGET_REPO" --worktree "$PWD" -- status --short`.
+       Use that `wave-git` command in place of raw `git` for every subsequent
+       worker Git operation. It is the mechanical guard that keeps the command
+       in this worktree and rejects aliases/config routing that could bypass the
+       safety boundary.
+     - **Never run `git stash` or access `refs/stash` directly.** The stash ref
+       is shared by every sibling worktree, so a push/pop can consume another
+       ticket's work. Before a planned pause, cancellation, or blocked return,
+       stage only this ticket's intended files and make a worktree-local
+       WIP commit on this worker's branch. Generate its AI-disclosure trailer with
+       `scripts/ai_disclosure.py`; the orchestrator can squash WIP history only
+       after the work is safely committed.
      - **Dependency install** (#329): `eval` the `$DEP_CACHE_ENV` lines above BEFORE running any install command, then install normally (`npm install`, `pip install`, `go mod download`, ...) into your own worktree. Do NOT symlink `node_modules`/`.venv`/a module cache from `$TARGET_REPO` or from another worker's worktree — under parallel workers that is a race, not a speedup.
      - Write all temp files to `$TICKET_TMP/` (pass the path explicitly).
      - If you encounter a blocking error after 3 retries, report it and stop — do not silently skip steps.

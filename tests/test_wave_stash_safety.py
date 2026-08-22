@@ -150,6 +150,44 @@ def test_wave_git_validator_rejects_stash_and_indirection(args, tmp_path):
         gitops.validate_wave_git_args(args, tmp_path)
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--git-dir", "/tmp/elsewhere", "status"],
+        ["--work-tree=/tmp/elsewhere", "status"],
+        ["--config-env", "alias.save=ENV", "save"],
+        ["--exec-path=/tmp/helpers", "status"],
+    ],
+)
+def test_wave_git_validator_rejects_repository_and_config_routing(args, tmp_path):
+    with pytest.raises(gitops.GitSafetyError):
+        gitops.validate_wave_git_args(args, tmp_path)
+
+
+def test_wave_git_rejects_sibling_reroute_and_configured_alias(sibling_worktrees):
+    main, worker_a, worker_b, env = sibling_worktrees
+    reroute = _wave_git(main, worker_a, "-C", str(worker_b), "status", env=env)
+    assert reroute.returncode == 1
+    assert "declared worker worktree" in reroute.stderr
+
+    _git(worker_a, "config", "alias.inspect", "status", env=env)
+    alias = _wave_git(main, worker_a, "inspect", env=env)
+    assert alias.returncode == 1
+    assert "aliases are forbidden" in alias.stderr
+
+
+def test_wave_git_allows_subdirectory_and_propagates_git_exit(sibling_worktrees):
+    main, worker_a, _, env = sibling_worktrees
+    subdir = worker_a / "nested"
+    subdir.mkdir()
+    allowed = _wave_git(main, worker_a, "-C", "nested", "status", "--short", env=env)
+    assert allowed.returncode == 0
+
+    failed = _wave_git(main, worker_a, "show", "missing-ref", env=env)
+    assert failed.returncode not in (0, 1, 2)
+    assert "unknown revision" in failed.stderr or "bad revision" in failed.stderr
+
+
 def test_worker_contract_and_both_harness_views_require_guarded_wip_commits():
     contract = (ROOT / "docs" / "worker-contracts.md").read_text()
     claude_workflow = (ROOT / ".claude" / "commands" / "implement-wave.md").read_text()
