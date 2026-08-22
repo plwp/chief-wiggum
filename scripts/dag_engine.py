@@ -18,6 +18,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum.dag import compatibility  # noqa: E402
+from chief_wiggum.dag.admission import AdmissionStore  # noqa: E402
 from chief_wiggum.dag.journal import GraphJournal, JournalError  # noqa: E402
 
 EXIT_OK = 0
@@ -209,6 +210,44 @@ def _verify(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _graph_id_for(args: argparse.Namespace) -> str:
+    """Default to the journal's own graph rather than making callers repeat it."""
+    if args.graph_id:
+        return args.graph_id
+    try:
+        journal = GraphJournal(args.db)
+    except JournalError:
+        return ""
+    try:
+        return str(journal.replay().get("graph_id", ""))
+    except JournalError:
+        return ""
+    finally:
+        journal.close()
+
+
+def _rejections(args: argparse.Namespace) -> int:
+    """The run's rejection set, so a refused proposal is never invisible."""
+    store = AdmissionStore(args.db)
+    try:
+        rows = store.rejections(_graph_id_for(args))
+    finally:
+        store.close()
+    print(json.dumps({"ok": True, "rejections": rows}, indent=2))
+    return EXIT_OK
+
+
+def _queue(args: argparse.Namespace) -> int:
+    """Proposals parked for a human, with the evidence each one cites."""
+    store = AdmissionStore(args.db)
+    try:
+        rows = store.pending(_graph_id_for(args))
+    finally:
+        store.close()
+    print(json.dumps({"ok": True, "pending": rows}, indent=2))
+    return EXIT_OK
+
+
 def _project(args: argparse.Namespace) -> int:
     """Emit the legacy six-field wave plan from the journal's intent graph.
 
@@ -303,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="truncate a torn tail back to the last valid record",
     )
+
+    rejections = add("rejections", "list rejected proposals and their reasons", _rejections)
+    rejections.add_argument("--graph-id", default="")
+
+    queue = add("queue", "list proposals awaiting human approval", _queue)
+    queue.add_argument("--graph-id", default="")
 
     project = add("project", "emit the legacy six-field wave plan", _project)
     project.add_argument(
