@@ -434,9 +434,11 @@ Run the integration check **on the staging branch, before promoting to main**:
    python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" \
      --changed-since "$DEFAULT_BRANCH" --format text
    python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" \
-     --changed-since "$DEFAULT_BRANCH" --format text
+     --changed-since "$DEFAULT_BRANCH" --gate soundness --gate-scope changed --format text
    ```
-   Report-only: this is a fast wave-scoped signal, not the authoritative gate — `--changed-since` cannot see a stale writer/annotation outside this wave's diff. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic. Surface findings for the fixer; don't hard-block the wave on them here.
+   Single-writer is report-only: a fast wave-scoped signal, not the authoritative gate — `--changed-since` cannot see a stale writer outside this wave's diff. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic.
+
+   Traceability **soundness blocks**, scoped to this wave's diff (chief-wiggum#379): a `@cw-trace` direction error introduced by a worker is a hard blocker here, fixed on the staging branch before promoting, rather than being discovered an epic later. `--gate-scope changed` keeps epic-doc findings (malformed IDs, orphan BRs) report-only, since no worker may edit goalposts. Surface the remaining findings for the fixer; don't hard-block the wave on those.
 7. **Prevention signals** (#216, report-only — NEVER blocking): `python3 "$CW_HOME/scripts/prevention_signals.py" --repo "$TARGET_REPO" --base "$DEFAULT_BRANCH"` over the merged staging diff — new duplication / dead code introduced / assertion-free tests added, appended to the wave report as reviewer information (same posture as `/implement` Step 7's 3b).
 
 If the integration check fails:

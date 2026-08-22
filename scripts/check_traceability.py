@@ -184,6 +184,31 @@ SOURCE_EXTS = cw_languages.all_known_extensions() | VERIFICATION_EXTS
 # detection uses the SAME set — imported above alongside hash_epic_definitions.
 
 
+# --- finding provenance (chief-wiggum#379) ------------------------------------
+#
+# A soundness finding is only actionable by whoever can edit the file it came
+# from. Epic-doc findings (a malformed ID in invariants.md, an orphan BR) are
+# GOALPOSTS: the ratchet forbids implementation workers from touching them, so
+# blocking a worker on one is blocking it on something it may not fix. Source
+# findings under `--changed-since` are, by construction, in the diff the worker
+# just wrote.
+#
+# Same in-domain / boundary split `docs/sidecar.md` already applies to scope:
+# report everything, block only on what the actor owns.
+
+ORIGIN_SOURCE = "source"
+ORIGIN_EPIC = "epic"
+# External links (docs/external-links.md) are re-anchored against the WHOLE
+# current source tree, never filtered by `--changed-since`'s changed set. So an
+# external-link finding is not diff-local even though it points at source, and
+# it gets its own origin rather than being mislabelled `source` and wrongly
+# blocking a worker.
+ORIGIN_EXTERNAL = "external"
+
+GATE_SCOPE_ALL = "all"
+GATE_SCOPE_CHANGED = "changed"
+
+
 @dataclass
 class TraceReport:
     defined: dict[str, str] = field(default_factory=dict)  # id -> kind
@@ -297,6 +322,41 @@ class TraceReport:
         # binary-ish files must not become unusable under --gate.
         return not (self.orphan_business_rules or self.dangling or self.invalid_links
                     or self.malformed_ids or self.unparsed_artifacts)
+
+    def soundness_findings_for_scope(self, scope: str) -> list[dict]:
+        """Soundness findings that BLOCK under ``scope``.
+
+        ``all`` (default) is every soundness finding — unchanged behaviour, and
+        what ``/architect`` and ``/close-epic`` use, since they are authoritative
+        over the whole epic.
+
+        ``changed`` keeps only findings tagged ``origin: source`` (#379). Paired
+        with ``--changed-since``, that is exactly the set of annotations in the
+        diff under review. It deliberately DROPS:
+
+        - ``malformed_ids`` / ``unparsed_artifacts`` — epic-doc defects
+        - ``orphan_business_rules`` — a whole-epic property; a BR is orphaned by
+          the absence of a realizing contract, which no single ticket's diff
+          determines
+        - epic-doc ``dangling`` / ``invalid_links``
+
+        all of which are real findings that still print, and still block where
+        the actor can act on them. This is a NARROWING of an already-validated
+        gate, never a way to make a finding disappear.
+        """
+        findings = [
+            *self.dangling,
+            *self.invalid_links,
+        ]
+        if scope != GATE_SCOPE_CHANGED:
+            return [*findings, *self.orphan_business_rules,
+                    *self.malformed_ids, *self.unparsed_artifacts]
+        return [f for f in findings if f.get("origin") == ORIGIN_SOURCE]
+
+    def soundness_ok_for_scope(self, scope: str) -> bool:
+        if scope != GATE_SCOPE_CHANGED:
+            return self.soundness_ok
+        return not self.soundness_findings_for_scope(scope)
 
     @property
     def coverage_ok(self) -> bool:
@@ -599,6 +659,8 @@ def build_report(
     coverage_requirements: dict[str, list[str]] | None = None,
     id_bearing_artifacts: tuple[str, ...] | list[str] = (),
     malformed_ids: tuple[dict, ...] | list[dict] = (),
+    source_annotations: set[int] | None = None,
+    external_annotations: set[int] | None = None,
 ) -> TraceReport:
     """Build the trace report. ``coverage_requirements`` (#169, optional) maps a
     contract ID to a list of ``source_kind`` alternatives (e.g.
@@ -608,7 +670,13 @@ def build_report(
     ``id_bearing_artifacts``/``malformed_ids`` (#281, both optional) are the
     outputs of ``find_id_bearing_artifacts``/``scan_malformed_ids`` — used to
     tell "nothing to measure" (inapplicable) apart from "measured and saw
-    nothing despite artifacts existing" (error, a broken instrument)."""
+    nothing despite artifacts existing" (error, a broken instrument).
+
+    ``source_annotations`` (#379, optional) is the set of ``id()`` values for
+    annotations that came from the SOURCE scan rather than the epic docs. Each
+    resulting finding is tagged ``origin: "source" | "epic"`` so a caller can
+    tell a finding the current diff owns from one it merely inherited. See
+    ``TraceReport.soundness_ok_for_scope``."""
     report = TraceReport(defined=dict(defined))
     link_types = schema.get("link_types", {})
     coverage_requirements = coverage_requirements or {}
@@ -617,24 +685,44 @@ def build_report(
     guarded: set[str] = set()       # CTR/INV with guards/ensures (code)
     verified_kinds: dict[str, set[str]] = {}  # CTR/INV -> set of verifying source_kinds
 
+    # Provenance is keyed by object identity, which is only sound because every
+    # Annotation stays referenced by `annotations` for the whole of this call —
+    # nothing is removed, so no id can be freed and reused underneath us. That
+    # is structural to this function, not luck. Identity is used in preference
+    # to an `origin` field on the dataclass because Annotation is serialized
+    # into the epic-model cache (see build_epic_model), and a reporting detail
+    # does not justify changing a cached on-disk format.
+    src_ids = source_annotations if source_annotations is not None else set()
+    ext_ids = external_annotations if external_annotations is not None else set()
+
+    def _finding(ann: Annotation, **extra) -> dict:
+        """One finding dict, tagged with where the annotation came from."""
+        if id(ann) in src_ids:
+            origin = ORIGIN_SOURCE
+        elif id(ann) in ext_ids:
+            origin = ORIGIN_EXTERNAL
+        else:
+            origin = ORIGIN_EPIC
+        return {**ann.to_dict(), "origin": origin, **extra}
+
     for ann in annotations:
         # Dangling: references an ID that isn't defined.
         if ann.target not in defined:
-            report.dangling.append(ann.to_dict())
+            report.dangling.append(_finding(ann))
             continue
         rule = link_types.get(ann.verb)
         if rule is None:
-            report.invalid_links.append({**ann.to_dict(), "reason": f"unknown verb {ann.verb}"})
+            report.invalid_links.append(_finding(ann, reason=f"unknown verb {ann.verb}"))
             continue
         # Validate source/target node types against the TIM schema.
         if ann.source_kind not in rule["from"]:
             report.invalid_links.append(
-                {**ann.to_dict(), "reason": f"{ann.verb} cannot originate from {ann.source_kind}"}
+                _finding(ann, reason=f"{ann.verb} cannot originate from {ann.source_kind}")
             )
             continue
         if defined[ann.target] not in rule["to"]:
             report.invalid_links.append(
-                {**ann.to_dict(), "reason": f"{ann.verb} cannot target {defined[ann.target]}"}
+                _finding(ann, reason=f"{ann.verb} cannot target {defined[ann.target]}")
             )
             continue
         if ann.verb == "realizes":
@@ -644,7 +732,7 @@ def build_report(
                 realized.add(ann.target)
             else:
                 report.invalid_links.append(
-                    {**ann.to_dict(), "reason": "realizes has no declaring contract/invariant source"}
+                    _finding(ann, reason="realizes has no declaring contract/invariant source")
                 )
         elif ann.verb in ("guards", "ensures"):
             guarded.add(ann.target)
@@ -813,6 +901,10 @@ def check(
     annotations = list(epic_model.epic_annotations)
     unsupported: dict[str, int] = {}
     unscanned: list[dict] = []
+    # #379 provenance: identity sets for the annotations that did NOT come from
+    # the epic docs. Declared up front so both branches below can add to them.
+    source_ann_ids: set[int] = set()
+    external_ann_ids: set[int] = set()
     if source_root:
         only_files = None
         if changed_since:
@@ -823,6 +915,9 @@ def check(
             # filters back down through _file_predicate itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
         source_annotations, unscanned = _scan_source_and_unscanned(source_root, only_files=only_files)
+        # Identity of the SOURCE-derived annotations, for #379 provenance. Under
+        # --changed-since these are exactly the annotations in the diff.
+        source_ann_ids |= {id(a) for a in source_annotations}
         annotations += source_annotations
         unsupported = unsupported_extension_counts(source_root, only_files=only_files)
     external = None
@@ -838,13 +933,16 @@ def check(
         for entry in external["ok"]:
             source_kind = classify_source_kind(entry["file"], Path(entry["file"]).suffix)
             for cid in entry["ids"]:
-                annotations.append(Annotation(
+                ann = Annotation(
                     entry["verb"], canonical_id(cid), entry["file"],
                     entry.get("line", 0), source_kind,
-                ))
+                )
+                external_ann_ids.add(id(ann))
+                annotations.append(ann)
     report = build_report(
         defined, annotations, schema, coverage_requirements=coverage_requirements,
         id_bearing_artifacts=id_bearing, malformed_ids=malformed,
+        source_annotations=source_ann_ids, external_annotations=external_ann_ids,
     )
     report.unscanned = unscanned
     if unscanned:
@@ -974,9 +1072,21 @@ def write_links_sidecar(
     return body
 
 
-def render_markdown(report: TraceReport) -> str:
+def render_markdown(report: TraceReport, gate_scope: str = GATE_SCOPE_ALL) -> str:
     lines = ["# Traceability Audit", "", f"Defined IDs: {report.counts['defined']}", ""]
     lines.append(f"- Soundness (orphans/dangling/invalid): {'OK' if report.soundness_ok else 'FINDINGS'}")
+    if gate_scope == GATE_SCOPE_CHANGED:
+        # Without this line, `Soundness: FINDINGS` beside exit 0 reads exactly
+        # like the fail-open this repo keeps hunting. Say what is blocking and
+        # what is merely inherited (#379).
+        blocking = report.soundness_findings_for_scope(GATE_SCOPE_CHANGED)
+        total = len(report.soundness_findings_for_scope(GATE_SCOPE_ALL))
+        lines.append(
+            f"- Gate scope: **changed** — {len(blocking)} of {total} soundness finding(s) "
+            "originate in the scanned diff and can block; the rest are epic-doc/external "
+            "findings, reported but not blocking here (they block in /architect and "
+            "/close-epic, where the actor can fix them)"
+        )
     lines.append(f"- Coverage (uncovered/untested): {'OK' if report.coverage_ok else 'FINDINGS'}")
     lines.append(
         f"- Measured: {report.id_bearing_artifacts_scanned} ID-bearing artifact(s), "
@@ -1198,6 +1308,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--schema", default=str(DEFAULT_SCHEMA))
     parser.add_argument("--gate", choices=["soundness", "coverage"], help="Fail (exit 1) on this gate's findings")
     parser.add_argument(
+        "--gate-scope", choices=[GATE_SCOPE_ALL, GATE_SCOPE_CHANGED], default=GATE_SCOPE_ALL,
+        help="Which soundness findings may BLOCK (chief-wiggum#379). 'all' (default) is every "
+             "finding — the authoritative posture for /architect and /close-epic. 'changed' blocks "
+             "only on findings originating in the scanned source diff, leaving epic-doc findings "
+             "(malformed IDs, orphan BRs, unparsed artifacts) report-only: an implementation worker "
+             "may not edit goalposts, so blocking it on one blocks it on something it cannot fix. "
+             "Requires --changed-since; never narrows coverage.")
+    parser.add_argument(
         "--changed-since",
         metavar="REF",
         help="Scope the --source scan to files changed since REF (via git diff + the "
@@ -1265,6 +1383,28 @@ def main(argv: list[str] | None = None) -> int:
         print("Error: epic_dir is required unless --scanner-version is given", file=sys.stderr)
         return 2
 
+    if args.gate_scope == GATE_SCOPE_CHANGED and not args.changed_since:
+        # Without --changed-since the source scan is the WHOLE repo, so
+        # "originates in source" stops meaning "in this diff" and the flag
+        # would silently drop epic-doc findings from an authoritative run.
+        print(
+            "Error: --gate-scope changed requires --changed-since — without it the source scan "
+            "is the whole repo, so scoping by origin would weaken the gate rather than aim it "
+            "(chief-wiggum#379)",
+            file=sys.stderr,
+        )
+        return 2
+    if args.gate_scope == GATE_SCOPE_CHANGED and args.gate == "coverage":
+        # Coverage under a partial scan is meaningless in EITHER direction —
+        # every untouched contract looks uncovered. --changed-since already
+        # documents this; make the combination an explicit error rather than
+        # letting a caller believe it got a scoped coverage gate.
+        print(
+            "Error: --gate-scope changed applies to --gate soundness only; a coverage gate over a "
+            "partial scan is not meaningful (chief-wiggum#379)",
+            file=sys.stderr,
+        )
+        return 2
     if args.write_links and args.changed_since:
         print(
             "Error: --write-links cannot be combined with --changed-since — the sidecar is the "
@@ -1325,7 +1465,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2))
     else:
-        print(render_markdown(report))
+        print(render_markdown(report, gate_scope=args.gate_scope))
 
     if args.write_links:
         gate_passed = (
@@ -1334,7 +1474,7 @@ def main(argv: list[str] | None = None) -> int:
             # state, --gate or not.
             report.applicability != "error"
             and (args.gate is None
-                 or (args.gate == "soundness" and report.soundness_ok)
+                 or (args.gate == "soundness" and report.soundness_ok_for_scope(args.gate_scope))
                  or (args.gate == "coverage" and report.coverage_ok))
         )
         if gate_passed:
@@ -1400,7 +1540,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    if args.gate == "soundness" and not report.soundness_ok:
+    if args.gate == "soundness" and not report.soundness_ok_for_scope(args.gate_scope):
         return 1
     if args.gate == "coverage" and not report.coverage_ok:
         return 1

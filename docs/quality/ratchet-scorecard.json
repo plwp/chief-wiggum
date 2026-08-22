@@ -3823,6 +3823,22 @@
     "pytest::tests.test_traceability::test_update_narrowed_by_ac",
     "pytest::tests.test_traceability::test_update_narrowed_by_test_ref",
     "pytest::tests.test_traceability::test_update_preserves_surrounding_prose",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_a_clean_worker_is_not_blocked_by_a_pre_existing_epic_defect",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_text_output_explains_why_it_did_not_block",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_the_default_scope_still_blocks_on_that_same_defect",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_the_unblocked_finding_is_still_reported",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_an_external_finding_does_not_block_under_changed_scope",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_epic_annotations_are_tagged_epic",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_external_annotations_are_tagged_external_not_source",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_scope_all_is_identical_to_soundness_ok",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_source_annotations_are_tagged_source",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_a_dangling_annotation_in_the_diff_blocks",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_a_direction_error_in_the_workers_diff_blocks_under_changed_scope",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_the_same_error_blocks_under_the_default_scope_too",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_verifies_from_production_code_also_blocks",
+    "pytest::tests.test_traceability_gate_scope.TestUsageGuards::test_changed_scope_with_coverage_gate_is_a_usage_error",
+    "pytest::tests.test_traceability_gate_scope.TestUsageGuards::test_changed_scope_without_changed_since_is_a_usage_error",
+    "pytest::tests.test_traceability_gate_scope.TestUsageGuards::test_the_default_scope_is_all",
     "pytest::tests.test_traceability_golden::test_golden_json_output_byte_identical",
     "pytest::tests.test_traceability_golden::test_golden_text_output_byte_identical",
     "pytest::tests.test_tracker.TestCLI::test_backend_subcommand_prints_resolved_backend",
@@ -4153,7 +4169,7 @@
     "pytest::tests.test_write_ticket_context::test_output_file_always_written_regardless_of_print_flag",
     "pytest::tests.test_write_ticket_context::test_print_flag_restores_full_json_output"
   ],
-  "passed": 4033,
+  "passed": 4049,
   "quality": {
     "note": "cyclomatic complexity requires lizard (pip install lizard)",
     "skipped": "lizard not found"
@@ -4164,14 +4180,14 @@
     "suites": [
       {
         "exit_code": 0,
-        "passing_cases": 4033,
+        "passing_cases": 4049,
         "source": "run",
         "suite": "pytest"
       }
     ],
-    "total_passing": 4033
+    "total_passing": 4049
   },
-  "target_sha": "1ffd15efbdd218651b0c5a75da1cc0dba97d373b",
+  "target_sha": "c1c12afd7228932a1eabcc9cd8b7a840f1595750",
   "test_files": {
     "pytest::tests.fixtures.code_query_repo.tests.test_checkout_order::test_confirm_order_rejects_already_confirmed": "tests/fixtures/code_query_repo/tests/test_checkout_order.py",
     "pytest::tests.fixtures.code_query_repo.tests.test_checkout_order::test_confirm_order_transitions_pending_to_confirmed": "tests/fixtures/code_query_repo/tests/test_checkout_order.py",
@@ -7877,6 +7893,22 @@
     "pytest::tests.test_traceability::test_update_narrowed_by_ac": "tests/test_traceability.py",
     "pytest::tests.test_traceability::test_update_narrowed_by_test_ref": "tests/test_traceability.py",
     "pytest::tests.test_traceability::test_update_preserves_surrounding_prose": "tests/test_traceability.py",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_a_clean_worker_is_not_blocked_by_a_pre_existing_epic_defect": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_text_output_explains_why_it_did_not_block": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_the_default_scope_still_blocks_on_that_same_defect": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestNoFalsePositive::test_the_unblocked_finding_is_still_reported": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_an_external_finding_does_not_block_under_changed_scope": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_epic_annotations_are_tagged_epic": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_external_annotations_are_tagged_external_not_source": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_scope_all_is_identical_to_soundness_ok": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestOriginTagging::test_source_annotations_are_tagged_source": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_a_dangling_annotation_in_the_diff_blocks": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_a_direction_error_in_the_workers_diff_blocks_under_changed_scope": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_the_same_error_blocks_under_the_default_scope_too": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestTruePositive::test_verifies_from_production_code_also_blocks": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestUsageGuards::test_changed_scope_with_coverage_gate_is_a_usage_error": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestUsageGuards::test_changed_scope_without_changed_since_is_a_usage_error": "tests/test_traceability_gate_scope.py",
+    "pytest::tests.test_traceability_gate_scope.TestUsageGuards::test_the_default_scope_is_all": "tests/test_traceability_gate_scope.py",
     "pytest::tests.test_traceability_golden::test_golden_json_output_byte_identical": "tests/test_traceability_golden.py",
     "pytest::tests.test_traceability_golden::test_golden_text_output_byte_identical": "tests/test_traceability_golden.py",
     "pytest::tests.test_tracker.TestCLI::test_backend_subcommand_prints_resolved_backend": "tests/test_tracker.py",

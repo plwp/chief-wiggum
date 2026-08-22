@@ -174,6 +174,64 @@ two scan modes agreeing on the file universe. A bad `--changed-since` ref or a
 non-git `--source` with `--changed-since` is a usage error (exit 2), reported
 concisely on stderr.
 
+## Gate scope: blocking a worker only on what it owns (#379)
+
+`--gate soundness` was not part of the per-ticket floor, so `@cw-trace`
+direction errors — `guards` on a test, `verifies` on production code — were
+introduced freely by implementation workers and surfaced three merges later at
+wave-merge. One epic carried two separate `fix(trace): correct @cw-trace
+direction` commits for the same class.
+
+The obvious fix is wrong. `--changed-since` scopes only the **source** scan;
+the epic docs are always read in full. So `malformed_ids`, `unparsed_artifacts`
+and `orphan_business_rules` fire regardless of what the worker touched — and
+the ratchet protects goalposts, so a worker may not edit `contracts.md` or
+`invariants.md` to clear them.
+
+Measured before the fix was designed: a worker whose entire diff was one
+unrelated helper function was blocked, exit 1, by a malformed ID in
+`invariants.md` that predated its branch. A gate that blocks on an unfixable
+defect is precisely the noisy gate [gate-rollout.md](gate-rollout.md) warns
+about — the operator learns to `--force`, and every gate loses authority.
+
+So findings carry an **origin**:
+
+| origin | meaning | diff-local? |
+|---|---|---|
+| `source` | from the source scan, which `--changed-since` filters to the diff | yes |
+| `epic` | from the epic docs — goalposts, always scanned in full | no |
+| `external` | from an [external-links](external-links.md) sidecar, re-anchored against the whole tree | no |
+
+`--gate-scope changed` blocks only on `source`-origin findings:
+
+```bash
+python3 scripts/check_traceability.py docs/epics/<slug> --source . \
+  --changed-since main --gate soundness --gate-scope changed
+```
+
+Everything else still prints, and still blocks under the default
+`--gate-scope all` in `/architect` and `/close-epic`, where the actor can
+actually fix it. Same in-domain vs boundary split [sidecar.md](sidecar.md)
+already applies to scope: **report everything, block only on what the actor
+owns.** This is a narrowing of an already-validated gate, never a way to make a
+finding disappear.
+
+Two usage errors (exit 2), both closing a way to weaken a gate by accident:
+
+- `--gate-scope changed` **without** `--changed-since` — the source scan would
+  be the whole repo, so "originates in source" would stop meaning "in this
+  diff" and the flag would silently drop epic findings from an authoritative
+  run.
+- `--gate-scope changed` with `--gate coverage` — coverage over a partial scan
+  is meaningless in either direction, since every untouched contract looks
+  uncovered. Refused outright rather than implying a scoped coverage gate
+  exists.
+
+Under `changed`, the text report prints a `Gate scope: **changed**` line saying
+how many of the total soundness findings could block. Without it, `Soundness:
+FINDINGS` beside exit 0 would read exactly like the fail-open this repo keeps
+hunting.
+
 ## Suspect-link propagation (#169)
 
 A trace link only proves what it claimed at the moment it was last checked. If
