@@ -338,7 +338,6 @@
     "pytest::tests.test_check_architecture::test_authored_trust_zone_crossing_caught",
     "pytest::tests.test_check_architecture::test_checks_inventory_is_frozen_and_matches_adr_fh_06",
     "pytest::tests.test_check_architecture::test_cli_absent_model_exits_zero_and_reports_not_checked_never_passed",
-    "pytest::tests.test_check_architecture::test_cli_absent_model_exits_zero_even_under_gate",
     "pytest::tests.test_check_architecture::test_cli_authority_line_present_in_every_mode",
     "pytest::tests.test_check_architecture::test_cli_gate_exits_one_on_same_findings",
     "pytest::tests.test_check_architecture::test_cli_gate_exits_zero_on_clean_model",
@@ -575,7 +574,6 @@
     "pytest::tests.test_check_gate_validation::test_forged_passed_flag_fails",
     "pytest::tests.test_check_gate_validation::test_full_valid_record_passes",
     "pytest::tests.test_check_gate_validation::test_garbage_journal_tail_after_wire_still_demotes",
-    "pytest::tests.test_check_gate_validation::test_gate_without_scanner_version_support_skips_the_check",
     "pytest::tests.test_check_gate_validation::test_instrumentation_deleted_required_when_telemetry_dependent",
     "pytest::tests.test_check_gate_validation::test_journal_entry_for_wrong_gate_fails",
     "pytest::tests.test_check_gate_validation::test_journal_entry_with_wrong_event_fails",
@@ -773,7 +771,6 @@
     "pytest::tests.test_check_single_writer::test_no_invariants_reports_inapplicable",
     "pytest::tests.test_check_single_writer::test_no_scope_reports_no_boundary",
     "pytest::tests.test_check_single_writer::test_no_sink_defaults_to_all_writers",
-    "pytest::tests.test_check_single_writer::test_no_writer_found_warns",
     "pytest::tests.test_check_single_writer::test_parse_prose_invariant_with_tag",
     "pytest::tests.test_check_single_writer::test_prose_incomplete_metadata_is_malformed",
     "pytest::tests.test_check_single_writer::test_prose_tag_attrs_order_free",
@@ -1025,7 +1022,6 @@
     "pytest::tests.test_consult_ai::test_codex_usage_ok_resolves_tokens_and_model",
     "pytest::tests.test_consult_ai::test_codex_usage_partial_nulls_both_tokens",
     "pytest::tests.test_consult_ai::test_codex_usage_reads_stderr_when_stdout_lacks_it",
-    "pytest::tests.test_consult_ai::test_consult_provider_ignores_timeout_override_for_tool_providers",
     "pytest::tests.test_consult_ai::test_consult_provider_threads_timeout_override_to_delegate",
     "pytest::tests.test_consult_ai::test_emit_consult_telemetry_threads_ticket_and_usage",
     "pytest::tests.test_consult_ai::test_gemini_envelope_parses_but_stats_drift_keeps_answer_text",
@@ -2054,8 +2050,6 @@
     "pytest::tests.test_review_pipeline::test_run_review_refuses_without_execute",
     "pytest::tests.test_review_pipeline::test_single_pass_does_not_rescan_injected_values",
     "pytest::tests.test_review_pipeline::test_stored_acceptance_criteria_never_mutated_by_rendering",
-    "pytest::tests.test_review_pipeline::test_synthesis_prompt_instructs_union_not_consensus",
-    "pytest::tests.test_review_pipeline::test_synthesis_prompt_lists_responses",
     "pytest::tests.test_review_pipeline::test_ticket_from_dict_parses_string_ac",
     "pytest::tests.test_review_pipeline::test_truncate_large_diff",
     "pytest::tests.test_review_pipeline::test_truncate_small_diff_unchanged",
@@ -2403,7 +2397,56 @@
   ],
   "quality": {},
   "quarantined": {},
-  "removed_cases": {},
+  "removed_cases": {
+    "pytest::tests.test_check_architecture::test_cli_absent_model_exits_zero_even_under_gate": {
+      "created_at": "2026-08-22T22:50:30.824242+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_check_architecture::test_cli_absent_model_exits_zero_even_under_gate",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "SUPERSEDED BY INVERSION \u2014 each asserted behaviour that was later declared to be the bug, so the successor asserts the opposite and the original can never pass again. (1) test_cli_absent_model_exits_zero_even_under_gate asserted rc==0 for an absent model under --gate; 01db322 (#289, fail-open family) declared that fail-open and replaced it with test_cli_absent_model_exits_one_under_gate, alongside test_cli_absent_model_exits_zero_and_reports_not_checked_never_passed for the non-gated path. (2) test_consult_provider_ignores_timeout_override_for_tool_providers asserted tool providers IGNORE the timeout override; 1c064bf (#330/#331/#332) made them honour it, successor test_consult_provider_threads_timeout_override_to_tool_providers. Verified per chief-wiggum#361 archaeology."
+    },
+    "pytest::tests.test_check_gate_validation::test_gate_without_scanner_version_support_skips_the_check": {
+      "created_at": "2026-08-22T22:50:21.526345+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_check_gate_validation::test_gate_without_scanner_version_support_skips_the_check",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "RENAMED, successor asserts the same behaviour. (1) test_gate_without_scanner_version_support_skips_the_check -> test_gate_script_genuinely_absent_skips_the_check in 01db322 (#289), which narrowed the skip to a genuinely absent script; the rename is recorded in the successor's own docstring. (2) test_no_writer_found_warns -> test_no_writer_found_is_reported_blind_not_pass in #377/PR#414, where the warning became the distinct 'blind' coverage state. Verified per chief-wiggum#361 archaeology."
+    },
+    "pytest::tests.test_check_single_writer::test_no_writer_found_warns": {
+      "created_at": "2026-08-22T22:50:21.526345+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_check_single_writer::test_no_writer_found_warns",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "RENAMED, successor asserts the same behaviour. (1) test_gate_without_scanner_version_support_skips_the_check -> test_gate_script_genuinely_absent_skips_the_check in 01db322 (#289), which narrowed the skip to a genuinely absent script; the rename is recorded in the successor's own docstring. (2) test_no_writer_found_warns -> test_no_writer_found_is_reported_blind_not_pass in #377/PR#414, where the warning became the distinct 'blind' coverage state. Verified per chief-wiggum#361 archaeology."
+    },
+    "pytest::tests.test_consult_ai::test_consult_provider_ignores_timeout_override_for_tool_providers": {
+      "created_at": "2026-08-22T22:50:30.824242+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_consult_ai::test_consult_provider_ignores_timeout_override_for_tool_providers",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "SUPERSEDED BY INVERSION \u2014 each asserted behaviour that was later declared to be the bug, so the successor asserts the opposite and the original can never pass again. (1) test_cli_absent_model_exits_zero_even_under_gate asserted rc==0 for an absent model under --gate; 01db322 (#289, fail-open family) declared that fail-open and replaced it with test_cli_absent_model_exits_one_under_gate, alongside test_cli_absent_model_exits_zero_and_reports_not_checked_never_passed for the non-gated path. (2) test_consult_provider_ignores_timeout_override_for_tool_providers asserted tool providers IGNORE the timeout override; 1c064bf (#330/#331/#332) made them honour it, successor test_consult_provider_threads_timeout_override_to_tool_providers. Verified per chief-wiggum#361 archaeology."
+    },
+    "pytest::tests.test_review_pipeline::test_synthesis_prompt_instructs_union_not_consensus": {
+      "created_at": "2026-08-22T22:50:39.428474+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_review_pipeline::test_synthesis_prompt_instructs_union_not_consensus",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "COVERAGE GAP, NOW CLOSED \u2014 retired only because replacement coverage was written first, not because the cases were obsolete. Both tested review.build_synthesis_prompt, removed as genuinely dead code in #332 (nothing consumed synthesis-prompt.md; /implement Step 8 uses synthesize_reviews.py). But the BEHAVIOUR moved rather than died: synthesize_reviews.synthesize() lists its inputs and carries the #163 union-not-consensus doctrine, and from #332 until now NO test asserted either. tests/test_synthesize_reviews.py (16 tests, 12/12 mutants caught) restores coverage on the live module. Verified per chief-wiggum#361 archaeology."
+    },
+    "pytest::tests.test_review_pipeline::test_synthesis_prompt_lists_responses": {
+      "created_at": "2026-08-22T22:50:39.428474+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_review_pipeline::test_synthesis_prompt_lists_responses",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "COVERAGE GAP, NOW CLOSED \u2014 retired only because replacement coverage was written first, not because the cases were obsolete. Both tested review.build_synthesis_prompt, removed as genuinely dead code in #332 (nothing consumed synthesis-prompt.md; /implement Step 8 uses synthesize_reviews.py). But the BEHAVIOUR moved rather than died: synthesize_reviews.synthesize() lists its inputs and carries the #163 union-not-consensus doctrine, and from #332 until now NO test asserted either. tests/test_synthesize_reviews.py (16 tests, 12/12 mutants caught) restores coverage on the live module. Verified per chief-wiggum#361 archaeology."
+    }
+  },
   "verifier_test_hashes": {
     "tests/fixtures/gate_validation/ratchet_clean/test_ratchet_fixture_smoke.py::test_widget_addition": "a8fb730202323daae6284f0c9e42a37872763af7f41ef6546466692082cf8910",
     "tests/fixtures/gate_validation/ratchet_clean/test_ratchet_fixture_smoke.py::test_widget_identity": "6c98bffa773f213921fadf683b7ef43a7968af139e24341048aa180e59477565",
