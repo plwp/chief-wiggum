@@ -22,6 +22,7 @@ derived exclusively inside ``factory_log.emit_consult`` from
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -102,7 +103,34 @@ def _env_timeout(name: str) -> int | None:
     return _positive_int(os.environ.get(name))
 
 
-def tool_timeout(tool: str, *, override: int | None = None) -> int:
+@functools.lru_cache(maxsize=1)
+def _model_timeouts() -> dict[str, int]:
+    """model id -> per-model timeout, from config/providers.json.
+
+    chief-wiggum#372: every OpenRouter-backed provider shares the `openrouter`
+    tool's one budget, but they are not equally fast. kimi is a REQUIRED
+    provider of the divergence role and blew the 300s default on long
+    generations, failing the quorum every time it thought hard. A per-model
+    budget lives in config beside the provider it describes, so no model name
+    is hardcoded here.
+    """
+    try:
+        config = json.loads(
+            (Path(__file__).resolve().parent.parent / "config" / "providers.json").read_text()
+        )
+    except (OSError, ValueError):
+        return {}
+    timeouts: dict[str, int] = {}
+    for entry in (config.get("providers") or {}).values():
+        model = entry.get("model")
+        seconds = _positive_int(entry.get("timeout_seconds"))
+        if model and seconds is not None:
+            timeouts[str(model)] = seconds
+    return timeouts
+
+
+def tool_timeout(tool: str, *, override: int | None = None,
+                 model: str | None = None) -> int:
     """Resolve ``tool``'s wall-clock timeout (seconds) through a single override
     chain (chief-wiggum#291), highest precedence first:
 
@@ -113,7 +141,8 @@ def tool_timeout(tool: str, *, override: int | None = None) -> int:
        non-alphanumeric character replaced with ``_`` (e.g. ``gemini-vertex`` ->
        ``CW_CONSULT_TIMEOUT_GEMINI_VERTEX``).
     3. ``CW_CONSULT_TIMEOUT`` — applies to every tool.
-    4. The ``TOOL_TIMEOUTS`` table default (``TIMEOUT`` if the tool is unlisted).
+    4. ``timeout_seconds`` for this ``model`` in config/providers.json (#372).
+    5. The ``TOOL_TIMEOUTS`` table default (``TIMEOUT`` if the tool is unlisted).
 
     Every candidate is validated by ``_positive_int``: a non-numeric or
     non-positive value at ANY source (including ``override``) is ignored and
@@ -134,6 +163,14 @@ def tool_timeout(tool: str, *, override: int | None = None) -> int:
     general = _env_timeout("CW_CONSULT_TIMEOUT")
     if general is not None:
         return general
+    if model:
+        # Validated like every other source: the documented invariant is that a
+        # non-numeric or non-positive value at ANY source falls through rather
+        # than being returned, so a bad knob degrades the timeout and never
+        # crashes a consult mid-workflow.
+        per_model = _positive_int(_model_timeouts().get(str(model)))
+        if per_model is not None:
+            return per_model
     return TOOL_TIMEOUTS.get(tool, TIMEOUT)
 
 # A retry after a TIMEOUT-classified failure gets a REDUCED budget, not a
@@ -956,6 +993,82 @@ def consult_claude(
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
+class OpenRouterBodyError(ValueError):
+    """The response body could not be decoded. Carries an excerpt for diagnosis."""
+
+
+def _decode_openrouter_body(raw: str) -> dict:
+    """Parse an OpenRouter response body that may not be bare JSON.
+
+    chief-wiggum#372: two runs against a slow model with a Mandarin prompt failed
+    at the IDENTICAL byte offset — a deterministic parsing bug, not a network
+    blip. OpenRouter emits SSE-style keep-alive comment lines (`: OPENROUTER
+    PROCESSING`) to hold the connection open during long generations, and a bare
+    `json.loads` on the whole body chokes on them. A long non-English generation
+    simply takes long enough to collect them.
+
+    Tolerated shapes, in order: bare JSON; JSON preceded or followed by `:`
+    comment lines and blank lines; and an SSE `data:` frame stream, from which
+    the last non-`[DONE]` frame is taken.
+
+    A body that still cannot be parsed raises with an EXCERPT of the raw text
+    rather than a bare offset, because "Expecting value: line 1143 column 1" is
+    not diagnosable on its own.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        raise OpenRouterBodyError("openrouter returned an empty body")
+
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    else:
+        if isinstance(payload, dict):
+            return payload
+        raise OpenRouterBodyError(
+            f"openrouter returned a {type(payload).__name__}, expected an object: "
+            f"{_body_excerpt(raw)}"
+        )
+
+    data_frames: list[str] = []
+    remainder: list[str] = []
+    for line in stripped.splitlines():
+        candidate = line.strip()
+        if not candidate or candidate.startswith(":"):
+            continue  # SSE comment / keep-alive
+        if candidate.startswith("data:"):
+            frame = candidate[len("data:"):].strip()
+            if frame and frame != "[DONE]":
+                data_frames.append(frame)
+            continue
+        remainder.append(line)
+
+    for candidate in (data_frames[-1] if data_frames else None, "\n".join(remainder)):
+        if not candidate or not candidate.strip():
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    raise OpenRouterBodyError(
+        "openrouter response body is not JSON after stripping SSE keep-alives: "
+        + _body_excerpt(raw)
+    )
+
+
+def _body_excerpt(raw: str, limit: int = 400) -> str:
+    """A bounded, single-line view of a body, for an error message."""
+    collapsed = " ".join(raw.split())
+    if len(collapsed) <= limit:
+        return repr(collapsed)
+    half = limit // 2
+    return repr(collapsed[:half] + " ... " + collapsed[-half:])
+
+
 def _http_json_with_deadline(request: urllib.request.Request, timeout: int) -> dict:
     """POST and decode JSON under a HARD wall-clock deadline.
 
@@ -974,7 +1087,8 @@ def _http_json_with_deadline(request: urllib.request.Request, timeout: int) -> d
     def _call() -> None:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                result["payload"] = json.loads(response.read().decode())
+                body = response.read().decode("utf-8", errors="replace")
+                result["payload"] = _decode_openrouter_body(body)
         except BaseException as exc:  # re-raised on the calling thread below
             result["error"] = exc
 
@@ -1060,7 +1174,7 @@ def consult_openrouter(
             "X-Title": "chief-wiggum",
         },
     )
-    effective_timeout = tool_timeout("openrouter", override=timeout)
+    effective_timeout = tool_timeout("openrouter", override=timeout, model=model)
     try:
         payload = _http_json_with_deadline(request, effective_timeout)
     except urllib.error.HTTPError as exc:

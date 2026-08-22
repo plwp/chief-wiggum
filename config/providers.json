@@ -120,7 +120,8 @@
       "vendor_family": "moonshot",
       "supports_tools": false,
       "context_window": 128000,
-      "latency_class": "standard"
+      "latency_class": "standard",
+      "timeout_seconds": 900
     },
     "glm": {
       "type": "tool",
