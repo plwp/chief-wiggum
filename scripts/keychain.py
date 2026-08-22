@@ -27,9 +27,17 @@ import sys
 try:
     import keyring
 except ImportError:
+    # Name the interpreter, not just the package (chief-wiggum#374). `python3`
+    # is unpinned across ~40 skill call sites, so "install keyring" is useless
+    # advice when the question is WHICH interpreter is missing it. uv rather
+    # than pip because installing into an externally-managed system Python is
+    # what stranded these dependencies in the first place.
     print(
         "Missing dependency: keyring\n"
-        "Install with: pip3 install keyring",
+        f"  interpreter: {sys.executable}\n"
+        f"  fix:         uv pip install --python {sys.executable} keyring\n"
+        "  or point CW at a working interpreter:\n"
+        "               export CW_PYTHON=$(python3 scripts/env.py python)",
         file=sys.stderr,
     )
     sys.exit(1)

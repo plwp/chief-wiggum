@@ -11,6 +11,7 @@ values such as temp directories and epic slugs.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -73,6 +74,17 @@ def main() -> int:
     sub.add_parser("home", help="Print chief-wiggum checkout path")
     sub.add_parser("tmp", help="Create and print a session temp directory")
 
+    python = sub.add_parser(
+        "python",
+        help="Print a VALIDATED interpreter path (chief-wiggum#374)",
+    )
+    python.add_argument(
+        "--profile", action="append", dest="profiles", default=None,
+        help="Which imports must work: core, consult, formal, vertex (repeatable)",
+    )
+    python.add_argument("--json", action="store_true", help="Emit the full resolution")
+    python.add_argument("--no-cache", action="store_true", help="Re-probe every candidate")
+
     slug = sub.add_parser("slug", help="Slugify text for docs/epics paths")
     slug.add_argument("value")
 
@@ -82,7 +94,24 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if args.command == "home":
+        if args.command == "python":
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from chief_wiggum.interpreter import NoValidInterpreter, resolve
+
+            try:
+                resolution = resolve(
+                    args.profiles or ["core"], use_cache=not args.no_cache
+                )
+            except (NoValidInterpreter, ValueError) as exc:
+                # Name the remediation instead of a bare traceback: the cost
+                # last time was three failed launches and three ad-hoc repairs.
+                print(str(exc), file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(resolution.to_dict(), indent=2))
+            else:
+                print(resolution.python)
+        elif args.command == "home":
             print(find_home())
         elif args.command == "tmp":
             print(create_tmp())
