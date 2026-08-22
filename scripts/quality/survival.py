@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import json
 import os
 import shutil
@@ -37,6 +38,67 @@ import sys
 from . import cache
 
 AGES = [7, 14, 30, 60, 90]
+
+
+def _current_branch(repo: str) -> str | None:
+    """The checked-out branch name, or None on a detached HEAD."""
+    proc = subprocess.run(
+        ["git", "-C", repo, "symbolic-ref", "--short", "-q", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    name = proc.stdout.strip()
+    return name or None
+
+
+def _short_sha(repo: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    return proc.stdout.strip() or None
+
+
+@contextlib.contextmanager
+def _analysable_branch(repo: str):
+    """Yield a real branch name for git-of-theseus, making one if needed.
+
+    git-of-theseus verifies its --branch with `git show-ref refs/heads/<name>`
+    and falls back to GitPython's `active_branch`, which RAISES on a detached
+    HEAD. So `--branch HEAD` never actually worked: on a normal checkout
+    refs/heads/HEAD does not exist either, and every run silently took the
+    warn-and-fallback path. On a detached checkout, which is what
+    `git worktree add --detach` produces, the fallback throws and the whole
+    survival signal is lost.
+
+    A detached HEAD therefore gets a throwaway branch, deleted afterwards, so
+    the analysis works on historical refs instead of requiring the operator to
+    attach one by hand.
+    """
+    branch = _current_branch(repo)
+    if branch:
+        yield branch
+        return
+    sha = _short_sha(repo)
+    if not sha:
+        # Not a git repo, or an empty one. Let the caller's error path report
+        # it rather than inventing a branch here.
+        yield None
+        return
+    temporary = f"cw/survival-{sha}"
+    created = subprocess.run(
+        ["git", "-C", repo, "branch", "--force", temporary, "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    if created.returncode != 0:
+        yield None
+        return
+    try:
+        yield temporary
+    finally:
+        subprocess.run(
+            ["git", "-C", repo, "branch", "-D", temporary],
+            capture_output=True, text=True, check=False,
+        )
 
 
 def _run_git_of_theseus(repo: str, outdir: str) -> tuple[str | None, dict | None]:
@@ -74,11 +136,12 @@ def _run_git_of_theseus(repo: str, outdir: str) -> tuple[str | None, dict | None
         os.unlink(survival_path)
     except FileNotFoundError:
         pass
-    proc = subprocess.run(
-        # weekly interval → enough resolution for 14/30-day survival bins
-        [tool, repo, "--outdir", outdir, "--branch", "HEAD", "--interval", "604800"],
-        capture_output=True, text=True,
-    )
+    with _analysable_branch(repo) as branch:
+        command = [tool, repo, "--outdir", outdir, "--interval", "604800"]
+        if branch:
+            # weekly interval → enough resolution for 14/30-day survival bins
+            command += ["--branch", branch]
+        proc = subprocess.run(command, capture_output=True, text=True)
     if proc.returncode != 0:
         return None, {
             "status": "crashed",
