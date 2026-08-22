@@ -368,36 +368,21 @@ _GV_RECORD = _GV_ROOT / "docs" / "quality" / "validation" / "quality_slop_gate.j
 _GV_VALIDATION_DIR = _GV_ROOT / "docs" / "quality" / "validation"
 _GV_EXPECTED_TO_RESULT = {"fire": "fired", "no-fire": "not-fired"}
 
-# seed_id -> (band file, int_keys) — int_keys re-casts the serialized string age
-# keys to the engine-native integer keys the survival engine actually emits.
-_GV_TRIALS = {
-    "slop-direct-01": ("survival_past_ai.json", True),
-    "slop-direct-02": ("duplication_past_ai.json", False),
-    "slop-config-indirection-01": ("survival_past_ai.json", False),
-    "slop-omission-01": ("too_young.json", False),
-    "slop-sampling-gap-01": ("both_skipped.json", False),
-    "slop-instrument-broken-01": ("crashed.json", False),
-}
+# The seed->fixture mapping and the replay itself now live in the GATE
+# (chief-wiggum#410), so `gate_validation_designer.py revalidate` and this suite
+# exercise the same code instead of two copies that can drift. These shims keep
+# the existing tests reading the same way.
+_GV_TRIALS = gate.SEED_FIXTURES
 
 
 def _gv_outcome(band_file: str, int_keys: bool = False) -> str:
-    data = _json.loads((_GV_CORPUS / band_file).read_text())
-    sv_result = data["survival_result"]
-    if int_keys and "survival_by_age_days" in sv_result:
-        sv_result = {
-            **sv_result,
-            "survival_by_age_days": {int(k): v for k, v in sv_result["survival_by_age_days"].items()},
-        }
-    sv = gate.evaluate_survival(sv_result)
-    dup = gate.evaluate_duplication(data["duplication_result"])
-    # A crashed engine reports status 'error' but produces NO finding —
-    # has_findings only counts 'past-ai' band regressions. A harness summing
-    # findings alone therefore records "not-fired" while the gate is correctly
-    # erroring, reproducing the very bug the error state was added to catch
-    # inside the machinery that certifies the gate. Count it explicitly.
-    if sv.get("status") == "error" or dup.get("status") == "error":
-        return "fired"
-    return "fired" if gate.has_findings(sv, dup) else "not-fired"
+    seed_id = next(
+        (sid for sid, (bf, ik) in gate.SEED_FIXTURES.items()
+         if bf == band_file and ik == int_keys),
+        None,
+    )
+    assert seed_id is not None, f"no seed maps to {band_file} (int_keys={int_keys})"
+    return gate.replay_seeded_trial({"seed_id": seed_id})
 
 
 def _gv_record() -> dict:

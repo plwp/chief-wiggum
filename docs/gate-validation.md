@@ -515,3 +515,58 @@ content digest of its fixture corpus (`check_gate_validation.corpus_digest`).
 `seed_id` and re-derives the digests and scanner versions, so any drift
 between the shipped records and the gates' live behavior — a renamed trial, a
 changed corpus, a changed scanner — fails the suite.
+
+## Re-running trials: `revalidate` (chief-wiggum#410)
+
+Bumping `scanner_version` alone does not revalidate a gate — the seeded trials
+must be re-run and the record re-authored. For a gate whose trials are
+mechanically replayable, that is one command:
+
+```bash
+python3 scripts/gate_validation_designer.py revalidate quality_slop_gate
+python3 scripts/gate_validation_designer.py revalidate quality_slop_gate --check   # report only
+```
+
+It replays every seed in `<gate>.seeds.json` against the gate's real verdict
+path, recomputes the clean-corpus coverage from that run, derives the corpus
+digest via `check_gate_validation.corpus_digest`, and re-authors the record.
+
+**It refuses to write when anything fails** — a failing trial, a replay that
+raises, findings on the clean corpus, or all-zero coverage. A tool that
+re-authored a record whose trials had regressed would launder a broken gate
+into a green one, which is worse than doing it by hand.
+
+Refusing to write is safe rather than silent: the record stays stale, and
+`check_gate_validation.py` (the blocking checker) fails on a stale record. The
+designer itself stays report-only and exits 0 always, per `docs/gate-rollout.md`.
+
+### Implementing the protocol for a gate
+
+A gate opts in by exposing two functions; the designer refuses by name for any
+gate that does not:
+
+```python
+SEED_FIXTURES: dict[str, tuple[str, bool]]   # seed_id -> (fixture, variant flag)
+
+def replay_seeded_trial(seed: dict) -> str:  # "fired" | "not-fired"
+    ...
+
+def replay_clean_corpus() -> dict:           # {"findings", "coverage", "passed", "repo"}
+    ...
+```
+
+The gate owns this, not the tool, so the generic runner never learns
+gate-specific fixtures. `quality_slop_gate` implements it today.
+
+**Not every gate should.** A gate whose trials need a live repo, a network
+call, or human judgement must stay manual — the refusal names the gate and says
+why, rather than half-automating something that cannot be replayed honestly.
+
+### Why not narrow the hash instead
+
+`quality_slop_gate._scanner_version()` hashes the `quality/` engine modules, so
+any change to any engine invalidates its record. That is the CTR-fh-041
+dep-completeness doctrine working: the banding genuinely depends on those
+engines' output shapes, and the hash is what makes the staleness visible.
+Narrowing it would hide a real dependency. The problem was the cost of
+responding to the signal, not the signal.
