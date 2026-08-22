@@ -3,6 +3,7 @@
 from .canonical import canonical_json_bytes, validate_canonical_bytes
 from .compatibility import ProjectionResult, dependency_block_to_intent_graph, project_legacy_waves
 from .errors import ContractViolation, ErrorCode
+from .journal import Decision, GraphJournal, JournalError
 from .schemas import SCHEMA_VERSION, load_authority_matrix, schema_catalog, validate_record
 from .semantics import (
     LEGAL_TRANSITIONS,
@@ -15,6 +16,9 @@ from .semantics import (
 __all__ = [
     "ContractViolation",
     "ErrorCode",
+    "Decision",
+    "GraphJournal",
+    "JournalError",
     "LEGAL_TRANSITIONS",
     "ProjectionResult",
     "SCHEMA_VERSION",
