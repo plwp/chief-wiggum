@@ -1,0 +1,7 @@
+{
+  "edges": [
+    {"edge_id": "SED-dag-001", "kind": "depends_on", "source": "EXN-dag-001", "target": "EXN-dag-002"},
+    {"edge_id": "SED-dag-002", "kind": "ordered_after", "source": "EXN-dag-002", "target": "EXN-dag-001"}
+  ],
+  "expected_code": "SCHEDULABLE_CYCLE"
+}

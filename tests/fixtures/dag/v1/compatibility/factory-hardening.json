@@ -1,0 +1,6 @@
+{
+  "description": "Close the quality loop.\n\n<!-- DEPENDENCIES\n#83: []\n#134: [#83]\n#174: []\n#184: [#174]\n#185: []\n#187: [#185]\n-->",
+  "gated": [185],
+  "issues": [83, 134, 174, 184, 185, 187],
+  "source_ref": "github:plwp/chief-wiggum/milestones/4"
+}

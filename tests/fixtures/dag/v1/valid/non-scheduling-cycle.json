@@ -1,0 +1,7 @@
+{
+  "relations": [
+    {"kind": "supersedes", "source": "EXN-dag-001", "target": "EXN-dag-002"},
+    {"kind": "retry_of", "source": "EXN-dag-002", "target": "EXN-dag-001"},
+    {"kind": "conflicts_with", "source": "EXN-dag-001", "target": "EXN-dag-002"}
+  ]
+}
