@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/dag/v1/intent-graph.schema.json",
+  "type": "object",
+  "required": ["schema_version", "record_type", "graph_id", "source_ref", "source_digest", "scan_status", "has_dependency_block", "source_warnings", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "intent_graph"}, "graph_id": {"$ref": "vocabulary.schema.json#/$defs/graph_id"},
+    "source_ref": {"type": "string", "minLength": 1, "maxLength": 2048}, "source_digest": {"$ref": "vocabulary.schema.json#/$defs/digest"}, "scan_status": {"enum": ["observed", "degraded", "unavailable", "malformed", "unscanned"]}, "has_dependency_block": {"type": "boolean"},
+    "source_warnings": {"type": "array", "maxItems": 1000, "items": {"type": "string", "maxLength": 4096}}, "nodes": {"type": "array", "maxItems": 10000, "items": {"$ref": "intent-node.schema.json"}}, "edges": {"type": "array", "maxItems": 50000, "items": {"$ref": "intent-edge.schema.json"}}
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "operations": [
+    {"operation_type": "add_intent_node", "automatic": false, "approval_required": true},
+    {"operation_type": "remove_intent_node", "automatic": false, "approval_required": true},
+    {"operation_type": "add_intent_edge", "automatic": false, "approval_required": true},
+    {"operation_type": "remove_intent_edge", "automatic": false, "approval_required": true},
+    {"operation_type": "add_execution_node", "automatic": true, "approval_required": false},
+    {"operation_type": "add_schedulable_edge", "automatic": true, "approval_required": false},
+    {"operation_type": "remove_schedulable_edge", "automatic": false, "approval_required": true},
+    {"operation_type": "add_relation", "automatic": true, "approval_required": false},
+    {"operation_type": "transition_node", "automatic": true, "approval_required": false},
+    {"operation_type": "record_evidence", "automatic": true, "approval_required": false},
+    {"operation_type": "approve_mutation", "automatic": false, "approval_required": true},
+    {"operation_type": "acquire_lease", "automatic": true, "approval_required": false},
+    {"operation_type": "release_lease", "automatic": true, "approval_required": false},
+    {"operation_type": "set_control", "automatic": false, "approval_required": true},
+    {"operation_type": "promote_candidate", "automatic": false, "approval_required": true},
+    {"operation_type": "compensate", "automatic": false, "approval_required": true}
+  ]
+}

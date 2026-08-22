@@ -1,0 +1,169 @@
+{
+  "approval_records": [
+    {
+      "approval_id": "APR-dag-001",
+      "approver": "actor:maintainer",
+      "authority_matrix_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "base_revision": 1,
+      "decision": "approved",
+      "envelope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "mutation_id": "MUT-dag-001",
+      "record_type": "approval_record",
+      "schema_version": "1.0.0"
+    }
+  ],
+  "authority_matrix_version": "1.0.0",
+  "control_records": [
+    {
+      "actor": "actor:maintainer",
+      "control_id": "CTL-dag-001",
+      "graph_id": "GRF-dag-001",
+      "reason_code": "EV_HUMAN_DECISION",
+      "record_type": "control_record",
+      "schema_version": "1.0.0",
+      "state": "active"
+    }
+  ],
+  "evidence_records": [
+    {
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "evidence_id": "EVD-dag-001",
+      "evidence_type": "tracker_snapshot",
+      "observed_at": "2026-08-22T00:00:00Z",
+      "record_type": "evidence_record",
+      "schema_version": "1.0.0",
+      "source_ref": "tracker:milestone/4",
+      "status": "validated"
+    }
+  ],
+  "execution_nodes": [
+    {
+      "approval_state": "not_required",
+      "attempt": {"attempt_id": "ATM-dag-001", "outcome": "succeeded"},
+      "candidate": {"disposition": "not_candidate", "group_id": null},
+      "compiled_from": {
+        "intent_graph_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "intent_node_id": "INN-dag-001"
+      },
+      "control_state": "active",
+      "execution_node_id": "EXN-dag-001",
+      "intent_node_id": "INN-dag-001",
+      "lease_state": "released",
+      "lifecycle_state": "succeeded",
+      "node_type": "implementation",
+      "record_type": "execution_node",
+      "role": "role:implementer",
+      "schema_version": "1.0.0"
+    },
+    {
+      "approval_state": "not_required",
+      "attempt": {"attempt_id": null, "outcome": "pending"},
+      "candidate": {"disposition": "pending", "group_id": "CND-dag-001"},
+      "compiled_from": {
+        "intent_graph_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "intent_node_id": "INN-dag-002"
+      },
+      "control_state": "active",
+      "execution_node_id": "EXN-dag-002",
+      "intent_node_id": "INN-dag-002",
+      "lease_state": "unclaimed",
+      "lifecycle_state": "admitted",
+      "node_type": "candidate",
+      "record_type": "execution_node",
+      "role": "role:reviewer",
+      "schema_version": "1.0.0"
+    }
+  ],
+  "graph_id": "GRF-dag-001",
+  "graph_revision": 1,
+  "intent_edges": [
+    {
+      "actor": "actor:maintainer",
+      "edge_id": "IED-dag-001",
+      "kind": "depends_on",
+      "reason_code": "EV_DEP_DECLARED",
+      "record_type": "intent_edge",
+      "schema_version": "1.0.0",
+      "source": "INN-dag-002",
+      "target": "INN-dag-001"
+    }
+  ],
+  "intent_nodes": [
+    {
+      "intent_node_id": "INN-dag-001",
+      "node_type": "implementation",
+      "record_type": "intent_node",
+      "role": "role:implementer",
+      "schema_version": "1.0.0",
+      "source_ref": "ticket:#83"
+    },
+    {
+      "intent_node_id": "INN-dag-002",
+      "node_type": "candidate",
+      "record_type": "intent_node",
+      "role": "role:reviewer",
+      "schema_version": "1.0.0",
+      "source_ref": "ticket:#134"
+    }
+  ],
+  "lease_records": [
+    {
+      "attempt_id": "ATM-dag-001",
+      "epoch": 1,
+      "execution_node_id": "EXN-dag-001",
+      "fencing_token": "fence:dag-001",
+      "lease_id": "LSE-dag-001",
+      "record_type": "lease_record",
+      "schema_version": "1.0.0",
+      "state": "released"
+    }
+  ],
+  "mutations": [
+    {
+      "actor": "actor:collector",
+      "authority_class": "automatic",
+      "base_revision": 0,
+      "budget_delta": {"unit": "tokens", "value": 0},
+      "evidence_refs": ["EVD-dag-001"],
+      "expected_effect": "evidence:recorded",
+      "graph_id": "GRF-dag-001",
+      "idempotency_key": "idem:snapshot-001",
+      "mutation_id": "MUT-dag-001",
+      "operations": [
+        {
+          "op_id": "OPR-dag-001",
+          "operation_type": "record_evidence",
+          "target_ref": "EVD-dag-001",
+          "value": {
+            "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "evidence_id": "EVD-dag-001",
+            "evidence_type": "tracker_snapshot",
+            "observed_at": "2026-08-22T00:00:00Z",
+            "record_type": "evidence_record",
+            "schema_version": "1.0.0",
+            "source_ref": "tracker:milestone/4",
+            "status": "validated"
+          }
+        }
+      ],
+      "reason_code": "EV_DEP_DISCOVERED",
+      "record_type": "mutation_envelope",
+      "requires_approval": false,
+      "schema_version": "1.0.0"
+    }
+  ],
+  "record_type": "graph_snapshot",
+  "relations": [],
+  "schedulable_edges": [
+    {
+      "derived_from": ["EVD-dag-001"],
+      "edge_id": "SED-dag-001",
+      "kind": "depends_on",
+      "record_type": "schedulable_edge",
+      "schema_version": "1.0.0",
+      "source": "EXN-dag-002",
+      "target": "EXN-dag-001"
+    }
+  ],
+  "schema_version": "1.0.0"
+}

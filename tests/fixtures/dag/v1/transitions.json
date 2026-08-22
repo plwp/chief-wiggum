@@ -1,0 +1,16 @@
+{
+  "states": ["proposed", "admitted", "ready", "running", "succeeded", "failed", "blocked", "superseded", "cancelled"],
+  "legal": [
+    ["proposed", "admitted"],
+    ["admitted", "ready"],
+    ["ready", "running"],
+    ["ready", "blocked"],
+    ["running", "succeeded"],
+    ["running", "failed"],
+    ["running", "blocked"],
+    ["running", "superseded"],
+    ["running", "cancelled"],
+    ["blocked", "ready"]
+  ],
+  "terminal": ["succeeded", "failed", "superseded", "cancelled"]
+}

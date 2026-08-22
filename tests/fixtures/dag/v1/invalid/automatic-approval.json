@@ -1,0 +1,5 @@
+{
+  "authority_class": "automatic",
+  "expected_code": "AUTHORITY_APPROVAL_REQUIRED",
+  "operation": {"op_id": "OPR-dag-001", "operation_type": "promote_candidate", "target_ref": "EXN-dag-002"}
+}

@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://chief-wiggum.dev/schemas/dag/v1/lease-record.schema.json",
+  "type": "object", "required": ["schema_version", "record_type", "lease_id", "execution_node_id", "attempt_id", "epoch", "state", "fencing_token"], "additionalProperties": false,
+  "properties": {"schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"}, "record_type": {"const": "lease_record"}, "lease_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "execution_node_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "attempt_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"}, "epoch": {"type": "integer", "minimum": 0}, "state": {"$ref": "vocabulary.schema.json#/$defs/lease_state"}, "fencing_token": {"type": "string", "minLength": 1}}
+}

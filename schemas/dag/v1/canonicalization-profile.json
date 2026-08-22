@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "encoding": "UTF-8",
+  "unicode_normalization": "NFC",
+  "object_keys": "lexicographic",
+  "line_ending": "LF",
+  "trailing_line_endings": 1,
+  "numbers": "integers-only",
+  "duplicate_keys": "forbidden",
+  "arrays": {
+    "operations": "preserve-order",
+    "capabilities": "canonical-value",
+    "derived_from": "canonical-value",
+    "evidence_refs": "canonical-value",
+    "record_collections": "stable-id"
+  }
+}

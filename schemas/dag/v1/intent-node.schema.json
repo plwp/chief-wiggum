@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/dag/v1/intent-node.schema.json",
+  "type": "object",
+  "required": ["schema_version", "record_type", "intent_node_id", "node_type", "role", "source_ref"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"$ref": "vocabulary.schema.json#/$defs/version"},
+    "record_type": {"const": "intent_node"},
+    "intent_node_id": {"$ref": "vocabulary.schema.json#/$defs/stable_id"},
+    "node_type": {"$ref": "vocabulary.schema.json#/$defs/node_type"},
+    "role": {"$ref": "vocabulary.schema.json#/$defs/role"},
+    "source_ref": {"type": "string", "minLength": 1},
+    "source_ticket": {"type": "integer", "minimum": 1},
+    "in_scope": {"type": "boolean"},
+    "capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^capability:[a-z][a-z0-9._-]*$"}}
+  }
+}
