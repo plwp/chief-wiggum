@@ -28,6 +28,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from pathlib import PurePosixPath
 
 from . import cache, population
 
@@ -38,6 +39,16 @@ IGNORE = ",".join([
     "**/coverage/**", "**/docs/**", "**/migrations/**",
     "**/*_test.go", "**/*.test.*", "**/*.spec.*",
     "**/test_*.py", "**/*_test.py", "**/tests/**", "**/__tests__/**", "**/e2e/**",
+    # C# (#382): xunit/nunit/mstest conventions. This engine reports
+    # "production duplication (tests excluded)" but only encoded Python/JS
+    # conventions, so on a large C# corpus *Tests.cs files and *.UnitTests /
+    # *.ScenarioTests project directories were counted as production. That both
+    # inflates the headline (scenario suites are legitimately clone-heavy) and
+    # buries the production figure. quality.complexity.TEST_RE already
+    # classified these correctly; the two lists had silently diverged, and
+    # test_duplication_test_globs_match_complexity keeps them in step.
+    "**/*Test.cs", "**/*Tests.cs",
+    "**/*Test/**", "**/*Tests/**",
 ])
 # Kept in step with quality.complexity.EXT_LANG / config/languages.json —
 # a format missing here means those files are invisible to clone detection
@@ -268,7 +279,11 @@ def run_jscpd(repo: str, workdir: str, files: list[str] | None = None,
             "status": "crashed",
             "crashed": "jscpd produced no report",
             "skipped": "jscpd produced no report",
-            "note": (proc.stderr or proc.stdout or "").strip()[:400],
+            # #382: an OOM death leaves a raw V8 GC log here, which never
+            # mentions that the heap ceiling is ours and adjustable. The
+            # timeout path names its knob; this one now does too, so the
+            # operator is not left reading a Mark-Compact trace for a hint.
+            "note": _crash_note(proc, heap_mb),
             "exit_code": proc.returncode,
             "corpus_fallback": fallback,
         }
@@ -312,6 +327,30 @@ def _production_candidate_count(repo: str) -> int:
     return sum(
         1 for f in population.tracked_source(repo) if not population.is_test_file(f)
     )
+
+
+def matches_ignore(path: str) -> bool:
+    """Would the IGNORE globs exclude this repo-relative path?
+
+    Exposed so the parity test can assert this engine's test exclusions cover
+    everything quality.complexity.TEST_RE calls a test, rather than the two
+    conventions drifting apart again.
+    """
+    candidate = PurePosixPath(path)
+    return any(candidate.full_match(glob) for glob in IGNORE.split(","))
+
+
+def _crash_note(proc, heap_mb: int) -> str:
+    """Crash output, with the heap knob named when it looks like an OOM."""
+    raw = (proc.stderr or proc.stdout or "").strip()
+    oom_markers = ("Mark-Compact", "heap out of memory", "Allocation failed",
+                   "JavaScript heap")
+    if any(marker in raw for marker in oom_markers) or proc.returncode in (-6, 134):
+        return (
+            f"jscpd exhausted its {heap_mb} MB heap; raise "
+            f"CW_JSCPD_MAX_OLD_SPACE_MB for a larger corpus. Raw: {raw[:280]}"
+        )
+    return raw[:400]
 
 
 def analyze(repo: str, workdir: str, name: str | None = None) -> dict:
