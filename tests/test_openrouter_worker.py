@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import json
-import os
 import stat
 import subprocess
-from pathlib import Path
 
 import pytest
 from delegates import openrouter_worker, task_protocol
 from providers import ExecutionProvider
 
-
-FAKE_HARNESS = r'''#!/usr/bin/env python3
+FAKE_HARNESS = r"""#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex 0.test")
+    raise SystemExit(0)
 capture = os.environ["CW_FAKE_CAPTURE"]
 prompt = sys.stdin.read()
 configs = [args[i + 1] for i, arg in enumerate(args) if arg == "-c"]
@@ -45,12 +45,20 @@ if mode == "malformed":
 if mode == "reported-error":
     print(json.dumps({"type":"error","message":"upstream failed"}))
     raise SystemExit(0)
+if mode == "secret-echo":
+    print(first.stdout)
+    raise SystemExit(0)
 if mode != "missing-result":
     Path(last_message).write_text("worker answer\n")
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"worker answer"}}))
-print(json.dumps({"type":"item.completed","item":{"type":"command_execution","status":"completed"}}))
-print(json.dumps({"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":5}}))
-'''
+if mode != "unsupported":
+    print(json.dumps({"type":"item.completed","item":{"type":"command_execution","status":"completed"}}))
+usage = {"input_tokens": 2000 if mode == "high-usage" else 11, "output_tokens": 5}
+terminal = {"type":"turn.completed", "usage": usage}
+if mode == "resolved":
+    terminal["resolved_model"] = "served/model-id"
+print(json.dumps(terminal))
+"""
 
 
 @pytest.fixture
@@ -64,7 +72,9 @@ def git_paths(tmp_path):
     subprocess.run(["git", "add", "."], cwd=main, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=main, check=True)
     worktree = tmp_path / "worker"
-    subprocess.run(["git", "worktree", "add", "-q", "-b", "worker", str(worktree)], cwd=main, check=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "worker", str(worktree)], cwd=main, check=True
+    )
     return main, worktree
 
 
@@ -121,7 +131,7 @@ def test_success_uses_responses_workspace_write_and_one_shot_auth(
     assert paths.result.read_text() == "worker answer\n"
     assert "--sandbox" in capture["argv"] and "workspace-write" in capture["argv"]
     assert "--ephemeral" in capture["argv"] and "--ignore-user-config" in capture["argv"]
-    assert any('wire_api=\"responses\"' in item for item in capture["argv"])
+    assert any('wire_api="responses"' in item for item in capture["argv"])
     assert capture["prompt"] == "Make a harmless edit"
     assert capture["first_ok"] is True
     assert capture["second_ok"] is False
@@ -129,12 +139,17 @@ def test_success_uses_responses_workspace_write_and_one_shot_auth(
     assert "seeded-super-secret" not in json.dumps(capture)
     assert "seeded-super-secret" not in durable
     metadata = json.loads(paths.metadata.read_text())
+    schema = json.loads(openrouter_worker.SCHEMA.read_text())
+    __import__("jsonschema").Draft202012Validator(schema).validate(metadata)
     assert metadata["requested_model"] == "vendor/preview-model"
+    assert metadata["harness"]["version"] == "codex 0.test"
     assert metadata["resolved_model"] is None
     assert metadata["usage"]["input_tokens"] == 11
 
 
-def test_main_checkout_refused_before_secret_or_harness(tmp_path, git_paths, fake_harness, provider):
+def test_main_checkout_refused_before_secret_or_harness(
+    tmp_path, git_paths, fake_harness, provider
+):
     main, _ = git_paths
     paths = task_protocol.create_task(tmp_path / "tasks", "task-1", "do it")
     called = []
@@ -162,6 +177,9 @@ def test_main_checkout_refused_before_secret_or_harness(tmp_path, git_paths, fak
         ("reported-error", "HARNESS_REPORTED_ERROR"),
         ("missing-result", "MISSING_RESULT"),
         ("timeout", "WORKER_TIMEOUT"),
+        ("unsupported", "UNSUPPORTED_CAPABILITY"),
+        ("secret-echo", "SECRET_EXPOSURE_DETECTED"),
+        ("high-usage", "USAGE_LIMIT_EXCEEDED"),
     ],
 )
 def test_failures_publish_stable_exclusive_error(
@@ -187,3 +205,13 @@ def test_disabled_provider_is_not_admitted(tmp_path, git_paths, fake_harness, pr
     paths, _, result = run_worker(tmp_path, git_paths, fake_harness, disabled)
     assert result.reason_code == "PROVIDER_DISABLED"
     assert paths.error.exists() and not paths.done.exists()
+
+
+def test_resolved_identity_is_recorded_only_when_observed(
+    tmp_path, git_paths, fake_harness, provider
+):
+    paths, _, result = run_worker(tmp_path, git_paths, fake_harness, provider, mode="resolved")
+    metadata = json.loads(paths.metadata.read_text())
+    assert result.status == "done"
+    assert metadata["resolved_model"] == "served/model-id"
+    assert metadata["model_resolution_status"] == "observed"

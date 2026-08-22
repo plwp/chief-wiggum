@@ -11,7 +11,14 @@ def test_default_provider_config_is_valid():
 
     assert providers.validate_config(config) == []
     roles = providers.roles_from_config(config)
-    assert {"explorer", "implementer", "reviewer", "architecture_critic", "design_critic", "risky_diff_review"} <= set(roles)
+    assert {
+        "explorer",
+        "implementer",
+        "reviewer",
+        "architecture_critic",
+        "design_critic",
+        "risky_diff_review",
+    } <= set(roles)
 
 
 def test_default_config_has_disabled_external_preview_execution_provider():
@@ -99,7 +106,9 @@ def test_validate_config_flags_unknown_role_provider():
         "roles": {"reviewer": {"required": ["codex"], "optional": ["missing"]}},
     }
 
-    assert providers.validate_config(config) == ["role reviewer references unknown provider missing"]
+    assert providers.validate_config(config) == [
+        "role reviewer references unknown provider missing"
+    ]
 
 
 def test_validate_config_can_flag_unknown_backend_names():
@@ -188,7 +197,9 @@ def test_prompt_for_provider_raises_for_unknown_lens():
 def test_validate_lenses_flags_unknown_lens_name():
     config = {
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
-        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "missing-lens"}}},
+        "roles": {
+            "reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "missing-lens"}}
+        },
     }
     errors = providers.validate_lenses(config, {"refute-soundness": {}})
     assert any("unknown lens" in e for e in errors)
@@ -197,7 +208,13 @@ def test_validate_lenses_flags_unknown_lens_name():
 def test_validate_lenses_flags_provider_not_in_role():
     config = {
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
-        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"gemini": "refute-soundness"}}},
+        "roles": {
+            "reviewer": {
+                "required": ["codex"],
+                "optional": [],
+                "lenses": {"gemini": "refute-soundness"},
+            }
+        },
     }
     errors = providers.validate_lenses(config, {"refute-soundness": {}})
     assert any("not a required or optional provider" in e for e in errors)
@@ -206,7 +223,13 @@ def test_validate_lenses_flags_provider_not_in_role():
 def test_validate_lenses_passes_for_well_formed_role():
     config = {
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
-        "roles": {"reviewer": {"required": ["codex"], "optional": [], "lenses": {"codex": "refute-soundness"}}},
+        "roles": {
+            "reviewer": {
+                "required": ["codex"],
+                "optional": [],
+                "lenses": {"codex": "refute-soundness"},
+            }
+        },
     }
     assert providers.validate_lenses(config, {"refute-soundness": {}}) == []
 
@@ -226,7 +249,9 @@ def test_role_loads_optional_timeout_seconds_from_config():
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
         "roles": {
             "reviewer": {
-                "required": ["codex"], "optional": [], "optional_timeout_seconds": 300,
+                "required": ["codex"],
+                "optional": [],
+                "optional_timeout_seconds": 300,
             }
         },
     }
@@ -249,7 +274,9 @@ def test_validate_config_rejects_malformed_optional_timeout_seconds(bad_value):
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
         "roles": {
             "reviewer": {
-                "required": ["codex"], "optional": [], "optional_timeout_seconds": bad_value,
+                "required": ["codex"],
+                "optional": [],
+                "optional_timeout_seconds": bad_value,
             }
         },
     }
@@ -262,7 +289,9 @@ def test_validate_config_accepts_well_formed_optional_timeout_seconds():
         "providers": {"codex": {"type": "tool", "tool": "codex"}},
         "roles": {
             "reviewer": {
-                "required": ["codex"], "optional": [], "optional_timeout_seconds": 300,
+                "required": ["codex"],
+                "optional": [],
+                "optional_timeout_seconds": 300,
             }
         },
     }

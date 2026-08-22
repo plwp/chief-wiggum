@@ -6,7 +6,6 @@ import threading
 import pytest
 from delegates import task_protocol
 
-
 SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -147,3 +146,8 @@ def test_symlinked_artifact_path_is_rejected(tmp_path):
         )
 
     assert outside.read_text() == "untouched"
+
+
+def test_task_id_cannot_escape_task_root(tmp_path):
+    with pytest.raises(task_protocol.UnsafeTaskPathError):
+        task_protocol.task_paths(tmp_path, "../escape")

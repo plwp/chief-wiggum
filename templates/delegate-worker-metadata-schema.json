@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chief-wiggum.dev/schemas/delegate-worker-metadata-v1.json",
+  "title": "Chief Wiggum delegate worker metadata",
+  "type": "object",
+  "required": [
+    "schema_version", "task_id", "status", "reason_code", "harness",
+    "execution_adapter", "provider_name", "provider_capability_tier",
+    "requested_model", "resolved_model", "model_resolution_status", "sandbox",
+    "tool_behavior", "worktree_start_sha", "worktree_end_sha", "started_at",
+    "completed_at", "duration_ms", "exit_status", "usage", "prompt_sha256",
+    "provider_config_sha256", "result_sha256", "log_sha256",
+    "redaction_policy_version", "adapter_version"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["done", "error"]},
+    "reason_code": {"type": ["string", "null"]},
+    "harness": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "execution_adapter": {"type": "string", "minLength": 1},
+    "provider_name": {"type": "string", "minLength": 1},
+    "provider_capability_tier": {"type": "string", "minLength": 1},
+    "requested_model": {"type": "string", "minLength": 1},
+    "resolved_model": {"type": ["string", "null"]},
+    "model_resolution_status": {"enum": ["observed", "unavailable"]},
+    "sandbox": {"enum": ["read-only", "workspace-write"]},
+    "tool_behavior": {"enum": ["observed", "not-observed", "unsupported"]},
+    "worktree_start_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "worktree_end_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "exit_status": {"type": ["integer", "null"]},
+    "usage": {
+      "type": "object",
+      "required": ["status", "input_tokens", "output_tokens", "reasoning_output_tokens", "within_limit"],
+      "properties": {
+        "status": {"enum": ["measured", "unavailable"]},
+        "input_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "output_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "reasoning_output_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "within_limit": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "prompt_sha256": {"$ref": "#/$defs/digest"},
+    "provider_config_sha256": {"$ref": "#/$defs/digest"},
+    "result_sha256": {"$ref": "#/$defs/digest"},
+    "log_sha256": {"$ref": "#/$defs/digest"},
+    "redaction_policy_version": {"type": "integer", "minimum": 1},
+    "adapter_version": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}
