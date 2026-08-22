@@ -421,6 +421,81 @@ def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
                 cost_usd=cost, pricing_version=_pricing_version(), repo=repo, ticket=ticket)
 
 
+def emit_phase(name: str, *, duration_ms: float, repo: str | None = None,
+               ticket: str | None = None, outcome: str = "ok", **fields) -> bool:
+    """Record how long one workflow phase took (chief-wiggum#375).
+
+    ticket_cost tracks tokens but not time-in-phase, so loop latency was felt
+    rather than measured and there was no data to rank the fixes against. A
+    phase that raised is recorded too, with outcome="error": a phase that blew
+    up fast would otherwise look like a phase that went well.
+    """
+    return emit("phase", phase=name, duration_ms=round(duration_ms, 1),
+                outcome=outcome, repo=repo, ticket=ticket, **fields)
+
+
+class phase_timer:
+    """Time a workflow phase and emit on exit.
+
+        with phase_timer("step4a_consults", ticket="#42") as p:
+            run_consults()
+            p.detail = f"{len(providers)} providers"
+
+    Mirrors gate_timer deliberately: one timing shape in the ledger rather than
+    two, so phase and gate latency can be read together.
+    """
+
+    def __init__(self, name: str, *, repo: str | None = None, ticket: str | None = None):
+        self.name, self.repo, self.ticket = name, repo, ticket
+        self.outcome = "ok"
+        self.detail: str | None = None
+        self._t0 = 0.0
+
+    def __enter__(self):
+        self._t0 = time.time()
+        return self
+
+    @property
+    def elapsed_ms(self) -> float:
+        return (time.time() - self._t0) * 1000
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.outcome = "error"
+        emit_phase(self.name, duration_ms=self.elapsed_ms, repo=self.repo,
+                   ticket=self.ticket, outcome=self.outcome, detail=self.detail)
+        return False  # never suppress
+
+
+def phase_summary(records: list[dict]) -> dict:
+    """Aggregate phase events into per-phase wall-clock.
+
+    Returns total and count per phase plus the overall total, so the slowest
+    phase is a number rather than an impression.
+    """
+    phases: dict[str, dict] = {}
+    for record in records:
+        if record.get("event") != "phase":
+            continue
+        name = str(record.get("phase", "unknown"))
+        bucket = phases.setdefault(
+            name, {"phase": name, "total_ms": 0.0, "runs": 0, "errors": 0}
+        )
+        bucket["total_ms"] += float(record.get("duration_ms") or 0.0)
+        bucket["runs"] += 1
+        if record.get("outcome") == "error":
+            bucket["errors"] += 1
+    ordered = sorted(phases.values(), key=lambda item: (-item["total_ms"], item["phase"]))
+    for bucket in ordered:
+        bucket["total_ms"] = round(bucket["total_ms"], 1)
+        bucket["mean_ms"] = round(bucket["total_ms"] / bucket["runs"], 1) if bucket["runs"] else 0.0
+    return {
+        "phases": ordered,
+        "total_ms": round(sum(item["total_ms"] for item in ordered), 1),
+        "slowest": ordered[0]["phase"] if ordered else None,
+    }
+
+
 class gate_timer:
     """Context manager that times a gate and emits on exit.
 
