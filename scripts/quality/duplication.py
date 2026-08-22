@@ -22,13 +22,14 @@ As a CLI:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
-from pathlib import PurePosixPath
 
 from . import cache, population
 
@@ -329,6 +330,45 @@ def _production_candidate_count(repo: str) -> int:
     )
 
 
+@functools.cache
+def _glob_to_regex(glob: str) -> re.Pattern[str]:
+    """Translate one jscpd/minimatch glob to a regex.
+
+    Hand-rolled rather than using ``PurePath.full_match``, which only exists on
+    Python 3.13+ while this project supports 3.11 (pyproject `requires-python`,
+    and CI runs 3.11). Relying on the newer API passed locally and failed in
+    CI — the same interpreter-drift class as #374, one layer up.
+
+    ``**`` spans path segments, ``*`` and ``?`` never cross a ``/``.
+    """
+    parts = []
+    for segment in glob.split("/"):
+        if segment == "**":
+            parts.append(None)  # placeholder: zero or more segments
+            continue
+        chunk = ""
+        for char in segment:
+            if char == "*":
+                chunk += "[^/]*"
+            elif char == "?":
+                chunk += "[^/]"
+            else:
+                chunk += re.escape(char)
+        parts.append(chunk)
+
+    pattern = ""
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        if part is None:
+            # Zero OR more segments: `**/tests/**` must match `tests/x.py`, not
+            # only `app/tests/x.py`. Making the separator part of an optional
+            # group is what allows the zero case.
+            pattern += "(?:.*/)?" if not last else ".*"
+        else:
+            pattern += part + ("" if last else "/")
+    return re.compile("^" + pattern + "$")
+
+
 def matches_ignore(path: str) -> bool:
     """Would the IGNORE globs exclude this repo-relative path?
 
@@ -336,8 +376,7 @@ def matches_ignore(path: str) -> bool:
     everything quality.complexity.TEST_RE calls a test, rather than the two
     conventions drifting apart again.
     """
-    candidate = PurePosixPath(path)
-    return any(candidate.full_match(glob) for glob in IGNORE.split(","))
+    return any(_glob_to_regex(glob).match(path) for glob in IGNORE.split(","))
 
 
 def _crash_note(proc, heap_mb: int) -> str:

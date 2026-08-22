@@ -99,6 +99,45 @@ class TestConventionParity:
         assert "csharp" in duplication.FORMATS
 
 
+class TestGlobSemantics:
+    """The matcher is hand-rolled because PurePath.full_match is 3.13+ and this
+    project supports 3.11. These pin the semantics it has to reproduce."""
+
+    @pytest.mark.parametrize("path", [
+        "tests/x.py",              # `**/` must match ZERO leading segments
+        "node_modules/a/b.js",
+        "e2e/journey.spec.ts",
+        "app/deep/nested/tests/x.py",   # ...and many
+    ])
+    def test_leading_doublestar_matches_zero_or_more_segments(self, path):
+        assert duplication.matches_ignore(path)
+
+    @pytest.mark.parametrize("path", [
+        "src/Foo/Bar.cs",
+        "src/Foo/deep/Bar.cs",
+        "scripts/thing.py",
+    ])
+    def test_production_paths_at_any_depth_are_measured(self, path):
+        assert not duplication.matches_ignore(path)
+
+    def test_a_single_star_does_not_cross_a_directory_separator(self):
+        """`**/*Tests.cs` must not match a directory called Tests.cs/..."""
+        assert not duplication.matches_ignore("src/Tests.cs/NotAFile.txt")
+
+    def test_the_matcher_runs_on_the_declared_minimum_python(self):
+        """Guard against reaching for a newer stdlib API again.
+
+        `PurePosixPath.full_match` passed locally on 3.14 and failed CI on 3.11.
+        pyproject declares >=3.11, so anything this module needs must exist
+        there.
+        """
+        import pathlib as _pathlib
+
+        assert not hasattr(_pathlib.PurePosixPath("x"), "_cw_full_match_shim")
+        # The matcher must work without the 3.13+ API being available at all.
+        assert duplication.matches_ignore("app/tests/test_x.py")
+
+
 class TestOomNoteNamesTheKnob:
     """#382 secondary: an OOM left a raw GC log with no mention of the knob."""
 
