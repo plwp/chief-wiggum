@@ -165,6 +165,28 @@ def validate_snapshot(
         elif node["attempt"]["attempt_id"] != lease["attempt_id"]:
             errors.append(ContractViolation(ErrorCode.COMPILATION_REFERENCE_INVALID, "lease attempt does not match its execution node", f"/lease_records/{index}/attempt_id"))
 
+    # chief-wiggum#389: exactly one promotion per candidate group, enforced at
+    # the contract level so a second promotion is an invalid GRAPH, not merely
+    # something the promotion code declines to do.
+    promoted_by_group: dict[str, list[str]] = {}
+    for node in snapshot.get("execution_nodes", []):
+        candidate = node.get("candidate") or {}
+        if candidate.get("disposition") == "promoted" and candidate.get("group_id"):
+            promoted_by_group.setdefault(str(candidate["group_id"]), []).append(
+                str(node.get("execution_node_id"))
+            )
+    for group, winners in sorted(promoted_by_group.items()):
+        if len(winners) > 1:
+            errors.append(
+                ContractViolation(
+                    ErrorCode.DUPLICATE_RECORD_ID,
+                    f"candidate group {group} has {len(winners)} promoted nodes;"
+                    " exactly one promotion is allowed",
+                    "/execution_nodes",
+                    details={"group_id": group, "promoted": sorted(winners)},
+                )
+            )
+
     if cycle := _cycle(snapshot.get("schedulable_edges", [])):
         errors.append(ContractViolation(ErrorCode.SCHEDULABLE_CYCLE, "schedulable subgraph contains a cycle", "/schedulable_edges", details={"cycle": cycle}))
     return tuple(sorted(errors, key=lambda error: (error.path, error.code.value)))
