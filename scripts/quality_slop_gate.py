@@ -358,6 +358,91 @@ def has_findings(sv: dict, dup: dict) -> list[str]:
     return findings
 
 
+# --- gate-validation replay protocol (chief-wiggum#410) ----------------------
+#
+# A gate that can mechanically replay its own seeded trials exposes these two
+# functions, and `gate_validation_designer.py revalidate` uses them. Keeping the
+# knowledge here rather than in the tool means the generic tool never learns
+# gate-specific fixtures, and a gate that CANNOT replay is refused by name
+# instead of half-automated.
+#
+# The mapping lived in three places before this: the test suite, an ad-hoc
+# script, and nowhere authoritative. One copy now.
+
+GV_CORPUS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / \
+    "gate_validation" / "quality_slop_gate_clean"
+
+# seed_id -> (band file, int_keys). `int_keys` re-casts the serialized string
+# age keys back to the integer keys the survival engine actually emits, which
+# is the difference the direct/config-indirection seed pair exists to pin.
+SEED_FIXTURES: dict[str, tuple[str, bool]] = {
+    "slop-direct-01": ("survival_past_ai.json", True),
+    "slop-direct-02": ("duplication_past_ai.json", False),
+    "slop-config-indirection-01": ("survival_past_ai.json", False),
+    "slop-omission-01": ("too_young.json", False),
+    "slop-sampling-gap-01": ("both_skipped.json", False),
+    "slop-instrument-broken-01": ("crashed.json", False),
+}
+
+
+def _load_band_file(band_file: str, int_keys: bool = False) -> tuple[dict, dict]:
+    import json as _json
+
+    data = _json.loads((GV_CORPUS / band_file).read_text())
+    survival_result = data["survival_result"]
+    if int_keys and "survival_by_age_days" in survival_result:
+        survival_result = {
+            **survival_result,
+            "survival_by_age_days": {
+                int(k): v for k, v in survival_result["survival_by_age_days"].items()
+            },
+        }
+    return (
+        evaluate_survival(survival_result),
+        evaluate_duplication(data["duplication_result"]),
+    )
+
+
+def replay_seeded_trial(seed: dict) -> str:
+    """Re-run one seeded trial. Returns "fired" or "not-fired".
+
+    A crashed engine reports status `error` but produces NO finding, because
+    has_findings only counts past-ai band regressions. A harness that summed
+    findings alone would record "not-fired" while the gate is correctly
+    erroring — reproducing the exact #289 bug inside the machinery that
+    certifies the gate against it. So the error state is counted explicitly.
+    """
+    seed_id = str(seed.get("seed_id", ""))
+    if seed_id not in SEED_FIXTURES:
+        raise KeyError(f"no fixture mapping for seed {seed_id!r}")
+    band_file, int_keys = SEED_FIXTURES[seed_id]
+    survival_verdict, duplication_verdict = _load_band_file(band_file, int_keys)
+    if survival_verdict.get("status") == "error" or duplication_verdict.get("status") == "error":
+        return "fired"
+    return "fired" if has_findings(survival_verdict, duplication_verdict) else "not-fired"
+
+
+def replay_clean_corpus() -> dict:
+    """Re-run the clean-corpus check, deriving coverage from the live run.
+
+    Coverage is computed here rather than copied forward: a copied block is the
+    "unexercised no-op wearing a green checkmark" the protocol warns about.
+    """
+    survival_verdict, duplication_verdict = _load_band_file("clean.json")
+    findings = has_findings(survival_verdict, duplication_verdict)
+    verdicts = (survival_verdict, duplication_verdict)
+    return {
+        "repo": "tests/fixtures/gate_validation/quality_slop_gate_clean",
+        "findings": len(findings),
+        "coverage": {
+            "signals_evaluated": len(verdicts),
+            "measured_signals": sum(1 for v in verdicts if v.get("status") == "measured"),
+            "bands_classified": sum(1 for v in verdicts if v.get("band_14d") or v.get("band")),
+        },
+        "passed": not findings,
+    }
+
+
 def run(args: argparse.Namespace) -> int:
     target = resolve_target(args.owner_repo, args.repo)
     if args.workdir:

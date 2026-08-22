@@ -61,6 +61,7 @@ Exit codes: 0 always (report-only; it proposes, never blocks). 2 = usage.
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import json
 import re
@@ -72,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_gate_validation import (  # noqa: E402
     _has_nonzero_coverage,
+    corpus_digest,
     load_record,
     required_seed_classes,
     trial_genuinely_passed,
@@ -759,6 +761,115 @@ def render_mutate(gate: str, result: dict) -> str:
 # --- CLI -----------------------------------------------------------------------
 
 
+# --- revalidate (chief-wiggum#410) -------------------------------------------
+
+
+class NotReplayable(RuntimeError):
+    """This gate cannot mechanically replay its trials, so it is refused by name."""
+
+
+def _load_gate_module(gate: str):
+    import importlib
+
+    try:
+        return importlib.import_module(gate)
+    except ImportError as exc:
+        raise NotReplayable(f"no module named {gate!r} to replay from: {exc}") from exc
+
+
+def revalidate(gate: str, validation_dir, *, write: bool = True) -> dict:
+    """Re-run a gate's seeded trials and re-author its record.
+
+    docs/gate-validation.md: bumping scanner_version alone does not revalidate
+    a gate; the trials must be re-run and the record re-authored. This does the
+    re-running, and REFUSES to write when any trial fails — a tool that
+    re-authors a record whose trials regressed is worse than doing it by hand.
+    """
+    validation_dir = Path(validation_dir)
+    record_path = validation_dir / f"{gate}.json"
+    if not record_path.is_file():
+        raise NotReplayable(f"no validation record at {record_path}")
+    record = json.loads(record_path.read_text())
+
+    module = _load_gate_module(gate)
+    for required in ("replay_seeded_trial", "replay_clean_corpus", "_scanner_version"):
+        if not hasattr(module, required):
+            raise NotReplayable(
+                f"{gate} does not implement {required}(); its trials are not "
+                "mechanically replayable (a live repo, a network call, or human "
+                "judgement). Re-run them by hand and re-author the record."
+            )
+
+    seeds_path = validation_dir / "seeds" / f"{gate}.seeds.json"
+    if seeds_path.is_file():
+        seeds = json.loads(seeds_path.read_text())["seeds"]
+    else:
+        seeds = record.get("seeded_defect_trials", [])
+
+    trials, failures = [], []
+    for seed in seeds:
+        expected = str(seed.get("expected", ""))
+        expected_result = {"fire": "fired", "no-fire": "not-fired"}.get(expected, expected)
+        try:
+            result = module.replay_seeded_trial(seed)
+        except Exception as exc:  # noqa: BLE001 - a broken replay is a failure, not a pass
+            result = f"replay-error: {exc}"
+        passed = result == expected_result
+        if not passed:
+            failures.append(f"{seed.get('seed_id')}: expected {expected_result}, got {result}")
+        trials.append({
+            "seed_id": seed.get("seed_id"),
+            "seed_class": seed.get("seed_class"),
+            "seed_version": seed.get("seed_version"),
+            "repo": seed.get("corpus") or seed.get("repo"),
+            "sha": seed.get("corpus_digest") or seed.get("sha"),
+            "injected": seed.get("injected"),
+            "expected": expected,
+            "result": result,
+            "passed": passed,
+        })
+
+    clean = module.replay_clean_corpus()
+    clean_run = {
+        "repo": clean.get("repo"),
+        # Derived by the checker, never an ad-hoc hash.
+        "sha": corpus_digest(Path(module.GV_CORPUS)) if hasattr(module, "GV_CORPUS")
+        else clean.get("sha"),
+        "findings": clean["findings"],
+        "coverage": clean["coverage"],
+        "passed": clean["passed"],
+    }
+    if not clean["passed"]:
+        failures.append(f"clean corpus produced {clean['findings']} finding(s)")
+    if not any(clean["coverage"].values()):
+        failures.append("clean-corpus coverage is all zero — the gate exercised nothing")
+
+    record["scanner_version"] = module._scanner_version()
+    record["seeded_defect_trials"] = trials
+    record["clean_corpus_runs"] = [clean_run]
+    record["status"] = "failed" if failures else "passed"
+    record["validated_at"] = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    written = False
+    if write and not failures:
+        record_path.write_text(json.dumps(record, indent=2) + "\n")
+        written = True
+
+    return {
+        "gate": gate,
+        "scanner_version": record["scanner_version"],
+        "trials": [
+            {"seed_id": t["seed_id"], "expected": t["expected"],
+             "result": t["result"], "passed": t["passed"]}
+            for t in trials
+        ],
+        "clean_corpus": clean_run,
+        "status": record["status"],
+        "failures": failures,
+        "written": written,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Gate-validation designer (report-only always: proposes, never blocks).",
@@ -794,6 +905,16 @@ def main(argv: list[str] | None = None) -> int:
     x.add_argument("--all", action="store_true")
     x.add_argument("--validation-dir", default=DEFAULT_VALIDATION_DIR)
 
+    rv = sub.add_parser(
+        "revalidate",
+        help="Re-run a gate's seeded trials and re-author its record (#410)",
+    )
+    rv.add_argument("gate", help="Gate name")
+    rv.add_argument("--validation-dir", default=DEFAULT_VALIDATION_DIR)
+    rv.add_argument("--check", action="store_true",
+                    help="Report only; never write the record")
+    rv.add_argument("--format", choices=["text", "json"], default="text")
+
     mu = sub.add_parser("mutate", help="Best-effort mutmut leg (skipped-with-instructions "
                                        "when mutmut is absent)")
     mu.add_argument("gate", help="Gate name")
@@ -813,6 +934,35 @@ def main(argv: list[str] | None = None) -> int:
     if not out_json:
         print(BANNER)
         print()
+
+    if args.cmd == "revalidate":
+        # Exit 0 even on failure: this tool is report-only by contract (see
+        # BANNER / docs/gate-rollout.md). Blocking is check_gate_validation's
+        # job, and it still blocks — a refused re-author leaves the record
+        # stale, which that checker fails on. Writing is fine (extract-seeds
+        # already writes); exiting non-zero is what would break the invariant.
+        try:
+            result = revalidate(args.gate, args.validation_dir, write=not args.check)
+        except NotReplayable as exc:
+            print(f"revalidate: {exc}")
+            return 0
+        if out_json:
+            print(json.dumps({"report_only": True, **result}, indent=2))
+        else:
+            for trial in result["trials"]:
+                mark = "ok  " if trial["passed"] else "FAIL"
+                print(f"  [{mark}] {trial['seed_id']}: expected {trial['expected']}, "
+                      f"got {trial['result']}")
+            clean = result["clean_corpus"]
+            print(f"  clean corpus: {clean['findings']} finding(s), "
+                  f"coverage {clean['coverage']}")
+            print(f"  scanner_version: {result['scanner_version']}")
+            print(f"  status: {result['status']}"
+                  + ("  (record re-authored)" if result["written"]
+                     else "  (record NOT written)"))
+            for failure in result["failures"]:
+                print(f"  ! {failure}")
+        return 0
 
     if args.cmd in ("audit",):
         gates = [args.gate] if args.gate else gates_with_records(args.validation_dir)
