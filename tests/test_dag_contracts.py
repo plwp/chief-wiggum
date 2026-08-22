@@ -113,3 +113,10 @@ def test_validation_cli_accepts_valid_snapshot():
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert json.loads(proc.stdout) == {"ok": True, "record_type": "graph_snapshot", "schema_version": "1.0.0"}
+
+
+def test_non_mapping_and_invalid_timestamp_return_typed_schema_errors():
+    assert validate_record([], "graph_snapshot")[0].code is ErrorCode.SCHEMA_INVALID
+    evidence = _snapshot()["evidence_records"][0]
+    evidence["observed_at"] = "not-a-timestamp"
+    assert ErrorCode.SCHEMA_INVALID in {error.code for error in validate_record(evidence, "evidence_record")}

@@ -9,6 +9,8 @@ from typing import Any
 
 from chief_wiggum import github, planning
 
+from .schemas import validate_record
+
 
 @dataclass(frozen=True)
 class ProjectionResult:
@@ -24,7 +26,14 @@ def dependency_block_to_intent_graph(
     issues: Iterable[int],
     source_ref: str,
 ) -> dict[str, Any]:
+    """Import pinned tracker intent one way. @cw-trace guards INV-dag-005"""
     metadata = github.parse_dependency_block(description)
+    if not metadata.has_block:
+        scan_status = "unscanned"
+    elif any("malformed dependency line" in warning for warning in metadata.warnings):
+        scan_status = "malformed"
+    else:
+        scan_status = "observed"
     in_scope = set(issues)
     tickets = in_scope | set(metadata.edges) | {dep for deps in metadata.edges.values() for dep in deps}
     nodes = [
@@ -65,6 +74,7 @@ def dependency_block_to_intent_graph(
         "graph_id": graph_id,
         "source_ref": source_ref,
         "source_digest": "sha256:" + hashlib.sha256(description.encode()).hexdigest(),
+        "scan_status": scan_status,
         "has_dependency_block": metadata.has_block,
         "source_warnings": metadata.warnings,
         "nodes": nodes,
@@ -78,11 +88,20 @@ def project_legacy_waves(
     closed: Iterable[int] = (),
     gated: Iterable[int] = (),
 ) -> ProjectionResult:
+    """Return the legacy oracle shape. @cw-trace guards CTR-dag-007 CTR-dag-008 INV-dag-006"""
+    schema_errors = validate_record(intent_graph, "intent_graph")
+    if schema_errors:
+        return ProjectionResult(1, error="; ".join(error.message for error in schema_errors))
     warnings = list(intent_graph.get("source_warnings", []))
-    malformed = [warning for warning in warnings if "malformed dependency line" in warning]
-    if malformed:
-        return ProjectionResult(1, error="; ".join(malformed))
-    issues = [node["source_ticket"] for node in intent_graph.get("nodes", []) if node.get("in_scope", True)]
+    if intent_graph["scan_status"] != "observed":
+        detail = "; ".join(warnings) or "source was not observed"
+        return ProjectionResult(1, error=f"intent scan status is {intent_graph['scan_status']}: {detail}")
+    ticket_nodes = [node for node in intent_graph["nodes"] if node.get("in_scope", True)]
+    if any(not isinstance(node.get("source_ticket"), int) for node in ticket_nodes):
+        return ProjectionResult(1, error="intent graph does not define a ticket-level projection")
+    if any(not isinstance(edge.get("source_ticket"), int) or not isinstance(edge.get("target_ticket"), int) for edge in intent_graph["edges"]):
+        return ProjectionResult(1, error="intent edges do not define a ticket-level projection")
+    issues = [node["source_ticket"] for node in ticket_nodes]
     edges: dict[int, list[int]] = {ticket: [] for ticket in issues}
     for edge in intent_graph.get("edges", []):
         edges.setdefault(edge["source_ticket"], []).append(edge["target_ticket"])

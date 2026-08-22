@@ -6,7 +6,7 @@ Status: v1 (`schema_version: "1.0.0"`). This document defines data and validatio
 
 The contract separates three kinds of truth:
 
-1. **Intent plane** — human-authoritative tracker and ratchet facts. Intent nodes and `depends_on` edges retain a pinned source reference and digest. Execution may import these facts; it may never write changes back to intent.
+1. **Intent plane** — human-authoritative tracker and ratchet facts. Intent nodes and `depends_on` edges retain a pinned source reference and digest plus a closed scan status (`observed`, `degraded`, `unavailable`, `malformed`, or `unscanned`). Execution may import these facts; it may never write changes back to intent. Only `observed` ticket-projectable intent can produce a static wave plan; every other status fails closed.
 2. **Execution plane** — machine-managed compiled nodes, schedulable edges, and typed non-scheduling relations. Each execution node pins the intent node and intent-graph digest from which it was compiled.
 3. **Evidence plane** — append-only observations and proposal envelopes. Evidence supports decisions but does not silently mutate either graph. A later journal implementation will commit accepted facts and normalized rejection decisions.
 
@@ -29,6 +29,8 @@ proposed -> admitted -> ready -> running -> succeeded | failed | superseded | ca
 ```
 
 `ready` is a derived projection. It appears in the lifecycle vocabulary so snapshots and compatibility projections can report it, but a proposal cannot directly set it. `succeeded`, `failed`, `superseded`, and `cancelled` are terminal and immutable.
+
+This ticket lifecycle is intentionally not the epic formal model's proposal/admission/claim control machine. States such as `received`, `validated`, `pending_approval`, `claimed`, `blocked_safe`, and `expired` describe proposal, lease, or attempt control in that machine; v1 represents those concerns through the independent approval, lease, control, and attempt fields below. Ticket #385 composes the machines. It must not replace one vocabulary with the other or make derived `ready` independently writable.
 
 Attempt outcome, candidate disposition, approval state, lease state, and control state are separate fields. In particular, candidate promotion or supersession never rewrites an attempt's successful or failed outcome. A correction to a terminal record is represented by a `compensate` operation that references the earlier mutation and a distinct replacement record; the old terminal stays unchanged.
 
@@ -61,7 +63,7 @@ Free-text explanation may accompany future evidence, but it cannot replace the s
 
 ## Canonical bytes
 
-DAG hashes use UTF-8 JSON with no BOM, NFC-normalized keys and strings, sorted object keys, compact separators, integer-only numeric values, and exactly one trailing LF. Duplicate object keys, floats/exponent notation, CRLF, and non-canonical key ordering are rejected. No defaults are inserted during encoding.
+DAG hashes use UTF-8 JSON with no BOM, NFC-normalized keys and strings, sorted object keys, compact separators, integer-only numeric values, and exactly one trailing LF. Duplicate object keys, floats/exponent notation, CRLF, and non-canonical key ordering are rejected. No defaults are inserted during encoding. The CLI and canonical-byte validator reject records over 16 MiB; collection schemas also carry explicit bounds, and graph cycle validation is iterative rather than recursion-limited.
 
 Arrays are either ordered sequences or deterministic collections. Mutation operations preserve order. Stable-record collections sort by their stable ID; `capabilities`, `derived_from`, and `evidence_refs` sort by canonical value. Optional means absent; required nullable fields use explicit `null`.
 
@@ -79,7 +81,7 @@ milestone DEPENDENCIES comment
   -> waves, gated, skipped, warnings, integration_risks, gate_reasons
 ```
 
-The adapter calls both existing functions; it does not copy their logic. It preserves numeric sorting, parser warnings, closed/external dependency handling, gating, integration-risk strings, exit `1` for corrupt/malformed dependency input, and exit `2` for cycles. The Factory Hardening milestone fixture is the historical golden round-trip.
+The adapter calls both existing functions; it does not copy their logic. It preserves numeric sorting, parser warnings, closed/external dependency handling, gating, integration-risk strings, exit `1` for corrupt, missing, unobserved, or non-ticket-projectable input, and exit `2` for cycles. The Factory Hardening milestone fixture is the historical golden round-trip.
 
 ## Validation entry point
 

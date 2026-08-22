@@ -11,6 +11,7 @@ from .errors import ContractViolation, ErrorCode
 
 _ID_KEYS = ("node_id", "intent_node_id", "execution_node_id", "edge_id", "relation_id", "evidence_id", "approval_id", "lease_id", "control_id", "mutation_id")
 _SET_FIELDS = {"capabilities", "derived_from", "evidence_refs"}
+MAX_CANONICAL_BYTES = 16 * 1024 * 1024
 
 
 class _DuplicateKey(ValueError):
@@ -58,12 +59,15 @@ def _normalize(value: Any, *, field: str = "") -> Any:
 
 
 def canonical_json_bytes(record: Mapping[str, Any]) -> bytes:
+    """Return replay-stable bytes. @cw-trace guards INV-dag-004"""
     normalized = _normalize(record)
     return (json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def validate_canonical_bytes(raw: bytes) -> tuple[ContractViolation, ...]:
     try:
+        if len(raw) > MAX_CANONICAL_BYTES:
+            raise ValueError(f"record exceeds {MAX_CANONICAL_BYTES} byte canonical limit")
         if raw.startswith(b"\xef\xbb\xbf"):
             raise ValueError("UTF-8 BOM is forbidden")
         decoded = raw.decode("utf-8")

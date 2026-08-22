@@ -75,6 +75,25 @@ def _envelope(
     mutation_id: str = "MUT-dag-001",
     idempotency_key: str = "idem:dag-001",
 ) -> dict:
+    operation = deepcopy(operation)
+    samples = _snapshot()
+    operation_type = operation["operation_type"]
+    values = {
+        "add_intent_node": samples["intent_nodes"][0],
+        "add_intent_edge": samples["intent_edges"][0],
+        "add_execution_node": samples["execution_nodes"][0],
+        "add_schedulable_edge": samples["schedulable_edges"][0],
+        "record_evidence": samples["evidence_records"][0],
+        "approve_mutation": samples["approval_records"][0],
+        "acquire_lease": samples["lease_records"][0],
+        "set_control": samples["control_records"][0],
+        "promote_candidate": {"candidate_group_id": "CND-dag-001", "execution_node_id": "EXN-dag-002"},
+    }
+    if operation_type in values and "value" not in operation:
+        operation["value"] = values[operation_type]
+    if operation_type == "compensate":
+        operation.setdefault("compensates_mutation_id", "MUT-dag-000")
+        operation.setdefault("replacement_ref", "EXN-dag-002")
     return {
         "actor": "actor:collector",
         "authority_class": authority,
@@ -136,6 +155,7 @@ def test_duplicate_idempotency_key_with_different_payload_is_invalid():
 
 
 def test_attempt_outcome_and_candidate_disposition_are_orthogonal():
+    """@cw-trace verifies INV-dag-011"""
     snapshot = _snapshot()
     snapshot["execution_nodes"][0]["candidate"] = {"disposition": "superseded", "group_id": "CND-dag-001"}
     assert snapshot["execution_nodes"][0]["attempt"]["outcome"] == "succeeded"
@@ -143,6 +163,7 @@ def test_attempt_outcome_and_candidate_disposition_are_orthogonal():
 
 
 def test_canonical_encoding_is_nfc_integer_only_sorted_and_lf_terminated():
+    """@cw-trace verifies INV-dag-004"""
     record = {"schema_version": "1.0.0", "record_type": "evidence_record", "label": "e\u0301", "count": 1}
     encoded = canonical_json_bytes(record)
     assert encoded == '{"count":1,"label":"é","record_type":"evidence_record","schema_version":"1.0.0"}\n'.encode()
@@ -151,3 +172,78 @@ def test_canonical_encoding_is_nfc_integer_only_sorted_and_lf_terminated():
     for case in cases["invalid"]:
         codes = {error.code for error in validate_canonical_bytes(bytes.fromhex(case["hex"]))}
         assert ErrorCode(case["expected_code"]) in codes, case["name"]
+
+
+def test_malformed_snapshot_and_operation_return_typed_errors_without_crashing():
+    snapshot = _snapshot()
+    snapshot["execution_nodes"] = [None]
+    assert validate_snapshot(snapshot)[0].code is ErrorCode.SCHEMA_INVALID
+
+    envelope = _envelope({"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": "EVD-dag-001"})
+    envelope["operations"] = [None]
+    assert validate_mutation(_snapshot(), envelope)[0].code is ErrorCode.SCHEMA_INVALID
+
+
+def test_mutation_must_match_graph_and_current_base_revision():
+    envelope = _envelope({"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": "EVD-dag-001"})
+    envelope["graph_id"] = "GRF-other"
+    envelope["base_revision"] = 999
+    codes = {error.code for error in validate_mutation(_snapshot(), envelope)}
+    assert {ErrorCode.GRAPH_ID_MISMATCH, ErrorCode.BASE_REVISION_MISMATCH} <= codes
+
+
+def test_operation_payload_is_discriminated_and_schema_validated():
+    bad_node = deepcopy(_snapshot()["execution_nodes"][1])
+    bad_node["lifecycle_state"] = "banana"
+    envelope = _envelope(
+        {"op_id": "OPR-dag-001", "operation_type": "add_execution_node", "target_ref": "GRF-dag-001", "value": bad_node}
+    )
+    assert ErrorCode.SCHEMA_INVALID in {error.code for error in validate_mutation(_snapshot(), envelope)}
+
+
+def test_snapshot_rejects_duplicate_ids_mixed_graphs_and_inconsistent_compilation():
+    snapshot = _snapshot()
+    duplicate = deepcopy(snapshot["execution_nodes"][0])
+    duplicate["lifecycle_state"] = "failed"
+    snapshot["execution_nodes"].append(duplicate)
+    snapshot["control_records"][0]["graph_id"] = "GRF-other"
+    snapshot["execution_nodes"][1]["compiled_from"]["intent_node_id"] = "INN-dag-001"
+    codes = {error.code for error in validate_snapshot(snapshot)}
+    assert {
+        ErrorCode.DUPLICATE_RECORD_ID,
+        ErrorCode.GRAPH_ID_MISMATCH,
+        ErrorCode.COMPILATION_REFERENCE_INVALID,
+    } <= codes
+
+
+def test_large_acyclic_graph_does_not_depend_on_python_recursion_limit():
+    snapshot = _snapshot()
+    snapshot["intent_edges"] = []
+    snapshot["execution_nodes"] = []
+    snapshot["intent_nodes"] = []
+    snapshot["schedulable_edges"] = []
+    snapshot["lease_records"] = []
+    for index in range(1, 1201):
+        intent_id = f"INN-scale-{index:04d}"
+        execution_id = f"EXN-scale-{index:04d}"
+        intent = deepcopy(_snapshot()["intent_nodes"][0])
+        intent["intent_node_id"] = intent_id
+        execution = deepcopy(_snapshot()["execution_nodes"][1])
+        execution["execution_node_id"] = execution_id
+        execution["intent_node_id"] = intent_id
+        execution["compiled_from"]["intent_node_id"] = intent_id
+        snapshot["intent_nodes"].append(intent)
+        snapshot["execution_nodes"].append(execution)
+        if index > 1:
+            snapshot["schedulable_edges"].append(
+                {
+                    "derived_from": ["EVD-dag-001"],
+                    "edge_id": f"SED-scale-{index:04d}",
+                    "kind": "depends_on",
+                    "record_type": "schedulable_edge",
+                    "schema_version": "1.0.0",
+                    "source": execution_id,
+                    "target": f"EXN-scale-{index - 1:04d}",
+                }
+            )
+    assert validate_snapshot(snapshot) == ()

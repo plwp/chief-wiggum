@@ -19,6 +19,8 @@ from chief_wiggum.dag import (  # noqa: E402
     validate_snapshot,
 )
 
+MAX_INPUT_BYTES = 16 * 1024 * 1024
+
 
 def _ints(value: str | None) -> list[int]:
     return [] if not value else [int(item) for item in value.replace(",", " ").split()]
@@ -27,6 +29,9 @@ def _ints(value: str | None) -> list[int]:
 def _validate(args: argparse.Namespace) -> int:
     path = Path(args.path)
     raw = path.read_bytes()
+    if len(raw) > MAX_INPUT_BYTES:
+        print(json.dumps({"ok": False, "input_error": f"record exceeds {MAX_INPUT_BYTES} byte limit"}))
+        return 1
     if args.canonical and (encoding_errors := validate_canonical_bytes(raw)):
         print(json.dumps({"ok": False, "errors": [error.to_dict() for error in encoding_errors]}, indent=2))
         return 2
@@ -35,7 +40,7 @@ def _validate(args: argparse.Namespace) -> int:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "input_error": str(exc)}, indent=2))
         return 1
-    record_type = args.record_type or record.get("record_type")
+    record_type = args.record_type or (record.get("record_type") if isinstance(record, dict) else None)
     errors = validate_snapshot(record) if record_type == "graph_snapshot" else validate_record(record, record_type)
     if errors:
         print(json.dumps({"ok": False, "errors": [error.to_dict() for error in errors]}, indent=2))

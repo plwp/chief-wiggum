@@ -38,9 +38,23 @@
         "to_state": {"$ref": "#/$defs/lifecycle_state"},
         "value": {}
       },
-      "allOf": [
-        {"if": {"properties": {"operation_type": {"const": "transition_node"}}}, "then": {"required": ["from_state", "to_state"]}},
-        {"if": {"properties": {"operation_type": {"const": "compensate"}}}, "then": {"required": ["compensates_mutation_id", "replacement_ref"]}}
+      "oneOf": [
+        {"properties": {"operation_type": {"const": "add_intent_node"}, "value": {"$ref": "intent-node.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "remove_intent_node"}}},
+        {"properties": {"operation_type": {"const": "add_intent_edge"}, "value": {"$ref": "intent-edge.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "remove_intent_edge"}}},
+        {"properties": {"operation_type": {"const": "add_execution_node"}, "value": {"$ref": "execution-node.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "add_schedulable_edge"}, "value": {"$ref": "schedulable-edge.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "remove_schedulable_edge"}}},
+        {"properties": {"operation_type": {"const": "add_relation"}, "value": {"$ref": "relation.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "transition_node"}}, "required": ["from_state", "to_state"]},
+        {"properties": {"operation_type": {"const": "record_evidence"}, "value": {"$ref": "evidence-record.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "approve_mutation"}, "value": {"$ref": "approval-record.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "acquire_lease"}, "value": {"$ref": "lease-record.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "release_lease"}}},
+        {"properties": {"operation_type": {"const": "set_control"}, "value": {"$ref": "control-record.schema.json"}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "promote_candidate"}, "value": {"type": "object", "required": ["candidate_group_id", "execution_node_id"], "additionalProperties": false, "properties": {"candidate_group_id": {"$ref": "#/$defs/stable_id"}, "execution_node_id": {"$ref": "#/$defs/stable_id"}}}}, "required": ["value"]},
+        {"properties": {"operation_type": {"const": "compensate"}}, "required": ["compensates_mutation_id", "replacement_ref"]}
       ]
     }
   }

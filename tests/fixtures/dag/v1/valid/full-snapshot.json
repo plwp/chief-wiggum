@@ -130,7 +130,21 @@
       "idempotency_key": "idem:snapshot-001",
       "mutation_id": "MUT-dag-001",
       "operations": [
-        {"op_id": "OPR-dag-001", "operation_type": "record_evidence", "target_ref": "EVD-dag-001"}
+        {
+          "op_id": "OPR-dag-001",
+          "operation_type": "record_evidence",
+          "target_ref": "EVD-dag-001",
+          "value": {
+            "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "evidence_id": "EVD-dag-001",
+            "evidence_type": "tracker_snapshot",
+            "observed_at": "2026-08-22T00:00:00Z",
+            "record_type": "evidence_record",
+            "schema_version": "1.0.0",
+            "source_ref": "tracker:milestone/4",
+            "status": "validated"
+          }
+        }
       ],
       "reason_code": "EV_DEP_DISCOVERED",
       "record_type": "mutation_envelope",

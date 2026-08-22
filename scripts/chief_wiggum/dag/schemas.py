@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,21 @@ from .errors import ContractViolation, ErrorCode
 
 SCHEMA_VERSION = "1.0.0"
 SCHEMA_DIR = Path(__file__).resolve().parents[3] / "schemas" / "dag" / "v1"
+
+
+def _is_datetime(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+_FORMAT_CHECKER = jsonschema.FormatChecker()
+if "date-time" not in _FORMAT_CHECKER.checkers:
+    _FORMAT_CHECKER.checks("date-time")(_is_datetime)
 
 
 @lru_cache(maxsize=1)
@@ -50,8 +66,16 @@ def _pointer(parts: object) -> str:
 
 
 def validate_record(
-    record: Mapping[str, Any], expected_type: str | None = None
+    record: Any, expected_type: str | None = None
 ) -> tuple[ContractViolation, ...]:
+    if not isinstance(record, Mapping):
+        return (
+            ContractViolation(
+                ErrorCode.SCHEMA_INVALID,
+                "DAG record must be a JSON object",
+                phase="schema",
+            ),
+        )
     version = record.get("schema_version")
     if version is None:
         return (
@@ -93,7 +117,11 @@ def validate_record(
                 "record_type",
             ),
         )
-    validator = jsonschema.Draft202012Validator(schema, registry=_registry())
+    validator = jsonschema.Draft202012Validator(
+        schema,
+        registry=_registry(),
+        format_checker=_FORMAT_CHECKER,
+    )
     errors = sorted(validator.iter_errors(record), key=lambda item: list(item.absolute_path))
     return tuple(
         ContractViolation(
