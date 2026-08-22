@@ -201,3 +201,91 @@ description (as today); for other backends it is written to
 frontmatter `epic` field set by `tracker.py group`. The remaining
 `gh`-calling commands (`/seed`, `/implement`, `/implement-wave`,
 `/close-epic`) are a later ticket.
+
+## Dependency verb group (chief-wiggum#371)
+
+The five core verbs (`get` / `list` / `create` / `update` / `comment`) plus
+epic grouping stay the minimal contract every backend must honour. Dependency
+knowledge is a separate, **optional** verb group, so a backend that models
+dependencies natively can expose them and one that cannot says so.
+
+| Verb | Shape | Meaning |
+|---|---|---|
+| `link` | `link(ref, blocked_by) -> None` | Record that `ref` is blocked by `blocked_by` |
+| `unlink` | `unlink(ref, blocked_by) -> None` | Remove that edge |
+| `deps` | `deps(ref) -> Dependencies` | Edges both ways: `.blocked_by`, `.blocks` |
+| `ready` | `ready(query=None) -> list[Issue]` | Open issues with no OPEN blocker |
+| `claim` | `claim(ref, agent_id) -> bool` | Atomically claim; `True` if this agent holds it |
+| `release` | `release(ref, agent_id) -> bool` | Release; `False` if this agent does not hold it |
+
+### Capability discovery
+
+Ask, do not probe:
+
+```python
+from tracker import CAP_CLAIM, get_tracker
+
+backend = get_tracker("acme/app", repo_root=target_root)
+if CAP_CLAIM in backend.capabilities():
+    won = backend.claim(ref, agent_id)
+else:
+    ...  # fall back to the wave lock
+```
+
+`capabilities()` returns a frozenset of `CAP_DEPENDENCIES` (link/unlink/deps),
+`CAP_READY`, and `CAP_CLAIM`. Feature-detecting means an unsupported verb is a
+planned branch rather than an exception path, and it is why callers never need
+`try/except NotImplementedError` around a verb.
+
+From the CLI: `python3 scripts/tracker.py --repo-root <root> capabilities <target>`.
+
+### Per-backend semantics
+
+| | `local` | `github` |
+|---|---|---|
+| `link` / `unlink` / `deps` | native, `blocked_by:` list in YAML frontmatter | emulated, `<!-- BLOCKED-BY ... -->` block in the issue body |
+| `ready` | computed client-side | computed client-side |
+| `claim` / `release` | **supported**, mutual exclusion via `O_EXCL` | **unsupported**, raises `UnsupportedCapability` |
+
+**Why GitHub declines `claim` rather than emulating it.** GitHub offers no
+compare-and-set on assignee, so an assignee-based claim is a read followed by a
+write, and two workers racing for the same issue can both come away believing
+they won. A claim that does not exclude is worse than no claim, because both
+workers then proceed. The backend therefore refuses the verb and reports
+`CAP_CLAIM` as absent, so a caller chooses its own exclusion (today, the wave
+lock) with its eyes open. This is the same fail-closed posture as the rest of
+CW: an unsupported verb is loud, never a silent no-op.
+
+**The per-issue `BLOCKED-BY` block is deliberately distinct** from the
+milestone-level `<!-- DEPENDENCIES -->` block that `chief_wiggum.github`
+parses. That one describes a whole epic's graph in one place; this one records
+the edges of a single issue. Parsing one with the other's reader would silently
+mix epic-wide and per-issue scope.
+
+### Rules that hold on every backend
+
+- **Cycles are refused at link time**, not discovered at schedule time. A cycle
+  makes every node in it permanently unready, so `ready()` would just return a
+  silently shorter list. `link` raises `DependencyCycle` and names the path.
+- **A blocker that does not exist does not block.** A deleted or not-yet-created
+  blocker would otherwise wedge its dependants forever with nothing to close.
+  The same rule applies inside cycle traversal, so linking ahead of an issue's
+  creation is allowed.
+- **`ready()` lists open work only**, and a closed blocker releases its
+  dependants.
+- **`link` leaves the rest of the issue alone** — title, body prose, labels and
+  epic are untouched.
+
+### Epic grouping and dependency edges
+
+They are independent axes. `group()` records *which* epic an issue belongs to;
+dependency edges record *ordering* within (or across) epics. `ready()` does not
+filter by epic — pass a query, or filter `members()` yourself, if a caller
+wants an epic-scoped ready set.
+
+### Not yet wired
+
+This ticket adds the seam. Rewiring `/plan-epic` to write edges instead of
+prose, and `/implement-wave` to schedule from `ready()`, are the payoff
+follow-ups. A `BeadsBackend` (native dependencies, readiness and claiming) is
+what the seam exists to make worth building.
