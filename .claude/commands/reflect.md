@@ -35,8 +35,12 @@ Run the analysis to completion autonomously. **Filing issues is the one checkpoi
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
+TARGET_REPO=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 ### Step 1b: Catch up the Claude-layer cost ingest
@@ -44,7 +48,7 @@ TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 `/reflect`'s own telemetry-health finding (Step 3, "Factory-log health") reads the ledger's `claude_code` layer as-is — a factory that ran on Claude Code but never had its transcripts ingested reads as "no AI cost logged", which is silence, not a measurement (chief-wiggum#345). Fold in a wide catch-up window before the analysis so the finding reflects reality:
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 30 || true
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 30 || true
 ```
 
 30 days (wider than `/implement`'s 7-day catch-up) because `/reflect` looks back across a whole factory run, not one build.
@@ -56,7 +60,7 @@ Fetch merged-PR history (review outcomes + bodies carry gate signal) and run the
 ```bash
 gh --repo "$owner_repo" pr list --state merged --limit 200 \
   --json number,title,body,reviewDecision,labels > "$CW_TMP/prs.json" 2>/dev/null || echo '[]' > "$CW_TMP/prs.json"
-python3 "$CW_HOME/scripts/reflect.py" "$TARGET_REPO" --prs "$CW_TMP/prs.json" --commits "${commits:-400}" --format json > "$CW_TMP/reflection.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/reflect.py" "$TARGET_REPO" --prs "$CW_TMP/prs.json" --commits "${commits:-400}" --format json > "$CW_TMP/reflection.json"
 ```
 
 The report has: `commit_kinds`, `gate_mentions`, `force_bypasses`, `slippage_commits`, `assumptions` (TBD markers), `ratchet` health, `pattern_coverage`, `retrospectives`, and mechanical `findings` seeding your analysis.
@@ -64,7 +68,7 @@ The report has: `commit_kinds`, `gate_mentions`, `force_bypasses`, `slippage_com
 Also run the deferred-rigor trigger check (report-only — see `docs/deferred-rigor.json`, the durable index that replaced chief-wiggum#171/#161's open-issue parking):
 
 ```bash
-python3 "$CW_HOME/scripts/check_deferred_triggers.py" --repo "$TARGET_REPO" --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_deferred_triggers.py" --repo "$TARGET_REPO" --format text
 ```
 
 Each deferred system-layer decision carries a quorum-settled design and a concrete build trigger. A `FIRED` item means its mechanical trigger is now true: file the full issue **from the item's `settled_notes`** (the design is settled — do not relitigate it) in Step 4 alongside the other drafted issues. A `CANDIDATE` item has soft evidence (heuristic counts, matching bug events) — confirm with the human before filing. `UNEVALUATED` items need human judgment and are listed so nothing is silently dropped.
@@ -94,7 +98,7 @@ Prefer a few high-signal issues over many speculative ones. Group related slippa
 Present the drafted issues (titles + one-line rationale). On confirmation (or `--create-issues`):
 
 ```bash
-gh --repo "$(python3 "$CW_HOME/scripts/repo.py" home >/dev/null; echo plwp/chief-wiggum)" \
+gh --repo "$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" home >/dev/null; echo plwp/chief-wiggum)" \
   issue create --title "<title>" --body-file "$CW_TMP/issue-<n>.md" --label reflection --label enhancement
 ```
 
@@ -105,7 +109,7 @@ Report the filed issue URLs and a one-paragraph factory-health summary (what's w
 `/reflect` is itself a validation — record its value (findings) so the cost↔value verdict can judge it. After filing, emit one gate event with the finding count (no-op unless telemetry is enabled; never blocks):
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name reflect \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" emit --event gate --name reflect \
   --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
 ```
 

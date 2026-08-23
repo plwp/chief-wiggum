@@ -24,7 +24,7 @@ feed its ticket plan through the NORMAL epic flow below. See
 ### Step F1: Run the planner (budget is REQUIRED)
 
 ```bash
-python3 "$CW_HOME/scripts/plan_from_debt.py" plan "$owner_repo" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/plan_from_debt.py" plan "$owner_repo" \
   --budget-count 5            # and/or --budget-severity-floor medium and/or --budget-cluster-cap 8
 ```
 
@@ -78,8 +78,12 @@ this epic's acceptance test.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-target_root=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
-backend=$(python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" backend)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+target_root=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+backend=$("${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" backend)
 ```
 
 `$target_root` is the local checkout of the target repo; every `tracker.py`
@@ -96,7 +100,7 @@ this is what makes the workflow backend-agnostic. See `docs/tracker.md` for
 the full interface.
 
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" list "$owner_repo"
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" list "$owner_repo"
 ```
 
 This returns every issue (any state) with full metadata (`ref`, `title`,
@@ -212,7 +216,7 @@ with the tested formatter (it de-dupes and sorts deps so the output always
 matches the parser). This is backend-independent:
 
 ```bash
-DEPS=$(python3 "$CW_HOME/scripts/epic_metadata.py" format-deps '{"42": [], "43": [42], "44": [43], "45": [43], "46": [42]}')
+DEPS=$("${CW_PY:-python3}" "$CW_HOME/scripts/epic_metadata.py" format-deps '{"42": [], "43": [42], "44": [43], "45": [43], "46": [42]}')
 ```
 
 The block is an HTML comment (invisible in rendered markdown) with one line per ticket in the format `#N: [#dep1, #dep2]`; empty brackets `[]` means no dependencies. This block is the **canonical source** for the dependency graph. Do not hand-write it; always generate it with `format-deps` so it round-trips through the parser.
@@ -233,7 +237,7 @@ $DEPS
 EOF
 )"
 else
-  EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "Epic: [Name]")
+  EPIC_SLUG=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" slug "Epic: [Name]")
   mkdir -p "$target_root/docs/epics/$EPIC_SLUG"
   cat > "$target_root/docs/epics/$EPIC_SLUG/epic.md" <<EOF
 # Epic: [Name]
@@ -254,7 +258,7 @@ milestone above already exists, so this only assigns issues to it;
 `epic` field):
 
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" group "Epic: [Name]" "$ref1" "$ref2" "$ref3"
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" group "Epic: [Name]" "$ref1" "$ref2" "$ref3"
 ```
 
 ### Step 7: Offer next steps

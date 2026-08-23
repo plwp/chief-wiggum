@@ -38,9 +38,13 @@ Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/nul
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
 # Capture first and check status so a resolver failure aborts cleanly.
-CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
+CW_CTX=$("${CW_PY:-python3}" "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
   echo "workflow_context failed for $owner_repo" >&2; exit 1; }
 eval "$CW_CTX"
 
@@ -50,7 +54,7 @@ eval "$CW_CTX"
 export CW_TELEMETRY=1
 # Wave-level catch-up ingest: fold in Claude Code turns from BEFORE this wave
 # starts, so no worker's Step-11 slice has to recover them by cwd+window alone.
-python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 7 || true
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days 7 || true
 ```
 
 `$EPIC_DIR/` holds this epic's artifacts:
@@ -66,7 +70,7 @@ python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts --since-days
 **Build the artifact inventory** — one tested pass that discovers prose/model/design artifacts, sets `HAS_FORMAL_MODELS`/`HAS_UI_SPEC`/`HAS_TRANSITION_MAP`, validates model JSON, and runs the unresolved-marker scan:
 
 ```bash
-python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "$EPIC_SLUG" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "$EPIC_SLUG" \
   ${EPIC_DIR:+--epic-dir "$EPIC_DIR"} > "$CW_TMP/inventory.json"
 # Tickets gated by unresolved markers, as a comma-separated list for the planner.
 BLOCKED_TICKETS=$(jq -r '.blocked_tickets | join(",")' "$CW_TMP/inventory.json")
@@ -103,7 +107,7 @@ Parse the dependency graph from the milestone description. `/plan-epic` writes a
 Parse the block into an adjacency list with the tested helper (no brittle inline parsing):
 
 ```bash
-python3 "$CW_HOME/scripts/epic_metadata.py" deps "$owner_repo" --milestone "$epic_name"
+"${CW_PY:-python3}" "$CW_HOME/scripts/epic_metadata.py" deps "$owner_repo" --milestone "$epic_name"
 ```
 
 This emits JSON like:
@@ -118,8 +122,8 @@ milestone surface in `warnings` rather than crashing.
 Compute the wave plan with the tested planner instead of sorting by hand. Feed it the dependency edges, the full epic issue list, the already-closed issues, and the tickets gated by the Step 1 unresolved scan (`blocked_tickets`):
 
 ```bash
-python3 "$CW_HOME/scripts/epic_metadata.py" deps "$owner_repo" --milestone "$epic_name" > "$CW_TMP/deps.json"
-python3 "$CW_HOME/scripts/plan_waves.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/epic_metadata.py" deps "$owner_repo" --milestone "$epic_name" > "$CW_TMP/deps.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/plan_waves.py" \
   --deps-json "$CW_TMP/deps.json" \
   --issues "$EPIC_ISSUES" \
   --closed "$CLOSED_ISSUES" \
@@ -181,7 +185,7 @@ git pull --ff-only
 # LEAK from a previous run — a worker that ran `git checkout` in the main checkout
 # instead of its worktree leaves main on a feature branch, contaminating every base
 # branched off it. Re-run this before each wave's worktree creation and before merging.
-python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
 ```
 
 **If any AI tool fails auth, fix it now.** Do not discover auth failures 20 minutes into a parallel wave. If the user needs to run an interactive login, tell them to run `! codex auth login` or similar.
@@ -190,13 +194,13 @@ python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_RE
 
 **Sweep orphaned worktrees from prior runs** (#329) — no workflow ever ran `git worktree remove`, so a crashed/killed prior session can leave merged-ticket worktrees sitting in the shared checkout indefinitely. Report-only signal, never a blocker: this only removes a worktree whose branch is PROVABLY merged into `$DEFAULT_BRANCH` (`git branch --merged`) — a parked ticket's branch was never merged, so it is never touched without any separate "is this parked" bookkeeping:
 ```bash
-python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
 ```
 
 **Load amnesia context** (`$QUALITY_DIR` already resolved at Step 1, #324; if `$QUALITY_DIR/ratchet.json` exists): replay the recent ratchet journal so this session doesn't re-litigate decisions a previous wave already made (a parked ticket, an amended contract, a known-flaky suite):
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 5
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 5
 ```
 
 ### Step 4: Execute waves
@@ -222,7 +226,7 @@ if [ "$HAS_FORMAL_MODELS" = true ]; then
   # One idempotent call generates every model-derived test artifact (test paths,
   # test plan, contract assertions, Hypothesis skeleton, guard templates) plus a
   # manifest, for whichever models exist in $MODELS_DIR.
-  python3 "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" \
+  "${CW_PY:-python3}" "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" \
     --output "$CW_TMP/formal-test-artifacts/"
 fi
 ```
@@ -259,7 +263,7 @@ For each ticket in the current wave (up to `--max-parallel`):
 
 2. **Compute the shared dependency-cache plan** (#329) — `/implement`'s single-ticket rule ("symlink `node_modules`/`.venv` instead of reinstalling") is UNSAFE here: `--max-parallel` workers install concurrently in separate worktrees, and a raw symlink to a shared tree lets one worker's install (prune/relink/rewrite) race a sibling's read of the same files. Detect the worktree's ecosystem(s) and point each package manager at a SHARED, concurrency-safe cache **store** instead — never at the installed tree itself (`chief_wiggum/dep_provisioning.py` — every ecosystem's cache format uses its own per-entry locking and is designed for exactly this multi-process sharing):
    ```bash
-   DEP_CACHE_ENV=$(python3 "$CW_HOME/scripts/dep_cache.py" plan --worktree "<worker's worktree path>" --shell)
+   DEP_CACHE_ENV=$("${CW_PY:-python3}" "$CW_HOME/scripts/dep_cache.py" plan --worktree "<worker's worktree path>" --shell)
    ```
    Pass `$DEP_CACHE_ENV` (the `export`/`mkdir -p` lines) to the worker to `eval` before it installs dependencies. The worker still runs its own `npm install`/`pip install`/`go mod download` into its OWN `node_modules`/`.venv`/module cache — only the download/extraction cost is shared, so concurrent workers stay isolated (no shared writable install tree) while skipping the network round-trip. If no recognized ecosystem is detected, the plan is empty and the worker installs normally.
 
@@ -281,9 +285,9 @@ For each ticket in the current wave (up to `--max-parallel`):
    - **Costing attribution** (chief-wiggum#345): if the worker's own `/implement` flow reaches its Step-11 transcript ingest, it MUST pass `--cwd-prefix "<its own worktree path>"` (never bare `--repo`) — every worker in this wave shares the same target repo, so a cwd-derived repo match alone would cross-bill a sibling ticket's spend onto this one. `ticket_cost.py actual` should get the matching `--cwd-prefix`/`--since-ts` pair for the same reason.
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
-     - You are in a git worktree. Assert isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.
+     - You are in a git worktree. Assert isolation with `"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"` (it aborts if you are in the main checkout). Never operate on the main checkout.
      - **Bootstrap the guarded Git path before any other Git action**: run
-       `eval "$(python3 "$CW_HOME/scripts/git_safety.py" wave-git-env --main "$TARGET_REPO" --worktree "$PWD")"`,
+       `eval "$("${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" wave-git-env --main "$TARGET_REPO" --worktree "$PWD")"`,
        then `git status --short` to prove the shim is active. Every subsequent
        worker Git operation and child-process invocation now routes through
        `wave-git`. The guard keeps commands in this worktree and rejects active
@@ -337,7 +341,7 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
    REUSE_OK=false
    if [ -f "$VERIFY_JSON" ]; then
      LAST_COMMIT_TS=$(git -C "$worktree" log -1 --format=%ct)
-     VERIFY_TS=$(python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$VERIFY_JSON")
+     VERIFY_TS=$("${CW_PY:-python3}" -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$VERIFY_JSON")
      TEST_STEPS=$(jq '[.steps[] | select(.profile=="test")] | length' "$VERIFY_JSON")
      if [ "$VERIFY_TS" -ge "$LAST_COMMIT_TS" ] && [ "$(jq .ok "$VERIFY_JSON")" = "true" ] && [ "$TEST_STEPS" != "0" ]; then
        REUSE_OK=true
@@ -347,7 +351,7 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
      echo "reusing #$ticket_number's own verify.json (fresh, ok, $TEST_STEPS test step(s)) — skipping a redundant re-run"
    else
      echo "no fresh/ok verify.json for #$ticket_number — falling back to a full re-run"
-     python3 "$CW_HOME/scripts/run_verification.py" --repo "$worktree" --profile test,lint,build --json > "$VERIFY_JSON"
+     "${CW_PY:-python3}" "$CW_HOME/scripts/run_verification.py" --repo "$worktree" --profile test,lint,build --json > "$VERIFY_JSON"
    fi
    ```
    The fallback re-run is never skipped when the artifact is missing, stale (older than the branch's last commit — e.g. the worker amended after verifying), or reports a non-passing/empty result; only a genuinely fresh, green, non-empty artifact is reused.
@@ -355,7 +359,7 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
 4. Verify the branch has the expected commits
 5. **Protected-path guard** (if `$QUALITY_DIR/ratchet.json` exists — `$QUALITY_DIR` already resolved at Step 1, #324; see `docs/ratchet.md`) — workers must not move their own goalposts. Check the worker's diff against the protected pathset (contracts, invariants, integration-test specs, formal models, ratchet state):
    ```bash
-   python3 "$CW_HOME/scripts/ratchet.py" protected --repo "$worktree" --base "origin/$DEFAULT_BRANCH"
+   "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" protected --repo "$worktree" --base "origin/$DEFAULT_BRANCH"
    ```
    If it exits non-zero, **park the ticket**: do NOT merge it this wave. Surface the touched files and the diff to the user — a worker editing a contract to make its implementation pass is exactly what this guard exists to catch. If the user approves the contract change, journal it with `ratchet.py record --amend/--retire` and re-admit the ticket next wave.
 6. **For frontend tickets**: verify screenshots exist in `$TICKET_TMP/ux-screenshots/` and LOOK at them. A worker reporting "design review passed" without screenshots is a worker that skipped the gate. If the epic has a design contract and the screenshots show default-theme output, the ticket is not done.
@@ -374,9 +378,9 @@ SESSION_ID=$(basename "$CW_TMP")
 # holds it (session id, pid, acquired-at) so the operator can tell this is a
 # collision, not a bug. Poll with a visible message rather than hard-failing:
 # a second wave's staging/promote phase is normally short-lived.
-until python3 "$CW_HOME/scripts/wave_lock.py" acquire --repo "$TARGET_REPO" --session "$SESSION_ID" --wave "$wave_number"; do
+until "${CW_PY:-python3}" "$CW_HOME/scripts/wave_lock.py" acquire --repo "$TARGET_REPO" --session "$SESSION_ID" --wave "$wave_number"; do
   echo "Waiting for the wave lock on $TARGET_REPO (held by another /implement-wave run)..." >&2
-  python3 "$CW_HOME/scripts/wave_lock.py" status --repo "$TARGET_REPO" >&2
+  "${CW_PY:-python3}" "$CW_HOME/scripts/wave_lock.py" status --repo "$TARGET_REPO" >&2
   sleep 30
 done
 ```
@@ -390,7 +394,7 @@ done
    git pull --ff-only
    # Re-assert main is pristine before branching the staging base off it (a worker in
    # this wave may have leaked a checkout into main).
-   python3 "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+   "${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" assert-main-pristine --main "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
    git checkout -b "wave-$wave_number-staging"
    ```
 
@@ -411,7 +415,7 @@ Run the integration check **on the staging branch, before promoting to main**:
 
 1. **Full test suite**, captured as structured evidence (chief-wiggum#284) rather than bare prose — this is the run item 5 below reuses instead of paying for the suite twice:
    ```bash
-   python3 "$CW_HOME/scripts/run_verification.py" --repo "$TARGET_REPO" --profile test,lint,build --json > "$CW_TMP/wave-$wave_number-verify.json"
+   "${CW_PY:-python3}" "$CW_HOME/scripts/run_verification.py" --repo "$TARGET_REPO" --profile test,lint,build --json > "$CW_TMP/wave-$wave_number-verify.json"
    ```
    All steps must pass (`jq .ok "$CW_TMP/wave-$wave_number-verify.json"`).
 2. **Linting**: covered by the `lint` profile above (or `golangci-lint run ./...` / `npx eslint` directly) — zero high-severity findings
@@ -419,27 +423,27 @@ Run the integration check **on the staging branch, before promoting to main**:
 4. **Smoke test**: If services can be started, start them and verify health endpoints respond
 5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists — `$QUALITY_DIR` already resolved at Step 1, #324; see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID. **Reuse item 1's run instead of re-executing the suite on the identical staging commit** (chief-wiggum#322, same pattern as `/implement` Step 4b): when item 1's JSON names a `report` for its `test`-profile step and the ratchet config has exactly one suite of the matching parser, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
    ```bash
-   REPORT=$(python3 -c "import json; d=json.load(open('$CW_TMP/wave-$wave_number-verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
-   SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
+   REPORT=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$CW_TMP/wave-$wave_number-verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
+   SUITE=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
    if [ -n "$REPORT" ] && [ -n "$SUITE" ] && [ -f "$TARGET_REPO/$REPORT" ]; then
-     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --reuse-report "$SUITE=$TARGET_REPO/$REPORT"
+     "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --reuse-report "$SUITE=$TARGET_REPO/$REPORT"
    else
-     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+     "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
    fi
-   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
+   "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
    ```
    Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (same record-gated posture as `/implement` Step 8 and `/close-epic` Step 2f, chief-wiggum#208); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings in the wave log. A violation is a hard blocker exactly like a test failure: fix it on the staging branch (or drop the offending ticket's merge from the wave) before promoting. Never resolve a violation by editing the contract, a verifier test, or the journal — a deliberate revision is a journaled human act (`record --amend`/`--amend-verifier`). A `missing_tests` finding caused by a flaky/order-dependent case is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead.
 6. **Single-writer / traceability quick check** (report-only, wave-scoped) — if the epic has `docs/epics/<slug>/`, scope both checkers to what THIS wave changed with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`):
    ```bash
-   python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" \
      --changed-since "$DEFAULT_BRANCH" --format text
-   python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" \
      --changed-since "$DEFAULT_BRANCH" --gate soundness --gate-scope changed --format text
    ```
    Single-writer is report-only: a fast wave-scoped signal, not the authoritative gate — `--changed-since` cannot see a stale writer outside this wave's diff. `/close-epic`'s coverage gate always scans the whole repo and is what actually blocks the epic.
 
    Traceability **soundness blocks**, scoped to this wave's diff (chief-wiggum#379): a `@cw-trace` direction error introduced by a worker is a hard blocker here, fixed on the staging branch before promoting, rather than being discovered an epic later. `--gate-scope changed` keeps epic-doc findings (malformed IDs, orphan BRs) report-only, since no worker may edit goalposts. Surface the remaining findings for the fixer; don't hard-block the wave on those.
-7. **Prevention signals** (#216, report-only — NEVER blocking): `python3 "$CW_HOME/scripts/prevention_signals.py" --repo "$TARGET_REPO" --base "$DEFAULT_BRANCH"` over the merged staging diff — new duplication / dead code introduced / assertion-free tests added, appended to the wave report as reviewer information (same posture as `/implement` Step 7's 3b).
+7. **Prevention signals** (#216, report-only — NEVER blocking): `"${CW_PY:-python3}" "$CW_HOME/scripts/prevention_signals.py" --repo "$TARGET_REPO" --base "$DEFAULT_BRANCH"` over the merged staging diff — new duplication / dead code introduced / assertion-free tests added, appended to the wave report as reviewer information (same posture as `/implement` Step 7's 3b).
 
 If the integration check fails:
 - **Test failure caused by merge**: Fix it on the staging branch. Launch an implementation worker (contract: `docs/worker-contracts.md#implementation-worker`) to diagnose and fix.
@@ -456,12 +460,12 @@ if [ "$HAS_FORMAL_MODELS" = true ]; then
 
   # Check guard clause presence: for each REQUIRES in contracts.json,
   # grep the implementation for a corresponding guard/validation
-  python3 "$CW_HOME/scripts/formal_models.py" validate "$MODELS_DIR/contracts.json"
-  python3 "$CW_HOME/scripts/formal_models.py" validate "$MODELS_DIR/state-machines.json"
+  "${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$MODELS_DIR/contracts.json"
+  "${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$MODELS_DIR/state-machines.json"
 
   # Verify invariants are covered by tests
   # For each invariant ID in the model, grep the test files
-  for inv_id in $(python3 -c "
+  for inv_id in $("${CW_PY:-python3}" -c "
 import json
 sm = json.load(open('$MODELS_DIR/state-machines.json'))
 for inv in sm.get('invariants', []):
@@ -479,14 +483,14 @@ for inv in sm.get('invariants', []):
   # hardcoded pattern from one target repo. code_query.py wraps
   # check_single_writer.py's writer inventory as a per-invariant query, so a
   # future epic's INV-<whatever> is covered without editing this skill.
-  for inv_id in $(python3 -c "
+  for inv_id in $("${CW_PY:-python3}" -c "
 import json
 sm = json.load(open('$MODELS_DIR/state-machines.json'))
 for inv in sm.get('invariants', []):
     if inv.get('controls_field') and inv.get('sanctioned_writers'):
         print(inv['id'])
 "); do
-    result=$(python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" --format json writers "$inv_id")
+    result=$("${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" --format json writers "$inv_id")
     violations=$(echo "$result" | jq '[.facts[] | select(.sanctioned == false)] | length')
     if [ "$violations" -gt 0 ]; then
       echo "  $inv_id: WARN — $violations unsanctioned writer(s)"
@@ -535,14 +539,14 @@ Only proceed to the next wave after the push succeeds.
 
 **Remove this wave's merged-ticket worktrees** (#329) — every ticket branch just merged into `$DEFAULT_BRANCH` above; its worktree has no more local work to do. `gc-worktrees` only removes a worktree whose branch is provably merged, so a PARKED ticket (protected-path violation, unresolved conflict — never merged this wave) survives without any separate bookkeeping; pass `--keep` for any ticket branch you know is parked as defense in depth:
 ```bash
-python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH" \
   $(for b in "${PARKED_BRANCHES[@]:-}"; do echo "--keep $b"; done)
 ```
 
 **Release the wave lock** acquired in 4d — every exit from the staging/promote phase (success, integration-check abort, or fast-forward failure requiring manual intervention) must release it, or the next wave (in this same run) blocks on itself:
 
 ```bash
-python3 "$CW_HOME/scripts/wave_lock.py" release --repo "$TARGET_REPO" --session "$SESSION_ID"
+"${CW_PY:-python3}" "$CW_HOME/scripts/wave_lock.py" release --repo "$TARGET_REPO" --session "$SESSION_ID"
 ```
 
 #### 4h: Update traceability
@@ -554,7 +558,7 @@ After the wave merges, update the traceability matrix for all tickets in the wav
 **Journal the ratchet** (if `$QUALITY_DIR/ratchet.json` exists — `$QUALITY_DIR` already resolved at Step 1, #324): record the merged wave so its passing tests advance the high-water mark, and give the next session amnesia context:
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
   --event wave --ref "wave-$wave_number" --merged \
   --notes "<tickets merged, anything parked and why>"
 ```

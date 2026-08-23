@@ -37,8 +37,12 @@ No existing tool does this. Contract testing covers one boundary. OpenAPI codege
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
+TARGET_REPO=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 ### Step 2: Discovery + Extraction
@@ -46,7 +50,7 @@ TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 Run the extraction orchestrator to find and parse all schemas related to the keyword:
 
 ```bash
-python3 "$CW_HOME/scripts/stitch_extract.py" "$TARGET_REPO" --trace "$keyword" -o "$CW_TMP/extraction.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_extract.py" "$TARGET_REPO" --trace "$keyword" -o "$CW_TMP/extraction.json"
 ```
 
 This uses the pluggable extractor architecture — whichever extractors match the repo's tech stack run automatically (Go+MongoDB, TypeScript, etc.).
@@ -63,8 +67,8 @@ If extraction finds nothing, stop and report: "No schemas found for keyword '$ke
 Run the stack-agnostic differ on the extraction output:
 
 ```bash
-python3 "$CW_HOME/scripts/stitch_diff.py" "$CW_TMP/extraction.json" --format json -o "$CW_TMP/findings.json"
-python3 "$CW_HOME/scripts/stitch_diff.py" "$CW_TMP/extraction.json" --format text -o "$CW_TMP/findings.txt"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_diff.py" "$CW_TMP/extraction.json" --format json -o "$CW_TMP/findings.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_diff.py" "$CW_TMP/extraction.json" --format text -o "$CW_TMP/findings.txt"
 ```
 
 Read `$CW_TMP/findings.txt` for a quick overview. Read `$CW_TMP/findings.json` for structured data.
@@ -76,7 +80,7 @@ If there are zero findings, report "Clean — no mismatches detected" and skip S
 For BREAK/WARN findings, trace how each break was introduced:
 
 ```bash
-python3 "$CW_HOME/scripts/stitch_provenance.py" "$CW_TMP/findings.json" --repo "$TARGET_REPO" --gh-repo "$owner_repo" -o "$CW_TMP/provenance.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_provenance.py" "$CW_TMP/findings.json" --repo "$TARGET_REPO" --gh-repo "$owner_repo" -o "$CW_TMP/provenance.json"
 ```
 
 This enriches each finding with:
@@ -103,7 +107,7 @@ Replace placeholders:
 Write the filled prompt to `$CW_TMP/stitch-prompt.md`, then consult Gemini:
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" gemini "$CW_TMP/stitch-prompt.md" -o "$CW_TMP/stitch-gemini.md"
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" gemini "$CW_TMP/stitch-prompt.md" -o "$CW_TMP/stitch-gemini.md"
 ```
 
 If Gemini times out, retry once. If it fails again, proceed without it — the automated findings are still valuable.
@@ -151,7 +155,7 @@ Same as trace mode.
 ### Step 2: Convention scan
 
 ```bash
-python3 "$CW_HOME/scripts/stitch_extract.py" "$TARGET_REPO" --patterns "$scan_path" -o "$CW_TMP/patterns.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_extract.py" "$TARGET_REPO" --patterns "$scan_path" -o "$CW_TMP/patterns.json"
 ```
 
 ### Step 3: Report

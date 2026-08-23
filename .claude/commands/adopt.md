@@ -22,19 +22,23 @@ The missing entry arrow: survey the repo's shape, elect a footprint, baseline th
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 ```
 
 ### Step 2: Run the adoption sequence
 
 ```bash
-python3 "$CW_HOME/scripts/adopt.py" run "$owner_repo"
+"${CW_PY:-python3}" "$CW_HOME/scripts/adopt.py" run "$owner_repo"
 # or step by step (same defaults; elect FIRST — the election decides where
 # the survey and every later artifact persist):
-python3 "$CW_HOME/scripts/adopt.py" elect "$owner_repo" --mode sidecar [--scope-from-codeowners]
-python3 "$CW_HOME/scripts/adopt.py" survey "$owner_repo"
-python3 "$CW_HOME/scripts/adopt.py" baseline "$owner_repo"
-python3 "$CW_HOME/scripts/adopt.py" grandfather "$owner_repo" [--expiry-days 90] [--owner NAME]
-python3 "$CW_HOME/scripts/adopt.py" record "$owner_repo"
+"${CW_PY:-python3}" "$CW_HOME/scripts/adopt.py" elect "$owner_repo" --mode sidecar [--scope-from-codeowners]
+"${CW_PY:-python3}" "$CW_HOME/scripts/adopt.py" survey "$owner_repo"
+"${CW_PY:-python3}" "$CW_HOME/scripts/adopt.py" baseline "$owner_repo"
+"${CW_PY:-python3}" "$CW_HOME/scripts/adopt.py" grandfather "$owner_repo" [--expiry-days 90] [--owner NAME]
+"${CW_PY:-python3}" "$CW_HOME/scripts/adopt.py" record "$owner_repo"
 ```
 
 What each step writes (all under the #213-resolved meta root — in sidecar mode the target tree gains **nothing**):
@@ -50,7 +54,7 @@ What each step writes (all under the #213-resolved meta root — in sidecar mode
 ### Step 3: Verify and present
 
 ```bash
-python3 "$CW_HOME/scripts/status.py" "$owner_repo"
+"${CW_PY:-python3}" "$CW_HOME/scripts/status.py" "$owner_repo"
 ```
 
 `/status` now shows the Adoption section (brownfield flag, grandfather counts, nearest expiry, EXPIRED warnings). Relay the survey verdicts and the baseline outcome honestly — if the test run failed because dependencies are missing, that IS the baseline; say so.

@@ -43,21 +43,25 @@ Flags (passed through to `scripts/quality_metrics.py`):
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
 ```
 
 If given `owner/repo`, resolve it (clones/pulls into the cache); otherwise the orchestrator defaults to the current repo or uses `--repo`:
 
 ```bash
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")   # only for owner/repo
+TARGET_REPO=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")   # only for owner/repo
 ```
 
 ### Step 2: Run the metric battery
 
 ```bash
-python3 "$CW_HOME/scripts/quality_metrics.py" "$owner_repo" --out "$CW_TMP/metrics"
+"${CW_PY:-python3}" "$CW_HOME/scripts/quality_metrics.py" "$owner_repo" --out "$CW_TMP/metrics"
 # or, for a local path:
-python3 "$CW_HOME/scripts/quality_metrics.py" --repo "$TARGET_REPO" --out "$CW_TMP/metrics"
+"${CW_PY:-python3}" "$CW_HOME/scripts/quality_metrics.py" --repo "$TARGET_REPO" --out "$CW_TMP/metrics"
 ```
 
 The orchestrator runs each engine, writes per-engine JSON (`churn.json`, `complexity.json`, `trend.json`, `survival.json`, `process.json`, `duplication.json`), builds `combined.json`, renders PNG charts, and writes `report.md`. It prints the `report.md` path on stdout.

@@ -14,6 +14,10 @@ Fetch the latest AI model IDs and library versions, update `models.md`, and push
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 ```
 
 ### Step 1: Fetch latest model information
@@ -83,14 +87,14 @@ Read the current `$CW_HOME/models.md` and update it with the new information:
 - Google — `ai.google.dev/gemini-api/docs/pricing`
 - Zhipu (GLM) — `docs.z.ai/guides/overview/pricing`
 
-For tiered models, record the base (≤200k-context) rate. Leave a row `null` + `verified: false` if a price genuinely can't be confirmed (don't fabricate). `python3 -c "import json;json.load(open('config/model_pricing.json'))"` must stay valid.
+For tiered models, record the base (≤200k-context) rate. Leave a row `null` + `verified: false` if a price genuinely can't be confirmed (don't fabricate). `"${CW_PY:-python3}" -c "import json;json.load(open('config/model_pricing.json'))"` must stay valid.
 
 ### Step 3.6: Refresh the language support matrix doc (`docs/languages.md`)
 
 `docs/languages.md` is mechanically rendered from `config/languages.json` (#162) — never hand-edit it. If the matrix changed (a new language, tier promotion, dep_profile change), regenerate the doc so it can't drift from the artifact:
 
 ```bash
-python3 "$CW_HOME/scripts/render_languages_doc.py"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_languages_doc.py"
 ```
 
 ### Step 3.7: Refresh the design-taste brief (`docs/design-taste.md`)

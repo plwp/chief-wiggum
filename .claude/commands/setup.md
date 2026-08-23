@@ -14,6 +14,10 @@ Check that all tools required by chief-wiggum are installed and working.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 ```
 
 ### Step 1: Run dependency check
@@ -21,28 +25,28 @@ CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
 Run the check script to see what's installed and what's missing:
 
 ```bash
-python3 $CW_HOME/scripts/check_deps.py --for core
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core
 ```
 
 Dependency checks are profile-based. Use only the profiles the current harness and workflow need. Rather than guessing the profiles, ask the checker to recommend them for the workflows and provider roles in play (`check_deps.py` is the source of truth for the mapping):
 
 ```bash
 # Recommend the flags for a workflow + the provider roles it uses, then run the check:
-RECO=$(python3 $CW_HOME/scripts/check_deps.py --recommend --workflow implement --role reviewer)
-python3 $CW_HOME/scripts/check_deps.py $RECO
-python3 $CW_HOME/scripts/check_deps.py --list-profiles   # see every available profile
+RECO=$("${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --recommend --workflow implement --role reviewer)
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py $RECO
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --list-profiles   # see every available profile
 ```
 
 The profiles map to flags like:
 
 ```bash
-python3 $CW_HOME/scripts/check_deps.py --for core
-python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-code
-python3 $CW_HOME/scripts/check_deps.py --for core --provider codex --provider gemini
-python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
-python3 $CW_HOME/scripts/check_deps.py --for transcription
-python3 $CW_HOME/scripts/check_deps.py --for browser-validation
-python3 $CW_HOME/scripts/check_deps.py --for vertex
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core --provider claude-code
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core --provider codex --provider gemini
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for transcription
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for browser-validation
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for vertex
 ```
 
 ### Step 2: Report results
@@ -69,12 +73,12 @@ If anything is missing, ask the user if they want to install it. For each missin
 If the user agrees, run the installer for specific missing tools:
 
 ```bash
-python3 $CW_HOME/scripts/install_deps.py --tool <tool_name>
+"${CW_PY:-python3}" $CW_HOME/scripts/install_deps.py --tool <tool_name>
 ```
 
 For Vertex AI packages:
 ```bash
-python3 $CW_HOME/scripts/install_deps.py --vertex
+"${CW_PY:-python3}" $CW_HOME/scripts/install_deps.py --vertex
 ```
 
 ### Step 4: Set up secrets in Keychain
@@ -83,14 +87,14 @@ For any missing secrets, help the user store them securely in macOS Keychain. Se
 
 Show current keychain status:
 ```bash
-python3 $CW_HOME/scripts/keychain.py list
+"${CW_PY:-python3}" $CW_HOME/scripts/keychain.py list
 ```
 
 To store each key (prompts securely, no echo):
 ```bash
-python3 $CW_HOME/scripts/keychain.py set ANTHROPIC_API_KEY
-python3 $CW_HOME/scripts/keychain.py set OPENAI_API_KEY
-python3 $CW_HOME/scripts/keychain.py set GEMINI_API_KEY
+"${CW_PY:-python3}" $CW_HOME/scripts/keychain.py set ANTHROPIC_API_KEY
+"${CW_PY:-python3}" $CW_HOME/scripts/keychain.py set OPENAI_API_KEY
+"${CW_PY:-python3}" $CW_HOME/scripts/keychain.py set GEMINI_API_KEY
 ```
 
 Explain where to get each key:
@@ -100,8 +104,8 @@ Explain where to get each key:
 
 For Vertex AI (alternative to GEMINI_API_KEY):
 ```bash
-python3 $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_PROJECT
-python3 $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
+"${CW_PY:-python3}" $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_PROJECT
+"${CW_PY:-python3}" $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
 ```
 
 ### Step 5: Final verification
@@ -109,15 +113,15 @@ python3 $CW_HOME/scripts/keychain.py set GOOGLE_CLOUD_LOCATION
 Re-run the check script to confirm everything is green:
 
 ```bash
-python3 $CW_HOME/scripts/check_deps.py --for core
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core
 ```
 
 For workflow-specific preflight checks:
 ```bash
-python3 $CW_HOME/scripts/check_deps.py --for implement
-python3 $CW_HOME/scripts/check_deps.py --for transcription
-python3 $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
-python3 $CW_HOME/scripts/check_deps.py --for vertex
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for implement
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for transcription
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for core --provider claude-interactive
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for vertex
 ```
 
 Provider roles are configured in `$CW_HOME/config/providers.json`. Validate role dependencies by running the matching provider profiles before a workflow starts.
@@ -127,9 +131,9 @@ Provider roles are configured in `$CW_HOME/config/providers.json`. Validate role
 A target repo with no CI lets red tests, lint errors, and uninstallable deps sit unnoticed on `main`. Check whether the repo has any GitHub Actions workflow, and offer to scaffold a minimal, stack-appropriate one (checkout → install deps → build → test → lint) if it has none:
 
 ```bash
-python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --report
+"${CW_PY:-python3}" "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --report
 # If MISSING, scaffold one (idempotent; won't overwrite an existing workflow without --force):
-python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --scaffold
+"${CW_PY:-python3}" "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --scaffold
 ```
 
 The stack is auto-detected (Go / Python / Node — possibly several) from `go.mod`, `pyproject.toml`/`requirements.txt`/`setup.py`, and `package.json`. Commit the generated `.github/workflows/ci.yml` so CI runs on the next push.
@@ -139,9 +143,9 @@ The stack is auto-detected (Go / Python / Node — possibly several) from `go.mo
 Per-ticket implementation costing (`docs/ticket-cost.md`) needs the full Claude Code layer ingested — orchestrator turns AND every delegated turn — not just consult spend; chief-wiggum#345 found this had silently never run. Check, then provision if needed:
 
 ```bash
-python3 $CW_HOME/scripts/check_deps.py --for telemetry
+"${CW_PY:-python3}" $CW_HOME/scripts/check_deps.py --for telemetry
 # If the Claude layer has never been ingested:
-python3 $CW_HOME/scripts/install_deps.py --tool telemetry-capture
+"${CW_PY:-python3}" $CW_HOME/scripts/install_deps.py --tool telemetry-capture
 ```
 
 The default route is the **transcript** ingest — zero-config and retroactive over whatever's already on disk at `~/.claude/projects/`; `install_deps.py --tool telemetry-capture` runs a bounded 7-day catch-up automatically. The OTEL console-exporter route is optional and suits headless (`claude -p`) runs only — it fights an interactive TUI session (`docs/factory-telemetry.md`). **`/setup` prints the OTEL env + wrapper snippet for operators who want it but never edits `~/.claude/settings.json` or a shell rc file — those stay the operator's own files.**

@@ -23,16 +23,20 @@ One screen, derived live at call time — never a hand-maintained doc: footprint
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 ```
 
 ### Step 2: Run the status script
 
 ```bash
-python3 "$CW_HOME/scripts/status.py" "$owner_repo"          # owner/repo (resolved via repo.py)
+"${CW_PY:-python3}" "$CW_HOME/scripts/status.py" "$owner_repo"          # owner/repo (resolved via repo.py)
 # or, for a local path:
-python3 "$CW_HOME/scripts/status.py" --repo "$TARGET_REPO"
+"${CW_PY:-python3}" "$CW_HOME/scripts/status.py" --repo "$TARGET_REPO"
 # machine-readable:
-python3 "$CW_HOME/scripts/status.py" --repo "$TARGET_REPO" --format json
+"${CW_PY:-python3}" "$CW_HOME/scripts/status.py" --repo "$TARGET_REPO" --format json
 ```
 
 The script derives everything live from the target's resolved meta locations (`scripts/artifacts.py`) and **never writes anything**. Gate verdicts come from `check_gate_validation.check` (never the record's own status field); wired state comes from the tamper-evident ratchet journal's gate-authority events.

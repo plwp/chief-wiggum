@@ -17,12 +17,16 @@ Interactive brainstorming session that explores a project's requirements, establ
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
 ```
 
 Resolve the target repo:
 ```bash
-TARGET_DIR=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+TARGET_DIR=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 ### Step 1: Understand the project
@@ -123,7 +127,7 @@ Registry patterns are proven, opinionated architecture + process shapes CW can s
 Load the selectable catalog:
 
 ```bash
-python3 "$CW_HOME/scripts/apply_pattern.py" --catalog --format json
+"${CW_PY:-python3}" "$CW_HOME/scripts/apply_pattern.py" --catalog --format json
 ```
 
 Each entry has an `id`, `category`, and `applies_when` (the selection criteria). **Reason over `applies_when` against this product's shape** and propose the patterns that fit — think in groups: the **saas-infra floor** (`multi-tenant-isolation` for any multi-tenant product; `provider-neutral-adapter` for any swappable external vendor), the **monetization surface** you're actually charging for (`tiered-subscription`, `frictionless-onboarding`), and always the **monitoring group** underneath (`engagement-instrumentation`) so the rest are measurable. Note `depends_on` — selecting a pattern pulls its floor.
@@ -135,7 +139,7 @@ Each entry has an `id`, `category`, and `applies_when` (the selection criteria).
 For each confirmed pattern, install its contract pack into the target repo (binding what you can from the architecture decisions; leave required params you can't confirm as `TBD:`):
 
 ```bash
-python3 "$CW_HOME/scripts/apply_pattern.py" <id> --target-dir "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/apply_pattern.py" <id> --target-dir "$TARGET_REPO" \
   --param <k>=<v> ...   # e.g. --param billing_provider=stripe --param tenant_key=provider_id
 ```
 
@@ -152,7 +156,7 @@ Write a consultation prompt to `$CW_TMP/consultation-prompt.md` asking for a cri
 
 Fire the `explorer` quorum (providers run in parallel, with retries + output validation) using `consult_ai.py`:
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" --role explorer "$CW_TMP/consultation-prompt.md" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role explorer "$CW_TMP/consultation-prompt.md" \
   --context "$CW_TMP/architecture-decisions.md" --output-dir "$CW_TMP/consult"
 ```
 

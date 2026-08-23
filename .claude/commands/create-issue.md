@@ -18,7 +18,11 @@ Create a well-structured GitHub issue with clear title, description, acceptance 
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-target_root=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+target_root=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 `$target_root` is the local checkout of the target repo. Every `tracker.py`
@@ -65,7 +69,7 @@ Using the template at `$CW_HOME/templates/issue.md`, fill in:
 - **Nominal cost**: After picking the Effort size, derive the estimate mechanically — never from intuition:
 
   ```bash
-  python3 "$CW_HOME/scripts/ticket_cost.py" estimate --effort <S|M|L|XL>
+  "${CW_PY:-python3}" "$CW_HOME/scripts/ticket_cost.py" estimate --effort <S|M|L|XL>
   ```
 
   Stamp its output line verbatim into the template's `Nominal cost` field. An `UNRESOLVED (N prior ... tickets logged, need >=3)` answer is a valid value — leave it as-is; it self-calibrates as `/implement` records actuals on merged PRs (see `docs/ticket-cost.md`). Never replace UNRESOLVED with a guessed dollar figure.
@@ -90,7 +94,7 @@ public artifact, and #317's decision is to disclose AI authorship on every one
 of them rather than argue Art. 50(2) (see `docs/ai-act-posture.md`):
 
 ```bash
-ref=$(python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" create "$owner_repo" \
+ref=$("${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" create "$owner_repo" \
   --title "$title" \
   --body "$body" \
   --label "$label1" --label "$label2" \
@@ -103,7 +107,7 @@ a local frontmatter `epic` field as appropriate):
 
 ```bash
 if [ -n "$milestone" ]; then
-  python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" update "$ref" --set "epic=$milestone"
+  "${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" update "$ref" --set "epic=$milestone"
 fi
 ```
 
@@ -112,7 +116,7 @@ fi
 Fetch the created issue back to show its URL/path and confirm the fields landed:
 
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" get "$ref"
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$target_root" get "$ref"
 ```
 
 Show the created issue's `url_or_path` and ref. Ask if the user wants to:

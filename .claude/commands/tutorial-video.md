@@ -39,12 +39,16 @@ it with one command, so it must stay accurate as the UI evolves.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
-TARGET=$(python3 "$CW_HOME/scripts/repo.py" resolve owner/repo)
-python3 "$CW_HOME/scripts/check_deps.py" --for tutorial-video
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
+TARGET=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve owner/repo)
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_deps.py" --for tutorial-video
 ```
 
-If dependencies are missing, install them (`python3 "$CW_HOME/scripts/install_deps.py"`)
+If dependencies are missing, install them (`"${CW_PY:-python3}" "$CW_HOME/scripts/install_deps.py"`)
 — do not punt to the user.
 
 ### Step 1: Get the app running
@@ -134,7 +138,7 @@ add a mapping and re-produce.
 Validate the schema:
 
 ```bash
-python3 "$CW_HOME/scripts/tutorial_video.py" validate "$CW_TMP/tutorial-<slug>/storyboard.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/tutorial_video.py" validate "$CW_TMP/tutorial-<slug>/storyboard.json"
 ```
 
 ### Step 4: Dry-run the storyboard
@@ -142,7 +146,7 @@ python3 "$CW_HOME/scripts/tutorial_video.py" validate "$CW_TMP/tutorial-<slug>/s
 Execute every action against the live app without recording:
 
 ```bash
-python3 "$CW_HOME/scripts/tutorial_video.py" record "$CW_TMP/tutorial-<slug>/storyboard.json" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/tutorial_video.py" record "$CW_TMP/tutorial-<slug>/storyboard.json" \
   --out "$CW_TMP/tutorial-<slug>/dry" --dry-run
 ```
 
@@ -153,7 +157,7 @@ validate before acting.
 ### Step 5: Produce
 
 ```bash
-python3 "$CW_HOME/scripts/tutorial_video.py" produce "$CW_TMP/tutorial-<slug>/storyboard.json" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/tutorial_video.py" produce "$CW_TMP/tutorial-<slug>/storyboard.json" \
   --out-dir "$CW_TMP/tutorial-<slug>/out"
 ```
 
@@ -175,7 +179,7 @@ downgrade, and say so in your summary.
 Never ship a video you have not looked at. Verify it yourself:
 
 ```bash
-python3 "$CW_HOME/scripts/tutorial_video.py" probe "$CW_TMP/tutorial-<slug>/out/tutorial.mp4" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/tutorial_video.py" probe "$CW_TMP/tutorial-<slug>/out/tutorial.mp4" \
   --frames-dir "$CW_TMP/tutorial-<slug>/frames" --frame-interval 5
 ```
 

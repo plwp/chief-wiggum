@@ -26,16 +26,20 @@ Everything else runs autonomously.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
 # Capture first and check status so a resolver failure aborts cleanly.
-CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
+CW_CTX=$("${CW_PY:-python3}" "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
   echo "workflow_context failed for $owner_repo" >&2; exit 1; }
 eval "$CW_CTX"
 ```
 
 Fetch all issues in the epic via `tracker.py` instead of calling `gh issue` directly — this is what makes the skill usable against non-github tracker backends, including a repo whose upstream has issues disabled entirely (see `docs/tracker.md`):
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" members "$owner_repo" "$epic_name"
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" members "$owner_repo" "$epic_name"
 ```
 This returns every ticket currently grouped into the epic — `ref`, `title`, `body`, `state`, `labels`, `assignee`, `epic`, `url_or_path` — for ANY backend (`gh:owner/repo#N` refs for `github`, `local:docs/issues/NNNN.md` for `local`). Filter client-side to `state == "open"` (matching the previous open-only behavior) unless you deliberately want closed tickets in view too. Keep each ticket's `ref` — Step 8 needs it to post the architecture comment.
 
@@ -55,7 +59,7 @@ ls "$TARGET_REPO/docs/adr/" 2>/dev/null
 # FAIL CLOSED: if the resolver errors (malformed election/scope), STOP and fix the
 # config — an empty META_ROOT must never silently fall through to the heuristic
 # and misclassify an adopted repo as a new product.
-META_ROOT=$(python3 "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | python3 -c "import sys,json; print(json.load(sys.stdin)['meta_root'])") || {
+META_ROOT=$("${CW_PY:-python3}" "$CW_HOME/scripts/artifacts.py" show "$TARGET_REPO" --format json | "${CW_PY:-python3}" -c "import sys,json; print(json.load(sys.stdin)['meta_root'])") || {
   echo "artifacts.py show failed for $TARGET_REPO — fix the election/config before the new-product check (never classify on a resolver error)" >&2
   exit 1
 }
@@ -72,7 +76,7 @@ else
   # the journal: absent/stub/unbaselined = no history; real = journaled
   # baseline; invalid/error = unreadable — treated as ESTABLISHED so a broken
   # state file never silently stamps DST invariants (flag it at Step 6 instead).
-  RATCHET_STATE=$(python3 "$CW_HOME/scripts/ratchet.py" state --repo "$TARGET_REPO" || echo error)
+  RATCHET_STATE=$("${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" state --repo "$TARGET_REPO" || echo error)
   case "$RATCHET_STATE" in
     absent|stub|unbaselined) RATCHET_HISTORY=false ;;
     *)                       RATCHET_HISTORY=true ;;
@@ -88,7 +92,7 @@ The fallback is a **default the operator can override**, not a proof — a repo 
 **Adopted patterns.** If the product has adopted registry patterns (via `/apply-pattern`), load their invariant clusters now — they are **pre-derived contracts** this epic must not re-invent:
 
 ```bash
-python3 "$CW_HOME/scripts/apply_pattern.py" --target-dir "$TARGET_REPO" --list-adopted --format json
+"${CW_PY:-python3}" "$CW_HOME/scripts/apply_pattern.py" --target-dir "$TARGET_REPO" --list-adopted --format json
 ```
 
 Each adopted pattern reports its `id`, its invariant cluster (stable `INV-<ABBR>-NNN` ids + statements), its `contract_pack` doc (`docs/patterns/<id>/invariants.md`), and any `unresolved` (unbound required) parameters. Note which of these patterns **this epic realizes** — you'll fold their clusters into `invariants.md` (Step 4e) by their existing stable ids, thread their integration tests (Step 4g), and any `unresolved` parameter is a hard blocker to resolve before contracts depend on it (`check_unresolved.py` already gates the stamped `TBD:` markers).
@@ -108,7 +112,7 @@ Write findings to `$CW_TMP/codebase-context.md`.
 **Hotspot + coupling context (measured, not declared — #187).** Refresh `docs/quality/hotspots.json` so architectural scrutiny concentrates where change-risk is *measured* from git history, not guessed:
 
 ```bash
-python3 "$CW_HOME/scripts/hotspot_discovery.py" --repo "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/hotspot_discovery.py" --repo "$TARGET_REPO" \
   --out "$TARGET_REPO/docs/quality/hotspots.json" --format text
 ```
 
@@ -132,7 +136,7 @@ Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
 Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation). Every provider gets the **identical** prompt above — the value is in natural divergence, not roleplay — but `config/providers.json` may additionally assign each provider a bounded **review lens** (`role.lenses`, e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters live in `config/lenses.json`). When a lens is assigned, `consult_ai.py` appends that provider's charter as a clearly-delimited `## Your charter` section — the shared prompt itself never changes. This decorrelates the reviewers on purpose: a soundness-refuter and a completeness-checker reading the *same* context reliably surface disjoint findings instead of converging on the same top issue three times:
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/architect-prompt.md \
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/architect-prompt.md \
   --output-dir "$CW_TMP/architect-consult" --cwd "$TARGET_REPO"
 ```
 
@@ -164,7 +168,7 @@ For every entity and API endpoint the epic touches, define:
 
 **Verifier-in-the-loop**: After the worker produces `contracts.json`, validate it:
 ```bash
-python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/contracts.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/contracts.json"
 ```
 If validation fails, feed the errors back to the worker and have it fix the JSON. Repeat until valid.
 
@@ -182,8 +186,8 @@ For every state machine in the epic, define:
 
 **Verifier-in-the-loop**: Validate and run graph analysis:
 ```bash
-python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/state-machines.json"
-python3 "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/state-machines.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
 ```
 Check for: unreachable states, dead states (non-terminal with no outgoing transitions), terminal states that aren't reachable. Fix any issues before proceeding.
 
@@ -192,16 +196,16 @@ Check for: unreachable states, dead states (non-terminal with no outgoing transi
 Once the structured JSON models are valid, generate the prose markdown mechanically:
 
 ```bash
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
 ```
 
 This produces `contracts.md` and `state-machines.md` in the same format as before — the downstream pipeline and human reviewers see identical prose. The difference is that the prose is now a derived artifact, not the source of truth.
 
 **Also generate the machine and test views** for the commit:
 ```bash
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view all --output "$CW_TMP/models/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view all --output "$CW_TMP/models/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view all --output "$CW_TMP/models/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view all --output "$CW_TMP/models/"
 ```
 
 #### 4d. UI Specification — structured model (`ui-spec.json`)
@@ -240,12 +244,12 @@ Include the worked example from `$CW_HOME/docs/formal-methods/examples/kanban-ap
 
 **Verifier-in-the-loop**: After the worker produces `ui-spec.json`, validate it:
 ```bash
-python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/ui-spec.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/ui-spec.json"
 ```
 
 **Generate human-readable UI spec**: Render the UI spec to a page-by-page markdown doc:
 ```bash
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/ui-spec.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/ui-spec.json" --view human --output "$CW_TMP/"
 ```
 
 #### 4e. Invariants (`invariants.md`)
@@ -420,7 +424,7 @@ For every deployable and connector this epic's tickets introduce or change, defi
 
 **Verifier-in-the-loop**: validate against the schema as soon as the worker produces it:
 ```bash
-python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/architecture.json" --type architecture
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/architecture.json" --type architecture
 ```
 Fix and re-validate until clean. The deeper consistency checks (dangling endpoints, retired-node edges, unlabelled externals, tier inversion, label propagation, cross-artifact drift) run in Step 5a below — schema validity here is necessary but not sufficient.
 
@@ -442,7 +446,7 @@ For every AI feature this epic's tickets introduce or change, from the epic's ow
 
 Validate with the gate immediately, report-only (never blocks Step 4, mirrors 4i's verifier-in-the-loop pattern):
 ```bash
-python3 "$CW_HOME/scripts/check_ai_act.py" "$TARGET_REPO"
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_ai_act.py" "$TARGET_REPO"
 ```
 Fix any `fail`-severity finding (malformed feature, undeclared `eu_scope`, an Annex III tier with no named derogation condition, a `transparency_art50` tier with no Art. 50 obligation cited) before Step 6. A `prohibited`-tier hit is not a finding to document around — route the feature away from the prohibited practice before this epic ships it.
 
@@ -456,18 +460,18 @@ Run structural validation on the formal models:
 
 ```bash
 # Schema validation
-python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/contracts.json"
-python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/state-machines.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/contracts.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/state-machines.json"
 
 # Graph analysis — check for structural defects
-python3 "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
 
 # Unresolved-unknowns scan — TBD/UNRESOLVED/PLACEHOLDER markers across all
 # artifacts, plus UNVERIFIED where it INTRODUCES a claim ("UNVERIFIED: the live
 # webhook secret", "UNVERIFIED whether ..."). Bare `UNVERIFIED` is NOT a marker:
 # it is also ordinary domain vocabulary (a FactStatus enum member, a
 # state-machine state) — chief-wiggum#350.
-python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 
 # External-interface provenance — REPORT-ONLY (chief-wiggum#350). An operation
 # marked `"external": true` describes a THIRD-PARTY interface this system calls,
@@ -480,7 +484,7 @@ python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
 # design, so an epic that integrates a third-party system and declares nothing
 # passes this gate vacuously — the note is what makes that visible. If this
 # epic calls anything you do not own, go back and declare those operations.
-python3 "$CW_HOME/scripts/check_interface_provenance.py" "$CW_TMP" --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_interface_provenance.py" "$CW_TMP" --format text
 
 # Traceability soundness gate — orphan business rules + dangling/invalid links in
 # the contract/invariant graph (see docs/traceability.md). Code/test coverage is
@@ -497,20 +501,20 @@ python3 "$CW_HOME/scripts/check_interface_provenance.py" "$CW_TMP" --format text
 # Author the IDs before running this, don't run it against stub/TBD prose.
 # (Suspect-link propagation and `--write-links` are a /close-epic concern — no
 # code/test links exist to record yet at this stage.)
-python3 "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_traceability.py" "$CW_TMP" --gate soundness --format text
 
 # Single-writer soundness gate — validates that "single write path"/"single source
 # of truth" invariants carry well-formed `controls_field` + `sanctioned_writers`
 # metadata, and (with --source) surfaces every existing writer of the controlled
 # fields so a second, unsanctioned mutator is visible at design time (see
 # docs/single-writer.md). Degrades gracefully when no such invariant exists.
-python3 "$CW_HOME/scripts/check_single_writer.py" "$CW_TMP" --source "$TARGET_REPO" --gate soundness --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_single_writer.py" "$CW_TMP" --source "$TARGET_REPO" --gate soundness --format text
 ```
 
 **Architecture model consistency (`docs/system/architecture.json`, when 4i produced or updated one).** Report-only — this checker is NOT gated in `/architect` yet (ADR-fh-07: gating requires the #168 gate-validation protocol plus a passing `#184` validation record for `check_architecture`, which freezes its `CHECKS` inventory as a prerequisite). Run it so findings are visible at design time even though they don't block:
 
 ```bash
-python3 "$CW_HOME/scripts/check_architecture.py" "$CW_TMP/architecture.json" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_architecture.py" "$CW_TMP/architecture.json" \
   --system-contracts "$TARGET_REPO/docs/system/system-contracts.json" --format text
 ```
 
@@ -521,7 +525,7 @@ Any invariant that says "single write path" or "single source of truth" for a fi
 **DST-readiness baseline (new products only — `IS_NEW_PRODUCT=true`).** Run the scanner report-only against the target repo to document the current wall-clock/random-call baseline — this NEVER blocks (advisory forever, per the design decision behind it):
 
 ```bash
-python3 "$CW_HOME/scripts/check_dst_readiness.py" "$TARGET_REPO" --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_dst_readiness.py" "$TARGET_REPO" --format text
 ```
 
 Note the finding counts in Step 6's summary (a fresh repo should have ~zero; a real baseline scan may surface some pre-existing calls worth folding into the seam allowlist or fixing before the first ticket lands). This never gates — `--gate` exists in the script for a repo that later opts in via its own ratchet config, but `/architect` never passes it.
@@ -554,7 +558,7 @@ Prepare a validation prompt at `$CW_TMP/validate-artifacts-prompt.md` containing
 Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation). As in Step 3, `reviewer` may carry a lens assignment in `config/providers.json` — check its `lenses` map before assuming two providers scoped alike:
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifacts-prompt.md \
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifacts-prompt.md \
   --output-dir "$CW_TMP/validate-artifacts" --cwd "$TARGET_REPO"
 ```
 
@@ -562,8 +566,8 @@ Responses land at `$CW_TMP/validate-artifacts/reviewer-<provider>.md` (status in
 
 Review both responses. **Union the findings rather than looking for agreement** — a lensed quorum is expected to produce disjoint findings; only cross-verify against the models when two providers make contested/contradictory claims about the same fact. Apply clear improvements to the JSON models. Regenerate prose if models changed:
 ```bash
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
 ```
 
 Flag genuine disagreements for the user in Step 6.
@@ -571,7 +575,7 @@ Flag genuine disagreements for the user in Step 6.
 **Record validation telemetry.** The review's cost already flows (its reviewer consults + the worker tokens); record its *value* — emit one gate event with the count of substantive findings the multi-AI validation raised (contradictions, missing transitions, incomplete invariants, uncovered ACs — exclude nits). No-op unless telemetry is enabled, never blocks:
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name architect-review \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" emit --event gate --name architect-review \
   --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
 ```
 
@@ -596,8 +600,8 @@ The Mermaid diagrams and counterexample traces are the primary review artifacts 
 
 Ask for feedback. Iterate if needed. If the user requests changes, update the JSON models and regenerate prose:
 ```bash
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
-python3 "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/contracts.json" --view human --output "$CW_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/render_models.py" "$CW_TMP/state-machines.json" --view human --output "$CW_TMP/"
 ```
 
 This is the most important review in the entire pipeline — getting the contracts wrong here means every ticket inherits the wrong constraints.
@@ -609,7 +613,7 @@ Install the artifacts with the tested helper. It validates the required artifact
 ```bash
 cd "$TARGET_REPO"
 git checkout "$DEFAULT_BRANCH" && git pull --ff-only
-python3 "$CW_HOME/scripts/install_epic_artifacts.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/install_epic_artifacts.py" \
   --source "$CW_TMP" --epic-dir "$EPIC_DIR" \
   --epic-name "$epic_name" --epic-slug "$EPIC_SLUG" --target-repo "$TARGET_REPO"
 git push
@@ -646,9 +650,9 @@ gh pr merge --squash --auto
 **Ratchet baseline** (see `docs/ratchet.md`): once the artifacts are on the default branch, enter the approved contract definitions into the quality ratchet's high-water mark so implementation workers can't weaken them silently. If the target repo has no ratchet config yet, initialize it first:
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" init --repo "$TARGET_REPO"   # no-op if config exists
-python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --no-tests
-python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" init --repo "$TARGET_REPO"   # no-op if config exists
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --no-tests
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
   --event baseline --ref "$EPIC_SLUG" --merged --notes "epic architecture approved"
 git -C "$TARGET_REPO" add docs/quality && git -C "$TARGET_REPO" commit -m "chore: ratchet baseline for $EPIC_SLUG" && git -C "$TARGET_REPO" push
 ```
@@ -661,7 +665,7 @@ For each ticket in the epic (using the `ref` values from Step 1's `tracker.py me
 
 ```bash
 # Reuse the installer's issue_comment, or post the equivalent below:
-python3 "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" comment "$ref" "## Epic Architecture
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" comment "$ref" "## Epic Architecture
 
 This ticket is part of **[Epic Name]**. Before implementing, read:
 - [Contracts](../docs/epics/$EPIC_SLUG/contracts.md) — REQUIRES/ENSURES for APIs and entities

@@ -35,7 +35,11 @@ Run to completion. The one judgement call is **parameter binding** — resolve e
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+TARGET_REPO=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 ### Step 2: Pick the pattern and inspect its cluster
@@ -43,7 +47,7 @@ TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 List specified patterns and read the chosen one's manifest so you know its parameters and invariant cluster:
 
 ```bash
-python3 -c "import json; d=json.load(open('$CW_HOME/patterns/registry.json')); [print(p['id'], '—', p.get('invariants','')) for p in d['patterns']]"
+"${CW_PY:-python3}" -c "import json; d=json.load(open('$CW_HOME/patterns/registry.json')); [print(p['id'], '—', p.get('invariants','')) for p in d['patterns']]"
 cat "$CW_HOME/patterns/<id>/manifest.json"
 ```
 
@@ -56,7 +60,7 @@ Read `manifest.json`'s `parameters`. For each, resolve a value from the **target
 ### Step 4: Install
 
 ```bash
-python3 "$CW_HOME/scripts/apply_pattern.py" <id> \
+"${CW_PY:-python3}" "$CW_HOME/scripts/apply_pattern.py" <id> \
   --target-dir "$TARGET_REPO" \
   --param resource=subscription --param projected_field=plan   # example
 ```
@@ -71,7 +75,7 @@ Dry-run first (`--dry-run`) to preview. This writes, in the target repo:
 Confirm the unresolved gate sees any `TBD:` markers (so dependent work can't build on a guess):
 
 ```bash
-python3 "$CW_HOME/scripts/check_unresolved.py" "$TARGET_REPO/docs/patterns/<id>/invariants.md"
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_unresolved.py" "$TARGET_REPO/docs/patterns/<id>/invariants.md"
 ```
 
 Then report the adopted cluster and point the user at the next step: **`/architect`** folds this cluster into the epic's `invariants.md` by stable id, and the traceability / single-writer / ratchet gates hold it from there.
