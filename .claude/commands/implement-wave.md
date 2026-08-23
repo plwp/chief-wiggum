@@ -420,7 +420,13 @@ Run the integration check **on the staging branch, before promoting to main**:
    All steps must pass (`jq .ok "$CW_TMP/wave-$wave_number-verify.json"`).
 2. **Linting**: covered by the `lint` profile above (or `golangci-lint run ./...` / `npx eslint` directly) — zero high-severity findings
 3. **Build**: covered by the `build` profile above — verify the project compiles/builds cleanly
-4. **Smoke test**: If services can be started, start them and verify health endpoints respond
+4. **Boot-and-hit** (chief-wiggum#352) — start the assembled service and probe **every route the epic declares**, not just a health endpoint. `go build ./...` and green package tests never compose the binary and ask it for a route: a duplicate `mux.Handle("/")` once panicked at startup and was found on deploy as a crash-loop, with `cmd/server` carrying no test files at all. Reaching a base URL is itself the startup check.
+   ```bash
+   # Boot however this target boots, then point $BASE_URL at it.
+   "${CW_PY:-python3}" "$CW_HOME/scripts/check_boot_and_hit.py" "$EPIC_DIR" \
+     --source "$TARGET_REPO" ${BASE_URL:+--base-url "$BASE_URL"} --format text
+   ```
+   Report-only. `not_served` (404/405) means a declared route was never wired; `unreachable` means the service did not answer at all. Mutating methods are NOT probed by default (firing POST/DELETE at a live service has side effects) and parameterized paths need `--path-param id=123` rather than a guessed value. **Without `--base-url` this is `inapplicable`, not a pass** — "if services can be started" is exactly the conditional that let the wiring bug through, so record the skip in the wave log instead of treating it as a clean smoke.
 5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists — `$QUALITY_DIR` already resolved at Step 1, #324; see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID. **Reuse item 1's run instead of re-executing the suite on the identical staging commit** (chief-wiggum#322, same pattern as `/implement` Step 4b): when item 1's JSON names a `report` for its `test`-profile step and the ratchet config has exactly one suite of the matching parser, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
    ```bash
    REPORT=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$CW_TMP/wave-$wave_number-verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
