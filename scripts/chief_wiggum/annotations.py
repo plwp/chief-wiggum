@@ -10,6 +10,9 @@ ID:
   out of prose ``invariants.md``.
 - ``@cw-emits <binding-name>`` (#170, ``scripts/check_instrumentation.py``) —
   marks the code site that emits a declared telemetry span/event/metric.
+- ``@cw-smoke <system-name> [case=<substring>]`` (#353,
+  ``scripts/check_external_smoke.py``) — marks the test that performs ONE real
+  round-trip against a declared external system.
 
 Both are namespaced ``@cw-*`` tags read comment-agnostically (the regex
 matches wherever the text appears; callers are expected to place it inside a
@@ -54,6 +57,31 @@ ATTR_RE = re.compile(r"(\w+)=([^\s]+)")
 _BINDING_TOKEN = r"[A-Za-z0-9_][A-Za-z0-9_./:-]*"
 EMITS_TAG_RE = re.compile(
     rf"@cw-emits\s+(?P<names>{_BINDING_TOKEN}(?:\s*,\s*{_BINDING_TOKEN})*)",
+    re.IGNORECASE,
+)
+
+# --- @cw-smoke (#353) ---------------------------------------------------------
+#
+# `@cw-smoke <system-name> [case=<substring>]` marks the test that performs ONE
+# real round-trip against an external system declared `"external": true` with an
+# `external_system` name in contracts.json (#350).
+#
+#     // @cw-smoke SCP case=TestSCPLiveVenueInfo
+#     func TestSCPLiveVenueInfo(t *testing.T) { ... }
+#
+# `case=` pins which junit result case proves the smoke ran, so the checker can
+# tell "ran and passed" from "was skipped because credentials were absent" —
+# the distinction the whole gate turns on. Without it the checker falls back to
+# matching the annotated FILE against the result case's file/classname, which
+# works within one language and is reported as the weaker match it is.
+#
+# ONE system per tag, deliberately unlike @cw-emits' comma list: a single test
+# that round-trips two external systems is not one smoke, it is two smokes
+# sharing a function, and each deserves its own annotation and its own verdict.
+_SYSTEM_TOKEN = r"[A-Za-z0-9_][A-Za-z0-9_.\-]*"
+SMOKE_TAG_RE = re.compile(
+    rf"@cw-smoke\s+(?P<system>{_SYSTEM_TOKEN})"
+    rf"(?:\s+case=(?P<case>[^\s]+))?",
     re.IGNORECASE,
 )
 

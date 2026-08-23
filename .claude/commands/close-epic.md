@@ -335,6 +335,31 @@ Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 pro
 
 **Report-only** (always exits 0 here, per `docs/gate-rollout.md` — this gate has no `--gate` wired into any workflow yet, and won't until a dry-run against a real shipped target and a `docs/quality/validation/check_ai_act.json` record exist per `docs/gate-validation.md`). Surface the finding count in the close report under `### EU AI Act`, distinguishing the four states: `pass` (all declared features clean), `findings` (a `fail`-severity hit — a `prohibited` tier, an undocumented Annex III derogation claim, an undeclared `eu_scope`, or a **missing artifact entirely** — Art. 6(4): absence is never a silent pass), `inapplicable` (the artifact exists with an explicit empty `features: []` — a genuine, recorded "no AI functionality here"), `error` (the artifact exists and could not be parsed). A `missing` classification_status on a product with an obvious AI feature (a chat widget, a recommendation surface) is worth flagging prominently in the close report even though it doesn't block — it means the Art. 6(4) assessment was never made, which the operator should fix before, not after, this epic ships.
 
+### Step 2j3: External-integration smoke (report-only) — chief-wiggum#353
+
+Every external system this epic declares needs **one real round-trip**, and a skip must be LOUD. Four production bugs in one epic — a turn-flow bug, a missing system prompt, a trailing-newline token that made `Bearer <token>\n` an invalid HTTP header, and a guessed route — each needed exactly one real end-to-end interaction to surface, and none was required to pass. The unit tests were green the whole time, because they never touched the real system.
+
+Run it with the epic's test results so it can tell "ran and passed" from "was skipped":
+
+```bash
+SMOKE_RESULTS="$REPORT"   # the junit-xml the verification step already produced, if any
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_external_smoke.py" "$EPIC_DIR" \
+  --source "$TARGET_REPO" \
+  ${SMOKE_RESULTS:+--results "$SMOKE_RESULTS"} \
+  --format text
+```
+
+**Report-only** (exits 0 here, per `docs/gate-rollout.md`; no `--gate` until a `docs/quality/validation/check_external_smoke.json` record exists). Surface the per-system state in the close report under `### External integrations`, and treat the states as genuinely different things:
+
+- **`verified`** — the smoke ran and passed. The only state that is evidence.
+- **`unverified`** — the smoke was **SKIPPED** (credentials absent, build tag off). This is the state the ticket exists for: report it as a visible gap in the close report, never as a green tick. An integration nobody exercised is not a working integration.
+- **`failed`** — the smoke ran and failed.
+- **`never_ran`** — annotated, but no case in the results matched it. If the annotation is unpinned, add `case=<test name>` so matching is exact.
+- **`no_smoke`** — no `@cw-smoke <system>` site anywhere. Nothing performs a real round-trip against that system.
+- **`smoke_declared`** — a static-only answer (no `--results`, or an unpinned annotation whose only evidence is other passing tests in the same file). Explicitly **not** `verified`.
+
+`inapplicable` means the epic declares no external system at all (`"external": true` with an `external_system` name — chief-wiggum#350). If this epic integrates a third-party system and this reports `inapplicable`, the gap is the *declaration*, not the smoke — see #350's declaration-gap note in Step 2j and fix it there.
+
 ### Step 2k: Remediation-epic acceptance — the inventory re-run (blocking)
 
 **Only for remediation epics** — epics whose ticket bodies carry `DEBT-` ids
