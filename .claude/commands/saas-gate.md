@@ -22,10 +22,14 @@ The gate reports five statuses so it never claims more than it proved: `pass`, `
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+TARGET_REPO=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
-`saas_gate.py` auto-detects the stack (Go/Node/Python) from the repo. Confirm the dependency profile if needed: `python3 "$CW_HOME/scripts/check_deps.py" --for core`.
+`saas_gate.py` auto-detects the stack (Go/Node/Python) from the repo. Confirm the dependency profile if needed: `"${CW_PY:-python3}" "$CW_HOME/scripts/check_deps.py" --for core`.
 
 ### Step 2: Get a running app
 
@@ -36,7 +40,7 @@ If you genuinely cannot start the app, run the gate without `--base-url` — it 
 ### Step 3: Run the gate
 
 ```bash
-python3 "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" \
   --base-url "$BASE_URL" --auth-mode cookie \
   --rate-limit-path /login --markdown
 ```

@@ -68,7 +68,7 @@ Chief Wiggum dependency checks are profile-based:
 Example:
 
 ```bash
-python3 scripts/check_deps.py --for core --provider claude-interactive
+"${CW_PY:-python3}" scripts/check_deps.py --for core --provider claude-interactive
 ```
 
 ## Secret Management
@@ -137,7 +137,8 @@ Temp files go in `~/.chief-wiggum/tmp/`, **not** `/tmp/`. Each session must crea
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("$CW_PY" "$CW_HOME/scripts/env.py" tmp)
 ```
 
 All temp file references (`approach-prompt.md`, `approach-codex.md`, etc.) go inside `$CW_TMP`. Per-ticket files go in `$CW_TMP/<ticket-number>/` to avoid collisions when implementing multiple tickets in one session (see `/implement` Step 1).
@@ -149,9 +150,16 @@ All temp file references (`approach-prompt.md`, `approach-codex.md`, etc.) go in
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 ```
 
-In practice, skills reference scripts as `python3 "$CW_HOME/scripts/..."` after resolving `CW_HOME` once. Use `python3 "$CW_HOME/scripts/env.py" tmp` for session temp directories and `python3 "$CW_HOME/scripts/env.py" slug "$epic_name"` for `docs/epics/<slug>` paths.
+**Runtime interpreter**: a bare `python3` is whatever the shell happens to resolve — an unpinned, per-machine accident. Homebrew bumping `python3` from 3.11 to 3.13 silently strands every dependency installed for the old one, and CW discovers it as `ModuleNotFoundError: keyring` inside a backgrounded consult, where the exit is instant and the output file never appears (chief-wiggum#374). `env.py python` resolves and caches a **validated** interpreter — one that actually has the profile's imports — preferring a `CW_PYTHON` override.
+
+The rule, which `tests/test_skill_interpreter_pinning.py` enforces: **every python invocation in a skill runs under `$CW_PY`**, with exactly two exceptions — the two bootstrap calls above (chicken-and-egg; `env.py` imports nothing outside the stdlib), and anything running the TARGET repo's own tooling (`cd "$TARGET_REPO" && python3 tests/browser-use/run.py`, `python3 "$TUT_STATUS_SCRIPT"`), which belongs to the target's interpreter and not CW's.
+
+Call sites use `"${CW_PY:-python3}"` rather than `"$CW_PY"`, so a bash block run in a fresh shell that never saw the bootstrap degrades to exactly today's behaviour instead of failing on an empty command.
+
+In practice, skills reference scripts as `"${CW_PY:-python3}" "$CW_HOME/scripts/..."` after resolving `CW_HOME` and `CW_PY` once. Use `"${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp` for session temp directories and `"${CW_PY:-python3}" "$CW_HOME/scripts/env.py" slug "$epic_name"` for `docs/epics/<slug>` paths.
 
 ## Target Repo Resolution
 

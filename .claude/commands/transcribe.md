@@ -17,7 +17,11 @@ Transcribe an audio or video recording of a client conversation and parse it int
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
 ```
 
 ### Step 1: Validate input
@@ -40,7 +44,7 @@ ffmpeg -i "$file_path" -vn -acodec pcm_s16le -ar 16000 -ac 1 $CW_TMP/transcribe-
 Run local Whisper transcription. Use the `base` model by default (fast, good enough for English):
 
 ```bash
-python3 -c "
+"${CW_PY:-python3}" -c "
 import whisper
 model = whisper.load_model('base')
 result = model.transcribe('$audio_path', fp16=False)
@@ -52,7 +56,7 @@ for seg in result['segments']:
 If the file is a video AND the user wants screenshot cross-references, use the full transcription script:
 
 ```bash
-python3 "$CW_HOME/scripts/transcribe_with_screenshots.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/transcribe_with_screenshots.py" \
   --audio "$audio_path" \
   --video "$file_path" \
   --out $CW_TMP/transcription/

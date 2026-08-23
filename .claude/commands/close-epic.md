@@ -24,9 +24,13 @@ Individual ticket quality is handled by `/implement`. This skill validates what 
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
 # Capture first and check status so a resolver failure aborts cleanly.
-CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
+CW_CTX=$("${CW_PY:-python3}" "$CW_HOME/scripts/workflow_context.py" "$owner_repo" --epic "$epic_name" --shell) || {
   echo "workflow_context failed for $owner_repo" >&2; exit 1; }
 eval "$CW_CTX"
 ```
@@ -41,7 +45,7 @@ Load epic artifacts from `$EPIC_DIR/`:
 **Load the target's own review authorities (#264)** — an adopted repo's house rules are as binding on the epic-level review as CW's own checklist:
 
 ```bash
-python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
   --phase review > "$CW_TMP/review-authorities.txt" || {
   echo "review-authorities binding is malformed — refusing to close the epic against CW defaults alone" >&2
   exit 2; }
@@ -51,7 +55,7 @@ Exit 2 means the binding exists but is unreadable — stop and fix it rather tha
 
 Fetch the epic's tickets via `tracker.py` instead of calling `gh issue` directly — this is what makes the skill usable against non-github tracker backends, including a repo whose upstream has issues disabled entirely (see `docs/tracker.md`):
 ```bash
-python3 "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" members "$owner_repo" "$epic_name"
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" members "$owner_repo" "$epic_name"
 ```
 This returns every ticket currently grouped into the epic — `ref`, `title`, `state`, `labels`, ... — for ANY backend.
 
@@ -62,7 +66,7 @@ Verify all tickets are closed (`state == "closed"` for every returned ticket). I
 Run the audit orchestrator once up front. It coordinates the deterministic audits — traceability coverage, unresolved markers + blocked tickets, transition-map verification (when a state machine model exists), optional stitch findings, mutation-tooling availability, and the integration test run — and writes `close-epic-manifest.json` + `close-epic-report.md`. **It exits non-zero if the epic cannot be closed** (integration tests failed, or unresolved markers still block tickets):
 
 ```bash
-python3 "$CW_HOME/scripts/close_epic_audit.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/close_epic_audit.py" \
   --epic-dir "$EPIC_DIR" --target-repo "$TARGET_REPO" \
   --output-dir "$CW_TMP/close-epic"
 ```
@@ -76,7 +80,7 @@ The manifest carries `target_sha` — the target repo's HEAD at the moment this 
 Parse and audit the traceability matrix with the tested helper. It returns per-status counts, coverage %, and the gap list (rows with no test, or `missing`/`failing` status):
 
 ```bash
-python3 "$CW_HOME/scripts/traceability.py" audit "$EPIC_DIR/traceability.md"
+"${CW_PY:-python3}" "$CW_HOME/scripts/traceability.py" audit "$EPIC_DIR/traceability.md"
 ```
 
 Then, for each acceptance criterion the audit flags as a gap (or still `covered` rather than `passing`):
@@ -84,7 +88,7 @@ Then, for each acceptance criterion the audit flags as a gap (or still `covered`
 1. Run the specific test referenced in the row and verify it passes.
 2. Record the verified status with the updater (`passing` / `failing` / `missing`):
    ```bash
-   python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" --ticket 43 --status passing --ac "Create order"
+   "${CW_PY:-python3}" "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" --ticket 43 --status passing --ac "Create order"
    ```
 
 Report:
@@ -111,7 +115,7 @@ if [ "$(git -C "$TARGET_REPO" rev-parse HEAD)" = "$(jq -r .target_sha "$MANIFEST
 else
   # HEAD moved since Step 1b (the manifest no longer describes the current
   # tree) — this is the ONLY case that re-runs the scan.
-  python3 "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$EPIC_DIR/models/state-machines.json" \
+  "${CW_PY:-python3}" "$CW_HOME/scripts/verify_transitions.py" "$TARGET_REPO" "$EPIC_DIR/models/state-machines.json" \
     --output "$CW_TMP/transition-map-final.json" --format json > /dev/null
 fi
 jq -r '.outcome as $o | .summary as $s |
@@ -150,7 +154,7 @@ MANIFEST="$CW_TMP/close-epic/close-epic-manifest.json"
 if [ "$(git -C "$TARGET_REPO" rev-parse HEAD)" = "$(jq -r .target_sha "$MANIFEST")" ]; then
   jq -r '.unresolved[] | "\(.file):\(.location) [\(.marker)] \(.text)  blocks: \(.tickets | join(", "))"' "$MANIFEST"
 else
-  python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
+  "${CW_PY:-python3}" "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format text
 fi
 ```
 
@@ -161,7 +165,7 @@ Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the
 Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, and before Step 2f passes `--gate-verifier-tests` to `ratchet.py check`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e/2f keep their existing enforcement unchanged. **One process checks all three gates** (#323) — `check_gate_validation.py` accepts multiple gate names and verifies the shared ratchet journal chain once for the whole call, instead of three separate processes each re-walking the same chain from genesis:
 
 ```bash
-GATE_VALIDATION=$(python3 "$CW_HOME/scripts/check_gate_validation.py" \
+GATE_VALIDATION=$("${CW_PY:-python3}" "$CW_HOME/scripts/check_gate_validation.py" \
   check_traceability check_single_writer ratchet \
   --validation-dir "$CW_HOME/docs/quality/validation" --format json)
 echo "$GATE_VALIDATION"
@@ -181,7 +185,7 @@ If a checker that was previously wired blocking (`check_gate_validation.py ... -
 Prove every contract/invariant is realized, guarded by code, and verified by a test — from the `@cw-trace` annotations (see `docs/traceability.md`). Only pass `--gate coverage` if Step 2c2's `$TRACEABILITY_VALIDATED` is `true`; otherwise drop `--gate coverage` and report the finding instead. **One invocation does both the coverage scan and the sidecar write** (#323 — `--write-links` is a no-op when the gate doesn't pass, so it always rides the same run instead of a second full annotation scan of the whole repo moments later):
 
 ```bash
-python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --write-links --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --write-links --format text
 ```
 
 **Uncovered contracts** (no code `@cw-trace guards/ensures`) and **untested contracts** (no test `@cw-trace verifies`) are findings — the contract isn't proven implemented/tested. Dangling annotations (a tag referencing an ID that no longer exists) indicate a refactor left a stale link; fix the link or the ID. Degrades gracefully when the epic uses no annotations.
@@ -197,7 +201,7 @@ python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$TARGET_R
 For every invariant that declares a **single write path** / **single source of truth** (carrying `controls_field` + `sanctioned_writers` metadata — see `docs/single-writer.md`), prove no second mutator exists. This catches the class of bug where a pre-existing control (e.g. a legacy admin `ChangePlan` dropdown) is a second writer of a field an epic's invariant said had one atomic write path — something traceability and the ratchet cannot see, because they check contract↔code↔test *links* and the pass-set, not *who writes a field*. Only pass `--gate coverage` if Step 2c2's `$SINGLE_WRITER_VALIDATED` is `true`; otherwise drop `--gate coverage` and report the finding instead:
 
 ```bash
-python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" --gate coverage --format text
 ```
 
 Any writer of a controlled field whose enclosing symbol/file is **not** in `sanctioned_writers` is a hard-blocking violation — either route it through the sanctioned path or add it to (and re-justify) the invariant's sanctioned set. Test-file writes are treated as fixtures, not violations. Degrades gracefully when the epic declares no single-write-path invariants.
@@ -209,15 +213,15 @@ Any writer of a controlled field whose enclosing symbol/file is **not** in `sanc
 **Reuse Step 1b's verification run instead of paying for the suite twice** (chief-wiggum#322, same pattern as `/implement` Step 4b) — `close_epic_audit.py` already ran `ver.verify(repo, ["test"])` on this exact `$TARGET_REPO` commit and recorded it in `close-epic-manifest.json`'s `verification.steps`. When that run named a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
 
 ```bash
-REPORT=$(python3 -c "import json; d=json.load(open('$CW_TMP/close-epic/close-epic-manifest.json')); v=d.get('verification') or {}; print(next((s['report'] for s in v.get('steps', []) if s['profile']=='test' and s.get('report')), ''))")
-SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
+REPORT=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$CW_TMP/close-epic/close-epic-manifest.json')); v=d.get('verification') or {}; print(next((s['report'] for s in v.get('steps', []) if s['profile']=='test' and s.get('report')), ''))")
+SUITE=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
 if [ -n "$REPORT" ] && [ -n "$SUITE" ] && [ -f "$TARGET_REPO/$REPORT" ]; then
-  python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --reuse-report "$SUITE=$TARGET_REPO/$REPORT"
+  "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO" --reuse-report "$SUITE=$TARGET_REPO/$REPORT"
 else
-  python3 "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
+  "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$TARGET_REPO"
 fi
-python3 "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
-python3 "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" recent --repo "$TARGET_REPO" --n 10   # per-wave/ticket history for the retrospective
 ```
 
 Pass `--gate-verifier-tests` only if Step 2c2's `$RATCHET_VALIDATED` is `true`; otherwise drop the flag (the check still *prints* `weakened_verifier_tests`/`removed_verifier_tests` findings report-only — surface them in the close report) and direct the operator to the gate-validation protocol, same as 2d/2e.
@@ -225,10 +229,10 @@ Pass `--gate-verifier-tests` only if Step 2c2's `$RATCHET_VALIDATED` is `true`; 
 A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. A `weakened_verifier_tests`/`removed_verifier_tests` violation (chief-wiggum#206, channel C1c) means a test annotated `@cw-trace verifies` — the executable expression of a contract — was rewritten or dropped behind its still-green test ID; fix the code, or if the verifier test was *deliberately* revised, journal it via `ratchet.py record --amend-verifier <ref>` (a human act, same semantics as `--amend` for contracts). A `missing_tests` entry caused by a genuinely flaky/order-dependent case (not a real regression) is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead; state the quarantine count (and nearest expiry) in the close report so it isn't discovered later. `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
   --ref "$EPIC_SLUG" --merged --amend CTR-xxx-001 --retire INV-xxx-002 \
   --notes "<why the contract changed, link to the decision>"
-python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
   --ref "$EPIC_SLUG" --retire-case 'pytest::tests/test_flaky.py::*' \
   --retire-case-reason "order-dependent shared state" --retire-case-owner plwp \
   --retire-case-expiry 2026-11-01   # quarantine a flaky class (#278)
@@ -241,7 +245,7 @@ Otherwise, once the check passes, record the epic close (same command without `-
 An epic's quality is only as durable as the enforcement layer that keeps it green on `main`. Report whether the target repo has any GitHub Actions workflow at all — a repo with no CI lets red tests, lint errors, and uninstallable deps merge unnoticed:
 
 ```bash
-python3 "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --report
+"${CW_PY:-python3}" "$CW_HOME/scripts/ci_scaffold.py" --repo "$TARGET_REPO" --report
 ```
 
 This is **report-only** (always exits 0, per `docs/gate-rollout.md`) — surface a `MISSING` finding in the close report, don't block on it. It also prints the detected stack(s); `/setup` can scaffold a minimal CI workflow (`--scaffold`) for a repo that has none.
@@ -251,7 +255,7 @@ This is **report-only** (always exits 0, per `docs/gate-rollout.md`) — surface
 For SaaS products, validate non-functional requirements (security headers + CSRF posture, auth rate-limiting, tenant isolation, health + structured logging) against the running app. Start the app if needed (don't punt), then:
 
 ```bash
-python3 "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" --base-url "$BASE_URL" --gate --markdown
+"${CW_PY:-python3}" "$CW_HOME/scripts/saas_gate.py" --repo "$TARGET_REPO" --base-url "$BASE_URL" --gate --markdown
 ```
 
 It reports five statuses (`pass`/`fail`/`warn`/`skipped`/`not_applicable`); a real `fail` (e.g. missing CSP, a cross-tenant data leak) blocks the epic close, while `warn`/`skipped` are surfaced but don't block. See `/saas-gate` for the full check list (tenant isolation, performance, data integrity need the live multi-user app).
@@ -271,7 +275,7 @@ Launch a **review-worker** (contract: `docs/worker-contracts.md#review-worker`) 
 Run the same prompt through the reviewer quorum for divergence, then reconcile the two into one findings list:
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer "$CW_TMP/security-review-prompt.md" --output-dir "$CW_TMP/security-review" --cwd "$TARGET_REPO"
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role reviewer "$CW_TMP/security-review-prompt.md" --output-dir "$CW_TMP/security-review" --cwd "$TARGET_REPO"
 ```
 
 Triage every finding like the other gates: a confirmed exploitable issue is **blocking** (fix before close); a plausible-but-unproven one is **parked for the human** with the `file:line` and the concrete attack. Never close a user-facing/auth/money epic on an unreviewed security surface. Skip only when the epic is purely internal/back-office with **no new external surface** — and say so explicitly in the close report.
@@ -279,7 +283,7 @@ Triage every finding like the other gates: a confirmed exploitable issue is **bl
 **Log a real finding as an escape.** When this adversarial review (or the cross-surface/UX review in Step 9) confirms a genuine bug that an *earlier* gate should have caught — the ticket's own tests/review, `traceability`, `ratchet`, `check_single_writer` — that's exactly the class of miss `caught` counters can't see: the gate reported clean while a real bug shipped anyway. Log it so `/reflect` can measure gate RECALL, not just catches (no-op unless telemetry is enabled, never blocks):
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
   --summary "reset endpoint leaks account existence via timing" --severity high \
   --missed-by ticket-gate --found-in close-epic-review --ticket 42 --fixed
 ```
@@ -291,7 +295,7 @@ python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
 Two signals the literature converged on for AI-generated code degradation: **elevated 2-week churn** (code reverted/reworked soon after authoring — GitClear; DORA 2024 stability drop) and **rising production duplication** (copy/paste written to be added, not reused). Run them over the target as a standing guardrail on top of the one-off `/code-metrics` audit:
 
 ```bash
-python3 "$CW_HOME/scripts/quality_slop_gate.py" --repo "$TARGET_REPO" --report
+"${CW_PY:-python3}" "$CW_HOME/scripts/quality_slop_gate.py" --repo "$TARGET_REPO" --report
 ```
 
 This is **report-only** (per `docs/gate-rollout.md`): it computes code survival (% of added lines surviving 14/30 days via git-of-theseus) and production-only duplication (% clones, tests excluded, via jscpd), prints each against GitClear's `[VENDOR]` reference bands (survival: pre-AI ~96.9% / AI-assisted ~94.3%; duplication: pre-AI 8.3% / AI 12.3%), and **always exits 0** — it never blocks the close. Surface its output verbatim in the final report under `### AI-slop signals`. It degrades gracefully: if git-of-theseus / jscpd / node are absent it prints `skipped (tool not found)`, and survival self-skips when the repo has < 14 days of history (too young to measure 2-week survival) — report that caveat honestly rather than treating a young repo as a pass. A future blocking mode is behind `--gate` (off by default, and even then only a regression *past* the AI band counts — the bands are directional).
@@ -326,7 +330,7 @@ This is **report-only** — it never blocks the close (a stale tutorial is a fol
 Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 prohibitions, Art. 6(4) derogation documentation, Art. 50 transparency) — the Chapter III high-risk conformity pack is parked (deferred by the Digital Omnibus, harmonised standards don't exist yet):
 
 ```bash
-python3 "$CW_HOME/scripts/check_ai_act.py" "$TARGET_REPO" --format text
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_ai_act.py" "$TARGET_REPO" --format text
 ```
 
 **Report-only** (always exits 0 here, per `docs/gate-rollout.md` — this gate has no `--gate` wired into any workflow yet, and won't until a dry-run against a real shipped target and a `docs/quality/validation/check_ai_act.json` record exist per `docs/gate-validation.md`). Surface the finding count in the close report under `### EU AI Act`, distinguishing the four states: `pass` (all declared features clean), `findings` (a `fail`-severity hit — a `prohibited` tier, an undocumented Annex III derogation claim, an undeclared `eu_scope`, or a **missing artifact entirely** — Art. 6(4): absence is never a silent pass), `inapplicable` (the artifact exists with an explicit empty `features: []` — a genuine, recorded "no AI functionality here"), `error` (the artifact exists and could not be parsed). A `missing` classification_status on a product with an obvious AI feature (a chat widget, a recommendation surface) is worth flagging prominently in the close report even though it doesn't block — it means the Art. 6(4) assessment was never made, which the operator should fix before, not after, this epic ships.
@@ -345,8 +349,8 @@ TICKETED id:
 
 ```bash
 # $QUALITY_DIR already resolved at Step 1 (#324).
-python3 "$CW_HOME/scripts/debt_inventory.py" --repo "$TARGET_REPO" --out "$CW_TMP/close-epic/fresh-debt"
-python3 "$CW_HOME/scripts/plan_from_debt.py" verify --repo "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/debt_inventory.py" --repo "$TARGET_REPO" --out "$CW_TMP/close-epic/fresh-debt"
+"${CW_PY:-python3}" "$CW_HOME/scripts/plan_from_debt.py" verify --repo "$TARGET_REPO" \
   --plan "$QUALITY_DIR/remediation-plan.json" \
   --debt "$CW_TMP/close-epic/fresh-debt/debt.json"
 ```
@@ -411,8 +415,8 @@ If the target repo has Playwright or E2E infrastructure, use it for UI-surface a
 Run `/stitch-audit` for each major feature keyword in the epic. This traces data flow across the full stack and flags where fields get lost, names drift, or validation diverges between layers.
 
 ```bash
-python3 "$CW_HOME/scripts/stitch_extract.py" "$TARGET_REPO" --trace "$keyword" -o "$CW_TMP/stitch-extraction.json"
-python3 "$CW_HOME/scripts/stitch_diff.py" "$CW_TMP/stitch-extraction.json" --format text -o "$CW_TMP/stitch-findings.txt"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_extract.py" "$TARGET_REPO" --trace "$keyword" -o "$CW_TMP/stitch-extraction.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/stitch_diff.py" "$CW_TMP/stitch-extraction.json" --format text -o "$CW_TMP/stitch-findings.txt"
 ```
 
 If findings exist, run provenance and Gemini analysis (same as `/stitch-audit` Steps 4-5).
@@ -615,14 +619,14 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
 Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/close-epic-review-prompt.md \
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/close-epic-review-prompt.md \
   --output-dir "$CW_TMP/close-review" --cwd "$TARGET_REPO"
 ```
 
 Synthesise the reviews via the manifest, never by naming the files:
 
 ```bash
-python3 "$CW_HOME/scripts/synthesize_reviews.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/synthesize_reviews.py" \
   --manifest "$CW_TMP/close-review/reviewer-manifest.json"
 ```
 
@@ -652,7 +656,7 @@ Write the retrospective to `$EPIC_DIR/retrospective.md` and commit.
 **Record validation telemetry.** `/close-epic` is the epic-level validation — record its value. The deterministic audits (traceability, unresolved, single-writer, ratchet) already emit their own gate events; this captures the epic-level LLM analysis (Step 9) + cross-surface/UX findings. Emit one gate event with the total count of substantive findings surfaced across the close (exclude nits) — no-op unless telemetry is enabled, never blocks:
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name close-epic \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" emit --event gate --name close-epic \
   --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
 ```
 

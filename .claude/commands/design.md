@@ -32,9 +32,13 @@ Product-level, once per product. Re-run it to evolve the brand. Epics inherit it
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
 DESIGN_TMP="$CW_TMP/design" && mkdir -p "$DESIGN_TMP"
-TARGET_DIR=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+TARGET_DIR=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 ### Step 1: Gather inputs and pick the path
@@ -74,7 +78,7 @@ Generate each direction with a **design-direction worker** (contract: `docs/work
 ```bash
 for f in "$DESIGN_TMP"/directions/*/*.html; do
   d=$(basename "$(dirname "$f")"); s=$(basename "$f" .html)
-  python3 - "$f" "$DESIGN_TMP/screenshots/$d-$s" <<'EOF'
+  "${CW_PY:-python3}" - "$f" "$DESIGN_TMP/screenshots/$d-$s" <<'EOF'
 import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -108,7 +112,7 @@ The critique is a **review worker** task (contract: `docs/worker-contracts.md#re
 Unless `--skip-critique`: send the approved direction's screenshots to the `design_critic` quorum with the **same prompt** (value is in natural divergence). The role runs its providers in parallel with retries + output validation:
 
 ```bash
-python3 "$CW_HOME/scripts/consult_ai.py" --role design_critic "$DESIGN_TMP/critique-prompt.md" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role design_critic "$DESIGN_TMP/critique-prompt.md" \
   --cwd "$DESIGN_TMP" --output-dir "$DESIGN_TMP/critique"
 ```
 
@@ -128,7 +132,7 @@ Reconcile the three critiques. Fold **high-confidence findings** (a contrast fai
 Tokens are **extracted, not transcribed** — `design.json` comes mechanically from the approved mock's CSS, so the contract cannot drift from what the human approved.
 
 ```bash
-python3 "$CW_HOME/scripts/extract_design.py" extract \
+"${CW_PY:-python3}" "$CW_HOME/scripts/extract_design.py" extract \
   "$DESIGN_TMP/directions/$CHOSEN/<primary-screen>.html" \
   --source-kind net-new \
   --out "$DESIGN_TMP/design.json"
@@ -147,8 +151,8 @@ Then **add what CSS can't carry** by editing `design.json`:
 Validate and render the styleguide:
 
 ```bash
-python3 "$CW_HOME/scripts/extract_design.py" validate "$DESIGN_TMP/design.json"
-python3 "$CW_HOME/scripts/extract_design.py" styleguide "$DESIGN_TMP/design.json" --out "$DESIGN_TMP/styleguide.html"
+"${CW_PY:-python3}" "$CW_HOME/scripts/extract_design.py" validate "$DESIGN_TMP/design.json"
+"${CW_PY:-python3}" "$CW_HOME/scripts/extract_design.py" styleguide "$DESIGN_TMP/design.json" --out "$DESIGN_TMP/styleguide.html"
 ```
 
 Validation must pass before anything is committed. Any decision you could not make (e.g. the user has no logo yet) is recorded as `TBD:` in the relevant `notes` field — `scripts/check_unresolved.py` will gate dependent frontend tickets on it, which is correct.
@@ -171,7 +175,7 @@ Assemble and commit with the tested helper. It re-validates `design.json`, rende
 
 ```bash
 cd "$TARGET_DIR" && git checkout "$DEFAULT_BRANCH" && git pull --ff-only
-python3 "$CW_HOME/scripts/install_design_artifacts.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/install_design_artifacts.py" \
   --design-json "$DESIGN_TMP/design.json" \
   --mockups "$DESIGN_TMP/directions/<chosen>" \
   --screenshots "$DESIGN_TMP/reference" \

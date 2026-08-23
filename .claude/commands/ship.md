@@ -18,7 +18,7 @@ The PR body drafted in Step 5 carries an AI-authorship disclosure line
 automatically — `draft_pr.py` builds it via `chief_wiggum.shipping.build_pr_body`,
 which appends it. If any commit on this branch was authored outside `/implement`
 (so it never ran through that workflow's Disclosure step), append the trailer
-before pushing: `python3 "$CW_HOME/scripts/ai_disclosure.py" commit-trailer --file <msg>`.
+before pushing: `"${CW_PY:-python3}" "$CW_HOME/scripts/ai_disclosure.py" commit-trailer --file <msg>`.
 See `docs/ai-act-posture.md`.
 
 ## Workflow
@@ -28,7 +28,11 @@ See `docs/ai-act-posture.md`.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
 DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
 ```
 
@@ -122,7 +126,7 @@ Guidelines for diagrams:
 The verification runner detects the project type (Go/Node/Python/Make/Docker/Playwright), runs the requested profiles, and emits structured evidence (command, exit code, duration, log tail) for the PR body:
 
 ```bash
-python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint --markdown
+"${CW_PY:-python3}" "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint --markdown
 ```
 
 It exits non-zero if any step fails. **If tests fail, stop and fix them** — do not create a PR with failing tests. Use `--dry-run` first to see the planned commands, and add `build`/`smoke` to `--profile` when relevant.
@@ -139,10 +143,10 @@ Fold this session's token spend into the factory ledger and render the measured 
 
 ```bash
 branch_start_ts=$(git log "$DEFAULT_BRANCH..HEAD" --format=%ct | tail -1)
-python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
   --repo "$owner_repo" --ticket "$issue_number" \
   --since-ts "$branch_start_ts"
-python3 "$CW_HOME/scripts/ticket_cost.py" actual \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ticket_cost.py" actual \
   --repo "$owner_repo" --ticket "$issue_number" \
   --format markdown > "$CW_TMP/implementation-cost.md"
 cat >> "$CW_TMP/implementation-cost.md" <<'EOF'
@@ -160,7 +164,7 @@ If the issue body carries a `Nominal cost: ~$X.XX` line (stamped by `/create-iss
 Assemble the PR body with the tested helper. It folds in the verification evidence, optional model-conformance/UX manifests, the implementation-cost section from Step 4, and a Mermaid diagram (themed with the shared palette automatically), validates the required sections, and can print the `gh pr create` command:
 
 ```bash
-python3 "$CW_HOME/scripts/draft_pr.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/draft_pr.py" \
   --issue "$issue_number" --title "$title" --summary "$summary" \
   --change "Change 1" --change "Change 2" \
   --mermaid-file "$CW_TMP/architecture.mmd" \
@@ -198,7 +202,7 @@ If an issue was specified, it should be linked via "Closes #N" in the body.
 Then, if Step 4 priced the build, **record the calibration point** so standalone PRs feed the estimator too. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure:
 
 ```bash
-python3 "$CW_HOME/scripts/ticket_cost.py" record \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ticket_cost.py" record \
   --repo "$owner_repo" --ticket "$issue_number" --effort "$effort"
 ```
 

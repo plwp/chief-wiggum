@@ -65,13 +65,17 @@ fabricated number.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-TARGET_REPO=$(python3 "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+TARGET_REPO=$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" resolve "$owner_repo")
 ```
 
 ### Step 2: Check the inputs are there
 
 ```bash
-python3 "$CW_HOME/scripts/apply_pattern.py" --target-dir "$TARGET_REPO" --list-adopted
+"${CW_PY:-python3}" "$CW_HOME/scripts/apply_pattern.py" --target-dir "$TARGET_REPO" --list-adopted
 ```
 
 If `tiered-subscription` isn't adopted, note it — the run will still produce a
@@ -90,7 +94,7 @@ data, not the code path.
 ### Step 3: Run the deriver
 
 ```bash
-python3 "$CW_HOME/scripts/business_consultant.py" --repo "$TARGET_REPO"
+"${CW_PY:-python3}" "$CW_HOME/scripts/business_consultant.py" --repo "$TARGET_REPO"
 # auto-uses $TARGET_REPO/docs/cost-inputs.json if present, else the illustrative seed;
 # pass --cost-inputs <path> only to point at a non-default location
 ```
@@ -123,7 +127,7 @@ This derives, purely mechanically (no AI consultation, no network calls):
 ### Step 4: Verify the unresolved seam is gated
 
 ```bash
-python3 "$CW_HOME/scripts/check_unresolved.py" "$TARGET_REPO/docs/pricing.md"
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_unresolved.py" "$TARGET_REPO/docs/pricing.md"
 ```
 
 Confirm it reports the market-comparable-floor marker — that's expected and

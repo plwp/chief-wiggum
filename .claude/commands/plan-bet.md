@@ -32,7 +32,11 @@ Bet-level, once per bet (re-run via `plan_bet.py rebaseline` to revise, never a 
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-CW_TMP=$(python3 "$CW_HOME/scripts/env.py" tmp)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
+CW_TMP=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" tmp)
 PLAN_TMP="$CW_TMP/plan-bet/$bet_id" && mkdir -p "$PLAN_TMP"
 PORTFOLIO_DIR="${portfolio_dir_flag:-${CHIEF_WIGGUM_PORTFOLIO:-$HOME/.chief-wiggum/portfolio}}"
 ```
@@ -63,7 +67,7 @@ Generate each candidate with a **design-direction-shaped worker** (contract: `do
 
 ```bash
 for f in "$PLAN_TMP"/candidates/*/business-model.json; do
-  python3 "$CW_HOME/scripts/plan_bet.py" author "$bet_id" --file "$f" --portfolio-dir "$PORTFOLIO_DIR" --min-failure-modes 5
+  "${CW_PY:-python3}" "$CW_HOME/scripts/plan_bet.py" author "$bet_id" --file "$f" --portfolio-dir "$PORTFOLIO_DIR" --min-failure-modes 5
 done
 ```
 
@@ -82,7 +86,7 @@ This is the **only** step that blocks on the user. Do not add approval gates els
 ### Step 4: Author the binding artifact
 
 ```bash
-python3 "$CW_HOME/scripts/plan_bet.py" author "$bet_id" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/plan_bet.py" author "$bet_id" \
   --file "$PLAN_TMP/candidates/$CHOSEN/business-model.json" \
   --portfolio-dir "$PORTFOLIO_DIR"
 ```

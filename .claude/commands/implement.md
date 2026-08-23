@@ -29,7 +29,7 @@ message you author for this ticket (test commits, implementation commits,
 fix-up commits):
 
 ```bash
-python3 "$CW_HOME/scripts/ai_disclosure.py" commit-trailer --file "$CW_TMP/<ticket>/commit-msg.txt"
+"${CW_PY:-python3}" "$CW_HOME/scripts/ai_disclosure.py" commit-trailer --file "$CW_TMP/<ticket>/commit-msg.txt"
 git commit -F "$CW_TMP/<ticket>/commit-msg.txt"
 ```
 
@@ -73,10 +73,14 @@ Resolve the chief-wiggum install directory and the target repo path. **Never har
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
+# Pin the interpreter CW scripts run under. A bare `python3` is whatever
+# the shell resolves, so a Homebrew bump silently strands keyring /
+# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, ISSUE_NUMBER.
 # Capture first and check status so a resolver failure aborts instead of
 # continuing with unset/stale variables.
-CW_CTX=$(python3 "$CW_HOME/scripts/workflow_context.py" "$owner_repo#$issue_number" --shell) || {
+CW_CTX=$("${CW_PY:-python3}" "$CW_HOME/scripts/workflow_context.py" "$owner_repo#$issue_number" --shell) || {
   echo "workflow_context failed for $owner_repo#$issue_number" >&2; exit 1; }
 eval "$CW_CTX"
 ```
@@ -93,7 +97,7 @@ mkdir -p "$TICKET_TMP"
 **Preflight the providers — before any phase needs one** (chief-wiggum#375). This is the single highest-leverage thing in Step 1: roughly 15 of a 25-minute consult phase once went on environment failures discovered *serially*, one relaunch at a time, after the prompt was already built.
 
 ```bash
-python3 "$CW_HOME/scripts/provider_preflight.py" --human --usage \
+"${CW_PY:-python3}" "$CW_HOME/scripts/provider_preflight.py" --human --usage \
   --role explorer --role reviewer --role implementer \
   | tee "$TICKET_TMP/preflight.txt"
 ```
@@ -118,7 +122,7 @@ date +%s > "$TICKET_TMP/build-start-ts"
 # bounded by --until-ts so it can never consume this ticket's own turns (dedup is
 # by request id and tagging happens at first ingest — an unbounded catch-up here
 # would permanently strand this build's Claude layer untagged, chief-wiggum#345).
-python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
   --since-days 7 --until-ts "$(cat "$TICKET_TMP/build-start-ts")" || true
 ```
 
@@ -130,7 +134,7 @@ All per-ticket files (`approach-prompt.md`, `approach-codex.md`, `approach-gemin
 # Find the ticket's milestone
 MILESTONE=$(gh issue view "$issue_number" --repo "$owner_repo" --json milestone -q '.milestone.title // empty')
 if [ -n "$MILESTONE" ]; then
-  EPIC_SLUG=$(python3 "$CW_HOME/scripts/env.py" slug "$MILESTONE")
+  EPIC_SLUG=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" slug "$MILESTONE")
   # epics_dir = meta_root/epics (artifacts.Resolver.epics_dir) — $CW_META_ROOT
   # is already resolved (Step 1's workflow_context.py, #324), so this needs
   # no `artifacts.py show` call of its own.
@@ -159,7 +163,7 @@ Also check for **formal model artifacts** in `$EPIC_DIR/models/`:
 
 Build the artifact inventory once with the tested helper, then read its flags (it discovers prose/model/design artifacts, validates model JSON, and runs the unresolved-marker scan in one pass — sidecar-aware: it resolves the epic/design location itself, but `$EPIC_DIR` is already resolved above, so pass it through rather than paying to re-derive it):
 ```bash
-python3 "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "${EPIC_SLUG:-}" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/epic_inventory.py" "$TARGET_REPO" --epic-slug "${EPIC_SLUG:-}" \
   ${EPIC_DIR:+--epic-dir "$EPIC_DIR"} --issue "$issue_number" > "$TICKET_TMP/inventory.json"
 EPIC_STATUS=$(jq -r '.epic_status' "$TICKET_TMP/inventory.json")
 if [ "$EPIC_STATUS" = "missing" ]; then
@@ -177,7 +181,7 @@ These artifacts are **hard constraints** on the implementation. The coding worke
 
 **Query the architecture live instead of re-deriving it** — when `$HAS_FORMAL_MODELS == true`, `scripts/code_query.py` (see `docs/code-query.md`) answers "what governs this file/field/contract" from the epic artifacts + code annotations, as small JSON with `file:line` handles instead of a full context-load of these docs. Steps 4/6/8 below use it — `orient` for a specific file, `contract`/`state` for a specific ID, `show` to dereference a handle to its actual text — in place of both ad hoc grepping AND the full doc load this section used to do:
 ```bash
-python3 "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" orient path/to/file.go
+"${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" --repo "$TARGET_REPO" --epic "$EPIC_SLUG" orient path/to/file.go
 ```
 
 **Unresolved-unknowns gate**: `epic_inventory.py` already ran this exact scan (over this exact `$EPIC_DIR`, zero intervening writes) building `$TICKET_TMP/inventory.json` above — read its `.unresolved`/`.blocked_tickets` rather than re-scanning:
@@ -186,7 +190,7 @@ jq '.unresolved' "$TICKET_TMP/inventory.json"
 ```
 If any finding's `tickets` list includes this ticket (or the finding sits on an entity/operation this ticket implements), do NOT implement on the guessed value. Resolve the unknown first — introspect the real source, read the upstream repo, or ask the user — update the artifact with a citation, then proceed. Building a query layer against `TBD:` schema names produces code that compiles, passes mocked tests, and fails on first contact with reality.
 
-Fallback (only if `$TICKET_TMP/inventory.json` is missing or unreadable — the standalone case, never the normal path): `python3 "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json`.
+Fallback (only if `$TICKET_TMP/inventory.json` is missing or unreadable — the standalone case, never the normal path): `"${CW_PY:-python3}" "$CW_HOME/scripts/check_unresolved.py" "$EPIC_DIR" --format json`.
 
 If `$EPIC_STATUS` is `none` (this ticket was never on a milestone), proceed without epic context — the skill works standalone too. That is the ONLY case that silently proceeds; `missing` already stopped above.
 
@@ -212,7 +216,7 @@ Present to the user:
 **Write `$TICKET_TMP/ticket.json`** — the reusable ticket context Step 4's approach prompt and Step 7's review pipeline both read. Comments (including `authorAssociation`) MUST be fetched and serialized here: before #83, this writer didn't exist at all, so `TicketComment`/`review.TicketContext.from_dict` had nothing to preserve and reviewers judged diffs against stale body-only acceptance criteria even after a maintainer amended them in a comment.
 
 ```bash
-python3 "$CW_HOME/scripts/write_ticket_context.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/write_ticket_context.py" \
   --issue-json "$TICKET_TMP/issue-raw.json" \
   --number "$issue_number" \
   --acceptance-criteria "<AC line 1 you extracted above>" \
@@ -243,8 +247,8 @@ Run **four** tasks in parallel — three AI consultations plus a codebase explor
 
 1. **Codex + Gemini** — Launch as background bash commands:
    ```bash
-   python3 "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
-   python3 "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
+   "${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" codex $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-codex.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
+   "${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" gemini $TICKET_TMP/approach-prompt.md -o $TICKET_TMP/approach-gemini.md --cwd "$TARGET_REPO" --ticket "$issue_number" &
    wait
    ```
 
@@ -325,7 +329,7 @@ in the shape `ratchet.py pathset` consumes:
   derive it mechanically, adding collateral (callers/tests that must move) as
   `--collateral` args:
   ```bash
-  python3 "$CW_HOME/scripts/plan_from_debt.py" pathset \
+  "${CW_PY:-python3}" "$CW_HOME/scripts/plan_from_debt.py" pathset \
     --plan "$QUALITY_DIR/remediation-plan.json" --id RT-001 \
     --collateral "tests/test_pricing.py" -o "$TICKET_TMP/pathset.json"
   ```
@@ -384,7 +388,7 @@ For every other ticket kind, Step 5 proceeds as written below.
 # One idempotent call generates every model-derived test artifact (test paths,
 # test plan, contract assertions, Hypothesis skeleton, guard templates) and a
 # manifest, for whichever models exist in $MODELS_DIR.
-python3 "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" --output "$TICKET_TMP/"
+"${CW_PY:-python3}" "$CW_HOME/scripts/generate_formal_test_artifacts.py" "$MODELS_DIR" --output "$TICKET_TMP/"
 ```
 
 The manifest (`$TICKET_TMP/formal-artifacts-manifest.json`) lists the generated files and per-model status; a non-zero exit means a present model failed validation — fix the model before building on it.
@@ -399,7 +403,7 @@ Launch an **implementation worker** (contract: `docs/worker-contracts.md#impleme
 - **If UI spec exists** (`$HAS_UI_SPEC == true`): include the UI spec's page, component, and interaction definitions for the pages this ticket touches. Read `$MODELS_DIR/ui-spec.json` and extract the relevant pages and their component trees. The worker MUST follow the UI spec's structural decisions — if the spec says "sidebar-panel", don't build a separate page; if it says "3-dot-menu", don't use a tab bar. Interaction contracts (trigger → action → target) are binding, not suggestions. If the spec has a `design` section, also pass its tokens, component-library binding, relevant assets, and voice guidelines — bind tokens as CSS variables/theme values, never hardcode the component library's defaults. The design-fidelity gate (Step 9) will review rendered screenshots against this contract.
 **HARD RULES for worker**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code and commit to the feature branch. The orchestrator owns PR creation (Step 11).
-- You work in an **isolated checkout** (required isolation behavior). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the checkout root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You work in an **isolated checkout** (required isolation behavior). At the start, assert isolation with the tested check (it aborts non-zero if you are in the main checkout): `"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Work ONLY in the checkout root it prints. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 - **Carry over gitignored runtime files** the checkout needs but git doesn't bring: for each `.env.local` / `.env.*.local` present in the main checkout, COPY it into the same relative path in the worktree; symlink dependency dirs (`node_modules`, `.venv`) instead of reinstalling. A worktree without `.env.local` runs dev servers against the wrong backend/project — tests then fail in ways that look like app bugs (empty lists, 404s on writes) while direct API calls succeed. Copy them BEFORE starting any dev server or test run.
 
 The worker should:
@@ -423,7 +427,7 @@ The worker should:
 **Load the target's own authoring authorities first (#264).** A repo CW didn't build usually already has house rules — naming conventions, test standards, framework-specific patterns — and on a mature codebase they are often packaged as harness skills. CW's generic checklist knows nothing about them, and a worker cannot infer them from a diff:
 
 ```bash
-python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
   --phase authoring > "$TICKET_TMP/authoring-authorities.txt" || {
   echo "review-authorities binding is malformed — refusing to build against CW defaults while the target's own conventions are unreadable" >&2
   exit 2; }
@@ -435,10 +439,10 @@ Launch an **implementation worker** (contract: `docs/worker-contracts.md#impleme
 
 **HARD RULES for worker**:
 - Do NOT create pull requests, do NOT merge branches, do NOT run `gh pr create` or `gh pr merge`. Your job is to write code, run tests, and commit. The orchestrator owns PR creation (Step 11).
-- You are working in a **git worktree** (the same one from Step 5). Confirm isolation with `python3 "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
+- You are working in a **git worktree** (the same one from Step 5). Confirm isolation with `"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" assert-worktree --main "$TARGET_REPO"`. Do NOT `cd` to `$TARGET_REPO`. Never run destructive git operations (`reset --hard`, `clean -f`) on the main checkout.
 - **Found ≠ fixed (adopted repos — `$IS_ADOPTED`)**: anything you discover mid-ticket that the ticket doesn't cover — dead code nearby, a clone, a smell, a stale comment — is filed **in the same turn** as a `DEBT-` candidate and left UNTOUCHED in the diff:
   ```bash
-  python3 "$CW_HOME/scripts/debt_inventory.py" append-candidate --repo "$TARGET_REPO" \
+  "${CW_PY:-python3}" "$CW_HOME/scripts/debt_inventory.py" append-candidate --repo "$TARGET_REPO" \
     --engine manual --path "pkg/orders/handler.py:88" --note "duplicate retry loop, clone of billing.py"
   ```
   (or file a tracker issue for anything bigger than a code smell). Candidates land in the **mode-independent pending store** (`~/.chief-wiggum/pending/<target-id>/candidates.json`) — never the target tree, so this works identically in embedded and sidecar mode, and every future inventory run merges them in automatically. A candidate leaves the store only via the explicit operator act `debt_inventory.py resolve-candidate --repo X --id DEBT-...` (after actually fixing it in a reviewed change) — never as a side effect of an engine re-run. Scope discipline must not cost information — the pending store is the pressure valve. No opportunistic fixes, no drive-by formatting/renames outside the declared pathset: those hunks get flagged in review and parked.
@@ -448,13 +452,13 @@ The worker should:
 
    **Semantic code intelligence (optional, Go/Python)**: while writing, resolve ground-truth facts with the LSP helper instead of guessing — go-to-definition, references, hover types, and live diagnostics. It degrades gracefully (if the language server isn't installed it returns `available: false` and you fall back):
    ```bash
-   python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" --line <L> --col <C> hover path/to/file.go
-   python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics path/to/file.py
+   "${CW_PY:-python3}" "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" --line <L> --col <C> hover path/to/file.go
+   "${CW_PY:-python3}" "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics path/to/file.py
    ```
 
    **Architecture knowledge (if $EPIC_DIR exists)**: before editing a file this ticket touches, ask what already governs it instead of re-reading the whole epic — `orient` surfaces the contracts/invariants/state-transitions bound to it (by annotation OR by artifact — an un-annotated handler still gets a real answer), so you don't silently miss a REQUIRES/invariant that isn't yet annotated:
    ```bash
-   python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" orient path/to/file.go
+   "${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" orient path/to/file.go
    ```
 2. Enforce epic contracts as runtime guards:
    - Every REQUIRES block → input validation / guard clause at function entry
@@ -499,7 +503,7 @@ The worker should:
 1b. **Load the target's own review authorities (#264).** The multi-AI quorum reviews against CW's checklist; a brownfield repo's standing objections are invisible to it unless they are supplied:
 
    ```bash
-   python3 "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
      --phase review --format json > "$TICKET_TMP/review-authorities.json" || {
      echo "review-authorities binding is malformed — refusing to review against CW defaults alone" >&2
      exit 2; }
@@ -525,7 +529,7 @@ The worker should:
 
 2. Run the review pipeline in one call. It captures the `base...HEAD` diff, assembles the review prompt from `templates/review-prompt.md` + `review-checklist.md` (plus any epic artifacts you pass), runs the `reviewer` quorum (parallel, retries, output validation), and writes the synthesis prompt + a manifest. Every provider gets the **identical** assembled prompt — but check `config/providers.json`'s `reviewer.lenses` map first: providers may be assigned a bounded review lens (e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters in `config/lenses.json`), in which case `run_review.py` appends each provider's charter as a `## Your charter` section before calling it — the shared diff/context every provider sees never changes. Pass the `ticket.json` written in Step 2 — title/body/acceptance criteria plus the comment thread (`comments`, always an array — CTR-fh-002), which `run_review.py` renders as two labeled, authority-separated regions ("Accepted AC amendments" vs "Discussion/context" — CTR-fh-003/ADR-fh-02) so reviewers judge the diff against the CURRENT authoritative state, not a stale body-only baseline — and optionally epic artifacts:
    ```bash
-   python3 "$CW_HOME/scripts/run_review.py" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/run_review.py" \
      --ticket-context "$TICKET_TMP/ticket.json" \
      --worktree "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH" \
      --output-dir "$TICKET_TMP/reviews" \
@@ -540,7 +544,7 @@ The worker should:
 3. **Hotspot-aware review depth (#187, report-only — NEVER a gate).** Check whether any changed file is a measured hotspot (or coupled to one) via `code_query.py orient` — a top-decile churn×complexity file, or one tightly coupled to it, deserves deeper scrutiny than a routine diff, same as a file with a governing invariant would:
    ```bash
    for f in $(git diff --name-only "$DEFAULT_BRANCH"...HEAD); do
-     python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --format text orient "$f" \
+     "${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --format text orient "$f" \
        | grep -q '^- (hotspot)' && echo "$f: measured hotspot — escalate review depth"
    done
    ```
@@ -548,14 +552,14 @@ The worker should:
 
 3b. **Prevention signals (#216, report-only — NEVER blocking).** Run the diff-scoped slop signals and append the output to the review context as reviewer information: new duplication (this diff clones EXISTING code — clone-class join), dead code introduced (added exports unused anywhere), assertion-free tests added:
    ```bash
-   python3 "$CW_HOME/scripts/prevention_signals.py" --repo "$(git rev-parse --show-toplevel)" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/prevention_signals.py" --repo "$(git rev-parse --show-toplevel)" \
      --base "$DEFAULT_BRANCH" >> "$TICKET_TMP/reviews/review-context-extra.md"
    ```
    It always exits 0 and never gates — the findings are for the reviewers' eyes (promotion to a blocking gate would require the full `docs/gate-validation.md` protocol first).
 
 3c. **Out-of-pathset flagging (adopted repos — `$IS_ADOPTED`, report-only).** Check the diff against the declared touch plan from Step 4 and feed any escapes to the reviewers as a flagged section:
    ```bash
-   python3 "$CW_HOME/scripts/ratchet.py" pathset --repo "$(git rev-parse --show-toplevel)" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" pathset --repo "$(git rev-parse --show-toplevel)" \
      --base "$DEFAULT_BRANCH" --pathset-file "$TICKET_TMP/pathset.json" --report-only \
      2>> "$TICKET_TMP/reviews/review-context-extra.md"
    ```
@@ -565,7 +569,7 @@ The worker should:
 
 5. Synthesize using:
    ```bash
-   python3 "$CW_HOME/scripts/synthesize_reviews.py" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/synthesize_reviews.py" \
      --manifest "$TICKET_TMP/reviews/reviewer-manifest.json"
    ```
    **Pass `--manifest`, do not list the review files by hand** (chief-wiggum#416). Naming them means the command drifts every time the role roster changes — this line said `reviewer-gemini.md` long after gemini left the `reviewer` role, so it was passing a path that could never resolve. More importantly, counting the files that happen to exist cannot tell "every reviewer answered" from "one never did": the synthesis opened with a confident `N reviews received` while silently describing a narrowed quorum. The manifest carries who was EXPECTED and in which tier, so the prompt now reports `2 of 3 expected reviews received — QUORUM INCOMPLETE` and names the absentee where the reconciler reads it. A missing OPTIONAL provider is still a legitimate outcome and does not block; a missing REQUIRED one is reported to stderr, and `--gate` turns it into a non-zero exit.
@@ -582,7 +586,7 @@ The worker should:
 7. **Record validation telemetry.** The review's cost already flows (its reviewer consults + the review worker's tokens); record its *value* so the cost↔value verdict can rate it. Emit one gate event with the count of substantive findings (high + medium + low real defects; exclude style-only) — no-op unless telemetry is enabled, never blocks:
 
    ```bash
-   python3 "$CW_HOME/scripts/factory_log.py" emit --event gate --name code-review \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" emit --event gate --name code-review \
      --result "$([ "$n_findings" -gt 0 ] && echo fail || echo pass)" --caught "$n_findings" --repo "$owner_repo"
    ```
 
@@ -595,27 +599,27 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 1. **Apply clear-cut fixes** directly (don't re-run a worker for trivial changes)
 2. **Flag ambiguous feedback** for user decision — only block on items that genuinely need input
 3. **Run static analysis** on the changed files:
-   - **Live LSP diagnostics first (Go/Python, optional)** — surface semantic errors (undefined symbols, type mismatches) before the linter gate, per changed file: `python3 "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics <changed-file>`. This augments, never replaces, the linter; it returns `available: false` and is skipped when the language server isn't installed.
+   - **Live LSP diagnostics first (Go/Python, optional)** — surface semantic errors (undefined symbols, type mismatches) before the linter gate, per changed file: `"${CW_PY:-python3}" "$CW_HOME/scripts/lsp_query.py" --root "$(git rev-parse --show-toplevel)" diagnostics <changed-file>`. This augments, never replaces, the linter; it returns `available: false` and is skipped when the language server isn't installed.
    - Go: `golangci-lint run ./...`
    - TypeScript/JavaScript: `npx eslint --no-warn-ignored` or `npx biome check`
    - Python: `ruff check` or `flake8`
    - Feed violations back to the code — fix them before proceeding. Gate on zero high-severity findings.
 4. **Run the full test suite** from the repo root. The verification runner detects the project type and emits structured evidence (command, exit code, duration, log tail, and — for a pytest-based `test` step, chief-wiggum#284 — the junit-xml report path it wrote via `PYTEST_ADDOPTS`) for the PR body — it prefers a `make` target named for the profile when present. Capture **JSON**, run once (Step 4b reuses this same run's report instead of re-running the suite — build the PR-body evidence section from this JSON rather than invoking `--markdown` a second time):
    ```bash
-   python3 "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --json > "$TICKET_TMP/verify.json"
+   "${CW_PY:-python3}" "$CW_HOME/scripts/run_verification.py" --repo "$(git rev-parse --show-toplevel)" --profile test,lint,build --json > "$TICKET_TMP/verify.json"
    ```
    It exits non-zero if any step fails (`jq .ok "$TICKET_TMP/verify.json"`). ALL tests must pass. Zero tolerance.
 4b. **Ratchet check** (see `docs/ratchet.md`) — `$QUALITY_DIR` is already resolved (Step 1, #324 — embedded targets `<repo>/docs/quality`, sidecar targets the external meta root); if `$QUALITY_DIR/ratchet.json` exists, verify this ticket doesn't slide quality backward. **Reuse Step 4's run instead of paying for the suite twice** (chief-wiggum#284): when Step 4's JSON names a `report` for its `test`-profile step (a pytest junit-xml file) and the ratchet config has exactly one `junit-xml` suite, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
    ```bash
-   REPORT=$(python3 -c "import json; d=json.load(open('$TICKET_TMP/verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
-   SUITE=$(python3 -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
+   REPORT=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$TICKET_TMP/verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
+   SUITE=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
    REPO_ROOT="$(git rev-parse --show-toplevel)"
    if [ -n "$REPORT" ] && [ -n "$SUITE" ] && [ -f "$REPO_ROOT/$REPORT" ]; then
-     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$REPO_ROOT" --reuse-report "$SUITE=$REPO_ROOT/$REPORT"
+     "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$REPO_ROOT" --reuse-report "$SUITE=$REPO_ROOT/$REPORT"
    else
-     python3 "$CW_HOME/scripts/ratchet.py" score --repo "$REPO_ROOT"
+     "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" score --repo "$REPO_ROOT"
    fi
-   python3 "$CW_HOME/scripts/ratchet.py" check --repo "$REPO_ROOT" --gate-verifier-tests
+   "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" check --repo "$REPO_ROOT" --gate-verifier-tests
    ```
    `score --reuse-report` fails loudly (never silently) if the report is missing or older than `--reuse-report-max-age` (default 1800s) — that's the signal to drop back to a plain `score` re-run, not to `--force` past it.
    Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (it normally does — the record ships with chief-wiggum); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings report-only, per `docs/gate-rollout.md`. A violation is a hard blocker, same as a failing test: a `missing_tests` entry means a previously-passing case regressed; `weakened_contracts`/`removed_contracts` means the branch edited a contract definition to make the implementation pass; `weakened_verifier_tests`/`removed_verifier_tests` (#206, channel C1c) means a `@cw-trace verifies`-annotated test body was rewritten or dropped behind its still-green test ID. Fix the code — never the contract or its verifier test. If a contract (or a verifier test) genuinely needs revising, that is a human decision: surface it to the user and journal it with `record --amend`/`--retire` (contracts) or `record --amend-verifier`/`--retire-verifier` (verifier tests), don't edit around the gate. A `missing_tests` entry caused by a genuinely flaky/order-dependent case (not a real regression) is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead. Skip this item only when the repo has no ratchet config (not yet adopted).
@@ -623,20 +627,20 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 
    **Traceability soundness DOES block here (chief-wiggum#379)**, scoped to this diff. `@cw-trace` direction errors (`guards` on a test, `verifies` on production code) are unambiguous, entirely determined by the annotation the worker just wrote, and cheap to detect — but before #379 they were not in the per-ticket floor, so they surfaced three merges later at wave-merge (two separate `fix(trace): correct @cw-trace direction` commits in one epic). `--gate-scope changed` blocks ONLY on findings originating in the scanned diff; epic-doc findings (malformed IDs, orphan BRs, unparsed artifacts) stay report-only here because the worker may not edit goalposts — blocking it on a defect it is forbidden to fix is how an operator learns to `--force` past gates. Those still block in `/architect` and `/close-epic`, where the actor can act on them:
    ```bash
-   python3 "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
      --changed-since "$DEFAULT_BRANCH" --format text
-   python3 "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/check_traceability.py" "$EPIC_DIR" --source "$(git rev-parse --show-toplevel)" \
      --changed-since "$DEFAULT_BRANCH" --gate soundness --gate-scope changed --format text
    ```
    The traceability call exits non-zero on a direction error in this ticket's diff — treat that exactly like a failing test: fix the annotation, don't `--force` past it. Its report still PRINTS every soundness finding, including the ones scoped out of blocking, under a `Gate scope: **changed**` line saying how many of them could block. Surface the rest to the fixer as early feedback (a new unsanctioned writer, a missing `@cw-trace guards`/`verifies` on the code this ticket just wrote); don't hard-block on those here. Skip this item if the ticket has no epic context.
 
    **Inspecting a finding**: `code_query.py` turns a bare ID from either report into its full governing context in one call, instead of re-opening `invariants.md`/`contracts.md` — `trace <BR-or-CTR-ID>` for the full BR→contract→code→test slice, `writers <INV-ID>` for every writer of that invariant's controlled field (sanctioned/unsanctioned), `guards`/`verifies <CTR-ID>` for just the code or test side:
    ```bash
-   python3 "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" trace CTR-order-001
+   "${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" trace CTR-order-001
    ```
 4d. **Scope check after review fixes (adopted repos — `$IS_ADOPTED`, report-only)** — the fixes applied in this step can themselves creep out of scope; re-run the pathset check from Step 7 (3c) against the final diff:
    ```bash
-   python3 "$CW_HOME/scripts/ratchet.py" pathset --repo "$(git rev-parse --show-toplevel)" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" pathset --repo "$(git rev-parse --show-toplevel)" \
      --base "$DEFAULT_BRANCH" --pathset-file "$TICKET_TMP/pathset.json" --report-only
    ```
    Any file it names goes into the PR body under a "Out of declared pathset" section for the human's eyes — a legitimate late addition means updating the declaration WITH a one-line reason; an illegitimate one gets dropped and its motivation filed via `debt_inventory.py append-candidate` (found ≠ fixed). Report-only for now per `docs/gate-rollout.md`.
@@ -671,7 +675,7 @@ Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then *
 8b. **Transition-map verification** (if `$HAS_TRANSITION_MAP == true`):
    Run the verification script **once**, in JSON mode, scoped to this ticket — it writes the transition-map AND the JSON this step renders from, in the same pass (the separate `--format text` run used to be a second full re-scan of the same code producing the same comparison — #324):
    ```bash
-   python3 "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" \
+   "${CW_PY:-python3}" "$CW_HOME/scripts/verify_transitions.py" "$(git rev-parse --show-toplevel)" "$MODELS_DIR/state-machines.json" \
      --ticket "#$issue_number" --format json --output "$MODELS_DIR/transition-map.json" > "$TICKET_TMP/verify-transitions.json"
    git add "$MODELS_DIR/transition-map.json"
    ```
@@ -703,7 +707,7 @@ If ANY verification fails: fix it directly, or re-launch the coding worker (cont
 **Log a real finding as an escape.** This orchestrator validation is exactly where a bug that the earlier steps (TDD/tests, Step 7's multi-AI code review, static analysis) should have caught but didn't gets found independently — walking the AC, hitting a real endpoint, or reading the code turns up something the automated checks missed. When that happens, log it so gate RECALL (not just catches) is measurable (no-op unless telemetry is enabled, never blocks):
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" bug --repo "$owner_repo" \
   --summary "..." --severity medium --missed-by code-review \
   --found-in implement-verify --ticket "$issue_number" --fixed
 ```
@@ -716,7 +720,7 @@ Run the tested gate to do all the mechanical setup — frontend-impact detection
 
 ```bash
 git diff "$DEFAULT_BRANCH"...HEAD --name-only > "$TICKET_TMP/changed.txt"
-python3 "$CW_HOME/scripts/ux_gate.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ux_gate.py" \
   --changed-files "$TICKET_TMP/changed.txt" \
   $(gh issue view "$issue_number" --repo "$owner_repo" --json labels -q '.labels[].name' | sed 's/^/--label /') \
   --ui-spec "$MODELS_DIR/ui-spec.json" --design-dir "$TARGET_REPO/docs/design" \
@@ -770,7 +774,7 @@ If screenshot capture fails entirely (services won't start, no browser tooling a
 If `$MODELS_DIR/ui-spec.json` has a `design` section, run a cheap mechanical check before the AI review: for each color token value in `design.tokens.colors`, grep the frontend's theme/CSS files for it. If the primary brand color appears nowhere in the codebase, the frontend ignored the design contract — that's a hard finding, no screenshot review needed to call it.
 
 ```bash
-python3 -c "
+"${CW_PY:-python3}" -c "
 import json, sys
 spec = json.load(open('$MODELS_DIR/ui-spec.json'))
 for name, value in spec.get('design', {}).get('tokens', {}).get('colors', {}).items():
@@ -899,10 +903,10 @@ If no browser-use or E2E setup exists at all, note it as a gap in the final summ
 3. **Price the build** (`docs/ticket-cost.md`). Fold this session's own token spend into the factory ledger — windowed to this ticket's build-start stamp so a multi-ticket session doesn't cross-bill — then render the measured actual:
 
 ```bash
-python3 "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" ingest-claude-transcripts \
   --repo "$owner_repo" --ticket "$issue_number" \
   --since-ts "$(cat "$TICKET_TMP/build-start-ts")"
-python3 "$CW_HOME/scripts/ticket_cost.py" actual \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ticket_cost.py" actual \
   --repo "$owner_repo" --ticket "$issue_number" \
   --cwd-prefix "$(git rev-parse --show-toplevel)" \
   --since-ts "$(cat "$TICKET_TMP/build-start-ts")" \
@@ -916,7 +920,7 @@ python3 "$CW_HOME/scripts/ticket_cost.py" actual \
 4. Draft the PR body with the tested helper. It folds in the verification evidence and (when present) the review/UX/model-conformance manifests plus the implementation-cost section, themes the Mermaid diagram with the shared palette automatically, validates the required sections, and links the issue:
 
 ```bash
-python3 "$CW_HOME/scripts/draft_pr.py" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/draft_pr.py" \
   --issue "$issue_number" --title "$pr_title" --summary "$summary" \
   --change "Change 1" --change "Change 2" \
   --mermaid-file "$TICKET_TMP/architecture.mmd" \
@@ -939,7 +943,7 @@ gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/p
 6. **Record the calibration point** so future `/create-issue` estimates ground in this build's actual. Read the Effort size (`S|M|L|XL`) from the issue body's Labels section; omit `--effort` if the issue has none, and pass `--estimate` when the issue carried a nominal-cost figure. Pass the **same** `--cwd-prefix`/`--since-ts` pair used for the `actual` call above — `record` computes its own slice independently, and without the matching window flags it silently reverts to tag-match-only, journaling a consult-only "clean" sample into the estimator while the real windowed slice (Claude Code layers included) is far larger (chief-wiggum#345):
 
 ```bash
-python3 "$CW_HOME/scripts/ticket_cost.py" record \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ticket_cost.py" record \
   --repo "$owner_repo" --ticket "$issue_number" --effort "$effort" \
   --cwd-prefix "$(git rev-parse --show-toplevel)" \
   --since-ts "$(cat "$TICKET_TMP/build-start-ts")"
@@ -974,7 +978,7 @@ python3 "$CW_HOME/scripts/ticket_cost.py" record \
 If epic context exists, flip this ticket's rows from `pending` to `covered` with the tested updater (it parses, updates by ticket/AC, and re-renders the table in place — no brittle manual markdown edits):
 
 ```bash
-python3 "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/traceability.py" update "$EPIC_DIR/traceability.md" \
   --ticket "$issue_number" --status covered
 # Narrow to specific rows with --ac "<criterion text>" when a ticket only
 # partially addresses its ACs.
@@ -985,7 +989,7 @@ Commit the updated `traceability.md` (or comment on the epic milestone if other 
 **Journal the ratchet** (`$QUALITY_DIR` already resolved at Step 1, #324; if `$QUALITY_DIR/ratchet.json` exists): once the PR is merged, record the ticket so its passing tests enter the high-water mark:
 
 ```bash
-python3 "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
+"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" \
   --event ticket --ref "#$issue_number" --merged --notes "<one line: what shipped>"
 # Embedded mode only — in sidecar mode the journal/state live outside the
 # target, so there is nothing to commit in-tree ($CW_META_MODE already
@@ -1000,7 +1004,7 @@ fi
 **Sweep this ticket's worktree if it already merged** (#329) — no prior step ever ran `git worktree remove`, so the worker's worktree from Step 5/6 would otherwise sit in the shared checkout forever. `gc-worktrees` only removes a worktree whose branch is provably merged into `$DEFAULT_BRANCH`, so this is a safe no-op if the PR hasn't merged yet (human/CI review still pending) — a later `/implement` or `/implement-wave` run's own sweep will catch it once it has:
 ```bash
 git -C "$TARGET_REPO" fetch origin "$DEFAULT_BRANCH"
-python3 "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
+"${CW_PY:-python3}" "$CW_HOME/scripts/git_safety.py" gc-worktrees --repo "$TARGET_REPO" --default-branch "$DEFAULT_BRANCH"
 ```
 
 Close the loop:
