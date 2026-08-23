@@ -343,6 +343,179 @@ def test_cost_value_verdict():
     assert v2["code-review"]["cost_per_catch"] == 0.2  # $0.80 / 4 findings
 
 
+def _otel(tmp_path, *events) -> Path:
+    f = tmp_path / f"otel-{len(list(tmp_path.iterdir()))}.jsonl"
+    f.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    return f
+
+
+class TestOtelIngestIsIdempotent:
+    """chief-wiggum#360: re-ingesting a capture must not double-count.
+
+    The transcript route dedupes by request id; the OTEL route never set one
+    and never consulted the log, so re-running it — or ingesting overlapping
+    captures — inflated the Claude layer without bound. Cost aggregates are
+    read as evidence, so a silently doubled number is worse than a missing
+    one.
+    """
+
+    def _event(self, **over):
+        base = {"event.name": "api_request", "model": "claude-opus-4-8",
+                "input_tokens": 1000, "output_tokens": 500, "cost_usd": 0.01,
+                "query_source": "repl_main_thread", "session.id": "s1"}
+        base.update(over)
+        return base
+
+    def test_ingesting_the_same_file_twice_counts_once(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event(), self._event(cost_usd=0.02))
+
+        first = factory_log.ingest_claude_code(otel)
+        second = factory_log.ingest_claude_code(otel)
+
+        assert int(first) == 2
+        assert int(second) == 0, "the second pass added records"
+        assert second.skipped == 2
+        # Assert the LOG, not just the counter. A return value of 0 could also
+        # mean the writes failed; the artifact is what /reflect reads.
+        assert len((tmp_path / "f.jsonl").read_text().splitlines()) == 2
+        agg = factory_log.aggregate(factory_log.read_log())
+        assert agg["claude_code_cost_usd"] == 0.03
+
+    def test_an_id_less_duplicate_within_one_file_counts_once(
+            self, tmp_path, monkeypatch):
+        """The within-run guard on the CONTENT path.
+
+        The id-path version of this passes even when content keys are not
+        tracked during the pass, so without this the content branch is
+        unexercised.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        event = self._event()  # no request id at all
+        result = factory_log.ingest_claude_code(_otel(tmp_path, event, event))
+        assert int(result) == 1 and result.skipped == 1
+        assert len((tmp_path / "f.jsonl").read_text().splitlines()) == 1
+
+    def test_an_id_less_capture_then_an_id_bearing_one_counts_once(
+            self, tmp_path, monkeypatch):
+        """The crossover, and it inflates — the direction that matters most.
+
+        This function serves both the console-exporter capture and the OTLP
+        file, and they disagree about whether a request id is emitted. Ingest
+        the console capture (keyed by content), then an OTLP export of the
+        same run (keyed by request.id), and a key that matched only on id
+        would find nothing and append every event a second time.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        without = _otel(tmp_path, self._event())
+        with_id = _otel(tmp_path, self._event(**{"request.id": "req-7"}))
+
+        assert int(factory_log.ingest_claude_code(without)) == 1
+        result = factory_log.ingest_claude_code(with_id)
+        assert int(result) == 0, "the same event landed twice"
+        assert result.skipped == 1
+
+    def test_requests_differing_only_by_id_are_both_kept(
+            self, tmp_path, monkeypatch):
+        """The other direction, which a naive union key breaks.
+
+        Two genuinely distinct requests can share every extracted field and
+        differ only in request id. Matching content against id-bearing records
+        would drop the second and under-report.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path,
+                     self._event(**{"request.id": "req-1"}),
+                     self._event(**{"request.id": "req-2"}))
+        assert int(factory_log.ingest_claude_code(otel)) == 2
+
+    def test_a_zero_request_id_is_used_rather_than_falling_back(
+            self, tmp_path, monkeypatch):
+        """`0` is falsy and a perfectly valid id.
+
+        A truthiness gate sends it down the content path while its siblings
+        use the id path — two identity bases inside one capture.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event(**{"request.id": 0}))
+        factory_log.ingest_claude_code(otel)
+        rec = json.loads((tmp_path / "f.jsonl").read_text().splitlines()[0])
+        assert rec["request_id"] == "0"
+
+    def test_a_failed_write_does_not_consume_the_key(self, tmp_path, monkeypatch):
+        """A record that could not be written is not a duplicate of anything.
+
+        Claiming the key before the append means a full disk loses the record
+        AND reports the next copy of it as a duplicate.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        event = self._event(**{"request.id": "req-x"})
+        otel = _otel(tmp_path, event, event)
+
+        monkeypatch.setattr(factory_log, "_append", lambda rec: False)
+        result = factory_log.ingest_claude_code(otel)
+        assert int(result) == 0
+        assert result.skipped == 0, (
+            "nothing was written, so the second copy is not a duplicate")
+
+    def test_a_real_request_id_is_preferred_and_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event(**{"request.id": "req-abc"}))
+        factory_log.ingest_claude_code(otel)
+
+        rec = json.loads((tmp_path / "f.jsonl").read_text().splitlines()[0])
+        assert rec["request_id"] == "req-abc"
+
+    def test_overlapping_captures_do_not_double_count(self, tmp_path, monkeypatch):
+        """Two wraps of the same run share events; the shared one counts once."""
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        shared = self._event(**{"request.id": "req-shared"})
+        first = _otel(tmp_path, shared, self._event(**{"request.id": "req-a"}))
+        second = _otel(tmp_path, shared, self._event(**{"request.id": "req-b"}))
+
+        assert int(factory_log.ingest_claude_code(first)) == 2
+        result = factory_log.ingest_claude_code(second)
+        assert int(result) == 1 and result.skipped == 1
+
+    def test_a_duplicate_within_one_file_counts_once(self, tmp_path, monkeypatch):
+        """Checking only the log would still double-count inside a single pass."""
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        event = self._event(**{"request.id": "req-twice"})
+        result = factory_log.ingest_claude_code(_otel(tmp_path, event, event))
+        assert int(result) == 1 and result.skipped == 1
+
+    def test_requests_differing_only_in_cost_are_not_collapsed(
+            self, tmp_path, monkeypatch):
+        """The fallback key must not be narrower than the record.
+
+        A key over only session/ts/model/tokens treats these as one event and
+        silently drops the second, under-reporting the loop.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event(cost_usd=0.42), self._event(cost_usd=0.05))
+        assert int(factory_log.ingest_claude_code(otel)) == 2
+
+    def test_the_same_capture_under_two_tickets_still_counts_once(
+            self, tmp_path, monkeypatch):
+        """repo/ticket are caller-supplied, so they are not identity."""
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event())
+        assert int(factory_log.ingest_claude_code(otel, ticket="1")) == 1
+        assert int(factory_log.ingest_claude_code(otel, ticket="2")) == 0
+
+    def test_the_cli_reports_the_skips_including_zero(self, tmp_path, monkeypatch,
+                                                      capsys):
+        """A count shown only when non-zero cannot be told from an old build."""
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event())
+
+        factory_log.main(["ingest-claude-code", str(otel)])
+        assert "skipped 0 duplicate(s)" in capsys.readouterr().out
+
+        factory_log.main(["ingest-claude-code", str(otel)])
+        assert "skipped 1 duplicate(s)" in capsys.readouterr().out
+
+
 def test_cost_attributed_per_loop_via_skill(tmp_path, monkeypatch):
     """The end state: every loop/validation is costed (via skill.name/agent.name)."""
     log = tmp_path / "f.jsonl"
