@@ -965,6 +965,43 @@ def test_a_corrupt_journal_line_reads_as_tamper_not_a_traceback(tmp_path):
     with pytest.raises(ratchet.TamperError, match="journal unreadable"):
         ratchet.load_journal(cfg)
 
+    # Exit 4 (tamper), never exit 1 (VIOLATED): a corrupt instrument and a real
+    # quality regression must stay distinguishable at the exit code.
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "check", "--repo", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 4, proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert "journal unreadable" in proc.stderr
+
+
+def test_both_journal_writers_refuse_a_garbage_tail_the_same_way(tmp_path):
+    """The two writers must not disagree about what a broken journal is.
+
+    Before #420 they did: `append_authority_event` gave a clean TamperError
+    while the `record` CLI crashed with an unhandled JSONDecodeError on the
+    same file. An operator hitting one path got an actionable error and the
+    other got a traceback.
+    """
+    cfg = make_repo(tmp_path)
+    scorecard = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, scorecard, merged=True)
+    _write_scorecard(cfg, scorecard)
+    with cfg.journal.open("a") as handle:
+        handle.write("garbage\n")
+
+    with pytest.raises(ratchet.TamperError):
+        ratchet.append_authority_event(cfg.journal, "g", "wire")
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#420", "--gate", "pass"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 4, proc.stderr
+    assert "Traceback" not in proc.stderr
+
 
 def test_a_fresh_journal_gets_no_leading_blank_line(tmp_path):
     """The separator is for an unterminated PREVIOUS line; there is none."""
