@@ -66,6 +66,19 @@ the event is decoded only to a neutral envelope (`{id, type, livemode, ...ids}`)
 - **Signature over a rotation list + bounded timestamp window.** Verify the raw
   body against *any* currently-valid signing secret (supports zero-downtime secret
   rotation) inside a replay window.
+- **Trim every secret on read, and provision without a trailing newline**
+  (chief-wiggum#370). Runtimes inject secret bytes verbatim, and a value created
+  with `echo` carries a trailing `0x0a`. That single byte is not a
+  misconfiguration, it is structural unreachability: an HTTP header value can
+  never end in a newline, so a PSK compared untrimmed rejects *every possible
+  caller*; an HMAC computed over the wrong bytes never verifies; Go's net/http
+  hard-rejects newlines in outbound header values. A real deployment ran a
+  production reconcile endpoint no caller could reach for a month, because
+  staging's copy of the secret happened to lack the byte and every test read
+  "401 without the secret = pass". So: `TrimSpace` in the secret-shaped getters
+  with the reason in a comment, provision with `printf '%s'` and never `echo`,
+  and remember the quiet sibling — a mode flag read as `live\n` fails an
+  equality test against `"live"` and silently runs on test billing.
 - **Split non-state signals away from the projector.** Events that don't change the
   projected state (a refund flag, a dispute) run the *same* dedupe lease but a
   *no-projection* effect — they annotate/audit and are forbidden from touching the

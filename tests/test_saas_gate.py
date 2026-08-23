@@ -503,3 +503,233 @@ def test_saas_gate_gate_exits_nonzero_on_the_instrument_broken_seed():
 def test_saas_gate_record_passes_gate_of_gates():
     rep = _gv.check("saas_gate", _GV_VALIDATION_DIR)
     assert rep.record_found and rep.passing, rep.to_dict()
+
+
+# --- secret hygiene + PSK reachability (chief-wiggum#370) --------------------
+
+
+class TestSecretHygiene:
+    """A trailing newline in a provisioned secret is not a misconfiguration.
+
+    It makes a service structurally unreachable: an HTTP header value can
+    never end in a newline, so a PSK compared untrimmed rejects every possible
+    caller. The real incident ran a production endpoint nobody could reach for
+    a month, because staging's copy of the secret happened to lack the byte.
+    """
+
+    def test_a_trailing_newline_is_reported_with_the_offending_byte(self):
+        findings = sg.check_secret_hygiene({"psk": b"s3cret\n"})
+        assert [f.status for f in findings] == [sg.FAIL]
+        assert "0x0a" in findings[0].detail
+        assert "printf" in findings[0].detail, "say how to re-provision"
+
+    def test_other_trailing_whitespace_counts_too(self):
+        for raw in (b"s3cret ", b"s3cret\t", b"s3cret\r\n"):
+            findings = sg.check_secret_hygiene({"psk": raw})
+            assert findings[0].status == sg.FAIL, raw
+
+    def test_a_clean_secret_passes(self):
+        findings = sg.check_secret_hygiene({"psk": b"s3cret"})
+        assert findings[0].status == sg.PASS
+
+    def test_the_secret_value_is_never_echoed_back(self):
+        """A gate that leaks the secret into its report is worse than the bug."""
+        findings = sg.check_secret_hygiene({"psk": b"hunter2\n"})
+        assert "hunter2" not in findings[0].detail
+
+    def test_no_material_is_skipped_not_passed(self):
+        assert [f.status for f in sg.check_secret_hygiene(None)] == [sg.SKIPPED]
+
+    def test_an_empty_source_is_reported_rather_than_read_as_clean(self):
+        """Consulted-and-found-nothing is not the same as never asked."""
+        findings = sg.check_secret_hygiene({})
+        assert [f.status for f in findings] == [sg.WARN]
+        assert "nothing was checked" in findings[0].detail
+
+
+class TestPskEndpointCallable:
+    """Rejecting without the secret and working with it are independent.
+
+    Checking only the first passes an endpoint nobody can ever call, which is
+    exactly what shipped.
+    """
+
+    def _get(self, without: int, with_secret: int):
+        def get(url, *, headers=None, **kw):
+            return (with_secret if headers else without), {}, ""
+        return get
+
+    def test_rejecting_in_both_directions_is_the_defect_signature(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(401, 401), "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.FAIL
+        assert "unreachable by every caller" in finding.detail
+        assert "trailing whitespace" in finding.detail, "name the likely cause"
+
+    def test_reachable_without_the_secret_fails(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(200, 200), "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.FAIL
+        assert "WITHOUT" in finding.detail
+
+    def test_the_healthy_shape_passes(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(401, 200), "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.PASS
+
+    def test_without_a_secret_the_positive_direction_is_skipped_not_passed(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(401, 200), "http://x", "/internal/reconcile", secret=None)
+        assert finding.status == sg.SKIPPED
+
+    def test_an_unreachable_endpoint_is_an_error_not_a_pass(self):
+        def boom(url, **kw):
+            raise OSError("connection refused")
+        finding = sg.check_psk_endpoint_callable(
+            boom, "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.ERROR
+
+
+def test_run_gate_skips_the_new_checks_when_their_inputs_are_absent():
+    """Additive checks must not silently pass when nothing was supplied.
+
+    Both are asserted. The first version of this checked only
+    `secret-hygiene`, so a refactor that emitted a PASS for `psk-callable`
+    with no --base-url would have gone unnoticed while the test's own name
+    claimed to cover it.
+    """
+    findings = sg.run_gate(".", None).findings
+    names = {f.name: f.status for f in findings}
+    assert names["secret-hygiene"] == sg.SKIPPED
+    psk = [f for f in findings if f.name.startswith("psk-callable")]
+    assert all(f.status == sg.SKIPPED for f in psk), psk
+
+
+def test_run_gate_skips_the_psk_probe_when_no_path_is_named(monkeypatch):
+    """A --base-url alone must not silently pass the PSK check."""
+    report = sg.run_gate(".", "http://x", http_get=lambda u, **kw: (200, {}, ""))
+    psk = [f for f in report.findings if f.name.startswith("psk-callable")]
+    assert psk and all(f.status == sg.SKIPPED for f in psk), psk
+
+
+class TestPskProbeProvesWhatItClaims:
+    """chief-wiggum#370, found in review: "not 2xx" is not "rejected".
+
+    A 500 or a 429 without the secret, followed by a 200 with it, would
+    otherwise read as a clean pass while the endpoint was crashing or
+    throttling — the gate certifying authentication it never observed, which
+    is the same shape as the defect it exists to catch.
+    """
+
+    def _get(self, without: int, with_secret: int):
+        def get(url, *, headers=None, **kw):
+            return (with_secret if headers else without), {}, ""
+        return get
+
+    @pytest.mark.parametrize("without", [500, 502, 429, 404, 400])
+    def test_a_non_auth_rejection_is_an_error_not_a_pass(self, without):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(without, 200), "http://x", "/i", secret="s")
+        assert finding.status == sg.ERROR, finding
+        assert "expected 401/403" in finding.detail
+
+    @pytest.mark.parametrize("without", [401, 403])
+    def test_a_genuine_auth_rejection_then_success_passes(self, without):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(without, 200), "http://x", "/i", secret="s")
+        assert finding.status == sg.PASS
+
+    def test_a_type_error_inside_the_getter_is_reported_verbatim(self):
+        """Not mislabelled as a harness mismatch.
+
+        A realistic secret, not "s": the report scrubs every occurrence of the
+        secret, so a one-character one would redact half the message. That is
+        the scrub working — never leaking beats staying readable — but it
+        makes such a fixture a poor test of the message.
+        """
+        def boom(url, **kw):
+            raise TypeError("unsupported operand deep inside the client")
+        finding = sg.check_psk_endpoint_callable(
+            boom, "http://x", "/i", secret="a-realistic-psk-value")
+        assert finding.status == sg.ERROR
+        assert "unsupported operand" in finding.detail
+
+
+def test_secret_hygiene_accepts_str_values_without_crashing():
+    """Public check: a caller handing decoded values gets an answer."""
+    findings = sg.check_secret_hygiene({"psk": "s3cret\n"})
+    assert findings[0].status == sg.FAIL
+    assert "0x0a" in findings[0].detail
+
+
+class TestTheProbeNeverLeaksTheSecret:
+    """Found in review, and it was the worst possible shape for this check.
+
+    `http.client.putheader` raises `ValueError: Invalid header value b'...'`
+    with the value embedded, and a generic handler interpolated that into a
+    finding that reaches stdout, the JSON report, and whatever /close-epic
+    persists. The trigger is the exact incident input — a PSK provisioned with
+    `echo` — so the detector would have leaked the very secret it detects.
+    """
+
+    SECRET = "s3cr3t-VALUE"
+
+    def test_a_newline_secret_is_diagnosed_without_being_printed(self):
+        finding = sg.check_psk_endpoint_callable(
+            sg.default_http_get, "http://127.0.0.1:1", "/i",
+            secret=self.SECRET + "\n")
+        assert finding.status == sg.FAIL
+        assert self.SECRET not in finding.detail, "the secret reached the report"
+        assert "0x0a" in finding.detail
+        assert "unreachable by every caller" in finding.detail
+
+    def test_a_carriage_return_secret_is_also_caught_before_sending(self):
+        finding = sg.check_psk_endpoint_callable(
+            sg.default_http_get, "http://127.0.0.1:1", "/i",
+            secret=self.SECRET + "\r")
+        assert finding.status == sg.FAIL
+        assert self.SECRET not in finding.detail
+
+    def test_a_non_latin1_secret_is_refused_rather_than_encoded(self):
+        finding = sg.check_psk_endpoint_callable(
+            sg.default_http_get, "http://127.0.0.1:1", "/i", secret="pa55—word")
+        assert finding.status == sg.FAIL
+        assert "latin-1" in finding.detail
+
+    def test_the_secret_is_scrubbed_from_any_transport_error(self):
+        """Belt and braces: no client may smuggle the value out via a message."""
+        def boom(url, **kw):
+            raise OSError(f"failed sending header X: {self.SECRET}")
+        finding = sg.check_psk_endpoint_callable(
+            boom, "http://x", "/i", secret=self.SECRET)
+        assert finding.status == sg.ERROR
+        assert self.SECRET not in finding.detail
+        assert "<redacted>" in finding.detail
+
+
+class TestRequestedChecksNeverQuietlyVanish:
+    """An explicitly requested probe that does not run must not read green."""
+
+    def test_psk_path_without_a_secret_env_is_a_usage_error(self, tmp_path, capsys):
+        code = sg.main(["--repo", ".", "--base-url", "http://x",
+                        "--psk-path", "/internal/x"])
+        assert code == 2
+        assert "needs --psk-secret-env" in capsys.readouterr().err
+
+    def test_psk_path_without_a_base_url_is_a_usage_error(self, monkeypatch, capsys):
+        monkeypatch.setenv("CW_TEST_PSK", "s")
+        code = sg.main(["--repo", ".", "--psk-path", "/internal/x",
+                        "--psk-secret-env", "CW_TEST_PSK"])
+        assert code == 2
+        assert "needs --base-url" in capsys.readouterr().err
+
+    def test_a_secrets_file_with_non_string_values_is_a_usage_error(
+            self, tmp_path, capsys):
+        """`str(v)` would manufacture a plausible secret that passes hygiene."""
+        f = tmp_path / "s.json"
+        f.write_text(json.dumps({"psk": 12345, "other": {"nested": True}}))
+        code = sg.main(["--repo", ".", "--secrets-file", str(f)])
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "values must be strings" in err
+        assert "other" in err and "psk" in err

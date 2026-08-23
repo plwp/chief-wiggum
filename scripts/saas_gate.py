@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -50,6 +51,10 @@ HEADER_CSRF_CHECK_NAMES = (
 
 # http_get(url) -> (status_code, headers_lower_dict, body_text)
 HttpGet = Callable[[str], tuple[int, dict, str]]
+# The PSK probe must send a header, which the plain HttpGet contract has no
+# room for. Kept as a separate alias rather than widening HttpGet, so every
+# existing check and test fake keeps its current signature.
+HttpGetAuth = Callable[..., tuple[int, dict, str]]
 
 
 @dataclass
@@ -297,6 +302,145 @@ def check_rate_limit(
     return Finding("security", "rate-limit", status_label, f"no 429 in {attempts} requests to {path}")
 
 
+def check_secret_hygiene(secrets: dict[str, bytes] | None) -> list[Finding]:
+    """Flag provisioned secrets whose bytes carry trailing whitespace (#370).
+
+    A secret created with `echo` gains a trailing 0x0a, and the runtime
+    injects the bytes verbatim. That one byte is enough to make a service
+    structurally unreachable rather than merely misconfigured:
+
+    - an HTTP header value can never end in a newline, so a PSK compared
+      untrimmed rejects EVERY possible caller;
+    - an HMAC computed over the wrong bytes never verifies;
+    - Go's net/http hard-rejects newlines in outbound header values, so a
+      Bearer token with one cannot even be sent;
+    - and the quiet one: a mode flag read as `live\\n` fails an equality test
+      against "live" and silently falls back to test billing.
+
+    The real incident ran a production endpoint that no caller could reach for
+    a month, because staging's copy of the secret happened to lack the
+    newline. Nothing failed loudly; the endpoint just answered 401 forever.
+
+    `None` means nothing was supplied, which is SKIPPED — never a pass. An
+    empty mapping means the source was consulted and held nothing, which is
+    a different, reportable state.
+    """
+    if secrets is None:
+        return [Finding("security", "secret-hygiene", SKIPPED,
+                        "no secret material supplied; pass --secrets-file")]
+    if not secrets:
+        return [Finding("security", "secret-hygiene", WARN,
+                        "secret source held no entries — nothing was checked")]
+
+    findings = []
+    for name in sorted(secrets):
+        raw = secrets[name]
+        # Accept str too: the CLI encodes, but this is a public check and a
+        # caller handing it decoded values should get an answer, not a crash
+        # about `rstrip` arguments.
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8", "surrogateescape")
+        trailing = len(raw) - len(raw.rstrip(b" \t\r\n"))
+        if trailing:
+            tail = raw[-1:].hex()
+            findings.append(Finding(
+                "security", f"secret-hygiene:{name}", FAIL,
+                f"{trailing} trailing whitespace byte(s), last=0x{tail}. "
+                f"Re-provision with printf '%s', never echo, and TrimSpace on "
+                f"read — an untrimmed value can make an endpoint unreachable "
+                f"by every caller."))
+        else:
+            findings.append(Finding("security", f"secret-hygiene:{name}", PASS,
+                                    "no trailing whitespace"))
+    return findings
+
+
+def check_psk_endpoint_callable(
+    http_get: HttpGetAuth, base_url: str, path: str, *,
+    header: str = "X-Internal-Auth", secret: str | None = None,
+) -> Finding:
+    """An internal endpoint must reject without the secret AND work with it.
+
+    Those are independent properties, and checking only the first is what let
+    the real defect ship: every existing check reads "401 without a secret =
+    pass", which an endpoint nobody can ever call satisfies perfectly.
+
+    So the signature being hunted here is 401 in BOTH directions — the mark of
+    a secret that does not match what the service holds, whether through a
+    trailing newline, drift, or a rotation nobody propagated.
+    """
+    url = base_url.rstrip("/") + path
+    if not secret:
+        return Finding("security", f"psk-callable:{path}", SKIPPED,
+                       "no secret supplied; cannot test the positive direction")
+
+    # Pre-validate before the value ever reaches an HTTP client. This is not
+    # defensive tidiness, it is the difference between detecting the incident
+    # and CAUSING it: http.client.putheader raises
+    # `ValueError: Invalid header value b's3cret\\n'` — with the secret
+    # embedded — and a generic handler would interpolate that straight into a
+    # finding that goes to stdout, the JSON report, and whatever /close-epic
+    # persists. The one input this check exists for would leak the secret.
+    illegal = {"\n": "0x0a", "\r": "0x0d", "\0": "0x00"}
+    for char, label in illegal.items():
+        if char in secret:
+            return Finding(
+                "security", f"psk-callable:{path}", FAIL,
+                f"the supplied secret contains {label} and can never be sent "
+                f"in an HTTP header — this endpoint is unreachable by every "
+                f"caller. Re-provision with printf '%s', not echo.")
+    try:
+        secret.encode("latin-1")
+    except UnicodeEncodeError:
+        return Finding(
+            "security", f"psk-callable:{path}", FAIL,
+            "the supplied secret has characters outside latin-1 and cannot be "
+            "sent in an HTTP header")
+
+    def _safe(exc: Exception) -> str:
+        """Exception text with the secret scrubbed, belt-and-braces.
+
+        The pre-validation above covers the known leak, but any client in the
+        chain may embed a header value in a message nobody anticipated.
+        """
+        return str(exc).replace(secret, "<redacted>")
+
+    try:
+        without, _, _ = http_get(url)
+        with_secret, _, _ = http_get(url, headers={header: secret})
+    except TypeError as exc:
+        # Report the actual message. A bare "does not accept headers" would
+        # swallow any other TypeError raised INSIDE the getter and mislabel a
+        # real bug as a harness mismatch.
+        return Finding("security", f"psk-callable:{path}", ERROR,
+                       f"probe could not call http_get with headers: {_safe(exc)}")
+    except Exception as exc:  # noqa: BLE001
+        return Finding("security", f"psk-callable:{path}", ERROR,
+                       f"{url} unreachable: {_safe(exc)}")
+
+    if without < 400:
+        return Finding("security", f"psk-callable:{path}", FAIL,
+                       f"reachable WITHOUT the secret ({without})")
+    if without not in (401, 403):
+        # "Not 2xx" is not the same as "rejected the caller". A 500 or a 429
+        # without the secret, followed by a 200 with it, would otherwise read
+        # as a clean pass while the endpoint is crashing or throttling — the
+        # gate would be certifying authentication it never observed.
+        return Finding(
+            "security", f"psk-callable:{path}", ERROR,
+            f"expected 401/403 without the secret, got {without}; the endpoint"
+            f" did not reject the caller, so nothing was proved about"
+            f" authentication")
+    if with_secret >= 400:
+        return Finding(
+            "security", f"psk-callable:{path}", FAIL,
+            f"rejects with AND without the secret ({without} then "
+            f"{with_secret}) — the endpoint is unreachable by every caller. "
+            f"Check the provisioned value for trailing whitespace.")
+    return Finding("security", f"psk-callable:{path}", PASS,
+                   f"{without} without the secret, {with_secret} with it")
+
+
 def check_tenant_isolation(
     make_user: Callable[[], object],
     create_resource: Callable[[object], object],
@@ -331,8 +475,12 @@ def _headers_to_dict(message) -> dict:
     return headers
 
 
-def default_http_get(url: str, *, timeout: float = 10.0) -> tuple[int, dict, str]:
-    req = urllib.request.Request(url, headers={"User-Agent": "chief-wiggum-saas-gate"})
+def default_http_get(url: str, *, timeout: float = 10.0,
+                     headers: dict | None = None) -> tuple[int, dict, str]:
+    """GET a URL. `headers` is keyword-only with a default, so every existing
+    caller and test fake keeps working while the PSK probe can authenticate."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "chief-wiggum-saas-gate", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - gate probes a user-supplied URL
             return resp.status, _headers_to_dict(resp.headers), resp.read(8192).decode("utf-8", "replace")
@@ -368,6 +516,10 @@ def run_gate(
     rate_limit_required: bool = False,
     require_https: bool = False,
     log_sample: list[str] | None = None,
+    secrets: dict[str, bytes] | None = None,
+    psk_paths: list[str] | None = None,
+    psk_header: str = "X-Internal-Auth",
+    psk_secret: str | None = None,
 ) -> SaasGateReport:
     report = SaasGateReport(base_url=base_url, stack=detect_stack(repo))
     if base_url:
@@ -393,8 +545,15 @@ def run_gate(
                 )
         report.findings.append(check_health(http_get, base_url, health_path))
         report.findings.append(check_rate_limit(http_get, base_url, rate_limit_path, required=rate_limit_required))
+        for path in (psk_paths or []):
+            report.findings.append(check_psk_endpoint_callable(
+                http_get, base_url, path, header=psk_header, secret=psk_secret))
+        if not psk_paths:
+            report.add("security", "psk-callable", SKIPPED,
+                       "no --psk-path given; internal endpoints not probed")
     else:
         report.add("security", "headers", SKIPPED, "no --base-url; runtime checks skipped")
+    report.findings.extend(check_secret_hygiene(secrets))
     report.findings.append(check_structured_logging(log_sample or []))
     report.add("isolation", "tenant-isolation", SKIPPED, "needs a live multi-user app; run via the /saas-gate skill")
     report.add("performance", "response-time", SKIPPED, "needs a representative deployment; run via the /saas-gate skill")
@@ -420,6 +579,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-path", default="/health")
     parser.add_argument("--rate-limit-path", default="/login")
     parser.add_argument("--rate-limit-required", action="store_true")
+    parser.add_argument(
+        "--secrets-file",
+        help="JSON object of provisioned secrets, name -> value, checked for "
+             "trailing whitespace (chief-wiggum#370). Produce it with e.g. "
+             "`gcloud secrets versions access latest --secret=NAME`; the "
+             "values are never printed, only their trailing bytes.")
+    parser.add_argument(
+        "--psk-path", action="append", dest="psk_paths",
+        help="Internal endpoint that must reject WITHOUT the secret and "
+             "succeed WITH it. Repeatable.")
+    parser.add_argument("--psk-header", default="X-Internal-Auth")
+    parser.add_argument(
+        "--psk-secret-env",
+        help="Environment variable holding the PSK for --psk-path probes. "
+             "Read at call time; never logged.")
     parser.add_argument("--require-https", action="store_true")
     parser.add_argument("--log-sample", help="File with sample log lines for structured-logging check")
     parser.add_argument("--gate", action="store_true", help="Exit 1 if any check failed")
@@ -451,10 +625,57 @@ def main(argv: list[str] | None = None) -> int:
     if args.log_sample and Path(args.log_sample).exists():
         log_sample = Path(args.log_sample).read_text().splitlines()
 
+    secrets = None
+    if args.secrets_file:
+        # A named file that cannot be read is a usage error, not honest
+        # absence — degrading to None would report SKIPPED and read exactly
+        # like "nobody asked for this check".
+        try:
+            raw = json.loads(Path(args.secrets_file).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"Error: --secrets-file {args.secrets_file}: {exc}",
+                  file=sys.stderr)
+            return 2
+        if not isinstance(raw, dict):
+            print(f"Error: --secrets-file {args.secrets_file}: expected a JSON "
+                  f"object of name -> value", file=sys.stderr)
+            return 2
+        # Only real string values. `str(v)` on a number or a nested object
+        # manufactures a plausible-looking secret that passes hygiene, so a
+        # malformed file would read as a clean bill of health for material
+        # that was never checked.
+        bad = sorted(k for k, v in raw.items() if not isinstance(v, str))
+        if bad:
+            print(f"Error: --secrets-file {args.secrets_file}: values must be "
+                  f"strings; not strings: {', '.join(bad)}", file=sys.stderr)
+            return 2
+        secrets = {str(k): v.encode("utf-8", "surrogateescape")
+                   for k, v in raw.items()}
+
+    psk_secret = os.environ.get(args.psk_secret_env) if args.psk_secret_env else None
+    if args.psk_secret_env and not psk_secret:
+        print(f"Error: --psk-secret-env {args.psk_secret_env} is unset or empty",
+              file=sys.stderr)
+        return 2
+    # An explicitly requested probe must never quietly not run. Both of these
+    # otherwise end as SKIPPED or as no finding at all, and SKIPPED can never
+    # fail --gate — the operator asked for a check and got a green report
+    # without it.
+    if args.psk_paths and not args.psk_secret_env:
+        print("Error: --psk-path needs --psk-secret-env; without a secret the "
+              "probe can only test the negative direction, which is what "
+              "passes an endpoint nobody can call", file=sys.stderr)
+        return 2
+    if args.psk_paths and not args.base_url:
+        print("Error: --psk-path needs --base-url", file=sys.stderr)
+        return 2
+
     report = run_gate(
         args.repo, args.base_url, auth_mode=args.auth_mode, health_path=args.health_path,
         rate_limit_path=args.rate_limit_path, rate_limit_required=args.rate_limit_required,
         require_https=args.require_https, log_sample=log_sample,
+        secrets=secrets, psk_paths=args.psk_paths,
+        psk_header=args.psk_header, psk_secret=psk_secret,
     )
 
     if args.markdown:
