@@ -62,6 +62,7 @@ Event schema (one JSON object per line):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -916,7 +917,62 @@ def _parse_iso_ts(value) -> float | None:
         return None
 
 
-def ingest_claude_code(path: Path, repo: str | None = None, ticket: str | None = None) -> int:
+class IngestCount(int):
+    """How many records were ingested, carrying how many duplicates were skipped.
+
+    An int subclass rather than a tuple so existing callers and their
+    assertions keep working unchanged, while the CLI can still report the
+    skips. Reporting them is the point: silently dropping records is the
+    failure this log is supposed to make impossible to commit accidentally.
+    """
+
+    skipped: int
+
+    def __new__(cls, ingested: int, skipped: int = 0):
+        obj = super().__new__(cls, ingested)
+        obj.skipped = skipped
+        return obj
+
+
+def _otel_request_key(event: dict, rec: dict) -> str:
+    """A stable identity for one OTEL `api_request`, for dedup.
+
+    Prefers a real request id. When the exporter does not carry one, falls
+    back to a content hash over the fields that identify the turn — session,
+    timestamp, model and the token counts.
+
+    The fallback hashes EVERY parsed field of the turn, not just session,
+    timestamp, model and tokens. Narrowing it to those collapses records that
+    differ elsewhere: the existing suite has two `code-review` requests
+    distinguished only by `cost_usd`, and a key blind to cost silently dropped
+    the second one and under-reported the loop. Anything the parser bothered
+    to extract is identity for this purpose.
+
+    `repo` and `ticket` are excluded deliberately — they are supplied by the
+    caller rather than read from the event, so including them would let the
+    same capture ingested under two tickets count twice.
+
+    The residual limit, stated rather than hidden: two requests identical in
+    every extracted field are indistinguishable and collapse into one. That
+    direction is the safe one for a cost ledger, since it under-counts rather
+    than inflating, and it is why a real request id is preferred whenever the
+    exporter emits one.
+    """
+    for name in ("request.id", "request_id", "requestId", "api_request.id"):
+        value = _cc_field(event, name)
+        if value:
+            return str(value)
+
+    material = "|".join(
+        f"{field}={rec[field]!r}"
+        for field in sorted(rec)
+        if field not in ("repo", "ticket", "request_id")
+    )
+    return "otel-sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def ingest_claude_code(path: Path, repo: str | None = None,
+                       ticket: str | None = None) -> IngestCount:
     """Fold a Claude Code OTEL export (console-exporter stderr capture, or OTLP file)
     into the factory log so /reflect sees end-to-end orchestrator+subagent token cost
     alongside consult/gate telemetry.
@@ -933,8 +989,14 @@ def ingest_claude_code(path: Path, repo: str | None = None, ticket: str | None =
     """
     path = Path(path)
     if not path.is_file():
-        return 0
+        return IngestCount(0)
     n = 0
+    skipped = 0
+    # Both the log's existing ids AND the ones seen in this pass: a single
+    # capture can contain the same event twice (overlapping wraps), so
+    # checking only what is already on disk would still double-count within
+    # one run.
+    seen = ingested_request_ids()
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line:
@@ -965,9 +1027,17 @@ def ingest_claude_code(path: Path, repo: str | None = None, ticket: str | None =
             rec["repo"] = repo
         if ticket is not None:
             rec["ticket"] = str(ticket)
+
+        key = _otel_request_key(e, rec)
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        rec["request_id"] = key
+
         if _append(rec):
             n += 1
-    return n
+    return IngestCount(n, skipped)
 
 
 # ---- reading / aggregation ---------------------------------------------------
@@ -1457,7 +1527,7 @@ def render_report(agg: dict, repo: str | None = None) -> str:
     return "\n".join(L)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Factory telemetry emitter / aggregator.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1526,14 +1596,19 @@ def main() -> int:
     cr_.add_argument("--format", choices=["text", "json"], default="text")
 
     sub.add_parser("path", help="Print the log path")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.cmd == "path":
         print(log_path())
         return 0
     if args.cmd == "ingest-claude-code":
         n = ingest_claude_code(Path(args.otel_file), repo=args.repo, ticket=args.ticket)
-        print(f"factory_log: ingested {n} api_request event(s) from {args.otel_file}")
+        skipped = getattr(n, "skipped", 0)
+        # Always say what was skipped, including zero. A count that appears
+        # only when non-zero leaves the reader unable to tell "no duplicates"
+        # from "this build does not report them".
+        print(f"factory_log: ingested {int(n)} api_request event(s) from "
+              f"{args.otel_file}, skipped {skipped} duplicate(s)")
         return 0
     if args.cmd == "cost-report":
         records = read_log()
