@@ -82,6 +82,60 @@ def render(path: Path | str = cw_languages.DEFAULT_PATH) -> str:
         ", ".join(f"`{e}`" for e in unsupported) or "(none)",
     ]
 
+    # A recognized-but-unsupported extension is usually just "nobody needed it
+    # yet". `.lua` is not: its emitter works and the blocker is elsewhere, so
+    # the state is written down rather than left to be re-derived from a broken
+    # test run (chief-wiggum#413's own acceptance criterion).
+    if ".lua" in unsupported:
+        lines += [
+            "",
+            "### Pending tier decision: `.lua` (chief-wiggum#413)",
+            "",
+            "`.lua` sits in the list above **deliberately**, and not because the "
+            "scanner cannot read it.",
+            "",
+            "**The emitter already works.** chief-wiggum#377 added Redis "
+            "write-command detection, `KIND_SCRIPT` emission and the `--` comment "
+            "marker, so feeding a `.lua` file to the write-site emitter produces "
+            "facts today. The reported case (inline Lua inside a scanned Go file) "
+            "is fixed. A *standalone* `.lua` file is surfaced as a coverage gap — "
+            "and if a single-write-path field's only writer lives in one, "
+            "`check_single_writer` reports the field `blind` rather than finding "
+            "the writer.",
+            "",
+            "**The blocker is the shared tier table, not the emitter.** Moving "
+            "`.lua` into `generic_tier` was tried during #377 and broke four tests "
+            "in `tests/test_external_links.py`, which used `hook.lua` as its "
+            "canonical *unscannable* language. That fixture encoded the premise of "
+            "external links — the feature exists for languages CW cannot resolve — "
+            "in a real extension's tier, so promoting a language silently redefined "
+            "a whole subsystem's assumption as a side effect of a write-detection "
+            "fix.",
+            "",
+            "That coupling is now gone: those tests use a deliberately fictional "
+            "`.cwnolang` extension, which no language will ever claim and therefore "
+            "cannot be promoted. The subsystem no longer has an opinion on which "
+            "real languages are scannable, so a future tier change cannot break it "
+            "the same way.",
+            "",
+            "**What promoting `.lua` still costs**, per `docs/gate-rollout.md` and "
+            "`docs/gate-validation.md`:",
+            "",
+            "- a clean-corpus run with coverage evidence, because the gate would "
+            "start producing findings from files it has never looked at — Lua's "
+            "assignment syntax (`t.field = v`, `t[\"field\"] = v`) is *plausibly* "
+            "close enough to the generic regex patterns, and plausible is not "
+            "measured",
+            "- re-deriving `check_single_writer`'s validation record "
+            "(`gate_validation_designer.py revalidate check_single_writer`) rather "
+            "than hand-editing it, since the scanned population changes",
+            "",
+            "Changing an extension's tier is a cross-subsystem decision, not a "
+            "per-gate one. Until that decision is taken with the corpus evidence "
+            "behind it, `.lua` stays recognized-but-unsupported — a loud coverage "
+            "gap, never a silent skip.",
+        ]
+
     # Two kinds of not-yet-tier-1 slot, rendered separately so "designed,
     # unbuilt" (nothing runs) is never confused with "tier 2" (it runs, it
     # measures, it just has no dedicated emitter/LSP behind it).
