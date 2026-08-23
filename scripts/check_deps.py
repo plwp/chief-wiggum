@@ -181,25 +181,50 @@ def check_cmd(name: str, cmd: str, version_flag: str = "--version", required: bo
             warn_count += 1
 
 
+def _remediation(python: str, modules: list[str]) -> str:
+    """The shared remediation string, or a plain one if it cannot be imported."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from chief_wiggum.interpreter import remediation
+
+        return remediation(python, modules)
+    except Exception:  # noqa: BLE001 - advice must survive a broken import
+        return f"uv pip install --python {python} {' '.join(modules)}"
+
+
 def runtime_python() -> str:
     """The interpreter CW's scripts will actually be run under (#374).
 
     Not necessarily the one running this check. `python3` is whatever the
     shell resolves, so Homebrew bumping it from 3.11 to 3.13 strands every
     dependency installed for the old one — and a green check under the
-    checker's own interpreter says nothing about that. Falls back to the
-    current interpreter only when resolution fails, and `verify_python_env`
-    reports that rather than hiding it.
+    checker's own interpreter says nothing about that.
+
+    When resolution fails this falls back to the current interpreter and SAYS
+    SO. A silent fallback reproduces the original incident exactly: run the
+    check under a working 3.11, resolution fails, the fallback quietly reports
+    on 3.11, every line comes back green, and the pipeline then runs under the
+    broken `python3` and dies. The point of this function is that the operator
+    knows which interpreter a green result describes.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
         from chief_wiggum.interpreter import resolve
 
         return resolve(["core"]).python
-    except Exception:  # noqa: BLE001 - any failure means "cannot resolve"
+    except Exception as exc:  # noqa: BLE001 - any failure means "cannot resolve"
         # Deliberately broad: NoValidInterpreter is only importable if the
         # import itself succeeded, so naming it in the handler would leave it
         # unbound on the path this exists to survive.
+        print(
+            f"{YELLOW}[WARN]{NC}  could not resolve CW's runtime interpreter"
+            f" ({type(exc).__name__}: {exc})\n"
+            f"        falling back to {sys.executable} — a green result below"
+            " describes THAT\n"
+            "        interpreter, which may not be the one the skills invoke."
+            "  (see: env.py python --json)",
+            file=sys.stderr,
+        )
         return sys.executable
 
 
@@ -221,13 +246,38 @@ def check_python_pkg(name: str, import_name: str, required: bool = True,
         except ImportError:
             ver = None
     else:
-        probe = subprocess.run(
-            [target, "-c",
-             f"import {import_name} as m;"
-             f"print(getattr(m, '__version__', 'installed'))"],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        ver = probe.stdout.strip() if probe.returncode == 0 else None
+        try:
+            probe = subprocess.run(
+                # -I: ignore the ambient environment and cwd. Without it the
+                # probe answers a different question than the runtime does —
+                # a stray keyring.py in the operator's cwd would read as [OK].
+                [target, "-I", "-c",
+                 f"import {import_name} as m;"
+                 f"print(getattr(m, '__version__', 'installed'))"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            # A probe that could not RUN is not a missing package. Reporting
+            # it as one hands the operator a remediation that cannot work,
+            # and letting the exception escape kills the whole audit with the
+            # kind of traceback this change exists to remove.
+            print(f"{RED}[ERROR]{NC}  {name:<14s} probe failed under {target}")
+            print(f"        {type(exc).__name__}: {exc}")
+            fail_count += 1
+            return
+        # LAST line, not the whole of stdout: interpreter wrappers (conda,
+        # some virtualenv shims) print a banner before running the -c script,
+        # and taking everything would report the banner as the version.
+        lines = [line for line in probe.stdout.splitlines() if line.strip()]
+        ver = lines[-1].strip() if probe.returncode == 0 and lines else None
+        if ver is None and import_name.split(".")[0] not in probe.stderr:
+            # Non-zero for a reason unrelated to this import: a broken
+            # sitecustomize, a mis-set PYTHONHOME. Not missing, not present.
+            tail = probe.stderr.strip().splitlines()
+            print(f"{RED}[ERROR]{NC}  {name:<14s} probe failed under {target}")
+            print(f"        {tail[-1][:160] if tail else '(no stderr)'}")
+            fail_count += 1
+            return
 
     if ver:
         print(f"{GREEN}[OK]{NC}  {name:<14s} {ver}")
@@ -235,7 +285,14 @@ def check_python_pkg(name: str, import_name: str, required: bool = True,
         return
     if required:
         print(f"{RED}[MISSING]{NC}  {name:<14s} python package not found")
-        print(f"        fix: uv pip install --python {target} {name}")
+        # Through the shared table, never the bare import name: advising
+        # `whisper` installs a DIFFERENT PyPI package that also provides a
+        # `whisper` module, so the next run reads green while the runtime is
+        # still broken. A remediation that manufactures a false pass is worse
+        # than no remediation. This is also the deduplication this change
+        # applied to keychain.py — hand-rolling the string here repeated the
+        # very thing it was fixing.
+        print(f"        fix: {_remediation(target, [import_name])}")
         fail_count += 1
     else:
         print(f"{YELLOW}[OPTIONAL]{NC}  {name:<14s} not installed")
@@ -527,6 +584,22 @@ def main():
         # Worth saying out loud: a green result here is about the interpreter
         # CW will run, which is not the one you invoked this with.
         print(f"      (this check is running under {sys.executable})")
+
+    # The skills still invoke a bare `python3`, so THAT is what actually
+    # executes CW's helpers today — not necessarily what `resolve()` picked.
+    # If they differ, a green report below describes an interpreter the
+    # workflows will not use, which is the #374 condition wearing a tick.
+    shell_python = shutil.which("python3")
+    if shell_python and os.path.realpath(shell_python) != os.path.realpath(runtime):
+        print(
+            f"{YELLOW}[WARN]{NC}  the skills invoke `python3`, which resolves to"
+            f" {shell_python}\n"
+            f"        but the checks below describe {runtime}. Until the skills"
+            " are migrated to\n"
+            "        `$(env.py python)`, the interpreter that actually runs CW"
+            " is the former.",
+            file=sys.stderr,
+        )
     check_python_pkg("keyring", "keyring", is_required("pkgs", "keyring", workflows),
                      python=runtime)
     check_python_pkg("whisper", "whisper", is_required("pkgs", "whisper", workflows),

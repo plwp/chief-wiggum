@@ -47,6 +47,13 @@ PACKAGE_FOR_IMPORT = {
     "google.cloud.aiplatform": "google-cloud-aiplatform",
     "anthropic": "anthropic",
     "yaml": "pyyaml",
+    # `whisper` is the trap in this table: PyPI's `whisper` is a DIFFERENT
+    # package that also provides a `whisper` module, so advising the import
+    # name installs something that imports cleanly and behaves wrongly — a
+    # remediation that manufactures a green check is worse than none.
+    "whisper": "openai-whisper",
+    "browser_use": "browser-use",
+    "langchain_anthropic": "langchain-anthropic",
 }
 
 # What each profile needs. Profiles mirror check_deps.py's vocabulary.

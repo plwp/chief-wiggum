@@ -324,6 +324,36 @@ class TestMissingDependencyIsActionable:
                   for line in proc.stdout.splitlines() if "probing:" in line]
         assert probed and probed[0].startswith("/"), probed
 
+    def test_a_failed_resolution_is_announced_not_silently_absorbed(
+            self, tmp_path, capsys, monkeypatch):
+        """Raised in review, and its worst case is the original incident.
+
+        Run the check under a working 3.11, let resolution fail, fall back
+        quietly to 3.11, and every line comes back green — while the pipeline
+        then runs under the broken `python3` and dies. The fallback is fine;
+        being silent about it is not.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cw_check_deps_warn", ROOT / "scripts" / "check_deps.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        import chief_wiggum.interpreter as interp
+
+        def boom(*a, **k):
+            raise interp.NoValidInterpreter("nothing validated")
+
+        monkeypatch.setattr(interp, "resolve", boom)
+        result = module.runtime_python()
+
+        assert result == sys.executable, "it should still fall back"
+        err = capsys.readouterr().err
+        assert "could not resolve" in err, err
+        assert sys.executable in err, "say which interpreter it fell back to"
+        assert "may not be the one the skills invoke" in err
+
     def test_check_python_pkg_reports_a_module_absent_from_another_interpreter(
             self, tmp_path, capsys):
         """Probing really crosses the process boundary.
@@ -339,14 +369,24 @@ class TestMissingDependencyIsActionable:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
+        # A faithful stand-in for a missing module: real interpreters
+        # say so on stderr. A bare `exit 1` is an unrunnable probe,
+        # which is a different state and is reported as one.
         fake = tmp_path / "fake-python"
-        fake.write_text("#!/bin/sh\nexit 1\n")
+        fake.write_text(
+            "#!/bin/sh\n"
+            "echo \"ModuleNotFoundError: No module named '$3'\" >&2\n"
+            "exit 1\n")
         fake.chmod(0o755)
 
         module.fail_count = 0
         module.pass_count = 0
         module.warn_count = 0
-        module.check_python_pkg("keyring", "keyring", True, python=str(fake))
+        # `json`, not `keyring`: a module guaranteed importable in the test
+        # interpreter. With `keyring` the kill was accidental — it depended on
+        # the dev box happening not to have it, so on a box that did, the
+        # "always use importlib" mutation would survive.
+        module.check_python_pkg("json", "json", True, python=str(fake))
         assert module.fail_count == 1, (
             "a module absent from the RUNTIME interpreter must be reported "
             "missing even when the checker's own interpreter has it")
@@ -355,7 +395,92 @@ class TestMissingDependencyIsActionable:
         # Saying "missing" without saying where to install it is how the
         # operator ends up guessing, which is the cost #374 recorded.
         out = capsys.readouterr().out
-        assert f"uv pip install --python {fake} keyring" in out, out
+        assert f"uv pip install --python {fake} json" in out, out
+
+    def test_the_fix_line_names_the_distribution_not_the_import(
+            self, tmp_path, capsys):
+        """A remediation that manufactures a false green is worse than none.
+
+        PyPI's `whisper` is a different package that also provides a `whisper`
+        module. Advising the import name installs something that imports
+        cleanly and behaves wrongly, so the NEXT check reads green while the
+        runtime stays broken.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cw_check_deps_dist", ROOT / "scripts" / "check_deps.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        # A faithful stand-in for a missing module: real interpreters
+        # say so on stderr. A bare `exit 1` is an unrunnable probe,
+        # which is a different state and is reported as one.
+        fake = tmp_path / "fake-python"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "echo \"ModuleNotFoundError: No module named '$3'\" >&2\n"
+            "exit 1\n")
+        fake.chmod(0o755)
+
+        module.pass_count = module.fail_count = module.warn_count = 0
+        module.check_python_pkg("whisper", "whisper", True, python=str(fake))
+        out = capsys.readouterr().out
+        assert "openai-whisper" in out, out
+        assert "python whisper" not in out, (
+            "advising the import name installs the wrong distribution")
+
+    def test_a_probe_that_cannot_run_is_an_error_not_a_missing_package(
+            self, tmp_path, capsys):
+        """Three states, not two: present, absent, and could-not-ask.
+
+        An unrunnable interpreter reported as "missing" hands the operator a
+        uv command that cannot help, and letting the OSError escape kills the
+        whole audit with the sort of traceback this change exists to remove.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cw_check_deps_err", ROOT / "scripts" / "check_deps.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        module.pass_count = module.fail_count = module.warn_count = 0
+        module.check_python_pkg("keyring", "keyring", True,
+                                python=str(tmp_path / "does-not-exist"))
+        out = capsys.readouterr().out
+        assert "probe failed" in out, out
+        assert "python package not found" not in out, (
+            "a probe that could not run is not evidence the package is absent")
+        assert module.fail_count == 1
+
+    def test_a_wrapper_banner_is_not_reported_as_the_version(
+            self, tmp_path, capsys):
+        """Some interpreter wrappers print before running the -c script.
+
+        conda and a few virtualenv shims emit a line of their own, and taking
+        the whole of stdout would report that banner as the package version —
+        a green tick carrying nonsense.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cw_check_deps_banner", ROOT / "scripts" / "check_deps.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        chatty = tmp_path / "chatty-python"
+        chatty.write_text("#!/bin/sh\necho 'Activating env foo'\necho '4.25.1'\n")
+        chatty.chmod(0o755)
+
+        module.pass_count = module.fail_count = module.warn_count = 0
+        module.check_python_pkg("jsonschema", "jsonschema", True,
+                                python=str(chatty))
+        out = capsys.readouterr().out
+        assert module.pass_count == 1, out
+        assert "4.25.1" in out
+        assert "Activating env foo" not in out, (
+            "the wrapper's banner was reported as the version")
 
     def test_no_script_advises_pip_into_the_system_interpreter(self):
         """pip into an externally-managed Python is what caused #374."""

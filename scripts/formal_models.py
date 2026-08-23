@@ -30,18 +30,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 try:
     import jsonschema
 except ImportError:  # pragma: no cover - exercised as a subprocess
     # chief-wiggum#374: this was one of the three scripts that died on a bare
     # ModuleNotFoundError when `python3` resolved to an interpreter without
     # the dependency. Same treatment keychain.py gives keyring.
+    #
+    # The sys.path insert happens HERE rather than above the import, so the
+    # third-party jsonschema keeps resolving exactly as it did before this
+    # change. Hoisting it would put scripts/ ahead of site-packages for the
+    # very import being guarded, which is a shadowing risk introduced by the
+    # guard rather than fixed by it.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from chief_wiggum.interpreter import missing_dependency_message
 
     print(missing_dependency_message("jsonschema"), file=sys.stderr)
     sys.exit(1)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum.trace_ids import near_miss_ids  # noqa: E402
 
