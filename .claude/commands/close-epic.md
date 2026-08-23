@@ -335,6 +335,21 @@ Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 pro
 
 **Report-only** (always exits 0 here, per `docs/gate-rollout.md` — this gate has no `--gate` wired into any workflow yet, and won't until a dry-run against a real shipped target and a `docs/quality/validation/check_ai_act.json` record exist per `docs/gate-validation.md`). Surface the finding count in the close report under `### EU AI Act`, distinguishing the four states: `pass` (all declared features clean), `findings` (a `fail`-severity hit — a `prohibited` tier, an undocumented Annex III derogation claim, an undeclared `eu_scope`, or a **missing artifact entirely** — Art. 6(4): absence is never a silent pass), `inapplicable` (the artifact exists with an explicit empty `features: []` — a genuine, recorded "no AI functionality here"), `error` (the artifact exists and could not be parsed). A `missing` classification_status on a product with an obvious AI feature (a chat widget, a recommendation surface) is worth flagging prominently in the close report even though it doesn't block — it means the Art. 6(4) assessment was never made, which the operator should fix before, not after, this epic ships.
 
+### Step 2j6: Fixture provenance (report-only) — chief-wiggum#351
+
+The root cause the three checks above are symptoms of. `harness/scp_fixture.go` routed requests by `TrimPrefix(path, "/api/gx-agent/")` and looked up scripts by tool NAME — **the exact same wrong assumption** as the client's endpoint builder. Client and fixture agreed. Every test was green. The route bug stayed invisible until a real call.
+
+When one worker authors the code and its double from a single assumption, the test validates the assumption rather than reality: TDD-with-fakes makes the fake the spec, and a green suite then measures nothing but the author's self-consistency.
+
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_fixture_provenance.py" "$EPIC_DIR" \
+  --source "$TARGET_REPO" --format text
+```
+
+A double for a declared external system must be DERIVED from a real captured interaction and say where it lives — `// @cw-fixture SCP capture=testdata/captures/scp-venue-info.json` — and the capture must carry `captured_at`/`source`, so an invented file cannot satisfy the check as well as a real one. `scripts/record_capture.py` takes the capture and stamps that provenance (request header values are never recorded — captures are committed).
+
+**Report-only.** States: `recorded` / `hand_authored` (no `capture=` — the finding) / `missing_capture` / `unattributed` (the capture records nothing about its origin) / `no_fixture` (reported, never a finding — not every external system needs a double).
+
 ### Step 2j5: Behavioural eval (report-only) — chief-wiggum#354
 
 **Only for products that ship an agent with tools.** Config that declares tools is not an agent that uses them. A Gemini config was built with its tools declared, the engine tests asserted the tools were *passed* to the model (`toGenaiTools`), and it was all green — but there was no system instruction, so the model never called a tool and answered *"I can't retrieve that."*
