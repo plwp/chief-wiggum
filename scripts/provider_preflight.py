@@ -40,7 +40,8 @@ def _render_human(result: dict) -> None:
     print("Providers")
     for name, report in result["providers"].items():
         mark = {"ok": "ok  ", "unavailable": "DOWN", "unknown": "????",
-                "disabled": "off "}.get(report["health"], "????")
+                "disabled": "off ", "exhausted": "SPENT"}.get(
+                    report["health"], "????")
         suffix = f"  {report['detail']}" if report["detail"] else ""
         print(f"  [{mark}] {name}{suffix}")
     print("\nRoles")
@@ -68,6 +69,13 @@ def main(argv: list[str] | None = None) -> int:
         "--deep", action="store_true",
         help="Run each CLI's --version instead of only checking PATH",
     )
+    parser.add_argument(
+        "--usage", action="store_true",
+        help="Ask each CLI to do the smallest real unit of work, so a provider "
+             "that is installed and out of budget reports `exhausted` rather "
+             "than `ok`. Costs a tiny real call when healthy; costs nothing "
+             "when exhausted, because the provider refuses before working.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -77,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CONFIG
 
     probes = Probes(command=probe_command_alive) if args.deep else Probes()
-    result = preflight(config, probes, roles=args.roles)
+    result = preflight(config, probes, roles=args.roles, usage=args.usage)
 
     if args.human:
         _render_human(result)

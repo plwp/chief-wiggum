@@ -16,6 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import chief_wiggum.preflight as pf  # noqa: E402
 from chief_wiggum.preflight import (  # noqa: E402
     Health,
     Probes,
@@ -343,3 +344,113 @@ class TestPhaseSummary:
         assert emitted[0]["outcome"] == "ok"
         assert emitted[0]["detail"] == "3 providers"
         assert emitted[0]["duration_ms"] >= 0
+
+
+# --- exhausted providers (chief-wiggum#375) ---------------------------------
+
+
+class TestExhaustedIsItsOwnState:
+    """Installed, authenticated, answering --version, and unable to work.
+
+    A quota-exhausted CLI passes every structural check there is, so without
+    its own state it reports `ok` and the operator discovers the truth
+    mid-phase, serially — which is the cost #375 is about. Observed live: an
+    exhausted `codex` reported `ok` under both the default and `--deep`
+    probes, and failed every real call for a whole session.
+    """
+
+    def _config(self):
+        return {
+            "providers": {"codex": {"tool": "codex", "enabled": True}},
+            "roles": {"reviewer": {"required": ["codex"], "optional": []}},
+        }
+
+    def test_an_exhausted_provider_is_not_usable(self):
+        report = pf.ProviderReport("codex", pf.Health.EXHAUSTED)
+        assert not report.usable, "exhausted must not count as a healthy voice"
+
+    def test_an_exhausted_required_provider_blocks_its_role(self):
+        result = pf.preflight(
+            self._config(), pf.Probes(command=lambda name: True),
+            usage=True,
+            usage_probe=lambda name: (pf.Health.EXHAUSTED, "usage limit"))
+        assert result["providers"]["codex"]["health"] == "exhausted"
+        assert result["roles"]["reviewer"]["status"] == "blocked"
+
+    def test_a_healthy_usage_probe_leaves_the_provider_ok(self):
+        result = pf.preflight(
+            self._config(), pf.Probes(command=lambda name: True),
+            usage=True, usage_probe=lambda name: (pf.Health.OK, ""))
+        assert result["providers"]["codex"]["health"] == "ok"
+        assert result["roles"]["reviewer"]["status"] == "ok"
+
+    def test_without_the_flag_no_usage_call_is_made(self):
+        """The probe costs a real call, so it must be opt-in."""
+        calls = []
+        pf.preflight(self._config(), pf.Probes(command=lambda name: True),
+                     usage=False,
+                     usage_probe=lambda name: calls.append(name) or (pf.Health.OK, ""))
+        assert calls == []
+
+    def test_a_structurally_broken_provider_is_never_asked(self):
+        """Nothing to learn from spending a call on a provider already down."""
+        calls = []
+        result = pf.preflight(
+            self._config(), pf.Probes(command=lambda name: False),
+            usage=True,
+            usage_probe=lambda name: calls.append(name) or (pf.Health.OK, ""))
+        assert calls == [], "spent a call on an already-unavailable provider"
+        assert result["providers"]["codex"]["health"] == "unavailable"
+
+    def test_an_unclassifiable_failure_is_unknown_not_exhausted(self):
+        """A probe that failed for an unnameable reason is not a diagnosis."""
+        result = pf.preflight(
+            self._config(), pf.Probes(command=lambda name: True),
+            usage=True,
+            usage_probe=lambda name: (pf.Health.UNKNOWN, "exited 7"))
+        assert result["providers"]["codex"]["health"] == "unknown"
+
+
+class TestTheUsageProbeClassifiesRealOutput:
+    """Parsing, exercised without invoking a provider."""
+
+    def test_every_exhaustion_marker_is_recognised(self, monkeypatch):
+        for marker in pf.EXHAUSTION_MARKERS:
+            monkeypatch.setattr(pf.shutil, "which", lambda name: "/usr/bin/x")
+            monkeypatch.setattr(pf.subprocess, "run",
+                                lambda *a, _m=marker, **k: type(
+                                    "R", (), {"stdout": "",
+                                              "stderr": f"Error: {_m} reached",
+                                              "returncode": 1})())
+            health, detail = pf.probe_command_usable("codex")
+            assert health is pf.Health.EXHAUSTED, marker
+            # Some marker is named, not necessarily this one: the markers
+            # overlap (`insufficient_quota` contains `quota`), so asserting
+            # the exact match would be testing iteration order.
+            assert any(m in detail for m in pf.EXHAUSTION_MARKERS), detail
+
+    def test_a_provider_with_no_probe_defined_is_unknown(self):
+        health, detail = pf.probe_command_usable("no-such-provider")
+        assert health is pf.Health.UNKNOWN
+        assert "no usage probe" in detail
+
+    def test_a_clean_run_is_ok(self, monkeypatch):
+        monkeypatch.setattr(pf.shutil, "which", lambda name: "/usr/bin/x")
+        monkeypatch.setattr(pf.subprocess, "run", lambda *a, **k: type(
+            "R", (), {"stdout": "ok", "stderr": "", "returncode": 0})())
+        assert pf.probe_command_usable("codex")[0] is pf.Health.OK
+
+    def test_a_nonzero_exit_with_no_marker_is_unknown_not_ok(self, monkeypatch):
+        """Failed for a reason nobody can name is not a clean bill of health."""
+        monkeypatch.setattr(pf.shutil, "which", lambda name: "/usr/bin/x")
+        monkeypatch.setattr(pf.subprocess, "run", lambda *a, **k: type(
+            "R", (), {"stdout": "", "stderr": "segmentation fault",
+                      "returncode": 139})())
+        health, detail = pf.probe_command_usable("codex")
+        assert health is pf.Health.UNKNOWN
+        assert "139" in detail and "segmentation fault" in detail
+
+    def test_a_missing_binary_is_unavailable_not_exhausted(self, monkeypatch):
+        monkeypatch.setattr(pf.shutil, "which", lambda name: None)
+        health, _ = pf.probe_command_usable("codex")
+        assert health is pf.Health.UNAVAILABLE
