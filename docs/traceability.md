@@ -270,6 +270,26 @@ journals written before this canonicalization are read compatibly (keys are
 canonicalized on load — hash *values* cover block content only and are
 unaffected).
 
+**The two written grammars differ on purpose (chief-wiggum#347).** The stable-ID
+`pattern`s in `templates/formal-models/*.json` allow a mixed-case slug
+(`^ARC-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$`), while `tim-registry`'s `id_pattern`
+is lowercase-only (`^(BR|CTR|INV|...)-[a-z0-9][a-z0-9-]*-[0-9]{3}$`). That reads
+like a disagreement and is not one: they describe **different stages**.
+
+- The schema patterns describe what an author may WRITE. Accepting
+  `CTR-BIL-001` means a human who capitalises an abbreviation is not rejected
+  by a validator over letter case.
+- `id_pattern` describes the CANONICAL form everything joins on after
+  `canonical_id()` has run — uppercase kind, lowercase slug.
+
+So `CTR-BIL-001`, `ctr-bil-001` and `CTR-Bil-001` are all valid to author and
+all join as `CTR-bil-001`.
+
+Reconciling them by editing either side would be a regression, not a tidy-up:
+tightening the schemas to lowercase rejects IDs that are valid today, and
+loosening `id_pattern` lets non-canonical IDs into the registry that the join
+would then have to guess about.
+
 On every run, if a sidecar exists at the resolved location, each recorded link
 is compared against the ID's CURRENT definition hash. A mismatch is **SUSPECT**
 — reported in `suspect_links`/`suspect_contracts`, distinct from both dangling

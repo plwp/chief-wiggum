@@ -782,6 +782,10 @@ git diff "$DEFAULT_BRANCH"...HEAD --name-only > "$TICKET_TMP/changed.txt"
 
 (Real example: a shipped production SaaS had 131 passing tests and 40 green E2E specs while its client-facing playlist was numbered "0., 1., ..." and the component library was completely unthemed. One screenshot caught both.)
 
+**This step is VISUAL only, and for a product with a non-visual surface that is a gap, not a pass (chief-wiggum#355).** It captures and compares screenshots. A realtime/audio/interaction surface has no equivalent in the loop, and the failures there are invisible to every frame: a 24kHz→48kHz resample that garbles playback, a 2s jitter buffer that drops bursty long-response chunks into choppiness, an over-sensitive VAD that cuts the user off. All three shipped past a green loop, and all three would have screenshotted perfectly.
+
+So do not let "Step 9 passed" stand as *the loop looked at the result* on such a product. Say in the PR which surfaces were actually observed and which were not — the same distinction `check_external_smoke.py` draws between `verified` and `unverified`. What a mechanical audio/interaction observation should BE (a recorded capture reviewed by a model, a spectral assertion, a human checkpoint that refuses to be skipped) is an open design question on #355; naming the gap is not.
+
 #### Phase 1: Capture screenshots
 
 Determine what tooling is available, in priority order:
