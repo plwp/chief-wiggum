@@ -94,6 +94,7 @@ SKILL = "skill"
 ESCAPE = "escape"  # a manually-found bug, especially one a gate missed
 DEMOTION = "demotion"  # a gate reverted to report-only after a validated seed class escaped
 QUERY = "query"  # one code_query.py verb call (#159)
+PHASE = "phase"  # wall-clock for one workflow phase (#375 proposal 6)
 CLAUDE_CODE = "claude_code"  # per-request api_request events from Claude Code's own OTEL telemetry
 
 ESCAPE_SEVERITIES = ("low", "medium", "high", "critical")
@@ -1258,6 +1259,9 @@ def aggregate(records: list[dict], repo: str | None = None) -> dict:
         es["caught"] = caught
         es["recall"] = round(caught / (caught + escaped), 4) if (caught + escaped) > 0 else None
     return {"gates": gates, "consults": consults, "claude_code": claude_code,
+            # #375 proposal 6: loop latency measured rather than felt. Before
+            # this, phase_summary() existed and nothing ever called it.
+            "phases": phase_summary(records),
             "cost_by_loop": by_loop, "verdict": cost_value_verdict(gates, by_loop),
             "escapes": escapes, "escapes_total": sum(es["escaped"] for es in escapes.values()),
             "queries": queries, "queries_total": sum(q["calls"] for q in queries.values()),
@@ -1627,7 +1631,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("emit", help="Append a telemetry event")
-    e.add_argument("--event", required=True, choices=[GATE, CONSULT, WORKER, SKILL])
+    e.add_argument("--event", required=True, choices=[GATE, CONSULT, WORKER, SKILL, PHASE])
     for opt in ("repo", "ticket", "name", "result", "provider", "details"):
         e.add_argument(f"--{opt}")
     for opt in ("caught", "tokens-in", "tokens-out"):
@@ -1652,6 +1656,25 @@ def main(argv: list[str] | None = None) -> int:
                         "validation record certified it catches this class.")
     b.add_argument("--validation-dir", default=DEFAULT_VALIDATION_DIR,
                    help=f"Directory of <gate>.json validation records (default: {DEFAULT_VALIDATION_DIR})")
+
+    ph = sub.add_parser(
+        "phase",
+        help="Record how long one workflow phase took (#375). Skills are bash, "
+             "so this verb is how a phase boundary reaches the ledger at all.")
+    ph.add_argument("--name", required=True, help="Phase name, e.g. step4a_consults")
+    ph.add_argument("--since", type=float,
+                    help="Epoch seconds captured by `factory_log.py now` at the phase start")
+    ph.add_argument("--duration-ms", type=float, help="Explicit duration instead of --since")
+    ph.add_argument("--ticket")
+    ph.add_argument("--repo")
+    ph.add_argument("--outcome", default="ok", choices=["ok", "error"],
+                    help="A phase that blew up fast would otherwise look like a "
+                         "phase that went well")
+    ph.add_argument("--detail")
+
+    sub.add_parser("now",
+                   help="Print epoch seconds for `phase --since`. A verb rather "
+                        "than `date` because BSD date has no %%3N and CW targets macOS.")
 
     a = sub.add_parser("aggregate", help="Summarize the log")
     a.add_argument("--repo")
@@ -1728,6 +1751,24 @@ def main(argv: list[str] | None = None) -> int:
         # explicitly that "0 new" means up-to-date rather than broken.
         print(f"factory_log: ingested {n} new Claude Code turn(s) from {args.root}"
               f"{' (already up to date)' if n == 0 else ''}")
+        return 0
+    if args.cmd == "now":
+        print(repr(time.time()))
+        return 0
+    if args.cmd == "phase":
+        if args.duration_ms is None and args.since is None:
+            print("factory_log: pass --since (from `factory_log.py now`) or --duration-ms",
+                  file=sys.stderr)
+            return 2
+        duration = (args.duration_ms if args.duration_ms is not None
+                    else max(0.0, (time.time() - args.since) * 1000.0))
+        extra = {"detail": args.detail} if args.detail else {}
+        ok = emit_phase(args.name, duration_ms=duration, repo=args.repo,
+                        ticket=args.ticket, outcome=args.outcome, **extra)
+        if not ok:
+            print("factory_log: telemetry disabled (set CW_TELEMETRY=1 to enable)",
+                  file=sys.stderr)
+            return 1
         return 0
     if args.cmd == "emit":
         fields = {k: getattr(args, k) for k in

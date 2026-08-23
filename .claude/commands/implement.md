@@ -94,6 +94,17 @@ TICKET_TMP="$CW_TMP/$issue_number"
 mkdir -p "$TICKET_TMP"
 ```
 
+**Time every phase** (chief-wiggum#375 proposal 6). Loop latency was *felt* rather than measured — a live run took ~90 minutes and the phase costs were reconstructed by hand afterwards, so there was no data to rank the fixes against. Stamp a start before each phase and record it after:
+
+```bash
+PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
+# ... the phase runs ...
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" phase \
+  --name step4a_consults --since "$PHASE_T0" --ticket "$issue_number" || true
+```
+
+`|| true` because telemetry is a no-op unless `CW_TELEMETRY=1`, and a measurement must never fail the loop it measures. Pass `--outcome error` when the phase blew up: a phase that failed fast would otherwise read as a phase that went well. `factory_log.py aggregate` rolls these into per-phase totals and names the slowest.
+
 **Preflight the providers — before any phase needs one** (chief-wiggum#375). This is the single highest-leverage thing in Step 1: roughly 15 of a 25-minute consult phase once went on environment failures discovered *serially*, one relaunch at a time, after the prompt was already built.
 
 ```bash
@@ -239,6 +250,10 @@ If you do need to ask, keep it tight:
 
 ### Step 4: Consult AIs on approach
 
+```bash
+PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
+```
+
 This step has two phases, each in its own worker. This keeps the heavy codebase exploration and synthesis out of the main context window.
 
 #### Phase A: Gather approaches (parallel)
@@ -343,7 +358,16 @@ Step 8 re-checks it (report-only for now, per `docs/gate-rollout.md` — teeth
 come only after a gate-validation record). "While I'm in here" is the dominant
 brownfield failure mode; the declared pathset is what makes it visible.
 
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" phase \
+  --name step4_consult_and_synthesis --since "$PHASE_T0" --ticket "$issue_number" || true
+```
+
 ### Step 5: Test-first specification
+
+```bash
+PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
+```
 
 #### Ticket kinds: `refactor` inverts this step's objective
 
@@ -481,7 +505,16 @@ The worker should:
 - **Match the conventions the spec or codebase demonstrates.** If some elements are given a naming/id/attribute style (e.g. kebab-case `data-testid`s, BEM classes), apply that SAME style consistently to the equivalent elements you build — the same way you match surrounding code style. Stay consistent; do NOT speculatively decorate elements no requirement calls for.
 - **Build the complete, idiomatic component — not the literal minimum.** A navigation bar gets its brand and the links the app needs; a data table gets proper column headers. Implement the whole feature a user would expect from the requirements, but do not invent features the requirements don't call for.
 
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" phase \
+  --name step5_6_tdd_and_implement --since "$PHASE_T0" --ticket "$issue_number" || true
+```
+
 ### Step 7: Multi-AI code review with structured checklist
+
+```bash
+PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
+```
 
 **THIS STEP IS NEVER OPTIONAL.** Every implementation gets a multi-AI code review, regardless of change size. A one-line typo fix, a 10-line config change, a 500-line feature — all get the same review process. You do not get to self-certify your own code. No exceptions, no shortcuts.
 
@@ -592,7 +625,16 @@ The worker should:
 
    (Convention: `docs/factory-telemetry.md` → "LLM validations report their value". A `code-review` that keeps costing tokens across tickets but catches nothing becomes a measured `demote-candidate`.)
 
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" phase \
+  --name step7_review_quorum --since "$PHASE_T0" --ticket "$issue_number" || true
+```
+
 ### Step 8: Apply review fixes and verify
+
+```bash
+PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
+```
 
 Apply clear-cut fixes from the review. Flag ambiguous items for the user. Then **the orchestrator independently verifies the final state** — this is not delegatable.
 
@@ -713,6 +755,11 @@ If ANY verification fails: fix it directly, or re-launch the coding worker (cont
 ```
 
 (Convention: `docs/factory-telemetry.md` → "Escapes — measuring gate RECALL, not just catches".)
+
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" phase \
+  --name step8_verification --since "$PHASE_T0" --ticket "$issue_number" || true
+```
 
 ### Step 9: UX sanity + design-fidelity gate
 
