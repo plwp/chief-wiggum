@@ -34,6 +34,7 @@ import hashlib
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -111,12 +112,16 @@ class TaskRecord:
             raise ValueError(
                 f"task record is missing required fields: {', '.join(missing)}"
             )
+        # Stored stripped, not merely validated stripped. Identity is compared
+        # as a plain string, so `"cw-352"` and `"cw-352 "` would be two
+        # different tasks: the duplicate check would pass them both and the
+        # same task would be scored twice, inflating its stratum.
         return cls(
-            task_id=str(raw["task_id"]),
-            source=str(raw["source"]),
-            task_class=str(raw["task_class"]),
-            risk=str(raw["risk"]),
-            size=str(raw["size"]),
+            task_id=str(raw["task_id"]).strip(),
+            source=str(raw["source"]).strip(),
+            task_class=str(raw["task_class"]).strip(),
+            risk=str(raw["risk"]).strip(),
+            size=str(raw["size"]).strip(),
             base_commit=str(raw.get("base_commit", "")),
             base_date=str(raw.get("base_date", "")),
             solution_commit=str(raw.get("solution_commit", "")),
@@ -154,13 +159,35 @@ def _dates_ordered(solution_date: str, base_date: str) -> bool | None:
     """
     if not solution_date or not base_date:
         return None
+
+    # Parsed as instants, never compared as text. Lexicographic order looks
+    # equivalent and is not: the time portion may carry a UTC offset, which
+    # sorting ignores. A solution stamped 2026-08-01T00:00:00+02:00 is
+    # 2026-07-31 22:00 UTC, genuinely earlier than a base of
+    # 2026-07-31T23:00:00Z, yet it sorts later as text - so the contaminated
+    # task read as clean and was admitted. Comparing calendar days does not
+    # fix it either, because the offset moves the day.
+    stamps = []
     for value in (solution_date, base_date):
-        parts = value.split("T")[0].split("-")
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        try:
+            stamps.append(datetime.fromisoformat(value))
+        except ValueError:
             return None
-        if len(parts[0]) != 4 or len(parts[1]) != 2 or len(parts[2]) != 2:
-            return None
-    return solution_date <= base_date
+
+    solution_at, base_at = stamps
+    if (solution_at.tzinfo is None) != (base_at.tzinfo is None):
+        # One instant, one wall-clock date. Assuming a zone for the naive one
+        # would be inventing the fact that decides contamination, so this is
+        # unorderable and the caller excludes the task as unverifiable.
+        return None
+    if solution_at == base_at:
+        return True
+    if solution_at.tzinfo is None and solution_at.date() == base_at.date():
+        # Two naive values on the same day: a bare date carries no time, so
+        # "2026-08-01" against "2026-08-01T09:00" is not evidence the solution
+        # came afterwards. Unorderable in the conservative direction.
+        return True
+    return solution_at < base_at
 
 
 def git_reachability(repo: str | Path) -> Callable[[str, str], Reachability]:
@@ -249,17 +276,30 @@ class FrozenCorpus:
         return len(self.included) + len(self.exclusions)
 
     def digest(self) -> str:
-        """Content hash of the frozen corpus.
+        """Content hash of the frozen corpus, including what it excluded.
 
         The task list is sorted by id before hashing. That sort is NOT
         redundant here: `canonical_json_bytes` only auto-sorts collections of
         records carrying a DAG identity key, and a task record carries none -
         so without it the same corpus fed in a different order would hash
         differently and read as a CORPUS_CHANGED protocol violation.
+
+        The exclusions are hashed too, and that is load-bearing rather than
+        tidy. The exclusion count is a quantity the pre-registration requires
+        the experiment to publish, and the report reads it from the corpus
+        file. If only the included tasks were hashed, a corpus that recorded
+        fifty contaminated candidates and one that quietly filtered them out
+        before freezing would share a `corpus_version`, and every manifest
+        would pin that same version while the published contamination
+        evidence differed. The digest has to bind the evidence, not just the
+        sample.
         """
         payload = {
             "included": [task.to_dict() for task in
                          sorted(self.included, key=lambda task: task.task_id)],
+            "exclusions": [item.to_dict() for item in
+                           sorted(self.exclusions,
+                                  key=lambda item: (item.task_id, str(item.reason)))],
             "min_stratum_n": self.min_stratum_n,
         }
         return "sha256:" + hashlib.sha256(canonical_json_bytes(payload)).hexdigest()

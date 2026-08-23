@@ -173,6 +173,27 @@ class Coverage:
         return (self.attempted == self.corpus_n and not self.missing
                 and not self.unknown and not self.duplicates)
 
+    def shortfall(self) -> str:
+        """Why this arm is not a clean full-corpus run, in the operator's terms.
+
+        "PARTIAL" alone sends the reader hunting for missing tasks, which is
+        wrong when the arm covered everything and merely submitted one record
+        for a task outside the corpus. Both block a ratio, and they are not
+        the same problem: one is an arm that did less than registered, the
+        other is an arm that ran something that was never registered.
+        """
+        parts = []
+        if self.missing:
+            parts.append(f"{len(self.missing)} corpus tasks with no outcome")
+        if self.unknown:
+            parts.append(f"{len(self.unknown)} outcomes for tasks outside the corpus")
+        if self.duplicates:
+            parts.append(f"{len(self.duplicates)} duplicate task outcomes")
+        if not parts:
+            return (f"attempted {self.attempted} of {self.corpus_n}"
+                    " corpus tasks")
+        return ", ".join(parts)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "corpus_n": self.corpus_n,
@@ -307,6 +328,7 @@ def _suppression(
     by_arm: Mapping[str, ArmRun],
     violations: Mapping[str, Sequence[str]],
     partial: Sequence[str],
+    shortfalls: Mapping[str, str] | None = None,
 ) -> tuple[ClosureSuppression, str]:
     """Decide whether the registered stopping rules permit a ratio at all."""
     required = [FRONTIER_ARM, STATIC_OPEN_ARM, HEADLINE_ADAPTIVE_ARM]
@@ -320,8 +342,13 @@ def _suppression(
               " manifest; no ratio is computed."
         )
     if partial:
+        detail = shortfalls or {}
+        named = "; ".join(
+            f"{arm} ({detail[arm]})" if arm in detail else arm
+            for arm in sorted(partial)
+        )
         return ClosureSuppression.PARTIAL_RUN, (
-            "incomplete arms: " + ", ".join(sorted(partial))
+            "incomplete arms: " + named
             + ". A partial result is reported as partial, with its N, and does"
               " not produce a gap-closure ratio."
         )
@@ -341,6 +368,23 @@ def assemble_report(
     min_n: int = 100,
 ) -> dict[str, Any]:
     """Assemble the full result: coverage, protocol, closure, frontier, findings."""
+    # Refuse two runs for one arm rather than letting a dict comprehension
+    # decide. Keeping the last silently drops the other, and every downstream
+    # list (`arms`, the frontier, the negative findings) would still carry
+    # both, so the ratio and the table beside it would describe different
+    # runs. It also hands the operator a way to submit two takes of an arm and
+    # have the analysis quietly read one of them.
+    counts: dict[str, int] = {}
+    for run in runs:
+        counts[run.result.arm] = counts.get(run.result.arm, 0) + 1
+    duplicated = sorted(arm for arm, count in counts.items() if count > 1)
+    if duplicated:
+        raise ValueError(
+            "more than one run supplied for " + ", ".join(duplicated)
+            + "; an arm has exactly one result, and choosing between two takes"
+              " after seeing them is not a choice the analysis may make"
+        )
+
     by_arm = {run.result.arm: run for run in runs}
     arms = [run.result for run in runs]
 
@@ -355,7 +399,9 @@ def assemble_report(
                 violations[run.result.arm] = [str(item) for item in found]
 
     partial = sorted(run.result.arm for run in runs if not run.coverage.complete)
-    suppression, detail = _suppression(by_arm, violations, partial)
+    shortfalls = {run.result.arm: run.coverage.shortfall() for run in runs
+                  if not run.coverage.complete}
+    suppression, detail = _suppression(by_arm, violations, partial, shortfalls)
 
     closures: dict[str, Any] = {}
     headline: GapClosure | None = None
@@ -385,10 +431,25 @@ def assemble_report(
 
     findings = list(negative_findings(arms, STATIC_OPEN_ARM))
     failures = list(reporting_failures(arms, findings))
-    failures += [f"{arm} did not attempt the whole corpus; reported as partial"
+    failures += [f"{arm} is not a clean full-corpus run ({shortfalls[arm]});"
+                 " reported as partial"
                  for arm in partial]
     failures += [f"{arm} violated protocol ({', '.join(items)}) and must re-run"
                  for arm, items in sorted(violations.items())]
+
+    # An absent arm 3 or 4 is a reporting failure, not a silent omission.
+    # Gap closure only needs arms 1, 2 and 5, so leaving the other two out
+    # still produces a clean-looking headline ratio. But the reason all three
+    # adaptive arms are shown against one denominator is so the flattering one
+    # cannot be promoted quietly, and that defence is worth nothing if simply
+    # not running an arm makes it disappear from the report.
+    unreported = [name for name in ADAPTIVE_ARMS if name not in by_arm]
+    if unreported and suppression is ClosureSuppression.NONE:
+        failures.append(
+            "no result for " + ", ".join(unreported)
+            + "; the headline ratio is quoted without the adaptive arms it is"
+              " meant to be read beside"
+        )
 
     if headline is not None:
         allowed, claim_detail = readme_claim_allowed(arms, headline, min_n=min_n)

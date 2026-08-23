@@ -240,7 +240,24 @@ def _check_protocol(args: argparse.Namespace) -> int:
 
 
 def _strata_by_task(frozen: dict[str, Any]) -> dict[str, str]:
-    return {task["task_id"]: task["stratum"] for task in frozen.get("included", [])}
+    """Task id -> stratum, from the corpus FILE.
+
+    Reports a missing field as bad input rather than raising KeyError out of a
+    dict comprehension: a hand-built or truncated corpus file is an operator
+    mistake with a clear fix, and a bare traceback reads like a tool bug.
+    """
+    strata: dict[str, str] = {}
+    for task in frozen.get("included", []):
+        task_id = str(task.get("task_id", "")).strip()
+        stratum = str(task.get("stratum", "")).strip()
+        if not task_id or not stratum:
+            raise ValueError(
+                f"corpus task {task_id or '<no id>'} is missing its"
+                " task_id/stratum; re-run freeze-corpus rather than editing"
+                " the corpus file by hand"
+            )
+        strata[task_id] = stratum
+    return strata
 
 
 def _record(args: argparse.Namespace) -> int:
@@ -273,9 +290,13 @@ def _record(args: argparse.Namespace) -> int:
         return _fail(f"bad outcome record: {exc}", EXIT_INPUT)
 
     tier, process = report_mod.ARM_SPECS[manifest.arm]
+    try:
+        strata = _strata_by_task(frozen)
+    except ValueError as exc:
+        return _fail(str(exc), EXIT_INPUT)
     run = report_mod.build_arm_run(
         arm=manifest.arm, model_tier=tier, process=process, manifest=manifest,
-        outcomes=outcomes, strata_by_task=_strata_by_task(frozen),
+        outcomes=outcomes, strata_by_task=strata,
     )
     payload = run.to_dict()
     if args.out:
@@ -332,6 +353,16 @@ def _report(args: argparse.Namespace) -> int:
                 verifier_hash=str(raw["manifest"]["verifier_hash"]),
                 environment=dict(raw["manifest"].get("environment") or {}),
             )
+            if manifest.corpus_version != frozen.get("corpus_version"):
+                return _fail(
+                    f"{path}: recorded against corpus"
+                    f" {manifest.corpus_version} but --corpus is"
+                    f" {frozen.get('corpus_version')}. `record` pins this and"
+                    " `report` re-checks it: without the check the report"
+                    " labels the results with a corpus they never ran"
+                    " against, including its exclusion counts.",
+                    EXIT_INPUT,
+                )
             outcomes = [report_mod.TaskOutcome.from_dict(entry)
                         for entry in raw.get("outcomes", [])]
             tier, process = report_mod.ARM_SPECS[manifest.arm]
@@ -354,15 +385,18 @@ def _report(args: argparse.Namespace) -> int:
     if not runs:
         return _fail("no runs given", EXIT_INPUT)
 
-    report = report_mod.assemble_report(
-        corpus=frozen,
-        runs=runs,
-        non_inferiority=NonInferiority(
-            margin=REGISTERED_MARGIN,
-            justification=REGISTERED_MARGIN_JUSTIFICATION,
-        ),
-        min_n=REGISTERED_MIN_N,
-    )
+    try:
+        report = report_mod.assemble_report(
+            corpus=frozen,
+            runs=runs,
+            non_inferiority=NonInferiority(
+                margin=REGISTERED_MARGIN,
+                justification=REGISTERED_MARGIN_JUSTIFICATION,
+            ),
+            min_n=REGISTERED_MIN_N,
+        )
+    except ValueError as exc:
+        return _fail(str(exc), EXIT_INPUT)
     markdown = report_mod.render_report(report)
     print(markdown)
     if args.out_json:

@@ -80,10 +80,21 @@ Exclusion reasons, all counted and published with their denominator:
 | `DUPLICATE_ID` | the same task id appeared twice |
 | `INVALID_STRATUM` | a class, risk or size outside the registered vocabulary |
 
-Public-benchmark instances are **annotated, not excluded**. They are listed
-under `pretraining_risk` so the reader knows the absolute score may be
-inflated; the readable signal is the cross-arm difference under fixed
-conditions.
+There are two different contamination vectors here and they are handled
+differently. Conflating them is easy, so state them separately:
+
+- **Pretraining contamination** (the task may be memorised from a public
+  benchmark) is **annotated, not excluded**. Such tasks are listed under
+  `pretraining_risk` so the reader knows the absolute score may be inflated;
+  the readable signal is the cross-arm difference under fixed conditions.
+- **Reachability contamination** (the arm can read the solution out of the
+  repo state it was handed) is **excluded**, and that applies to public
+  benchmark instances too. `public_benchmark` only exempts a task from the
+  `UNVERIFIABLE_BASE` rule when no solution is recorded at all, because a
+  benchmark instance takes its repo state from the benchmark harness rather
+  than from a `base_commit`. A benchmark task that does carry a
+  `solution_commit` reachable from its base is still excluded: annotating it
+  would leave an answer key inside the corpus.
 
 ### Underpowered strata
 

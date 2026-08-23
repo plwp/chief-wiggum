@@ -156,6 +156,30 @@ def test_public_benchmark_instance_is_annotated_not_excluded():
     assert frozen.pretraining_risk == ("bench-1",)
 
 
+def test_public_benchmark_does_not_exempt_a_reachable_solution():
+    """Two contamination vectors, handled differently.
+
+    Pretraining risk is annotated. Reachability is excluded, and being a
+    public benchmark does not buy an exemption from it: annotating a task
+    whose solution sits in the base leaves an answer key inside the corpus.
+    Both reviewers of this change read "annotated, not excluded" as covering
+    the reachable case, so the distinction is pinned here.
+    """
+    frozen = freeze_corpus(
+        [task("bench-leak", solution_commit="s" * 40, public_benchmark=True)],
+        reachable=oracle(Reachability.REACHABLE),
+    )
+    assert frozen.included == ()
+    assert frozen.exclusions[0].reason is ExclusionReason.SOLUTION_IN_BASE
+    assert frozen.pretraining_risk == ()
+
+    # With nothing recorded to reach, the same task is admitted and annotated.
+    annotated = freeze_corpus([task("bench-ok", base_commit="",
+                                    public_benchmark=True)])
+    assert [item.task_id for item in annotated.included] == ["bench-ok"]
+    assert annotated.pretraining_risk == ("bench-ok",)
+
+
 def test_duplicate_ids_and_unknown_strata_are_excluded_with_reasons():
     frozen = freeze_corpus([
         task("t1"), task("t1"),
@@ -183,6 +207,94 @@ def test_corpus_digest_ignores_input_order_but_not_content():
 
     changed = freeze_corpus([task("a"), task("b", risk="high")])
     assert changed.digest() != first.digest()
+
+
+def test_corpus_digest_binds_the_exclusions_not_only_the_sample():
+    """Filtering contaminated candidates out beforehand must change the hash.
+
+    The exclusion count is a quantity the pre-registration requires the
+    experiment to publish, and the report reads it from the corpus file. If
+    the digest covered only the included tasks, a corpus that recorded three
+    contaminated candidates and one that quietly dropped them before freezing
+    would share a `corpus_version`, every manifest would pin that same
+    version, and the published contamination evidence would be unbound.
+    """
+    leak = dict(solution_commit="s" * 40, solution_date="2020-01-01",
+                base_date="2026-01-01")
+    recorded = freeze_corpus([task("t1"), task("t2"),
+                              task("x1", **leak), task("x2", **leak),
+                              task("x3", **leak)])
+    prefiltered = freeze_corpus([task("t1"), task("t2")])
+
+    assert [item.task_id for item in recorded.included] == ["t1", "t2"]
+    assert [item.task_id for item in prefiltered.included] == ["t1", "t2"]
+    assert len(recorded.exclusions) == 3
+    assert not prefiltered.exclusions
+    assert recorded.digest() != prefiltered.digest()
+
+
+def test_task_identity_is_stripped_so_whitespace_cannot_duplicate_a_task():
+    """`"t1"` and `"t1 "` are one task, and must not both be scored."""
+    frozen = freeze_corpus([
+        TaskRecord.from_dict({"task_id": "t1", "source": "cw",
+                              "task_class": "bugfix", "risk": "low",
+                              "size": "small", "base_commit": "b" * 40}),
+        TaskRecord.from_dict({"task_id": "t1 ", "source": "cw",
+                              "task_class": "bugfix", "risk": "low",
+                              "size": "small", "base_commit": "b" * 40}),
+    ])
+    assert [item.task_id for item in frozen.included] == ["t1"]
+    assert frozen.exclusions[0].reason is ExclusionReason.DUPLICATE_ID
+
+
+def test_timezone_offsets_cannot_make_an_earlier_solution_look_later():
+    """Lexicographic order on a full timestamp ignores the UTC offset.
+
+    2026-08-01T00:00:00+02:00 is 2026-07-31 22:00 UTC, genuinely earlier than
+    a base of 2026-07-31T23:00:00Z. Compared as text it sorts later, so the
+    contaminated task read as clean.
+    """
+    solution = "2026-08-01T00:00:00+02:00"
+    base = "2026-07-31T23:00:00Z"
+    frozen = freeze_corpus(
+        [task("tz", solution_commit="s" * 40, solution_date=solution,
+              base_date=base)],
+        reachable=oracle(Reachability.UNKNOWN),
+    )
+    assert frozen.included == ()
+    assert frozen.exclusions[0].reason is ExclusionReason.SOLUTION_PREDATES_BASE
+
+    # Same calendar day cannot be ordered by a date alone, so it excludes.
+    same_day = freeze_corpus(
+        [task("sd", solution_commit="s" * 40,
+              solution_date="2026-08-01T10:00:00", base_date="2026-08-01T09:00:00")],
+        reachable=oracle(Reachability.UNKNOWN),
+    )
+    assert same_day.included == ()
+
+    # A solution a clear day later is still admitted.
+    later = freeze_corpus(
+        [task("lt", solution_commit="s" * 40,
+              solution_date="2026-08-02T00:00:00Z", base_date="2026-08-01T23:00:00Z")],
+        reachable=oracle(Reachability.UNKNOWN),
+    )
+    assert [item.task_id for item in later.included] == ["lt"]
+
+
+def test_one_zoned_and_one_bare_date_is_unverifiable_not_a_crash():
+    """A wall-clock date against an instant cannot be ordered.
+
+    Assuming a zone for the bare one would invent the fact that decides
+    contamination. Comparing them anyway raises TypeError, which reaches the
+    operator as a tool crash rather than as an excluded task.
+    """
+    frozen = freeze_corpus(
+        [task("mixed", solution_commit="s" * 40, solution_date="2026-08-01",
+              base_date="2026-07-31T23:00:00Z")],
+        reachable=oracle(Reachability.UNKNOWN),
+    )
+    assert frozen.included == ()
+    assert frozen.exclusions[0].reason is ExclusionReason.UNVERIFIABLE_BASE
 
 
 def test_underpowered_strata_are_reported_with_their_n_never_dropped():
@@ -483,6 +595,33 @@ def test_partial_arm_means_no_ratio_exists_at_all():
     assert report["gap_closure"]["suppressed"] == str(ClosureSuppression.PARTIAL_RUN)
     assert report["gap_closure"]["by_arm"] == {}
     assert any("reported as partial" in item for item in report["reporting_failures"])
+    assert "2 corpus tasks with no outcome" in (
+        report["gap_closure"]["suppression_detail"])
+
+
+def test_an_extra_out_of_corpus_record_is_not_described_as_missing_tasks():
+    """Both block a ratio; they are not the same problem.
+
+    An arm that covered the corpus and also submitted one record for a task
+    outside it did not do less than registered - it ran something never
+    registered. Reporting that as "did not attempt the whole corpus" sends the
+    operator hunting for missing tasks that do not exist.
+    """
+    tier, process = report_mod.ARM_SPECS["arm-5"]
+    outcomes = [TaskOutcome(task_id=f"t{index}", accepted=True)
+                for index in range(4)] + [TaskOutcome(task_id="stray", accepted=True)]
+    stray = build_arm_run(arm="arm-5", model_tier=tier, process=process,
+                          manifest=manifest("arm-5"), outcomes=outcomes,
+                          strata_by_task=STRATA)
+    assert stray.coverage.attempted == 4
+    assert stray.coverage.missing == ()
+    assert stray.coverage.complete is False
+
+    report = report_for([full_run("arm-1", 4), full_run("arm-2", 1),
+                         full_run("arm-3", 2), full_run("arm-4", 3), stray])
+    detail = report["gap_closure"]["suppression_detail"]
+    assert "outcomes for tasks outside the corpus" in detail
+    assert "with no outcome" not in detail
 
 
 def test_missing_headline_arm_means_no_ratio_exists_at_all():
@@ -555,6 +694,34 @@ def test_rendered_report_shows_all_three_adaptive_arms_when_clean():
     markdown = render_report(report_for(runs))
     for name in ("arm-3", "arm-4", "arm-5"):
         assert f"| {name} | DEFINED" in markdown
+
+
+def test_two_runs_for_one_arm_are_refused_not_silently_deduplicated():
+    """Choosing between two takes after seeing them is not the analysis's call.
+
+    A dict keyed by arm keeps the last run, while every downstream list still
+    carries both, so the ratio and the table beside it would describe
+    different runs.
+    """
+    runs = [full_run("arm-1", 4), full_run("arm-2", 1),
+            full_run("arm-5", 1), full_run("arm-5", 3)]
+    with pytest.raises(ValueError, match="more than one run supplied for arm-5"):
+        report_for(runs)
+
+
+def test_absent_adaptive_arms_are_a_reporting_failure_not_a_silent_omission():
+    """Gap closure needs arms 1, 2 and 5, so 3 and 4 can vanish unnoticed.
+
+    Showing all three adaptive arms against one denominator is what stops the
+    flattering one being promoted quietly. That defence is worth nothing if
+    simply not running an arm removes it from the report without comment.
+    """
+    report = report_for([full_run("arm-1", 4), full_run("arm-2", 1),
+                         full_run("arm-5", 3)])
+    assert report["gap_closure"]["suppressed"] == str(ClosureSuppression.NONE)
+    assert sorted(report["gap_closure"]["by_arm"]) == ["arm-5"]
+    assert any("arm-3" in item and "arm-4" in item
+               for item in report["reporting_failures"])
 
 
 def test_cost_quality_frontier_is_reported_beside_quality():
@@ -710,6 +877,77 @@ def test_cli_report_detects_a_run_file_edited_after_it_was_recorded(tmp_path):
                  str(tmp_path / "run.json"))
     assert result.returncode == 2
     assert "changed after it was recorded" in result.stderr
+
+
+def _one_task_corpus(tmp_path, task_id="t0"):
+    """freeze a single-task corpus plus a verifier, returning both paths."""
+    write(tmp_path / "candidates.json", {"tasks": [
+        {"task_id": task_id, "source": "s", "task_class": "bugfix",
+         "risk": "low", "size": "small", "base_commit": "b" * 40}]})
+    corpus_path = tmp_path / f"corpus-{task_id}.json"
+    cli("freeze-corpus", "--candidates", str(tmp_path / "candidates.json"),
+        "--out", str(corpus_path))
+    verifier_path = tmp_path / "verifier.json"
+    if not verifier_path.exists():
+        (tmp_path / "verify.py").write_text("assert True")
+        cli("hash-verifier", "--path", "verify.py", "--root", str(tmp_path),
+            "--out", str(verifier_path))
+    return corpus_path, verifier_path
+
+
+def test_cli_report_refuses_a_run_recorded_against_a_different_corpus(tmp_path):
+    """`record` pins the corpus; `report` must re-check it.
+
+    Without the check the report labels the results with a corpus they never
+    ran against, including its exclusion counts.
+    """
+    corpus_a, verifier = _one_task_corpus(tmp_path, "t0")
+    cli("manifest", "--arm", "arm-1", "--corpus", str(corpus_a), "--verifier",
+        str(verifier), "--out", str(tmp_path / "m1.json"))
+    write(tmp_path / "outcomes.json", {"outcomes": [{"task_id": "t0",
+                                                     "accepted": True}]})
+    cli("record", "--arm", "arm-1", "--corpus", str(corpus_a), "--manifest",
+        str(tmp_path / "m1.json"), "--outcomes", str(tmp_path / "outcomes.json"),
+        "--out", str(tmp_path / "run.json"))
+
+    # A second corpus with the same task but a recorded exclusion: different
+    # contamination evidence, therefore a different corpus_version.
+    write(tmp_path / "candidates-b.json", {"tasks": [
+        {"task_id": "t0", "source": "s", "task_class": "bugfix", "risk": "low",
+         "size": "small", "base_commit": "b" * 40},
+        {"task_id": "leak", "source": "s", "task_class": "bugfix",
+         "risk": "low", "size": "small", "base_commit": "b" * 40,
+         "base_date": "2026-07-01", "solution_commit": "s" * 40,
+         "solution_date": "2026-01-01"}]})
+    corpus_b = tmp_path / "corpus-b.json"
+    cli("freeze-corpus", "--candidates", str(tmp_path / "candidates-b.json"),
+        "--out", str(corpus_b))
+    assert (json.loads(corpus_a.read_text())["corpus_version"]
+            != json.loads(corpus_b.read_text())["corpus_version"])
+
+    result = cli("report", "--corpus", str(corpus_b), "--run",
+                 str(tmp_path / "run.json"))
+    assert result.returncode == 2
+    assert "but --corpus is" in result.stderr
+
+
+def test_cli_reports_a_hand_edited_corpus_file_as_input_not_a_traceback(tmp_path):
+    corpus_path, verifier = _one_task_corpus(tmp_path, "t0")
+    broken = json.loads(corpus_path.read_text())
+    for entry in broken["included"]:
+        entry.pop("stratum", None)
+    write(corpus_path, broken)
+
+    cli("manifest", "--arm", "arm-1", "--corpus", str(corpus_path), "--verifier",
+        str(verifier), "--out", str(tmp_path / "m1.json"))
+    write(tmp_path / "outcomes.json", {"outcomes": [{"task_id": "t0",
+                                                     "accepted": True}]})
+    result = cli("record", "--arm", "arm-1", "--corpus", str(corpus_path),
+                 "--manifest", str(tmp_path / "m1.json"),
+                 "--outcomes", str(tmp_path / "outcomes.json"))
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "re-run freeze-corpus" in result.stderr
 
 
 def test_cli_check_protocol_names_what_moved(tmp_path):
