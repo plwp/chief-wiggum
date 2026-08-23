@@ -13,6 +13,9 @@ ID:
 - ``@cw-smoke <system-name> [case=<substring>]`` (#353,
   ``scripts/check_external_smoke.py``) — marks the test that performs ONE real
   round-trip against a declared external system.
+- ``@cw-fixture <system-name> [capture=<path>]`` (#351,
+  ``scripts/check_fixture_provenance.py``) — marks a test DOUBLE for a declared
+  external system and names the real captured interaction it was derived from.
 
 Both are namespaced ``@cw-*`` tags read comment-agnostically (the regex
 matches wherever the text appears; callers are expected to place it inside a
@@ -82,6 +85,29 @@ _SYSTEM_TOKEN = r"[A-Za-z0-9_][A-Za-z0-9_.\-]*"
 SMOKE_TAG_RE = re.compile(
     rf"@cw-smoke\s+(?P<system>{_SYSTEM_TOKEN})"
     rf"(?:\s+case=(?P<case>[^\s]+))?",
+    re.IGNORECASE,
+)
+
+# --- @cw-fixture (#351) -------------------------------------------------------
+#
+# `@cw-fixture <system-name> [capture=<path>]` marks a test double standing in
+# for a declared external system, and names the real captured interaction it was
+# derived from:
+#
+#     // @cw-fixture SCP capture=testdata/captures/scp-venue-info.json
+#     func newSCPFixture(t *testing.T) *httptest.Server { ... }
+#
+# `capture=` is OPTIONAL in the grammar and its ABSENCE is the finding: a double
+# with no capture was invented, which lets it agree with the code and both be
+# wrong (mock-model collusion). Parsing it as optional is what lets the checker
+# SEE a hand-authored fixture and say so, rather than failing to match it at all
+# and reporting a clean zero.
+#
+# Same `<system-name>` vocabulary as @cw-smoke: it joins to the `external_system`
+# declared on an `"external": true` contracts operation (#350).
+FIXTURE_TAG_RE = re.compile(
+    rf"@cw-fixture\s+(?P<system>{_SYSTEM_TOKEN})"
+    rf"(?:\s+capture=(?P<capture>[^\s]+))?",
     re.IGNORECASE,
 )
 
