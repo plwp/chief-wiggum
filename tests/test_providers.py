@@ -319,6 +319,60 @@ def test_validate_config_accepts_well_formed_optional_timeout_seconds():
     assert providers.validate_config(config) == []
 
 
+def _models_md() -> str:
+    from pathlib import Path
+
+    # Explicit encoding: the file carries em dashes, and read_text() would
+    # otherwise decode by locale, which is a portability trap rather than a
+    # today problem.
+    return (Path(__file__).resolve().parents[1] / "models.md").read_text(
+        encoding="utf-8")
+
+
+def _openrouter_section() -> str:
+    """Just the OpenRouter table, so other vendors' slugs are not swept in."""
+    text = _models_md()
+    start = text.index("## OpenRouter")
+    rest = text.index("\n## ", start + 1)
+    return text[start:rest]
+
+
+def _tabled_slugs() -> set[str]:
+    """The Model ID column of the OpenRouter table, lowercased.
+
+    Read from the table's second column rather than by pattern-matching the
+    prose: a "looks like a slug" heuristic also matches `config/providers.json`
+    and `scripts/consult_ai.py`, which is what the first attempt at this did.
+    """
+    slugs = set()
+    for line in _openrouter_section().splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = line.split("|")
+        if len(cells) < 3:
+            continue
+        cell = cells[2].strip()
+        if cell.startswith("`") and cell.endswith("`"):
+            slugs.add(cell.strip("`").strip().lower())
+    return slugs
+
+
+def _routed_openrouter_models(config: dict | None = None) -> dict[str, str]:
+    """Enabled OpenRouter-backed providers, name -> model slug.
+
+    A provider switched off is deliberately not dispatched to, so requiring a
+    reference entry for it would fail CI over a config change that broke
+    nothing — and a guard that cries wolf teaches the operator to bypass it.
+    """
+    config = config if config is not None else providers.load_config()
+    return {
+        name: spec["model"]
+        for name, spec in (config.get("providers") or {}).items()
+        if spec.get("tool") == "openrouter" and spec.get("model")
+        and spec.get("enabled", True)
+    }
+
+
 def test_every_openrouter_model_slug_is_documented_in_models_md():
     """models.md must list every OpenRouter-backed provider (chief-wiggum#368).
 
@@ -330,29 +384,95 @@ def test_every_openrouter_model_slug_is_documented_in_models_md():
     stale slug does not degrade gracefully, it 404s and that reviewer drops
     out of its role.
     """
-    import re
-    from pathlib import Path
-
-    config = providers.load_config()
-    reference = (Path(__file__).resolve().parents[1] / "models.md").read_text()
-    # Exact backticked tokens, not a substring search: `deepseek/x-flash` is a
-    # substring of `deepseek/x-flash-preview`, so a plain `in` check passes
-    # while the two files name different models.
-    documented = set(re.findall(r"`([^`]+)`", reference))
-
-    routed = {
-        name: spec["model"]
-        for name, spec in (config.get("providers") or {}).items()
-        if spec.get("tool") == "openrouter" and spec.get("model")
-    }
+    documented = _tabled_slugs()
+    routed = _routed_openrouter_models()
     assert routed, "expected at least one openrouter-backed provider to exist"
+    assert documented, "the OpenRouter table in models.md has no model column"
 
     missing = {name: model for name, model in routed.items()
-               if model not in documented}
+               if model.lower() not in documented}
     assert not missing, (
         f"models.md does not document these OpenRouter model slugs: {missing}. "
         "Add them, or drop the provider from config/providers.json."
     )
+
+
+def test_a_disabled_provider_is_not_required_to_be_documented():
+    """Switching a provider off must not break CI over the reference.
+
+    Nothing dispatches to a disabled provider, so demanding a models.md entry
+    for it would fail the build over a config change that broke nothing — and
+    a guard that cries wolf teaches the operator to bypass it. Exercised on a
+    synthetic config because no shipped OpenRouter provider is currently
+    disabled, which would otherwise leave this filter untested.
+    """
+    config = {"providers": {
+        "live": {"tool": "openrouter", "model": "vendor/live-v1", "enabled": True},
+        "off": {"tool": "openrouter", "model": "vendor/off-v1", "enabled": False},
+        "implied": {"tool": "openrouter", "model": "vendor/implied-v1"},
+        "other-tool": {"tool": "codex", "model": "vendor/not-routed"},
+    }}
+    assert _routed_openrouter_models(config) == {
+        "live": "vendor/live-v1",
+        "implied": "vendor/implied-v1",  # absent `enabled` means enabled
+    }
+
+
+def test_models_md_does_not_advertise_a_provider_that_is_no_longer_wired():
+    """The reverse drift, which the forward check cannot see.
+
+    A slug left in the reference after its provider was removed from config
+    tells a reader the model is available when nothing dispatches to it. Only
+    the OpenRouter section is scanned, so slugs belonging to other vendors are
+    not swept up.
+    """
+    slugs = _tabled_slugs()
+    routed = {model.lower() for model in _routed_openrouter_models().values()}
+
+    stale = sorted(slugs - routed)
+    assert not stale, (
+        f"models.md advertises OpenRouter slugs nothing dispatches to: {stale}. "
+        "Remove them, or wire the provider back into config/providers.json."
+    )
+
+
+def test_models_md_role_membership_claims_match_the_config():
+    """The prose claims are drift too, and were the untested half.
+
+    models.md states which roles each provider sits in and whether it is
+    required there. That is exactly the kind of hand-maintained assertion this
+    file's slug check exists to stop trusting — raised in review, and fair:
+    guarding the slugs while leaving the surrounding sentences unguarded is
+    half a guard.
+    """
+    config = providers.load_config()
+    roles = config.get("roles") or {}
+
+    def membership(provider: str) -> tuple[set[str], set[str]]:
+        required = {name for name, role in roles.items()
+                    if provider in (role.get("required") or [])}
+        optional = {name for name, role in roles.items()
+                    if provider in (role.get("optional") or [])}
+        return required, optional
+
+    # The claims made in models.md's OpenRouter table, transcribed.
+    claimed = {
+        "deepseek-flash": ({"reviewer", "risky_diff_review"},
+                           {"explorer", "architecture_critic"}),
+        "deepseek": ({"divergence"}, set()),
+        "kimi": ({"divergence"}, set()),
+        "glm": (set(), {"divergence"}),
+        "qwen": (set(), {"divergence"}),
+        "minimax": (set(), {"divergence"}),
+    }
+    for provider, (want_required, want_optional) in claimed.items():
+        got_required, got_optional = membership(provider)
+        assert got_required == want_required, (
+            f"models.md says {provider} is required in {sorted(want_required)},"
+            f" config says {sorted(got_required)}")
+        assert got_optional == want_optional, (
+            f"models.md says {provider} is optional in {sorted(want_optional)},"
+            f" config says {sorted(got_optional)}")
 
 
 def test_default_provider_config_sets_optional_timeout_seconds_on_every_role():
