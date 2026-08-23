@@ -335,6 +335,31 @@ Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 pro
 
 **Report-only** (always exits 0 here, per `docs/gate-rollout.md` — this gate has no `--gate` wired into any workflow yet, and won't until a dry-run against a real shipped target and a `docs/quality/validation/check_ai_act.json` record exist per `docs/gate-validation.md`). Surface the finding count in the close report under `### EU AI Act`, distinguishing the four states: `pass` (all declared features clean), `findings` (a `fail`-severity hit — a `prohibited` tier, an undocumented Annex III derogation claim, an undeclared `eu_scope`, or a **missing artifact entirely** — Art. 6(4): absence is never a silent pass), `inapplicable` (the artifact exists with an explicit empty `features: []` — a genuine, recorded "no AI functionality here"), `error` (the artifact exists and could not be parsed). A `missing` classification_status on a product with an obvious AI feature (a chat widget, a recommendation surface) is worth flagging prominently in the close report even though it doesn't block — it means the Art. 6(4) assessment was never made, which the operator should fix before, not after, this epic ships.
 
+### Step 2j5: Behavioural eval (report-only) — chief-wiggum#354
+
+**Only for products that ship an agent with tools.** Config that declares tools is not an agent that uses them. A Gemini config was built with its tools declared, the engine tests asserted the tools were *passed* to the model (`toGenaiTools`), and it was all green — but there was no system instruction, so the model never called a tool and answered *"I can't retrieve that."*
+
+Run the target's golden set against the real model, then check the OUTCOME:
+
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_behavioral_eval.py" \
+  --source "$TARGET_REPO" \
+  ${EVAL_RESULTS:+--results "$EVAL_RESULTS"} \
+  --format text
+```
+
+The spec lives in the target at `docs/quality/behavioral-evals.json` (tools + a small golden set of cases, each naming its `expect_tool` and optionally `expect_contains`). Running it is the target's job — it needs the target's model, credentials and harness. Requiring it, and refusing to call an unrun set a pass, is the gate's.
+
+**Report-only** (no `--gate` until a `docs/quality/validation/check_behavioral_eval.json` record exists). Surface under `### Behavioural evals`:
+
+- **`tool_not_called`** — the case ran and the expected tool was NOT called. This is the missing-system-instruction bug exactly.
+- **`no_case`** — a tool declared to the model that no golden case exercises.
+- **`wrong_answer`** — the tool was called and its data did not reach the user.
+- **`unverified`** — the eval was SKIPPED, **or** it passed without recording which tools it called. Exit status is not behaviour: a green case with no `called_tools` proves the case ran, never that the tool was reached.
+- **`never_ran`** — declared in the spec, absent from the results.
+
+No spec at all is `inapplicable`, not `pass`. For a product that ships an agent, **its absence is the gap** — say so in the close report rather than recording a clean line.
+
 ### Step 2j4: Boot-and-hit (report-only) — chief-wiggum#352
 
 `go build ./...` and green package tests do not compose the binary and ask it for a route. A duplicate `mux.Handle("/")` once panicked at startup and was found on deploy as a Cloud Run crash-loop; `cmd/server` had **no test files** at all, and the demo page and `/widget.js` were never wired into the server until the deploy branch.
