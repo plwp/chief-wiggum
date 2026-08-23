@@ -219,6 +219,35 @@ Records also serve as **amnesia context**: `ratchet.py recent` replays the
 last N iterations' notes so a fresh session doesn't oscillate on decisions a
 previous one already made.
 
+### One record per line is load-bearing (#420)
+
+The chain's integrity assumes each record occupies its own line, and that
+assumption used to be unenforced on write. A journal whose final record had
+lost its trailing newline did **not** trip the broken-chain guard — the record
+is complete, it verifies, and the raw line count matches the verified prefix —
+so an append wrote onto that line and fused the two records. The write reported
+success and the fused line no longer parsed, which meant:
+
+- `last_authority_action` read a **wired gate as never wired**, so a gate under
+  blocking authority looked un-wired and its demotion path had nothing to
+  demote; and
+- `derive_highwater` folded nothing, so the pass-set high-water **reset to
+  empty** and a suite that had shrunk no longer violated the ratchet.
+
+Both are the "failed to run = pass" family (see `gate-rollout.md`), and both
+were silent in each direction. Every writer now goes through
+`ratchet.append_journal_line`, which separates from an unterminated last line
+before appending. Repairing rather than refusing is sound because the chain is
+verified first: a genuinely truncated tail is still rejected as tamper, so only
+the missing separator is ever added.
+
+On the read side, records fused by something outside CW — a bad merge, a hand
+edit — surface as a named `TamperError` at **exit 4**, not as an unhandled
+`JSONDecodeError`. That distinction matters for the operator, not for
+authority: a corrupt instrument (exit 4) has always been distinguishable from a
+quality regression (exit 1), but a traceback is not something anyone can act
+on.
+
 ## chief-wiggum's own pass-set (#262)
 
 This repo ratchets itself. `docs/quality/ratchet.json` configures the pytest
