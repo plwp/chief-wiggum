@@ -376,8 +376,87 @@ class TestOtelIngestIsIdempotent:
         assert int(first) == 2
         assert int(second) == 0, "the second pass added records"
         assert second.skipped == 2
+        # Assert the LOG, not just the counter. A return value of 0 could also
+        # mean the writes failed; the artifact is what /reflect reads.
+        assert len((tmp_path / "f.jsonl").read_text().splitlines()) == 2
         agg = factory_log.aggregate(factory_log.read_log())
         assert agg["claude_code_cost_usd"] == 0.03
+
+    def test_an_id_less_duplicate_within_one_file_counts_once(
+            self, tmp_path, monkeypatch):
+        """The within-run guard on the CONTENT path.
+
+        The id-path version of this passes even when content keys are not
+        tracked during the pass, so without this the content branch is
+        unexercised.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        event = self._event()  # no request id at all
+        result = factory_log.ingest_claude_code(_otel(tmp_path, event, event))
+        assert int(result) == 1 and result.skipped == 1
+        assert len((tmp_path / "f.jsonl").read_text().splitlines()) == 1
+
+    def test_an_id_less_capture_then_an_id_bearing_one_counts_once(
+            self, tmp_path, monkeypatch):
+        """The crossover, and it inflates — the direction that matters most.
+
+        This function serves both the console-exporter capture and the OTLP
+        file, and they disagree about whether a request id is emitted. Ingest
+        the console capture (keyed by content), then an OTLP export of the
+        same run (keyed by request.id), and a key that matched only on id
+        would find nothing and append every event a second time.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        without = _otel(tmp_path, self._event())
+        with_id = _otel(tmp_path, self._event(**{"request.id": "req-7"}))
+
+        assert int(factory_log.ingest_claude_code(without)) == 1
+        result = factory_log.ingest_claude_code(with_id)
+        assert int(result) == 0, "the same event landed twice"
+        assert result.skipped == 1
+
+    def test_requests_differing_only_by_id_are_both_kept(
+            self, tmp_path, monkeypatch):
+        """The other direction, which a naive union key breaks.
+
+        Two genuinely distinct requests can share every extracted field and
+        differ only in request id. Matching content against id-bearing records
+        would drop the second and under-report.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path,
+                     self._event(**{"request.id": "req-1"}),
+                     self._event(**{"request.id": "req-2"}))
+        assert int(factory_log.ingest_claude_code(otel)) == 2
+
+    def test_a_zero_request_id_is_used_rather_than_falling_back(
+            self, tmp_path, monkeypatch):
+        """`0` is falsy and a perfectly valid id.
+
+        A truthiness gate sends it down the content path while its siblings
+        use the id path — two identity bases inside one capture.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        otel = _otel(tmp_path, self._event(**{"request.id": 0}))
+        factory_log.ingest_claude_code(otel)
+        rec = json.loads((tmp_path / "f.jsonl").read_text().splitlines()[0])
+        assert rec["request_id"] == "0"
+
+    def test_a_failed_write_does_not_consume_the_key(self, tmp_path, monkeypatch):
+        """A record that could not be written is not a duplicate of anything.
+
+        Claiming the key before the append means a full disk loses the record
+        AND reports the next copy of it as a duplicate.
+        """
+        monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))
+        event = self._event(**{"request.id": "req-x"})
+        otel = _otel(tmp_path, event, event)
+
+        monkeypatch.setattr(factory_log, "_append", lambda rec: False)
+        result = factory_log.ingest_claude_code(otel)
+        assert int(result) == 0
+        assert result.skipped == 0, (
+            "nothing was written, so the second copy is not a duplicate")
 
     def test_a_real_request_id_is_preferred_and_recorded(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CW_FACTORY_LOG", str(tmp_path / "f.jsonl"))

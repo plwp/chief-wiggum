@@ -934,14 +934,69 @@ class IngestCount(int):
         return obj
 
 
-def _otel_request_key(event: dict, rec: dict) -> str:
-    """A stable identity for one OTEL `api_request`, for dedup.
+def _ingested_claude_keys() -> tuple[set[str], set[str]]:
+    """Identities already on claude_code records: (request ids, contentless hashes).
 
-    Prefers a real request id. When the exporter does not carry one, falls
-    back to a content hash over the fields that identify the turn — session,
-    timestamp, model and the token counts.
+    Two sets rather than one union, because the two identities are not
+    interchangeable and treating them as such breaks in both directions.
 
-    The fallback hashes EVERY parsed field of the turn, not just session,
+    Matching only on id misses the crossover: a record written from an id-less
+    console capture is keyed by content, so a later OTLP capture of the same
+    run — which does carry `request.id` — finds nothing and appends a
+    duplicate. That is the inflation direction.
+
+    Matching on the union over-corrects: two genuinely distinct requests whose
+    every extracted field is identical except the request id share a content
+    hash, so the second is dropped. That is the under-count direction, and the
+    suite has exactly that case.
+
+    So: a content hash is matchable only for records the exporter gave no id
+    for. `ingested_request_ids()` is left alone — the transcript route depends
+    on its current meaning.
+    """
+    ids = ingested_request_ids()
+    contentless: set[str] = set()
+    path = log_path()
+    if not path.is_file():
+        return ids, contentless
+    try:
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("event") != CLAUDE_CODE:
+                    continue
+                content = r.get("content_key")
+                # `request_id == content_key` marks a record the exporter gave
+                # no id for. Only those may be matched BY content: a record
+                # that had a real id keeps its identity, so a later capture
+                # carrying a different id but identical content is a genuinely
+                # different request, not a repeat.
+                if content and r.get("request_id") == content:
+                    contentless.add(content)
+    except OSError:
+        return ids, contentless
+    return ids, contentless
+
+
+def _otel_request_keys(event: dict, rec: dict) -> tuple[str, str | None]:
+    """Every identity one `api_request` can be known by: (content_key, id_key).
+
+    BOTH are returned and dedup matches on either, because choosing one
+    silently double-counts across capture shapes. This function serves the
+    console-exporter capture AND the OTLP file, and they do not agree on
+    whether a request id is emitted. Ingest a run's console capture (keyed by
+    content hash), then an OTLP export of the same run (keyed by
+    `request.id`), and the second key misses the first, so every event lands
+    twice. That is the inflation direction, the one a cost ledger most needs
+    to avoid, and an exporter upgrade produces exactly this mix.
+
+    The content key hashes EVERY parsed field of the turn, not just session,
     timestamp, model and tokens. Narrowing it to those collapses records that
     differ elsewhere: the existing suite has two `code-review` requests
     distinguished only by `cost_usd`, and a key blind to cost silently dropped
@@ -952,23 +1007,38 @@ def _otel_request_key(event: dict, rec: dict) -> str:
     caller rather than read from the event, so including them would let the
     same capture ingested under two tickets count twice.
 
-    The residual limit, stated rather than hidden: two requests identical in
-    every extracted field are indistinguishable and collapse into one. That
-    direction is the safe one for a cost ledger, since it under-counts rather
-    than inflating, and it is why a real request id is preferred whenever the
-    exporter emits one.
+    Residual limits, stated rather than hidden:
+
+    - Two requests identical in every extracted field are indistinguishable
+      and collapse into one. That direction is the safe one for a ledger,
+      since it under-counts rather than inflating.
+    - An exporter emitting a non-unique id (a placeholder, or a per-session
+      counter that repeats across sessions) collapses every event sharing it.
+      Nothing here can tell that apart from a genuine repeat.
+    - Dedup is only as durable as the log. Rotate, truncate or break the
+      permissions on `$CW_FACTORY_LOG` and the baseline is gone, so a
+      re-ingest of an archived capture appends everything again and honestly
+      reports `skipped 0`. Records written before this change carry no keys
+      at all and cannot participate.
     """
+    id_key = None
     for name in ("request.id", "request_id", "requestId", "api_request.id"):
         value = _cc_field(event, name)
-        if value:
-            return str(value)
+        # A stripped-string check, not truthiness: an id of `0` is falsy but
+        # perfectly valid, and would otherwise fall to the content path while
+        # its siblings used the id path — two identity bases in one capture.
+        if value is not None and str(value).strip():
+            id_key = str(value).strip()
+            break
 
     material = "|".join(
         f"{field}={rec[field]!r}"
         for field in sorted(rec)
-        if field not in ("repo", "ticket", "request_id")
+        if field not in ("repo", "ticket", "request_id", "content_key")
     )
-    return "otel-sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+    content_key = "otel-sha256:" + hashlib.sha256(
+        material.encode("utf-8")).hexdigest()
+    return content_key, id_key
 
 
 def ingest_claude_code(path: Path, repo: str | None = None,
@@ -992,11 +1062,12 @@ def ingest_claude_code(path: Path, repo: str | None = None,
         return IngestCount(0)
     n = 0
     skipped = 0
+    failed = 0
     # Both the log's existing ids AND the ones seen in this pass: a single
     # capture can contain the same event twice (overlapping wraps), so
     # checking only what is already on disk would still double-count within
     # one run.
-    seen = ingested_request_ids()
+    seen_ids, seen_contentless = _ingested_claude_keys()
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line:
@@ -1028,15 +1099,39 @@ def ingest_claude_code(path: Path, repo: str | None = None,
         if ticket is not None:
             rec["ticket"] = str(ticket)
 
-        key = _otel_request_key(e, rec)
-        if key in seen:
+        content_key, id_key = _otel_request_keys(e, rec)
+        # An id-bearing event is a repeat if that id is known, or if the same
+        # content was already recorded from a capture that had no id (the
+        # crossover). An id-less event can only be matched by content.
+        duplicate = (id_key in seen_ids if id_key else False) \
+            or content_key in seen_contentless
+        if duplicate:
             skipped += 1
             continue
-        seen.add(key)
-        rec["request_id"] = key
+        # Both are persisted so a later pass can match on either, whichever
+        # identity that capture happens to carry.
+        rec["request_id"] = id_key or content_key
+        rec["content_key"] = content_key
 
         if _append(rec):
+            # Claim the key only once the record is actually on disk. Marking
+            # it seen before the write means a failed append consumes the key:
+            # the record is not written, yet a later copy of the same event in
+            # this pass is skipped as a duplicate of something that does not
+            # exist. Losing a record to a full disk is bad; losing it and
+            # reporting it as a duplicate is worse.
+            if id_key:
+                seen_ids.add(id_key)
+            else:
+                seen_contentless.add(content_key)
             n += 1
+        else:
+            failed += 1
+    if failed:
+        # ingested + skipped would otherwise not account for the whole file,
+        # and a ledger whose arithmetic does not close is not evidence.
+        print(f"factory_log: WARNING {failed} record(s) could not be written"
+              f" while ingesting {path}", file=sys.stderr)
     return IngestCount(n, skipped)
 
 
