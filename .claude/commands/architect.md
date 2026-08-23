@@ -462,8 +462,25 @@ python3 "$CW_HOME/scripts/formal_models.py" validate "$CW_TMP/state-machines.jso
 # Graph analysis — check for structural defects
 python3 "$CW_HOME/scripts/formal_models.py" graph "$CW_TMP/state-machines.json"
 
-# Unresolved-unknowns scan — TBD/UNRESOLVED/PLACEHOLDER markers across all artifacts
+# Unresolved-unknowns scan — TBD/UNRESOLVED/PLACEHOLDER markers across all
+# artifacts, plus UNVERIFIED where it INTRODUCES a claim ("UNVERIFIED: the live
+# webhook secret", "UNVERIFIED whether ..."). Bare `UNVERIFIED` is NOT a marker:
+# it is also ordinary domain vocabulary (a FactStatus enum member, a
+# state-machine state) — chief-wiggum#350.
 python3 "$CW_HOME/scripts/check_unresolved.py" "$CW_TMP" --format text
+
+# External-interface provenance — REPORT-ONLY (chief-wiggum#350). An operation
+# marked `"external": true` describes a THIRD-PARTY interface this system calls,
+# and must cite a source somebody actually saw: a `derived_from` entry of type
+# `observed_fact` (a captured real response) or `api_doc` (the vendor's
+# published contract). `ticket`/`acceptance_criterion`/`user_input` record who
+# ASKED for the interface, never that anyone looked at it.
+#
+# Read the "declaration gap" note if it appears. `external` is optional by
+# design, so an epic that integrates a third-party system and declares nothing
+# passes this gate vacuously — the note is what makes that visible. If this
+# epic calls anything you do not own, go back and declare those operations.
+python3 "$CW_HOME/scripts/check_interface_provenance.py" "$CW_TMP" --format text
 
 # Traceability soundness gate — orphan business rules + dangling/invalid links in
 # the contract/invariant graph (see docs/traceability.md). Code/test coverage is

@@ -39,7 +39,19 @@ from pathlib import Path
 
 # Uppercase-only, whole-word: lowercase "tbd"/"placeholder" in normal prose
 # (e.g. an input field's placeholder text) must not trip the gate.
-MARKER_RE = re.compile(r"\b(TBD|UNRESOLVED|PLACEHOLDER)\b")
+#
+# UNVERIFIED is matched only in MARKER POSITION -- introducing a claim
+# ("UNVERIFIED: the live webhook secret", "UNVERIFIED whether ...") -- never as
+# a bare word, because it is also legitimate domain vocabulary (a `FactStatus`
+# enum member, a state-machine state). Measured over 314 shipped epic artifacts
+# in 9 repos: a bare-word alias fired 22 times, 18 of them on that enum (82%
+# false); the marker-position form fired 4 times, all 4 genuine author-written
+# unknowns that this gate had been silently ignoring (chief-wiggum#350).
+MARKER_RE = re.compile(
+    r"\b(?:TBD|UNRESOLVED|PLACEHOLDER)\b"
+    r"|\bUNVERIFIED\b(?=\s*[:\-\u2014]"
+    r"|\s+(?:whether|if|that|which|what|how|why|who|when|where)\b)"
+)
 
 SCANNED_SUFFIXES = {".json", ".md"}
 
@@ -131,7 +143,7 @@ def scan_json(path: Path, unparsed: list[dict] | None = None) -> list[Finding]:
                 findings.append(Finding(
                     file=str(path),
                     location=json_path.lstrip("."),
-                    marker=match.group(1),
+                    marker=match.group(0),
                     text=node.strip()[:200],
                     tickets=_provenance_tickets(ancestors),
                 ))
@@ -156,7 +168,7 @@ def scan_markdown(path: Path, unparsed: list[dict] | None = None) -> list[Findin
             findings.append(Finding(
                 file=str(path),
                 location=f"line {lineno}",
-                marker=match.group(1),
+                marker=match.group(0),
                 text=line.strip()[:200],
                 tickets=ticket_refs,
             ))
