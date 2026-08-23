@@ -326,6 +326,8 @@ If the repo has no `docs/tutorials/` (or no maintainer script), **skip and say s
 
 This is **report-only** — it never blocks the close (a stale tutorial is a follow-up, not a broken seam). Recommend `/tutorial-videos` to re-produce drifted ones and author the gaps, and **ticket the new-tutorial gaps** so they aren't lost. Do not attempt to record videos inside `/close-epic` — production needs a running instance and is its own workflow.
 
+**`CURRENT` is a weaker signal than it looks — say so in the report rather than implying it (chief-wiggum#365).** The maintainer's drift mapping keys off files the storyboard *directly references* plus test titles; it never resolves what a recorded route actually RENDERS — the layout shell wrapping it or the component tree beneath the page. A shared-layout or shared-component change therefore drifts nothing. Measured on a real re-record session: it reported 10 CURRENT / 1 MISSING while **two** tutorials genuinely needed re-recording, both UI changes having shipped onto "CURRENT" recordings. Manual triage then over-corrected in the other direction and would have paid for one unnecessary re-record. So report the count AND the limit: a `CURRENT` verdict means "no storyboard-referenced file changed", not "the recording still matches the product".
+
 ### Step 2j2: EU AI Act check (report-only) — chief-wiggum#316
 
 Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 prohibitions, Art. 6(4) derogation documentation, Art. 50 transparency) — the Chapter III high-risk conformity pack is parked (deferred by the Digital Omnibus, harmonised standards don't exist yet):
