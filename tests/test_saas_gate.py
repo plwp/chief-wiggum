@@ -503,3 +503,94 @@ def test_saas_gate_gate_exits_nonzero_on_the_instrument_broken_seed():
 def test_saas_gate_record_passes_gate_of_gates():
     rep = _gv.check("saas_gate", _GV_VALIDATION_DIR)
     assert rep.record_found and rep.passing, rep.to_dict()
+
+
+# --- secret hygiene + PSK reachability (chief-wiggum#370) --------------------
+
+
+class TestSecretHygiene:
+    """A trailing newline in a provisioned secret is not a misconfiguration.
+
+    It makes a service structurally unreachable: an HTTP header value can
+    never end in a newline, so a PSK compared untrimmed rejects every possible
+    caller. The real incident ran a production endpoint nobody could reach for
+    a month, because staging's copy of the secret happened to lack the byte.
+    """
+
+    def test_a_trailing_newline_is_reported_with_the_offending_byte(self):
+        findings = sg.check_secret_hygiene({"psk": b"s3cret\n"})
+        assert [f.status for f in findings] == [sg.FAIL]
+        assert "0x0a" in findings[0].detail
+        assert "printf" in findings[0].detail, "say how to re-provision"
+
+    def test_other_trailing_whitespace_counts_too(self):
+        for raw in (b"s3cret ", b"s3cret\t", b"s3cret\r\n"):
+            findings = sg.check_secret_hygiene({"psk": raw})
+            assert findings[0].status == sg.FAIL, raw
+
+    def test_a_clean_secret_passes(self):
+        findings = sg.check_secret_hygiene({"psk": b"s3cret"})
+        assert findings[0].status == sg.PASS
+
+    def test_the_secret_value_is_never_echoed_back(self):
+        """A gate that leaks the secret into its report is worse than the bug."""
+        findings = sg.check_secret_hygiene({"psk": b"hunter2\n"})
+        assert "hunter2" not in findings[0].detail
+
+    def test_no_material_is_skipped_not_passed(self):
+        assert [f.status for f in sg.check_secret_hygiene(None)] == [sg.SKIPPED]
+
+    def test_an_empty_source_is_reported_rather_than_read_as_clean(self):
+        """Consulted-and-found-nothing is not the same as never asked."""
+        findings = sg.check_secret_hygiene({})
+        assert [f.status for f in findings] == [sg.WARN]
+        assert "nothing was checked" in findings[0].detail
+
+
+class TestPskEndpointCallable:
+    """Rejecting without the secret and working with it are independent.
+
+    Checking only the first passes an endpoint nobody can ever call, which is
+    exactly what shipped.
+    """
+
+    def _get(self, without: int, with_secret: int):
+        def get(url, *, headers=None, **kw):
+            return (with_secret if headers else without), {}, ""
+        return get
+
+    def test_rejecting_in_both_directions_is_the_defect_signature(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(401, 401), "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.FAIL
+        assert "unreachable by every caller" in finding.detail
+        assert "trailing whitespace" in finding.detail, "name the likely cause"
+
+    def test_reachable_without_the_secret_fails(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(200, 200), "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.FAIL
+        assert "WITHOUT" in finding.detail
+
+    def test_the_healthy_shape_passes(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(401, 200), "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.PASS
+
+    def test_without_a_secret_the_positive_direction_is_skipped_not_passed(self):
+        finding = sg.check_psk_endpoint_callable(
+            self._get(401, 200), "http://x", "/internal/reconcile", secret=None)
+        assert finding.status == sg.SKIPPED
+
+    def test_an_unreachable_endpoint_is_an_error_not_a_pass(self):
+        def boom(url, **kw):
+            raise OSError("connection refused")
+        finding = sg.check_psk_endpoint_callable(
+            boom, "http://x", "/internal/reconcile", secret="s")
+        assert finding.status == sg.ERROR
+
+
+def test_run_gate_skips_the_new_checks_when_their_inputs_are_absent():
+    """Additive checks must not silently pass when nothing was supplied."""
+    names = {f.name: f.status for f in sg.run_gate(".", None).findings}
+    assert names["secret-hygiene"] == sg.SKIPPED

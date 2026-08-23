@@ -1,7 +1,7 @@
 {
   "gate": "saas_gate",
   "protocol_version": "1",
-  "scanner_version": "46e327ddffa902a70290b577b882d1d159c22e08764009fdf88d6f3679c490f0",
+  "scanner_version": "9ec9bf878dfb98375f544841ece8883c441223332702f7213209afa8347decef",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "saas_gate issues sequential, single deterministic HTTP exchanges (GET /, /health, /login) against a scripted fixture server; each probe's response is fixed for the scenario. There is no concurrent/racing dimension in the fixture target to evade \u2014 the rate-limit probe counts sequential attempts, not concurrent ones.",
@@ -78,7 +78,7 @@
       "sha": "sha256:a009eb20e6c457f712be139a246ae0bcfaf6f0d01e249e12bf0675b9a3985235",
       "findings": 0,
       "coverage": {
-        "security_checks": 7,
+        "security_checks": 9,
         "runtime_probes": 2,
         "checks_passed": 7
       },
@@ -87,6 +87,6 @@
   ],
   "status": "passed",
   "validated_at": "2026-08-04T00:00:00Z",
-  "validated_by": "chief-wiggum#184; re-authored for chief-wiggum#295: chief_wiggum/hashing.py gained ID_BEARING_ARTIFACTS/find_id_bearing_artifacts/scan_malformed_ids (reusing trace_ids.near_miss_ids from #281 rather than a second detector). hashing.py is a finding-affecting scanner_version hash input for every shipped gate, so this gate's version moved even though its OWN behaviour is unchanged \u2014 trials and clean-corpus runs are unchanged and were re-verified live.; re-authored for chief-wiggum#289: a network failure on an explicitly-supplied --base-url collapsed the entire six-check header/CSRF battery into a single SKIPPED finding \u2014 and SKIPPED can never fail --gate, so an unreachable target passed the security battery by not being probed at all. A new ERROR status, distinct from the honest SKIPPED of an absent probe, is now emitted per check when the probe cannot run, and report.ok/--gate fail on ERROR exactly as on FAIL. --repo is validated (exit 2 for a nonexistent path) instead of silently degrading to an empty stack. to_dict carries a measured denominator (total/measured/skipped/error). The honest-absence path \u2014 no --base-url given at all \u2014 still reports SKIPPED and does NOT block; trials unchanged and re-verified live.",
+  "validated_by": "chief-wiggum#184; re-authored for chief-wiggum#295: chief_wiggum/hashing.py gained ID_BEARING_ARTIFACTS/find_id_bearing_artifacts/scan_malformed_ids (reusing trace_ids.near_miss_ids from #281 rather than a second detector). hashing.py is a finding-affecting scanner_version hash input for every shipped gate, so this gate's version moved even though its OWN behaviour is unchanged \u2014 trials and clean-corpus runs are unchanged and were re-verified live.; re-authored for chief-wiggum#289: a network failure on an explicitly-supplied --base-url collapsed the entire six-check header/CSRF battery into a single SKIPPED finding \u2014 and SKIPPED can never fail --gate, so an unreachable target passed the security battery by not being probed at all. A new ERROR status, distinct from the honest SKIPPED of an absent probe, is now emitted per check when the probe cannot run, and report.ok/--gate fail on ERROR exactly as on FAIL. --repo is validated (exit 2 for a nonexistent path) instead of silently degrading to an empty stack. to_dict carries a measured denominator (total/measured/skipped/error). The honest-absence path \u2014 no --base-url given at all \u2014 still reports SKIPPED and does NOT block; trials unchanged and re-verified live.; re-authored for chief-wiggum#370: saas_gate gained two security checks \u2014 `secret-hygiene`, which flags provisioned secret values carrying trailing whitespace, and `psk-callable`, which requires an internal endpoint to reject WITHOUT the secret AND succeed WITH it. The second is the point of the ticket: those are independent properties, and every existing check read '401 without a secret = pass', which an endpoint nobody can ever call satisfies perfectly. The real incident ran a production reconcile endpoint unreachable by every possible caller for a month because its Secret Manager value was created with `echo` and carried a trailing 0x0a; staging's copy happened to lack it, so tests and staging never surfaced it. Both new checks are ADDITIVE and default to SKIPPED when their inputs are absent (no --secrets-file, no --psk-path), so no existing finding class changed and no existing threshold moved; the clean-corpus security_checks denominator rises 7->9 because the gate now genuinely measures two more things, and that number is re-derived live by tests/test_saas_gate.py rather than restamped. The 5 seeded trials and the clean-corpus run are unchanged and were re-executed live. New guards mutation-tested.",
   "ratchet_record_id": "rec-00075"
 }
