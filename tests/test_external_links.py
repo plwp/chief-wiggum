@@ -197,11 +197,22 @@ def test_missing_file_and_missing_symbol_are_unresolved(tmp_path):
 
 
 def test_no_tier_language_is_skip_with_warning(tmp_path):
-    """A language with neither LSP nor regex tier (e.g. .lua) never resolves
-    silently — the reason names the gap."""
+    """A file with neither LSP nor regex tier never resolves silently — the
+    reason names the gap.
+
+    The fixture extension is deliberately fictional (chief-wiggum#413). These
+    tests used `.lua`, which encodes the premise of external links — the
+    feature exists for languages CW cannot resolve — in a REAL extension's
+    tier. So promoting `.lua` broke four tests here as a side effect of a
+    write-detection fix in #377, and the tier table is shared state: changing
+    an extension's tier is a cross-subsystem decision, not a per-gate one.
+
+    An extension no language will ever claim cannot be promoted, so this
+    subsystem stops having an opinion on which real languages are scannable.
+    """
     root = _target(tmp_path)
-    _write(root, "hook.lua", "function on_save()\n  print('x')\nend\n")
-    span, reason = xl.resolve_symbol_span(root, "hook.lua", "on_save", use_lsp=True)
+    _write(root, "hook.cwnolang", "function on_save()\n  noop()\nend\n")
+    span, reason = xl.resolve_symbol_span(root, "hook.cwnolang", "on_save", use_lsp=True)
     assert span is None
     assert "no symbol-resolution tier" in reason
 
@@ -291,9 +302,9 @@ def test_deleted_file_and_deleted_symbol_are_unresolved_surfaced(tmp_path):
 
 def test_add_without_tier_records_unanchored_entry_with_warning(tmp_path):
     root = _target(tmp_path)
-    _write(root, "hook.lua", "function on_save()\nend\n")
+    _write(root, "hook.cwnolang", "function on_save()\nend\n")
     store = tmp_path / "external-links.json"
-    entry, warning = xl.add_link(store, root, "hook.lua", "on_save", "guards", ["CTR-x-001"])
+    entry, warning = xl.add_link(store, root, "hook.cwnolang", "on_save", "guards", ["CTR-x-001"])
     assert entry["symbol_hash"] is None
     assert warning and "WITHOUT a symbol hash" in warning
     # Never dropped: verify keeps surfacing it as unresolved.
@@ -371,10 +382,10 @@ def test_empty_store_is_inapplicable(tmp_path):
 
 def test_fully_unresolved_populated_store_is_error(tmp_path):
     root = _target(tmp_path)
-    _write(root, "hook.lua", "function on_save()\nend\n")
+    _write(root, "hook.cwnolang", "function on_save()\nend\n")
     store = tmp_path / "external-links.json"
-    xl.add_link(store, root, "hook.lua", "on_save", "guards", ["CTR-x-001"])
-    xl.add_link(store, root, "hook.lua", "on_save2", "verifies", ["CTR-x-001"])
+    xl.add_link(store, root, "hook.cwnolang", "on_save", "guards", ["CTR-x-001"])
+    xl.add_link(store, root, "hook.cwnolang", "on_save2", "verifies", ["CTR-x-001"])
     result = xl.verify_links(store, root)
     assert result["ok"] == [] and result["suspect"] == []
     assert len(result["unresolved"]) == 2
@@ -397,9 +408,9 @@ def test_partially_resolved_store_is_ok_not_error(tmp_path):
 
 def test_cli_verify_prints_measured_denominator(tmp_path, capsys):
     root = _target(tmp_path)
-    _write(root, "hook.lua", "function on_save()\nend\n")
+    _write(root, "hook.cwnolang", "function on_save()\nend\n")
     store = tmp_path / "external-links.json"
-    xl.main(["add", str(store), "--target", str(root), "--file", "hook.lua",
+    xl.main(["add", str(store), "--target", str(root), "--file", "hook.cwnolang",
              "--symbol", "on_save", "--verb", "guards", "--ids", "CTR-x-001"])
     capsys.readouterr()
     rc = xl.main(["verify", str(store), "--target", str(root)])
