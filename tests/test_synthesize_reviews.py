@@ -212,9 +212,10 @@ class TestQuorumDelta:
             codex=(True, "ok", "/x/reviewer-codex.md", None),
             deepseek=(True, "ok", "/x/reviewer-deepseek.md", None),
         )
-        delta = synthesize_reviews.quorum_delta(_reviews("a", "b"), manifest)
+        reviews = _reviews("reviewer-codex", "reviewer-deepseek")
+        delta = synthesize_reviews.quorum_delta(reviews, manifest)
         assert delta["status"] == "complete"
-        prompt = synthesize_reviews.synthesize(_reviews("a", "b"), delta)
+        prompt = synthesize_reviews.synthesize(reviews, delta)
         assert "2 of 2 expected reviews received" in prompt
         assert "quorum complete" in prompt.lower()
 
@@ -223,11 +224,12 @@ class TestQuorumDelta:
             codex=(True, "failed", None, "usage limit reached"),
             deepseek=(True, "ok", "/x/reviewer-deepseek.md", None),
         )
-        delta = synthesize_reviews.quorum_delta(_reviews("a"), manifest)
+        reviews = _reviews("reviewer-deepseek")
+        delta = synthesize_reviews.quorum_delta(reviews, manifest)
         assert delta["status"] == "degraded-required"
         assert delta["absent_required"] == ["codex"]
 
-        prompt = synthesize_reviews.synthesize(_reviews("a"), delta)
+        prompt = synthesize_reviews.synthesize(reviews, delta)
         assert "1 of 2 expected reviews received" in prompt
         assert "QUORUM INCOMPLETE" in prompt
         assert "codex" in prompt
@@ -239,11 +241,12 @@ class TestQuorumDelta:
             codex=(True, "ok", "/x/reviewer-codex.md", None),
             claude_interactive=(False, "failed", None, "delegate timed out"),
         )
-        delta = synthesize_reviews.quorum_delta(_reviews("a"), manifest)
+        reviews = _reviews("reviewer-codex")
+        delta = synthesize_reviews.quorum_delta(reviews, manifest)
         assert delta["status"] == "degraded-optional"
         assert delta["absent_required"] == []
 
-        prompt = synthesize_reviews.synthesize(_reviews("a"), delta)
+        prompt = synthesize_reviews.synthesize(reviews, delta)
         assert "QUORUM INCOMPLETE" in prompt
         assert "which the role permits" in prompt
         assert "claude_interactive" in prompt
@@ -257,12 +260,140 @@ class TestQuorumDelta:
         never report a gap, which is the fail-open being closed.
         """
         manifest = _manifest(
-            a=(True, "ok", "/x/a.md", None),
+            a=(True, "ok", "/x/reviewer-a.md", None),
             b=(True, "failed", None, "boom"),
             c=(False, "failed", None, "boom"),
         )
-        delta = synthesize_reviews.quorum_delta(_reviews("a"), manifest)
+        delta = synthesize_reviews.quorum_delta(
+            _reviews("reviewer-a"), manifest)
         assert (delta["received_n"], delta["expected_n"]) == (1, 3)
+
+
+class TestTheManifestIsNotTakenAtItsWord:
+    """Expected providers are matched to reviews that actually loaded (#416).
+
+    Deriving absence from the manifest's own `status` alone is not enough, and
+    review found three ways it produced headers that contradict themselves.
+    The first is the fail-open this whole change exists to close, wearing the
+    fixed version's clothes.
+    """
+
+    def test_a_provider_marked_ok_whose_review_never_loaded_is_absent(self):
+        """"0 of 1 expected reviews received - quorum complete."
+
+        The manifest says the provider succeeded; its file is gone. The
+        filesystem is what the synthesis is actually built from, so the
+        manifest does not get the last word.
+        """
+        manifest = _manifest(
+            codex=(True, "ok", "/gone/reviewer-codex.md", None),
+        )
+        delta = synthesize_reviews.quorum_delta([], manifest)
+        assert delta["status"] == "degraded-required"
+        assert delta["absent_required"] == ["codex"]
+        assert "was not loaded" in delta["absent"][0]["error"]
+
+        prompt = synthesize_reviews.synthesize(_reviews("x"), delta)
+        assert "0 of 1 expected reviews received" in prompt
+        assert "QUORUM INCOMPLETE" in prompt
+
+    def test_an_optional_provider_marked_ok_but_unloaded_does_not_escalate(self):
+        manifest = _manifest(
+            codex=(True, "ok", "/x/reviewer-codex.md", None),
+            extra=(False, "ok", "/gone/reviewer-extra.md", None),
+        )
+        delta = synthesize_reviews.quorum_delta(
+            [{"source": "reviewer-codex", "content": "c"}], manifest)
+        assert delta["status"] == "degraded-optional"
+        assert delta["absent_required"] == []
+
+    def test_unexpected_reviews_cannot_inflate_the_received_count(self):
+        """"3 of 2 expected reviews received - quorum complete."
+
+        received_n counts expected reviews genuinely in hand, so it can never
+        exceed expected_n. Anything else loaded is reported, not counted.
+        """
+        manifest = _manifest(
+            a=(True, "ok", "/x/reviewer-a.md", None),
+            b=(True, "ok", "/x/reviewer-b.md", None),
+        )
+        reviews = [{"source": "reviewer-a", "content": "A"},
+                   {"source": "reviewer-b", "content": "B"},
+                   {"source": "reviewer-stray", "content": "S"}]
+        delta = synthesize_reviews.quorum_delta(reviews, manifest)
+        assert (delta["received_n"], delta["expected_n"]) == (2, 2)
+        assert delta["status"] == "complete"
+        assert delta["unexpected"] == ["reviewer-stray"]
+
+        prompt = synthesize_reviews.synthesize(reviews, delta)
+        assert "2 of 2 expected reviews received" in prompt
+        assert "reviewer-stray" in prompt
+        assert "unattributed" in prompt
+
+    def test_a_manifest_listing_no_providers_is_malformed(self):
+        """"1 of 0 expected reviews received - quorum complete."."""
+        with pytest.raises(synthesize_reviews.MalformedManifest,
+                           match="lists no providers"):
+            synthesize_reviews.quorum_delta(_reviews("a"), {"role": "reviewer"})
+
+    def test_the_worst_case_still_reports_who_was_absent(self):
+        """Every provider failed, so nothing loaded.
+
+        This used to produce the LEAST informative output of any path: a bare
+        "No reviews to synthesize." with the delta discarded, or a usage error
+        from the CLI. The maximally degraded quorum is the one the operator
+        most needs told about.
+        """
+        manifest = _manifest(
+            codex=(True, "failed", None, "usage limit reached"),
+            deepseek=(True, "failed", None, "timed out"),
+        )
+        delta = synthesize_reviews.quorum_delta([], manifest)
+        prompt = synthesize_reviews.synthesize([], delta)
+
+        assert "0 of 2 expected reviews received" in prompt
+        assert "QUORUM INCOMPLETE" in prompt
+        assert "codex" in prompt and "usage limit reached" in prompt
+        assert "deepseek" in prompt and "timed out" in prompt
+        assert "No reviews were loaded at all" in prompt
+        assert prompt != "No reviews to synthesize."
+
+    def test_no_reviews_and_nothing_expected_stays_terse(self):
+        """The bare message is still right when there is nothing to say."""
+        assert synthesize_reviews.synthesize([]) == "No reviews to synthesize."
+
+    @pytest.mark.parametrize("payload,match", [
+        ({}, "lists no providers"),
+        ([], "must be a JSON object"),
+        ({"role": "r", "results": "codex"}, "must be a list"),
+        ({"role": "r", "results": ["codex"]}, "entries must be objects"),
+        ({"role": "r", "results": [{"required": True, "status": "ok"}]},
+         "no usable provider name"),
+        ({"role": "r", "results": [
+            {"name": "x", "required": True, "status": "failed", "error": 123}]},
+         "non-string error"),
+    ])
+    def test_off_shape_manifests_are_refused_by_name(self, payload, match):
+        """Bad input must be bad input, not a crash mid-computation.
+
+        Left unchecked these raised AttributeError or IndexError out of the
+        delta computation, surfacing as a traceback at exit 1 — the code
+        reserved for a finding being gated on, so a malformed file was
+        indistinguishable from a real quorum failure.
+        """
+        with pytest.raises(synthesize_reviews.MalformedManifest, match=match):
+            synthesize_reviews.quorum_delta(_reviews("a"), payload)
+
+    def test_a_manifest_naming_a_provider_twice_is_malformed(self):
+        manifest = {"role": "reviewer", "results": [
+            {"name": "codex", "required": True, "status": "ok",
+             "path": "/x/reviewer-codex.md", "error": None},
+            {"name": "codex", "required": True, "status": "failed",
+             "path": None, "error": "boom"},
+        ]}
+        with pytest.raises(synthesize_reviews.MalformedManifest,
+                           match="twice"):
+            synthesize_reviews.quorum_delta(_reviews("a"), manifest)
 
 
 class TestCli:
@@ -327,3 +458,76 @@ class TestCli:
         assert synthesize_reviews.main(
             ["--manifest", str(broken), str(review)]) == 2
         assert "cannot read manifest" in capsys.readouterr().err
+
+    def test_a_manifest_that_cannot_say_who_was_expected_is_also_an_error(
+            self, tmp_path, capsys):
+        """Readable JSON, but it answers nothing. Same treatment."""
+        empty = tmp_path / "reviewer-manifest.json"
+        empty.write_text(json.dumps({"role": "reviewer", "results": []}))
+        review = tmp_path / "reviewer-deepseek.md"
+        review.write_text("a finding")
+        assert synthesize_reviews.main(
+            ["--manifest", str(empty), str(review)]) == 2
+        assert "lists no providers" in capsys.readouterr().err
+
+    def test_a_manifest_file_containing_null_is_not_read_as_absent(
+            self, tmp_path, capsys):
+        """`null` parses to None, which looks exactly like "not supplied".
+
+        Without the distinction the header would claim no manifest was given
+        when one was, and `--gate` would go inert.
+        """
+        manifest = tmp_path / "reviewer-manifest.json"
+        manifest.write_text("null")
+        review = tmp_path / "reviewer-deepseek.md"
+        review.write_text("a finding")
+        assert synthesize_reviews.main(
+            ["--manifest", str(manifest), str(review)]) == 2
+        assert "null" in capsys.readouterr().err
+
+    def test_gate_without_a_manifest_is_refused_not_silently_inert(
+            self, tmp_path, capsys):
+        """A gate that cannot run must not report success.
+
+        Without a manifest there is no expected set, so `--gate` could never
+        fire and exited 0 — automation adding the flag would believe the
+        quorum had been verified when nothing was checked. That is the
+        "failed to run = pass" pattern at the gate level.
+        """
+        review = tmp_path / "reviewer-deepseek.md"
+        review.write_text("a finding")
+        assert synthesize_reviews.main(["--gate", str(review)]) == 2
+        assert "--gate requires --manifest" in capsys.readouterr().err
+
+    def test_a_total_provider_failure_reports_instead_of_erroring_out(
+            self, tmp_path, capsys):
+        """No provider succeeded, so no paths can be derived.
+
+        The CLI used to treat that as a usage error and exit 2, losing the
+        quorum report entirely at exactly the moment it mattered most.
+        """
+        manifest = tmp_path / "reviewer-manifest.json"
+        manifest.write_text(json.dumps({"role": "reviewer", "results": [
+            {"name": "codex", "required": True, "status": "failed",
+             "path": None, "error": "usage limit reached"},
+        ]}))
+        assert synthesize_reviews.main(["--manifest", str(manifest), "--gate"]) == 1
+        out = capsys.readouterr().out
+        assert "0 of 1 expected reviews received" in out
+        assert "codex" in out
+
+    def test_gate_blocks_when_a_required_review_is_missing_from_disk(
+            self, tmp_path, capsys):
+        """The manifest says ok; the file is gone. --gate must still block."""
+        review = tmp_path / "reviewer-deepseek.md"
+        review.write_text("a finding")
+        manifest = tmp_path / "reviewer-manifest.json"
+        manifest.write_text(json.dumps({"role": "reviewer", "results": [
+            {"name": "codex", "required": True, "status": "ok",
+             "path": str(tmp_path / "reviewer-codex.md"), "error": None},
+            {"name": "deepseek-flash", "required": True, "status": "ok",
+             "path": str(review), "error": None},
+        ]}))
+        assert synthesize_reviews.main(
+            ["--manifest", str(manifest), "--gate"]) == 1
+        assert "QUORUM INCOMPLETE" in capsys.readouterr().out
