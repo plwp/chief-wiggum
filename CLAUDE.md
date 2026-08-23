@@ -179,6 +179,18 @@ patterns/            # Registry of reusable product patterns CW stamps into buil
 models.md            # AI model IDs and library versions (refresh with /update)
 ```
 
+**Template placeholder convention** (chief-wiggum#347). The two brace styles in
+`templates/` mean different things, and the split is deliberate rather than
+accidental:
+
+- `{{DOUBLE_BRACE}}` — **machine-substituted**. A script fills it before the
+  text is used (e.g. `{{KEYWORD}}`, `{{DIFF_REPORT}}` in the prompt templates).
+  Leaving one unsubstituted is a bug: it ships the literal token to a model.
+- `{SINGLE_BRACE}` — **human-filled**. A person completes it when adopting the
+  template (e.g. `{PRODUCT}`, `{GOVERNING_STANDARD}` in
+  `compliance-requirements.md`). These are expected to survive copying and are
+  filled in the target repo.
+
 ### Epic artifacts (in target repos)
 
 `/architect` commits artifacts to `docs/epics/[slug]/` in the target repo:
