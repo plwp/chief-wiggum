@@ -166,3 +166,79 @@ def test_scan_stays_a_plain_finding_list(tmp_path):
     """Backward compatibility: existing callers unpack a list, not a report."""
     (tmp_path / "adr.md").write_text("TBD: confirm\n")
     assert isinstance(check_unresolved.scan([tmp_path]), list)
+
+
+# --- UNVERIFIED as a marker, in marker position only (chief-wiggum#350) -------
+#
+# Authors were already writing `**UNVERIFIED: ...**` in shipped epic artifacts
+# believing it gated dependent work. It did not: the token was not in the
+# marker set, so those unknowns propagated silently. Adding it bare would be
+# worse than not adding it -- UNVERIFIED is also ordinary domain vocabulary
+# (a FactStatus enum member, a state-machine state), and a bare-word alias
+# measured 82% false on a 314-file corpus of real artifacts. So it counts only
+# where it INTRODUCES a claim.
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("line", [
+    "**UNVERIFIED: the live webhook endpoints' signing secret**",
+    "**UNVERIFIED whether the registered endpoints were updated to match**",
+    "UNVERIFIED - nobody has called this route",
+    "UNVERIFIED \u2014 nobody has called this route",
+    "UNVERIFIED that the envelope is shaped this way",
+    "UNVERIFIED which account hosts the prod stream",
+])
+def test_unverified_in_marker_position_is_a_marker(tmp_path, line):
+    (tmp_path / "contracts.md").write_text(line + "\n")
+    findings = check_unresolved.scan([tmp_path])
+    assert len(findings) == 1
+    assert findings[0].marker == "UNVERIFIED"
+
+
+@pytest.mark.parametrize("line", [
+    '    UNVERIFIED = "unverified"     # Extracted but not cross-referenced',
+    "status: FactStatus = FactStatus.UNVERIFIED",
+    "GIVEN a fact with status=UNVERIFIED",
+    "| UNVERIFIED | VERIFIED | `verify(id)` | Corroborating fact exists |",
+    "The new fact starts as UNVERIFIED regardless of the original's status.",
+    "AND the anecdotal fact's status remains UNVERIFIED",
+])
+def test_unverified_as_domain_vocabulary_is_not_a_marker(tmp_path, line):
+    """Every one of these is a real line from a shipped epic artifact
+    (a shipped recon-engine epic in a target repo). Flagging them would make the gate
+    noisy on correct work, which is how an operator learns to --force."""
+    (tmp_path / "state-machines.md").write_text(line + "\n")
+    assert check_unresolved.scan([tmp_path]) == []
+
+
+def test_unverified_marker_is_found_in_json_artifacts_too(tmp_path):
+    (tmp_path / "contracts.json").write_text(json.dumps({
+        "entities": [{"name": "Charge", "description": "UNVERIFIED: real envelope shape"}],
+    }))
+    findings = check_unresolved.scan([tmp_path])
+    assert len(findings) == 1
+    assert findings[0].marker == "UNVERIFIED"
+
+
+def test_lowercase_unverified_is_not_a_marker(tmp_path):
+    (tmp_path / "notes.md").write_text("this is unverified: we should check it\n")
+    assert check_unresolved.scan([tmp_path]) == []
+
+
+def test_the_original_markers_still_report_their_own_token(tmp_path):
+    """The pattern became a two-branch alternation; the reported marker must
+    still be the token that actually matched, not the first branch."""
+    (tmp_path / "a.md").write_text("TBD: one\nUNRESOLVED: two\nPLACEHOLDER: three\n")
+    assert [f.marker for f in check_unresolved.scan([tmp_path])] == [
+        "TBD", "UNRESOLVED", "PLACEHOLDER"]
+
+
+def test_an_unverified_marker_blocks_the_gate(tmp_path):
+    (tmp_path / "contracts.md").write_text(
+        "**UNVERIFIED: the live webhook secret** blocks #42\n")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check_unresolved.py"), str(tmp_path)],
+        capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "UNVERIFIED" in result.stdout

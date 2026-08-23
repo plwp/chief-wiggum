@@ -119,6 +119,14 @@
           "type": "string",
           "description": "API path (e.g., '/api/v1/orders', '/api/v1/orders/:id/confirm')"
         },
+        "external": {
+          "type": "boolean",
+          "description": "True when this operation describes a THIRD-PARTY interface this system calls, rather than one it serves. Such an operation MUST cite verification-grade provenance — a derived_from entry of type 'observed_fact' (a captured real response) or 'api_doc' (the vendor's published contract) — or carry a TBD:/UNRESOLVED: marker. Deliberately NOT schema-required: an author must not be blocked into lying, so an epic that declares zero external operations surfaces as check_interface_provenance.py's named 'declaration gap' for a human to confirm, never as a silent pass (chief-wiggum#350)."
+        },
+        "external_system": {
+          "type": "string",
+          "description": "Name of the third-party system this operation is served by (e.g. 'Stripe', 'SCP'). Reported alongside findings so an unsourced interface names its vendor."
+        },
         "description": {
           "type": "string"
         },
