@@ -55,7 +55,6 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 from chief_wiggum.dag import journal as journal_mod  # noqa: E402
-
 from test_dag_journal import (  # noqa: E402
     envelope,
     intent_node,
