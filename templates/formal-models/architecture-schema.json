@@ -158,13 +158,19 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ASM-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$"
+          "pattern": "^ASM-[A-Za-z0-9][A-Za-z0-9-]*-[0-9]{3}$",
+          "description": "Stable ID, e.g. ASM-elevenlabs-ttfb-001"
         },
         "evidence": {
           "type": "string",
-          "enum": ["sla-doc", "live-probe", "justified"]
+          "enum": ["sla-doc", "live-probe", "justified"],
+          "description": "How this assumption is backed. 'sla-doc'/'live-probe' render as covered; 'justified' renders as a DOCUMENTED WAIVER (a distinct status, not silently equal to covered). Missing/invalid evidence is a finding."
         },
-        "ref": { "type": "string", "minLength": 1 }
+        "ref": {
+          "type": "string",
+          "description": "Pointer to the evidence (doc URL, probe script/run, or waiver rationale)",
+          "minLength": 1
+        }
       }
     },
     "provenance": {
@@ -174,10 +180,17 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"]
+          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "api_doc", "user_input"],
+          "description": "What kind of source this traces back to"
         },
-        "ref": { "type": "string" },
-        "description": { "type": "string" }
+        "ref": {
+          "type": "string",
+          "description": "Reference identifier (e.g., '#42', 'AC-3', 'INV-order-002', 'FACT-17')"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable summary of what was derived"
+        }
       }
     }
   }
