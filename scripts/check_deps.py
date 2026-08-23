@@ -181,20 +181,65 @@ def check_cmd(name: str, cmd: str, version_flag: str = "--version", required: bo
             warn_count += 1
 
 
-def check_python_pkg(name: str, import_name: str, required: bool = True):
-    global pass_count, fail_count, warn_count
+def runtime_python() -> str:
+    """The interpreter CW's scripts will actually be run under (#374).
+
+    Not necessarily the one running this check. `python3` is whatever the
+    shell resolves, so Homebrew bumping it from 3.11 to 3.13 strands every
+    dependency installed for the old one — and a green check under the
+    checker's own interpreter says nothing about that. Falls back to the
+    current interpreter only when resolution fails, and `verify_python_env`
+    reports that rather than hiding it.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
-        mod = importlib.import_module(import_name)
-        ver = getattr(mod, "__version__", "installed")
+        from chief_wiggum.interpreter import resolve
+
+        return resolve(["core"]).python
+    except Exception:  # noqa: BLE001 - any failure means "cannot resolve"
+        # Deliberately broad: NoValidInterpreter is only importable if the
+        # import itself succeeded, so naming it in the handler would leave it
+        # unbound on the path this exists to survive.
+        return sys.executable
+
+
+def check_python_pkg(name: str, import_name: str, required: bool = True,
+                     python: str | None = None):
+    """Probe the module under the RUNTIME interpreter, not this one.
+
+    `importlib.import_module` here would answer for whichever interpreter is
+    running check_deps.py. That is the bug this check exists to catch: the
+    machine in #374 had a working python3.11 with keyring while `python3`
+    resolved to a 3.13 without it, and this check passed.
+    """
+    global pass_count, fail_count, warn_count
+    target = python or sys.executable
+    if target == sys.executable:
+        try:
+            mod = importlib.import_module(import_name)
+            ver = getattr(mod, "__version__", "installed")
+        except ImportError:
+            ver = None
+    else:
+        probe = subprocess.run(
+            [target, "-c",
+             f"import {import_name} as m;"
+             f"print(getattr(m, '__version__', 'installed'))"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        ver = probe.stdout.strip() if probe.returncode == 0 else None
+
+    if ver:
         print(f"{GREEN}[OK]{NC}  {name:<14s} {ver}")
         pass_count += 1
-    except ImportError:
-        if required:
-            print(f"{RED}[MISSING]{NC}  {name:<14s} python package not found")
-            fail_count += 1
-        else:
-            print(f"{YELLOW}[OPTIONAL]{NC}  {name:<14s} not installed")
-            warn_count += 1
+        return
+    if required:
+        print(f"{RED}[MISSING]{NC}  {name:<14s} python package not found")
+        print(f"        fix: uv pip install --python {target} {name}")
+        fail_count += 1
+    else:
+        print(f"{YELLOW}[OPTIONAL]{NC}  {name:<14s} not installed")
+        warn_count += 1
 
 
 def check_secret(name: str, required: bool = False):
@@ -475,9 +520,17 @@ def main():
     check_cmd("gopls", "gopls", "version", is_required("cmds", "gopls", workflows))
     check_cmd("pyright-langserver", "pyright-langserver", "--version", is_required("cmds", "pyright-langserver", workflows))
 
+    runtime = runtime_python()
     print("\n--- Python Packages ---")
-    check_python_pkg("keyring", "keyring", is_required("pkgs", "keyring", workflows))
-    check_python_pkg("whisper", "whisper", is_required("pkgs", "whisper", workflows))
+    print(f"      probing: {runtime}")
+    if runtime != sys.executable:
+        # Worth saying out loud: a green result here is about the interpreter
+        # CW will run, which is not the one you invoked this with.
+        print(f"      (this check is running under {sys.executable})")
+    check_python_pkg("keyring", "keyring", is_required("pkgs", "keyring", workflows),
+                     python=runtime)
+    check_python_pkg("whisper", "whisper", is_required("pkgs", "whisper", workflows),
+                     python=runtime)
 
     print("\n--- Python Packages (browser-use — optional, for /implement validation) ---")
     check_python_pkg("browser-use", "browser_use", is_required("pkgs", "browser-use", workflows))

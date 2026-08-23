@@ -30,9 +30,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import jsonschema
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    import jsonschema
+except ImportError:  # pragma: no cover - exercised as a subprocess
+    # chief-wiggum#374: this was one of the three scripts that died on a bare
+    # ModuleNotFoundError when `python3` resolved to an interpreter without
+    # the dependency. Same treatment keychain.py gives keyring.
+    from chief_wiggum.interpreter import missing_dependency_message
+
+    print(missing_dependency_message("jsonschema"), file=sys.stderr)
+    sys.exit(1)
 
 from chief_wiggum.trace_ids import near_miss_ids  # noqa: E402
 

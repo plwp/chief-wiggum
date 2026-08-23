@@ -235,11 +235,132 @@ class TestEnvPythonCLI:
         )
 
 
-class TestKeychainRemediation:
-    def test_the_missing_keyring_message_names_the_interpreter_and_uv(self):
-        source = (ROOT / "scripts" / "keychain.py").read_text()
-        assert "uv pip install --python" in source
-        assert "pip3 install keyring" not in source, (
-            "pip into an externally-managed system Python is what caused #374"
+def _blocking_env(module: str, tmp_path: Path) -> dict:
+    """An environment where importing `module` raises, for the child process.
+
+    A meta_path finder rather than a stub file on sys.path: a stub would
+    import successfully, which is the opposite of the condition under test.
+    """
+    import os
+
+    (tmp_path / "sitecustomize.py").write_text(
+        "import sys\n"
+        "class _Block:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        f"        if name == {module!r} or name.startswith({module + '.'!r}):\n"
+        f"            raise ModuleNotFoundError('blocked', name={module!r})\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _Block())\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path)
+    return env
+
+
+class TestMissingDependencyIsActionable:
+    """A missing dependency must name the interpreter, not just the package.
+
+    Asserted by RUNNING the scripts with the module blocked, rather than by
+    grepping their source for the message. The source check this replaces
+    broke the moment the message moved into a shared helper — it was pinned to
+    where the words lived, not to what the operator sees.
+
+    #374's cost was three failed launches and three ad-hoc repairs, and the
+    worst case is a backgrounded consult: the process exits instantly, the
+    output file never appears, and a wait-less launch reads as success.
+    """
+
+    @pytest.mark.parametrize("script,module", [
+        ("keychain.py", "keyring"),
+        ("formal_models.py", "jsonschema"),
+        ("generate_formal_test_artifacts.py", "jsonschema"),
+    ])
+    def test_the_message_names_the_interpreter_and_the_uv_command(
+            self, script, module, tmp_path):
+        path = ROOT / "scripts" / script
+        if not path.is_file():
+            pytest.skip(f"{script} is not present")
+        proc = subprocess.run(
+            [sys.executable, str(path), "--help"],
+            capture_output=True, text=True, cwd=str(ROOT),
+            env=_blocking_env(module, tmp_path),
         )
-        assert "CW_PYTHON" in source
+        assert proc.returncode != 0, "a missing dependency must not exit 0"
+        assert "Traceback" not in proc.stderr, (
+            f"{script} died on a bare traceback: {proc.stderr[:300]}")
+        assert f"Missing dependency: {module}" in proc.stderr
+
+        # The child resolves symlinks, so its sys.executable need not equal
+        # ours (/opt/homebrew/opt/... vs /opt/homebrew/Cellar/...). Assert the
+        # PROPERTY: an absolute interpreter is named, and the fix targets that
+        # same one — a remediation pointing at a different interpreter than
+        # the one that failed is the advice that wasted the operator's time.
+        named = [line.split("interpreter:", 1)[1].strip()
+                 for line in proc.stderr.splitlines() if "interpreter:" in line]
+        assert named, f"no interpreter named in: {proc.stderr[:300]}"
+        interpreter = named[0]
+        assert interpreter.startswith("/"), interpreter
+        assert f"uv pip install --python {interpreter}" in proc.stderr
+        assert "CW_PYTHON" in proc.stderr, "offer the override too"
+
+    def test_check_deps_probes_the_runtime_interpreter_not_its_own(self, tmp_path):
+        """The original defect, stated as a property.
+
+        `check_deps.py` used `importlib.import_module`, which answers for
+        whichever interpreter is running the checker. The #374 machine had a
+        working python3.11 with keyring while `python3` resolved to a 3.13
+        without it — and this check passed. So the probe must happen inside
+        the interpreter CW will actually invoke, and the report must say which
+        one that was.
+        """
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "check_deps.py"), "--for", "core"],
+            capture_output=True, text=True, cwd=str(ROOT),
+        )
+        assert "probing:" in proc.stdout, (
+            "check_deps must name the interpreter it probed, or a green result "
+            f"says nothing about which one: {proc.stdout[:300]}")
+        probed = [line.split("probing:", 1)[1].strip()
+                  for line in proc.stdout.splitlines() if "probing:" in line]
+        assert probed and probed[0].startswith("/"), probed
+
+    def test_check_python_pkg_reports_a_module_absent_from_another_interpreter(
+            self, tmp_path, capsys):
+        """Probing really crosses the process boundary.
+
+        Exercised against a stub interpreter that fails every import, because
+        a same-interpreter shortcut would otherwise make the cross-process
+        path untested — and that path IS the fix.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cw_check_deps", ROOT / "scripts" / "check_deps.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        fake = tmp_path / "fake-python"
+        fake.write_text("#!/bin/sh\nexit 1\n")
+        fake.chmod(0o755)
+
+        module.fail_count = 0
+        module.pass_count = 0
+        module.warn_count = 0
+        module.check_python_pkg("keyring", "keyring", True, python=str(fake))
+        assert module.fail_count == 1, (
+            "a module absent from the RUNTIME interpreter must be reported "
+            "missing even when the checker's own interpreter has it")
+
+        # And the report has to be actionable, aimed at THAT interpreter.
+        # Saying "missing" without saying where to install it is how the
+        # operator ends up guessing, which is the cost #374 recorded.
+        out = capsys.readouterr().out
+        assert f"uv pip install --python {fake} keyring" in out, out
+
+    def test_no_script_advises_pip_into_the_system_interpreter(self):
+        """pip into an externally-managed Python is what caused #374."""
+        for name in ("keychain.py", "formal_models.py", "consult_ai.py"):
+            source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+            assert "pip3 install keyring" not in source
+            assert "pip install keyring" not in source.replace(
+                "uv pip install", "")

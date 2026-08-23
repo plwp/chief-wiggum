@@ -32,14 +32,12 @@ except ImportError:
     # advice when the question is WHICH interpreter is missing it. uv rather
     # than pip because installing into an externally-managed system Python is
     # what stranded these dependencies in the first place.
-    print(
-        "Missing dependency: keyring\n"
-        f"  interpreter: {sys.executable}\n"
-        f"  fix:         uv pip install --python {sys.executable} keyring\n"
-        "  or point CW at a working interpreter:\n"
-        "               export CW_PYTHON=$(python3 scripts/env.py python)",
-        file=sys.stderr,
-    )
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from chief_wiggum.interpreter import missing_dependency_message
+
+    print(missing_dependency_message("keyring"), file=sys.stderr)
     sys.exit(1)
 
 SERVICE = "chief-wiggum"

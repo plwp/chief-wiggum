@@ -846,7 +846,17 @@ def consult_gemini_vertex(
         sys.exit(1)
 
     # Import here so the dependency is only needed for this path
-    from google import genai  # type: ignore
+    try:
+        from google import genai  # type: ignore
+    except ImportError:
+        # The third failure in chief-wiggum#374's report, and the least
+        # obvious: `google` imports fine as a namespace package, so the error
+        # is "cannot import name 'genai' from 'google'" rather than a missing
+        # module — which reads like a broken install instead of an absent one.
+        from chief_wiggum.interpreter import missing_dependency_message
+
+        print(missing_dependency_message("google.genai"), file=sys.stderr)
+        sys.exit(1)
 
     requested_model = model or DEFAULT_VERTEX_MODEL
     client = genai.Client(vertexai=True, project=project, location=location)
