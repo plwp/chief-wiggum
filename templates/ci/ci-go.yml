@@ -13,3 +13,17 @@
         run: go vet ./...
       - name: Test
         run: go test ./...
+      # CW's own loop requires `golangci-lint run ./...` (/implement Step 7,
+      # /implement-wave's wave integration check), so a scaffolded CI that
+      # never runs it is out of parity with the gate the loop applies anyway.
+      #
+      # continue-on-error is docs/gate-rollout.md applied to a scaffolded job:
+      # a NEW gate ships report-only. Scaffolding runs on repos that had no CI
+      # at all, which may carry real lint debt, and a hard-failing linter on
+      # day one blocks every PR and gets deleted rather than fixed. Drop this
+      # line once the repo is clean — that promotion is the point.
+      - name: Lint (report-only until the repo is clean)
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
+        with:
+          version: latest
