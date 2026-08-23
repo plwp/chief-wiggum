@@ -335,6 +335,34 @@ Checks `docs/compliance/ai-act.json` against the in-force layer only (Art. 5 pro
 
 **Report-only** (always exits 0 here, per `docs/gate-rollout.md` — this gate has no `--gate` wired into any workflow yet, and won't until a dry-run against a real shipped target and a `docs/quality/validation/check_ai_act.json` record exist per `docs/gate-validation.md`). Surface the finding count in the close report under `### EU AI Act`, distinguishing the four states: `pass` (all declared features clean), `findings` (a `fail`-severity hit — a `prohibited` tier, an undocumented Annex III derogation claim, an undeclared `eu_scope`, or a **missing artifact entirely** — Art. 6(4): absence is never a silent pass), `inapplicable` (the artifact exists with an explicit empty `features: []` — a genuine, recorded "no AI functionality here"), `error` (the artifact exists and could not be parsed). A `missing` classification_status on a product with an obvious AI feature (a chat widget, a recommendation surface) is worth flagging prominently in the close report even though it doesn't block — it means the Art. 6(4) assessment was never made, which the operator should fix before, not after, this epic ships.
 
+### Step 2j4: Boot-and-hit (report-only) — chief-wiggum#352
+
+`go build ./...` and green package tests do not compose the binary and ask it for a route. A duplicate `mux.Handle("/")` once panicked at startup and was found on deploy as a Cloud Run crash-loop; `cmd/server` had **no test files** at all, and the demo page and `/widget.js` were never wired into the server until the deploy branch.
+
+**Start the assembled service, then probe it.** Reaching a base URL is itself the startup check — a binary that crash-loops has no URL to give.
+
+```bash
+# Boot however this target boots (docker compose, `go run ./cmd/server`, npm start).
+# Then, with $BASE_URL pointing at it:
+"${CW_PY:-python3}" "$CW_HOME/scripts/check_boot_and_hit.py" "$EPIC_DIR" \
+  --source "$TARGET_REPO" \
+  ${BASE_URL:+--base-url "$BASE_URL"} \
+  --format text
+```
+
+**Report-only** (exits 0 here, per `docs/gate-rollout.md`; no `--gate` until a `docs/quality/validation/check_boot_and_hit.json` record exists). Surface it in the close report under `### Boot-and-hit`:
+
+- **`not_served`** (404/405) — declared in `contracts.json` and not wired into the assembled service. This is the finding the gate exists for.
+- **`unreachable`** — the service did not answer at all. Never a pass; usually the startup panic.
+- **`error_status`** (5xx) — registered and erroring.
+- **`served` / `served_gated`** — the composition answers. A 401/403 still proves the route is registered, which is the question being asked.
+- **`not_probed`** — a mutating method. The gate does not fire POST/PUT/PATCH/DELETE by default, because doing so at a real service has side effects. Pass `--probe-mutating` only against a disposable target.
+- **`unprobeable`** — a parameterized path. Supply `--path-param id=123`; the gate will not invent a value, because a 404 from an invented id means "no such record" as readily as "not registered".
+
+**Without `--base-url` the outcome is `inapplicable`, not `pass`** — nothing was composed and nothing was asked. Do not let that read as a green boot check in the close report.
+
+The entrypoint rule is a **conjunction**: an entrypoint (`cmd/*/main.go`, `main.py`, `src/main.ts`, ...) is only a finding when it has no test files **and** no boot-and-hit coverage. An untested entrypoint whose routes just answered is exercised.
+
 ### Step 2j3: External-integration smoke (report-only) — chief-wiggum#353
 
 Every external system this epic declares needs **one real round-trip**, and a skip must be LOUD. Four production bugs in one epic — a turn-flow bug, a missing system prompt, a trailing-newline token that made `Bearer <token>\n` an invalid HTTP header, and a guessed route — each needed exactly one real end-to-end interaction to surface, and none was required to pass. The unit tests were green the whole time, because they never touched the real system.
