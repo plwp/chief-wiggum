@@ -271,6 +271,7 @@ Launch a **review-worker** (contract: `docs/worker-contracts.md#review-worker`) 
 - **IDOR / tenant isolation** — every new data-access path scopes by tenant/owner **server-side** (never trusts a client-supplied id); cross-tenant reads/writes are rejected.
 - **PII / secrets in logs** — no email, token, key, or raw request body written to logs.
 - **Input bounds** — unbounded strings/payloads are capped (oversized free-text fields, giant uploads).
+- **Handler-family consistency** (chief-wiggum#378) — for each NEW handler, list its siblings in the same package family and diff the protections. A handler that touches Redis, a database, or an outbound upstream and lacks a guard **every sibling has** (a non-blocking semaphore, a fail-closed client-IP derivation, a blacklist check) is a finding, even when it passes every per-ticket check. This is the one item on this list that no automated gate covers: a new handler once shipped without the concurrency semaphore all three of its siblings had — an unbounded-concurrency DoS on a service whose whole purpose was bounding abuse — and it passed the per-ticket floor, review, traceability and the ratchet. A sibling's own comment named the missing limit. Read the siblings, not just the diff.
 
 Run the same prompt through the reviewer quorum for divergence, then reconcile the two into one findings list:
 
