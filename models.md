@@ -42,6 +42,39 @@ Refresh with `/update`.
 
 **Deprecated** (do not use): `gpt-5.2`, `gpt-5.1-codex`, `gpt-5.1-mini`, `gpt-4o`, `gpt-4o-mini`, `o1`, `o1-mini`
 
+## OpenRouter (chief-wiggum#368, #372)
+
+Reached over the OpenRouter HTTP API by the single `openrouter` tool in
+`scripts/consult_ai.py`; the key is `OPENROUTER_API_KEY` from the keyring,
+passed at call time and never placed in the environment. Provider names below
+are the `config/providers.json` names, which is what roles refer to — the
+`openrouter` tool plus a `model` is the transport underneath.
+
+| Provider | Model ID | Cost tier | Use for |
+|----------|----------|-----------|---------|
+| `deepseek-flash` | `deepseek/deepseek-v4-flash` | 1 | The code-quorum seat gemini vacated. Required in `reviewer` and `risky_diff_review`, optional in `explorer` and `architecture_critic`. Chosen for cost and speed, not distribution entropy. |
+| `deepseek` | `deepseek/deepseek-v4-pro` | 2 | Required in `divergence`. Slower and dearer than flash; note its default 300s budget is often not enough for a large diff — pass `--timeout 900`. |
+| `kimi` | `moonshotai/kimi-k3` | 2 | Required in `divergence`. Carries its own 900s `timeout_seconds`. |
+| `glm` | `z-ai/glm-5.2` | 2 | Optional in `divergence`. |
+| `qwen` | `qwen/qwen3.7-max` | 2 | Optional in `divergence`. |
+| `minimax` | `minimax/minimax-m3` | 2 | Optional in `divergence`. |
+
+All six declare `reads_repo=false`, `needs_inline_diff=true` and
+`accepts_images=false`, with a 128k context window. Two consequences that bite
+in practice:
+
+- **A prompt sent to any of them must be self-contained.** They cannot read the
+  repository, so a review prompt has to carry the diff inline AND enough
+  context about the code the diff calls into. A blind reviewer that is not told
+  what a helper does will infer, and inferred defects arrive at high confidence
+  — verify every finding against the real code before acting on it.
+- **`gemini-vertex` remains only where images are sent** (`design_critic`),
+  because no OpenRouter provider here accepts them.
+
+The `divergence` role exists to widen the quorum's *pretraining distribution*,
+not its prompting, and stays opt-in. `deepseek-flash`'s seat in the code roles
+is a separate decision made on cost and speed.
+
 ## Whisper (Local)
 
 | Model | Params | Notes |

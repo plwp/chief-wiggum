@@ -319,6 +319,42 @@ def test_validate_config_accepts_well_formed_optional_timeout_seconds():
     assert providers.validate_config(config) == []
 
 
+def test_every_openrouter_model_slug_is_documented_in_models_md():
+    """models.md must list every OpenRouter-backed provider (chief-wiggum#368).
+
+    These are ROUTING SLUGS, not vendor IDs, and they change independently of
+    the vendor's own naming. `config/providers.json` is what dispatches;
+    models.md is what a human reads when choosing a voice, and `/update` is
+    what refreshes both. A provider wired into a role but absent from the
+    reference is one nobody knows to re-check when the slug moves — and a
+    stale slug does not degrade gracefully, it 404s and that reviewer drops
+    out of its role.
+    """
+    import re
+    from pathlib import Path
+
+    config = providers.load_config()
+    reference = (Path(__file__).resolve().parents[1] / "models.md").read_text()
+    # Exact backticked tokens, not a substring search: `deepseek/x-flash` is a
+    # substring of `deepseek/x-flash-preview`, so a plain `in` check passes
+    # while the two files name different models.
+    documented = set(re.findall(r"`([^`]+)`", reference))
+
+    routed = {
+        name: spec["model"]
+        for name, spec in (config.get("providers") or {}).items()
+        if spec.get("tool") == "openrouter" and spec.get("model")
+    }
+    assert routed, "expected at least one openrouter-backed provider to exist"
+
+    missing = {name: model for name, model in routed.items()
+               if model not in documented}
+    assert not missing, (
+        f"models.md does not document these OpenRouter model slugs: {missing}. "
+        "Add them, or drop the provider from config/providers.json."
+    )
+
+
 def test_default_provider_config_sets_optional_timeout_seconds_on_every_role():
     # Every shipped role includes claude-interactive as optional (chief-wiggum#188);
     # each must set the knob so the delegate never silently reverts to its full
