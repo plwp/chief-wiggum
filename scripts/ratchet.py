@@ -1031,10 +1031,27 @@ def load_journal(cfg: Config) -> list[dict]:
     if not cfg.journal.is_file():
         return []
     records = []
-    for line in cfg.journal.read_text().splitlines():
+    for lineno, line in enumerate(cfg.journal.read_text().splitlines(), 1):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             records.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            # A corrupt line is a broken chain, and must read as one. The
+            # append path already holds this invariant ("a garbage tail must
+            # raise TamperError, not a JSONDecodeError"); the read path did
+            # not, so a journal whose records had been fused onto one line by
+            # a bad merge or a hand edit surfaced as an unhandled traceback
+            # rather than as a named, actionable failure (chief-wiggum#420).
+            # It failed closed either way — this is about the operator being
+            # told what is wrong, not about whether the gate blocks.
+            raise TamperError(
+                f"journal unreadable at {cfg.journal}:{lineno}: {exc}."
+                " The chain is broken — fail closed. If two records were"
+                " joined onto one line, split them at the '}{' boundary and"
+                " re-verify."
+            ) from exc
     prev = "genesis"
     for i, rec in enumerate(records):
         body = {k: v for k, v in rec.items() if k != "record_hash"}
@@ -1149,11 +1166,39 @@ def append_authority_event(journal_path: str | Path, gate: str, action: str,
     body["record_hash"] = stable_hash(
         prev, json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True)
     )
+    append_journal_line(journal_path, body)
+    return body["record_id"]
+
+
+def append_journal_line(journal_path: str | Path, body: dict) -> None:
+    """Append one already-hashed record as its own line in the journal.
+
+    Separates from an unterminated last line first (chief-wiggum#420). A
+    journal whose final record lost its trailing newline does NOT trip the
+    broken-chain guard: the record is complete and verifies, `splitlines()`
+    still yields it, and the raw line count matches the verified prefix. So
+    the append proceeded and wrote directly onto that line, FUSING the two
+    records. The write reported success, the fused line no longer parsed, and
+    `verified_prefix` returned nothing — which for a gate-authority event
+    meant `last_authority_action` read a wired gate as never wired, and for
+    `derive_highwater` meant the quality high-water mark silently reset to
+    empty. Both are the "failed to run = pass" family (#289), and both are
+    silent in each direction: the write says it worked, the read says nothing
+    was ever journaled.
+
+    Repairing rather than refusing is sound precisely because the chain
+    verified: the record hash covers the whole body, so a truncated tail would
+    already have been rejected as a broken chain above. Only the separator is
+    missing, and only the separator is added. An empty journal gets no leading
+    blank line.
+    """
     path = Path(journal_path)
+    existing = path.read_text() if path.is_file() else ""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
         f.write(json.dumps(body, sort_keys=True) + "\n")
-    return body["record_id"]
 
 
 def derive_highwater(records: list[dict]) -> dict:
@@ -2075,9 +2120,7 @@ def cmd_record(args) -> int:
     }
     prev = records[-1]["record_hash"] if records else "genesis"
     body["record_hash"] = stable_hash(prev, json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True))
-    cfg.journal.parent.mkdir(parents=True, exist_ok=True)
-    with cfg.journal.open("a") as f:
-        f.write(json.dumps(body, sort_keys=True) + "\n")
+    append_journal_line(cfg.journal, body)
     _write_json(cfg.highwater, derive_highwater(load_journal(cfg)))  # display cache
     print(
         f"ratchet: recorded {body['record_id']} event={args.event} ref={args.ref!r} "

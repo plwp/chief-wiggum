@@ -927,6 +927,104 @@ def test_append_authority_event_fails_closed_on_garbled_tail(tmp_path):
         ratchet.append_authority_event(journal, "g", "unwire")
 
 
+def test_append_does_not_fuse_onto_an_unterminated_last_line(tmp_path):
+    """chief-wiggum#420: a missing newline must not erase the journal.
+
+    The broken-chain guard does not fire here, and that is the whole problem:
+    a record that merely lost its trailing newline is complete, verifies, and
+    the raw line count matches the verified prefix. Appending onto it fused
+    both records, reported success, and left a line that no longer parses.
+
+    Asserted on what a reader would then believe, not on the file bytes: a
+    wired gate reading back as NEVER WIRED is the fail-open this protects.
+    """
+    journal = tmp_path / "ratchet-journal.jsonl"
+    ratchet.append_authority_event(journal, "gate_a", "wire", wired_rid="rec-x")
+    journal.write_text(journal.read_text().rstrip("\n"))
+    assert not journal.read_text().endswith("\n")
+
+    rid = ratchet.append_authority_event(journal, "gate_a", "unwire")
+    assert rid == "rec-00002"
+    assert len(ratchet.verified_prefix(journal)) == 2
+    assert ratchet.last_authority_action(journal, "gate_a") == "unwire"
+
+
+def test_a_corrupt_journal_line_reads_as_tamper_not_a_traceback(tmp_path):
+    """The read path must hold the invariant the append path already states.
+
+    Records fused onto one line by a bad merge or a hand edit produced an
+    unhandled JSONDecodeError out of `load_journal`. It failed closed, so this
+    is about the operator being told what is wrong rather than about whether
+    the gate blocks: a named TamperError is actionable, a traceback is not.
+    """
+    cfg = make_repo(tmp_path)
+    append_record(cfg, scorecard_from(cfg, {"s::t1"}), merged=True)
+    intact = cfg.journal.read_text().rstrip("\n")
+    cfg.journal.write_text(intact + intact + "\n")  # two records, one line
+
+    with pytest.raises(ratchet.TamperError, match="journal unreadable"):
+        ratchet.load_journal(cfg)
+
+
+def test_a_fresh_journal_gets_no_leading_blank_line(tmp_path):
+    """The separator is for an unterminated PREVIOUS line; there is none."""
+    journal = tmp_path / "ratchet-journal.jsonl"
+    ratchet.append_authority_event(journal, "gate_a", "wire")
+    assert not journal.read_text().startswith("\n")
+    assert len(ratchet.verified_prefix(journal)) == 1
+
+
+def test_cmd_record_also_separates_from_an_unterminated_last_line(tmp_path):
+    """The `record` CLI is the second writer, and must not drift from the first.
+
+    `append_authority_event` and `cmd_record` both append to this journal. The
+    fix only holds if BOTH go through the shared append: covering one leaves
+    the other free to fuse records again, which is how the two call sites
+    diverge in the first place.
+    """
+    cfg = make_repo(tmp_path)
+    scorecard = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, scorecard, merged=True)
+    _write_scorecard(cfg, scorecard)
+    cfg.journal.write_text(cfg.journal.read_text().rstrip("\n"))
+    assert not cfg.journal.read_text().endswith("\n")
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
+         "--event", "ticket", "--ref", "#420", "--gate", "pass"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    records = ratchet.verified_prefix(cfg.journal)
+    assert len(records) == 2, [r.get("record_id") for r in records]
+    # The earlier merged record still counts: the high-water did not reset.
+    assert "s::t1" in ratchet.derive_highwater(records)["pass_set"]
+
+
+def test_an_unterminated_scorecard_record_does_not_reset_the_high_water(tmp_path):
+    """The same fusion on a `merged` record silently empties the pass-set.
+
+    `derive_highwater` folds merged records; if the fused line stops parsing,
+    the verified prefix is empty and the high-water mark reads as nothing ever
+    having passed, so a suite that shrank no longer violates the ratchet.
+    """
+    journal = tmp_path / "ratchet-journal.jsonl"
+    _chain(journal, [
+        {"record_id": "rec-00001", "event": "suite", "ref": "v1", "merged": True,
+         "scorecard": {"pass_set": ["tests/test_a.py::test_one"]}},
+    ])
+    journal.write_text(journal.read_text().rstrip("\n"))
+
+    ratchet.append_journal_line(journal, {
+        "record_id": "rec-00002", "event": "gate-authority", "ref": "g",
+        "details": "wire", "merged": False, "record_hash": "unchained",
+    })
+    records = ratchet.verified_prefix(journal)
+    assert records, "the merged record must survive the append"
+    assert ratchet.derive_highwater(records)["pass_set"] == [
+        "tests/test_a.py::test_one"]
+
+
 # ---- --scanner-version (#184) --------------------------------------------------
 
 
