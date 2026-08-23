@@ -35,6 +35,21 @@ Research the current state of each provider's models by checking their official 
 - Note flagship, coding, and reasoning models
 - Flag any newly deprecated models
 
+**OpenRouter (the `openrouter` tool's models — chief-wiggum#368, #372):**
+- Check https://openrouter.ai/models for the current slugs of every provider in
+  `config/providers.json` whose `tool` is `openrouter` — today `deepseek`,
+  `deepseek-flash`, `kimi`, `glm`, `qwen`, `minimax`
+- These are **routing slugs, not vendor IDs** (`deepseek/deepseek-v4-flash`,
+  `moonshotai/kimi-k3`), and they change independently of the vendor's own
+  naming. A stale slug does not degrade — the call 404s and the provider drops
+  out of its role, which since #416 is reported as a quorum gap rather than
+  silently absorbed, but is still a dead reviewer
+- Update BOTH `models.md` and the `model` field in `config/providers.json`;
+  they drift apart otherwise, and `providers.json` is the one that actually
+  dispatches
+- Note context-window changes: several roles send whole diffs inline because
+  these providers declare `reads_repo=false`
+
 ### Step 2: Fetch latest library versions
 
 Check PyPI for current versions of each package:
@@ -56,6 +71,8 @@ Read the current `$CW_HOME/models.md` and update it with the new information:
 - Update library version table
 - Keep the same format and structure
 - Add notes about breaking changes if any model IDs changed
+- The OpenRouter table must stay in step with `config/providers.json`: if a
+  slug changed, change it in both, and say so in the diff you show the user
 
 ### Step 3.5: Refresh model pricing (`config/model_pricing.json`)
 
