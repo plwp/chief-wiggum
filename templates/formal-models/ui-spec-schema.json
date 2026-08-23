@@ -4,7 +4,10 @@
   "title": "UI Specification",
   "description": "Structured specification of an application's UI: pages, component trees, interaction patterns, and navigation. Populated by observation (an agentic SaaS-cloning tool) or design decisions (chief-wiggum /architect).",
   "type": "object",
-  "required": ["pages", "navigation"],
+  "required": [
+    "pages",
+    "navigation"
+  ],
   "additionalProperties": false,
   "properties": {
     "app": {
@@ -12,8 +15,12 @@
       "description": "Application-level metadata",
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "description": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
         "shell": {
           "$ref": "#/$defs/shell",
           "description": "The persistent app shell (navbar, sidebar, footer) that wraps all pages"
@@ -22,7 +29,7 @@
     },
     "design": {
       "$ref": "#/$defs/design",
-      "description": "Visual design contract — tokens, theme, typography, component-library binding, and brand assets. A frontend can satisfy every interaction contract and still ship off-brand; this section makes visual identity checkable."
+      "description": "Visual design contract \u2014 tokens, theme, typography, component-library binding, and brand assets. A frontend can satisfy every interaction contract and still ship off-brand; this section makes visual identity checkable."
     },
     "patterns": {
       "type": "object",
@@ -33,55 +40,75 @@
     },
     "pages": {
       "type": "object",
-      "description": "Map of route path → page specification",
+      "description": "Map of route path \u2192 page specification",
       "additionalProperties": {
         "$ref": "#/$defs/page"
       }
     },
     "navigation": {
       "$ref": "#/$defs/navigationGraph",
-      "description": "Navigation state machine — pages are states, links are transitions"
+      "description": "Navigation state machine \u2014 pages are states, links are transitions"
     },
     "derived_from": {
       "type": "array",
-      "items": { "$ref": "#/$defs/provenance" }
+      "items": {
+        "$ref": "#/$defs/provenance"
+      }
     }
   },
   "$defs": {
     "design": {
       "type": "object",
       "description": "The visual design contract. Implementations MUST bind these tokens (e.g. as CSS variables) and the design-fidelity gate reviews rendered screenshots against them.",
-      "required": ["source", "tokens"],
+      "required": [
+        "source",
+        "tokens"
+      ],
       "additionalProperties": false,
       "properties": {
         "source": {
           "type": "object",
-          "description": "Where this design comes from — discovered by /seed (existing system, reference product) or authored net-new",
-          "required": ["kind"],
+          "description": "Where this design comes from \u2014 discovered by /seed (existing system, reference product) or authored net-new",
+          "required": [
+            "kind"
+          ],
           "additionalProperties": false,
           "properties": {
             "kind": {
               "type": "string",
-              "enum": ["existing-design-system", "reference-product", "brand-kit", "net-new"]
+              "enum": [
+                "existing-design-system",
+                "reference-product",
+                "brand-kit",
+                "net-new"
+              ]
             },
             "references": {
               "type": "array",
               "description": "URLs, repo paths, or screenshot paths for the design source (e.g. the product being replicated, the Figma export, the tokens file)",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             },
-            "notes": { "type": "string" }
+            "notes": {
+              "type": "string"
+            }
           }
         },
         "tokens": {
           "type": "object",
-          "description": "Design tokens. Keys are semantic names, values are concrete CSS values. These are binding — a frontend that ignores them fails the conformance check.",
+          "description": "Design tokens. Keys are semantic names, values are concrete CSS values. These are binding \u2014 a frontend that ignores them fails the conformance check.",
           "additionalProperties": false,
           "properties": {
             "colors": {
               "type": "object",
-              "description": "Semantic color name → CSS value (hex/hsl/gradient). MUST include at least 'primary'. Include brand gradients here.",
-              "required": ["primary"],
-              "additionalProperties": { "type": "string" }
+              "description": "Semantic color name \u2192 CSS value (hex/hsl/gradient). MUST include at least 'primary'. Include brand gradients here.",
+              "required": [
+                "primary"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
             },
             "typography": {
               "type": "object",
@@ -90,30 +117,40 @@
               "properties": {
                 "fonts": {
                   "type": "object",
-                  "description": "Role (heading/body/mono) → font stack",
-                  "additionalProperties": { "type": "string" }
+                  "description": "Role (heading/body/mono) \u2192 font stack",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
                 },
                 "scale": {
                   "type": "object",
-                  "description": "Size name (xs/sm/base/lg/xl/...) → CSS size",
-                  "additionalProperties": { "type": "string" }
+                  "description": "Size name (xs/sm/base/lg/xl/...) \u2192 CSS size",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
                 }
               }
             },
             "spacing": {
               "type": "object",
-              "description": "Spacing scale name → CSS value",
-              "additionalProperties": { "type": "string" }
+              "description": "Spacing scale name \u2192 CSS value",
+              "additionalProperties": {
+                "type": "string"
+              }
             },
             "radii": {
               "type": "object",
-              "description": "Border-radius name → CSS value",
-              "additionalProperties": { "type": "string" }
+              "description": "Border-radius name \u2192 CSS value",
+              "additionalProperties": {
+                "type": "string"
+              }
             },
             "shadows": {
               "type": "object",
-              "description": "Shadow name → CSS value",
-              "additionalProperties": { "type": "string" }
+              "description": "Shadow name \u2192 CSS value",
+              "additionalProperties": {
+                "type": "string"
+              }
             }
           }
         },
@@ -123,25 +160,47 @@
           "properties": {
             "modes": {
               "type": "array",
-              "items": { "type": "string", "enum": ["light", "dark", "high-contrast"] }
+              "items": {
+                "type": "string",
+                "enum": [
+                  "light",
+                  "dark",
+                  "high-contrast"
+                ]
+              }
             },
-            "default": { "type": "string" }
+            "default": {
+              "type": "string"
+            }
           }
         },
         "component_library": {
           "type": "object",
-          "description": "The component library binding — prefer adopting an existing library over hand-rolling",
-          "required": ["name", "usage"],
+          "description": "The component library binding \u2014 prefer adopting an existing library over hand-rolling",
+          "required": [
+            "name",
+            "usage"
+          ],
           "additionalProperties": false,
           "properties": {
-            "name": { "type": "string" },
-            "version": { "type": "string" },
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
             "usage": {
               "type": "string",
-              "enum": ["adopt", "extend", "custom"],
+              "enum": [
+                "adopt",
+                "extend",
+                "custom"
+              ],
               "description": "adopt = use as-is with tokens; extend = themed wrapper components; custom = hand-rolled (justify in notes)"
             },
-            "notes": { "type": "string" }
+            "notes": {
+              "type": "string"
+            }
           }
         },
         "assets": {
@@ -149,42 +208,67 @@
           "description": "Brand assets and reference screenshots, with the pages/regions they apply to",
           "items": {
             "type": "object",
-            "required": ["id", "type"],
+            "required": [
+              "id",
+              "type"
+            ],
             "additionalProperties": false,
             "properties": {
-              "id": { "type": "string" },
+              "id": {
+                "type": "string"
+              },
               "type": {
                 "type": "string",
-                "enum": ["logo", "wordmark", "illustration", "icon-set", "reference-screenshot"]
+                "enum": [
+                  "logo",
+                  "wordmark",
+                  "illustration",
+                  "icon-set",
+                  "reference-screenshot"
+                ]
               },
-              "path": { "type": "string", "description": "Repo path or URL" },
+              "path": {
+                "type": "string",
+                "description": "Repo path or URL"
+              },
               "applies_to": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Page routes or component IDs this asset applies to"
               },
-              "description": { "type": "string" }
+              "description": {
+                "type": "string"
+              }
             }
           }
         },
         "voice": {
           "type": "object",
-          "description": "Copy/personality guidelines — empty states, greetings, error tone",
+          "description": "Copy/personality guidelines \u2014 empty states, greetings, error tone",
           "additionalProperties": false,
           "properties": {
-            "tone": { "type": "string" },
-            "empty_states": { "type": "string", "description": "How empty states should feel (e.g. 'warm, dog-themed illustration + one actionable sentence')" }
+            "tone": {
+              "type": "string"
+            },
+            "empty_states": {
+              "type": "string",
+              "description": "How empty states should feel (e.g. 'warm, dog-themed illustration + one actionable sentence')"
+            }
           }
         },
         "derived_from": {
           "type": "array",
-          "items": { "$ref": "#/$defs/provenance" }
+          "items": {
+            "$ref": "#/$defs/provenance"
+          }
         }
       }
     },
     "shell": {
       "type": "object",
-      "description": "Persistent app shell — always visible regardless of current page",
+      "description": "Persistent app shell \u2014 always visible regardless of current page",
       "additionalProperties": false,
       "properties": {
         "navbar": {
@@ -204,11 +288,16 @@
     "page": {
       "type": "object",
       "description": "A page/route in the application",
-      "required": ["layout"],
+      "required": [
+        "layout"
+      ],
       "additionalProperties": false,
       "properties": {
         "route": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "URL pattern (e.g., '/boards', '/b/:boardId'). Null for overlays/modals that don't have their own route."
         },
         "title": {
@@ -221,52 +310,87 @@
         },
         "layout": {
           "type": "string",
-          "enum": ["full-width", "sidebar-main", "centered", "split", "canvas"],
+          "enum": [
+            "full-width",
+            "sidebar-main",
+            "centered",
+            "split",
+            "canvas"
+          ],
           "description": "Page layout pattern. 'canvas' = free-form like a board view"
         },
         "auth": {
           "type": "string",
-          "enum": ["required", "optional", "public"],
+          "enum": [
+            "required",
+            "optional",
+            "public"
+          ],
           "default": "required",
           "description": "Authentication requirement"
         },
         "components": {
           "type": "object",
-          "description": "Flat map of component ID → component spec. Use IDs to reference children.",
+          "description": "Flat map of component ID \u2192 component spec. Use IDs to reference children.",
           "additionalProperties": {
             "$ref": "#/$defs/component"
           }
         },
         "root": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Ordered list of top-level component IDs (the page's direct children)"
         },
         "design_refs": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "IDs of design assets (from design.assets) that apply to this page — brand treatments, reference screenshots to match"
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of design assets (from design.assets) that apply to this page \u2014 brand treatments, reference screenshots to match"
         },
         "derived_from": {
           "type": "array",
-          "items": { "$ref": "#/$defs/provenance" }
+          "items": {
+            "$ref": "#/$defs/provenance"
+          }
         }
       }
     },
     "component": {
       "type": "object",
       "description": "A UI component. Uses flat ID references for children, not nested trees.",
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "description": "Component type — use ARIA-inspired vocabulary for structural components, descriptive names for custom ones",
+          "description": "Component type \u2014 use ARIA-inspired vocabulary for structural components, descriptive names for custom ones",
           "examples": [
-            "navbar", "sidebar", "dialog", "menu", "tabpanel", "list",
-            "card", "form", "button", "input", "grid", "section",
-            "popover", "toast", "avatar", "badge", "breadcrumb",
-            "search-bar", "board-column", "kanban-board", "card-modal"
+            "navbar",
+            "sidebar",
+            "dialog",
+            "menu",
+            "tabpanel",
+            "list",
+            "card",
+            "form",
+            "button",
+            "input",
+            "grid",
+            "section",
+            "popover",
+            "toast",
+            "avatar",
+            "badge",
+            "breadcrumb",
+            "search-bar",
+            "board-column",
+            "kanban-board",
+            "card-modal"
           ]
         },
         "label": {
@@ -283,7 +407,9 @@
         },
         "children": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Ordered list of child component IDs"
         },
         "data": {
@@ -291,13 +417,21 @@
           "description": "What data this component displays or manages",
           "additionalProperties": true,
           "properties": {
-            "entity": { "type": "string", "description": "Entity type (e.g., 'Board', 'Card')" },
+            "entity": {
+              "type": "string",
+              "description": "Entity type (e.g., 'Board', 'Card')"
+            },
             "fields": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "Which entity fields are displayed"
             },
-            "source": { "type": "string", "description": "API endpoint or data source" }
+            "source": {
+              "type": "string",
+              "description": "API endpoint or data source"
+            }
           }
         },
         "interactions": {
@@ -314,7 +448,11 @@
           "properties": {
             "default": {
               "type": "string",
-              "enum": ["visible", "hidden", "collapsed"],
+              "enum": [
+                "visible",
+                "hidden",
+                "collapsed"
+              ],
               "default": "visible"
             },
             "condition": {
@@ -330,12 +468,24 @@
           "properties": {
             "mobile": {
               "type": "string",
-              "enum": ["visible", "hidden", "collapsed", "full-screen", "drawer", "bottom-sheet"],
+              "enum": [
+                "visible",
+                "hidden",
+                "collapsed",
+                "full-screen",
+                "drawer",
+                "bottom-sheet"
+              ],
               "description": "Behavior on mobile (<768px)"
             },
             "desktop": {
               "type": "string",
-              "enum": ["visible", "hidden", "sidebar", "inline"],
+              "enum": [
+                "visible",
+                "hidden",
+                "sidebar",
+                "inline"
+              ],
               "description": "Behavior on desktop"
             }
           }
@@ -344,14 +494,25 @@
     },
     "interaction": {
       "type": "object",
-      "description": "An interaction contract — what happens when the user does something",
-      "required": ["trigger", "action"],
+      "description": "An interaction contract \u2014 what happens when the user does something",
+      "required": [
+        "trigger",
+        "action"
+      ],
       "additionalProperties": false,
       "properties": {
         "trigger": {
           "type": "string",
           "description": "What the user does",
-          "examples": ["click", "hover", "focus", "submit", "keypress:Escape", "keypress:n", "drag-drop"]
+          "examples": [
+            "click",
+            "hover",
+            "focus",
+            "submit",
+            "keypress:Escape",
+            "keypress:n",
+            "drag-drop"
+          ]
         },
         "action": {
           "type": "string",
@@ -385,8 +546,11 @@
     },
     "pattern": {
       "type": "object",
-      "description": "A reusable UI pattern — define once, reference by ID in components",
-      "required": ["name", "type"],
+      "description": "A reusable UI pattern \u2014 define once, reference by ID in components",
+      "required": [
+        "name",
+        "type"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -399,7 +563,7 @@
         },
         "description": {
           "type": "string",
-          "description": "How this pattern works — the contract sub-agents must follow"
+          "description": "How this pattern works \u2014 the contract sub-agents must follow"
         },
         "structure": {
           "type": "object",
@@ -410,20 +574,27 @@
         },
         "interactions": {
           "type": "array",
-          "items": { "$ref": "#/$defs/interaction" },
+          "items": {
+            "$ref": "#/$defs/interaction"
+          },
           "description": "Standard interactions this pattern provides"
         },
         "examples": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Where this pattern is used in the app"
         }
       }
     },
     "navigationGraph": {
       "type": "object",
-      "description": "Navigation state machine — XState-compatible format. Pages are states, links are transitions.",
-      "required": ["initial", "states"],
+      "description": "Navigation state machine \u2014 XState-compatible format. Pages are states, links are transitions.",
+      "required": [
+        "initial",
+        "states"
+      ],
       "additionalProperties": false,
       "properties": {
         "initial": {
@@ -432,7 +603,7 @@
         },
         "states": {
           "type": "object",
-          "description": "Map of page ID → navigation state",
+          "description": "Map of page ID \u2192 navigation state",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
@@ -443,17 +614,27 @@
               },
               "on": {
                 "type": "object",
-                "description": "Map of event → target page ID (same as XState transitions)",
+                "description": "Map of event \u2192 target page ID (same as XState transitions)",
                 "additionalProperties": {
                   "oneOf": [
-                    { "type": "string" },
+                    {
+                      "type": "string"
+                    },
                     {
                       "type": "object",
                       "properties": {
-                        "target": { "type": "string" },
-                        "guard": { "type": "string" }
+                        "target": {
+                          "type": "string"
+                        },
+                        "guard": {
+                          "type": "string"
+                        }
                       },
-                      "required": ["target"]
+                      "required": [
+                        "target"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Transition object. Closed (additionalProperties: false) like every other object in the formal-models schemas \u2014 it was the one exception, so a misspelled `guard`/`target` validated silently instead of being rejected (chief-wiggum#347)."
                     }
                   ]
                 }
@@ -465,15 +646,29 @@
     },
     "provenance": {
       "type": "object",
-      "required": ["type", "ref"],
+      "required": [
+        "type",
+        "ref"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["ticket", "acceptance_criterion", "epic_invariant", "observed_fact", "screenshot", "user_input"]
+          "enum": [
+            "ticket",
+            "acceptance_criterion",
+            "epic_invariant",
+            "observed_fact",
+            "screenshot",
+            "user_input"
+          ]
         },
-        "ref": { "type": "string" },
-        "description": { "type": "string" }
+        "ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
       }
     }
   }
