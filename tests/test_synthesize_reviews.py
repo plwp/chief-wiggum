@@ -26,6 +26,8 @@ clothes.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import synthesize_reviews
 
@@ -160,21 +162,168 @@ class TestLoadReviews:
         assert loaded == [{"source": "reviewer-codex", "content": "a finding"}]
 
     def test_a_missing_file_is_skipped_with_a_warning(self, tmp_path, capsys):
-        """Pins CURRENT behaviour, which is not the behaviour I would choose.
+        """Loading stays non-fatal, and that is deliberate (chief-wiggum#416).
 
-        A missing reviewer file is dropped and the synthesis proceeds with a
-        silently smaller quorum — `synthesize()` will then report the REDUCED
-        count as though it were the whole picture. That is the quorum-integrity
-        fail-open this repo keeps finding, filed as #416 rather than changed
-        here — the fix has a real design question in it (a missing OPTIONAL
-        provider is a legitimate outcome, so this cannot simply become fatal).
+        `config/providers.json` distinguishes required from optional providers
+        precisely so an optional one may fail without blocking the role, so a
+        missing file cannot simply become fatal here.
 
-        This test exists so that change is a deliberate, visible edit to an
-        assertion rather than something that slides in unnoticed.
+        What changed in #416 is downstream: the SYNTHESIS no longer reports the
+        reduced set as though it were the whole picture. See
+        `TestQuorumDelta` — the fix went where the lie was, not where the file
+        was missing.
         """
         present = tmp_path / "reviewer-codex.md"
         present.write_text("a finding")
         loaded = synthesize_reviews.load_reviews([str(present), str(tmp_path / "gone.md")])
 
-        assert len(loaded) == 1, "current behaviour: the missing file is skipped, not fatal"
+        assert len(loaded) == 1, "a missing file is skipped, not fatal"
         assert "not found" in capsys.readouterr().err
+
+
+def _manifest(**providers):
+    """A role manifest in the shape `consult_ai.py --role` writes."""
+    return {
+        "role": "reviewer",
+        "results": [
+            {"name": name, "required": required, "status": status,
+             "path": path, "error": error}
+            for name, (required, status, path, error) in providers.items()
+        ],
+    }
+
+
+class TestQuorumDelta:
+    """What the synthesis received, against what the role expected (#416).
+
+    The failure this guards is not a crash. It is a synthesis that opens with
+    a confident count while a provider that was supposed to run never did —
+    which under review lenses removes exactly the findings nobody else was
+    scoped to produce, and presents the narrowed result as complete.
+    """
+
+    def test_no_manifest_reports_the_expected_set_as_unknown(self):
+        prompt = synthesize_reviews.synthesize(_reviews("a", "b"))
+        assert "expected set is UNKNOWN" in prompt
+        assert "unverified rather than complete" in prompt
+
+    def test_a_complete_quorum_says_so_with_both_numbers(self):
+        manifest = _manifest(
+            codex=(True, "ok", "/x/reviewer-codex.md", None),
+            deepseek=(True, "ok", "/x/reviewer-deepseek.md", None),
+        )
+        delta = synthesize_reviews.quorum_delta(_reviews("a", "b"), manifest)
+        assert delta["status"] == "complete"
+        prompt = synthesize_reviews.synthesize(_reviews("a", "b"), delta)
+        assert "2 of 2 expected reviews received" in prompt
+        assert "quorum complete" in prompt.lower()
+
+    def test_an_absent_required_provider_is_named_and_flagged(self):
+        manifest = _manifest(
+            codex=(True, "failed", None, "usage limit reached"),
+            deepseek=(True, "ok", "/x/reviewer-deepseek.md", None),
+        )
+        delta = synthesize_reviews.quorum_delta(_reviews("a"), manifest)
+        assert delta["status"] == "degraded-required"
+        assert delta["absent_required"] == ["codex"]
+
+        prompt = synthesize_reviews.synthesize(_reviews("a"), delta)
+        assert "1 of 2 expected reviews received" in prompt
+        assert "QUORUM INCOMPLETE" in prompt
+        assert "codex" in prompt
+        assert "usage limit reached" in prompt, "the reason belongs in the prompt"
+        assert "NARROWED result" in prompt
+
+    def test_an_absent_optional_provider_is_reported_but_not_alarming(self):
+        manifest = _manifest(
+            codex=(True, "ok", "/x/reviewer-codex.md", None),
+            claude_interactive=(False, "failed", None, "delegate timed out"),
+        )
+        delta = synthesize_reviews.quorum_delta(_reviews("a"), manifest)
+        assert delta["status"] == "degraded-optional"
+        assert delta["absent_required"] == []
+
+        prompt = synthesize_reviews.synthesize(_reviews("a"), delta)
+        assert "QUORUM INCOMPLETE" in prompt
+        assert "which the role permits" in prompt
+        assert "claude_interactive" in prompt
+        # An optional absence must not be dressed up as a required one.
+        assert "A **required** provider is missing" not in prompt
+
+    def test_the_counts_track_the_manifest_not_the_files_found(self):
+        """The whole point: expected comes from the role, received from disk.
+
+        A synthesis that derived both numbers from the files it found could
+        never report a gap, which is the fail-open being closed.
+        """
+        manifest = _manifest(
+            a=(True, "ok", "/x/a.md", None),
+            b=(True, "failed", None, "boom"),
+            c=(False, "failed", None, "boom"),
+        )
+        delta = synthesize_reviews.quorum_delta(_reviews("a"), manifest)
+        assert (delta["received_n"], delta["expected_n"]) == (1, 3)
+
+
+class TestCli:
+    """End-to-end: the reconciler reads stdout, so the delta must land there."""
+
+    def _setup(self, tmp_path, codex_ok: bool):
+        review = tmp_path / "reviewer-deepseek.md"
+        review.write_text("a concrete finding")
+        manifest = tmp_path / "reviewer-manifest.json"
+        manifest.write_text(json.dumps({
+            "role": "reviewer",
+            "results": [
+                {"name": "codex", "required": True,
+                 "status": "ok" if codex_ok else "failed",
+                 "path": str(review) if codex_ok else None,
+                 "error": None if codex_ok else "usage limit reached"},
+                {"name": "deepseek-flash", "required": True, "status": "ok",
+                 "path": str(review), "error": None},
+            ],
+        }))
+        return manifest
+
+    def test_paths_are_derived_from_the_manifest_when_none_are_given(
+            self, tmp_path, capsys):
+        """Callers listing filenames by hand drift as the roster changes.
+
+        `/implement` Step 8 hardcoded `reviewer-gemini.md` long after gemini
+        left the reviewer role, so the name it passed could never resolve.
+        """
+        manifest = self._setup(tmp_path, codex_ok=True)
+        assert synthesize_reviews.main(["--manifest", str(manifest)]) == 0
+        assert "a concrete finding" in capsys.readouterr().out
+
+    def test_an_absent_required_provider_is_reported_but_does_not_block(
+            self, tmp_path, capsys):
+        manifest = self._setup(tmp_path, codex_ok=False)
+        assert synthesize_reviews.main(["--manifest", str(manifest)]) == 0
+        captured = capsys.readouterr()
+        assert "QUORUM INCOMPLETE" in captured.out
+        assert "codex" in captured.err
+
+    def test_gate_blocks_on_an_absent_required_provider(self, tmp_path, capsys):
+        manifest = self._setup(tmp_path, codex_ok=False)
+        assert synthesize_reviews.main(["--manifest", str(manifest), "--gate"]) == 1
+        assert "QUORUM INCOMPLETE" in capsys.readouterr().out
+
+    def test_gate_does_not_block_on_a_complete_quorum(self, tmp_path):
+        manifest = self._setup(tmp_path, codex_ok=True)
+        assert synthesize_reviews.main(["--manifest", str(manifest), "--gate"]) == 0
+
+    def test_an_unreadable_manifest_is_an_error_not_a_silent_unknown(
+            self, tmp_path, capsys):
+        """The caller asked for the quorum to be checked and it could not be.
+
+        Degrading to "expected set unknown" would turn a broken instrument
+        into the same output as never having asked.
+        """
+        broken = tmp_path / "reviewer-manifest.json"
+        broken.write_text("{not json")
+        review = tmp_path / "reviewer-deepseek.md"
+        review.write_text("a finding")
+        assert synthesize_reviews.main(
+            ["--manifest", str(broken), str(review)]) == 2
+        assert "cannot read manifest" in capsys.readouterr().err

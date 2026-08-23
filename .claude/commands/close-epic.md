@@ -619,7 +619,14 @@ python3 "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/close-epic-revi
   --output-dir "$CW_TMP/close-review" --cwd "$TARGET_REPO"
 ```
 
-Read `$CW_TMP/close-review/reviewer-codex.md` and `reviewer-gemini.md` (status in `reviewer-manifest.json`). Synthesise both reviews. Categorise findings:
+Synthesise the reviews via the manifest, never by naming the files:
+
+```bash
+python3 "$CW_HOME/scripts/synthesize_reviews.py" \
+  --manifest "$CW_TMP/close-review/reviewer-manifest.json"
+```
+
+Naming them drifts as the `reviewer` role's roster changes (this step read `reviewer-gemini.md` long after gemini left the role), and a file list cannot tell "every reviewer answered" from "one never did" — chief-wiggum#416. The manifest carries who was expected and in which tier, so an absent provider is reported instead of quietly shrinking the quorum. Categorise findings:
 - **Consensus risks**: Both AIs flagged the same area — high confidence, address before shipping
 - **Unique insights**: Only one AI flagged — investigate, may be a genuine blind spot or a false positive
 - **Recommendations**: Suggestions for the retrospective and future epics

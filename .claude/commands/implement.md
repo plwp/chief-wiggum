@@ -547,8 +547,10 @@ The worker should:
 
 5. Synthesize using:
    ```bash
-   python3 "$CW_HOME/scripts/synthesize_reviews.py" $TICKET_TMP/reviews/reviewer-codex.md $TICKET_TMP/reviews/reviewer-gemini.md
+   python3 "$CW_HOME/scripts/synthesize_reviews.py" \
+     --manifest "$TICKET_TMP/reviews/reviewer-manifest.json"
    ```
+   **Pass `--manifest`, do not list the review files by hand** (chief-wiggum#416). Naming them means the command drifts every time the role roster changes — this line said `reviewer-gemini.md` long after gemini left the `reviewer` role, so it was passing a path that could never resolve. More importantly, counting the files that happen to exist cannot tell "every reviewer answered" from "one never did": the synthesis opened with a confident `N reviews received` while silently describing a narrowed quorum. The manifest carries who was EXPECTED and in which tier, so the prompt now reports `2 of 3 expected reviews received — QUORUM INCOMPLETE` and names the absentee where the reconciler reads it. A missing OPTIONAL provider is still a legitimate outcome and does not block; a missing REQUIRED one is reported to stderr, and `--gate` turns it into a non-zero exit.
    **When `reviewer` is lensed, expect disjoint findings, not convergence** — each provider was scoped to a different concern over the same diff, so agreement across reviewers is the exception, not the confirmation signal. `synthesize_reviews.py` reconciles by **union, then cross-verifies only contested items**: every concrete finding is retained regardless of whether one reviewer raised it or several (a soundness issue only the refuter caught is not weaker for being unique to it), and cross-verification against the diff is reserved for cases where two reviewers make genuinely *contradictory* claims about the same fact — not merely where one mentions something the other didn't. Do not fall back to majority-vote reasoning when reconciling a lensed quorum; it defeats the reason the lenses were assigned.
 
 6. Return a concise summary categorising each piece of feedback:
