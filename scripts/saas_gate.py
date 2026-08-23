@@ -335,6 +335,11 @@ def check_secret_hygiene(secrets: dict[str, bytes] | None) -> list[Finding]:
     findings = []
     for name in sorted(secrets):
         raw = secrets[name]
+        # Accept str too: the CLI encodes, but this is a public check and a
+        # caller handing it decoded values should get an answer, not a crash
+        # about `rstrip` arguments.
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8", "surrogateescape")
         trailing = len(raw) - len(raw.rstrip(b" \t\r\n"))
         if trailing:
             tail = raw[-1:].hex()
@@ -368,19 +373,64 @@ def check_psk_endpoint_callable(
     if not secret:
         return Finding("security", f"psk-callable:{path}", SKIPPED,
                        "no secret supplied; cannot test the positive direction")
+
+    # Pre-validate before the value ever reaches an HTTP client. This is not
+    # defensive tidiness, it is the difference between detecting the incident
+    # and CAUSING it: http.client.putheader raises
+    # `ValueError: Invalid header value b's3cret\\n'` — with the secret
+    # embedded — and a generic handler would interpolate that straight into a
+    # finding that goes to stdout, the JSON report, and whatever /close-epic
+    # persists. The one input this check exists for would leak the secret.
+    illegal = {"\n": "0x0a", "\r": "0x0d", "\0": "0x00"}
+    for char, label in illegal.items():
+        if char in secret:
+            return Finding(
+                "security", f"psk-callable:{path}", FAIL,
+                f"the supplied secret contains {label} and can never be sent "
+                f"in an HTTP header — this endpoint is unreachable by every "
+                f"caller. Re-provision with printf '%s', not echo.")
+    try:
+        secret.encode("latin-1")
+    except UnicodeEncodeError:
+        return Finding(
+            "security", f"psk-callable:{path}", FAIL,
+            "the supplied secret has characters outside latin-1 and cannot be "
+            "sent in an HTTP header")
+
+    def _safe(exc: Exception) -> str:
+        """Exception text with the secret scrubbed, belt-and-braces.
+
+        The pre-validation above covers the known leak, but any client in the
+        chain may embed a header value in a message nobody anticipated.
+        """
+        return str(exc).replace(secret, "<redacted>")
+
     try:
         without, _, _ = http_get(url)
         with_secret, _, _ = http_get(url, headers={header: secret})
-    except TypeError:
+    except TypeError as exc:
+        # Report the actual message. A bare "does not accept headers" would
+        # swallow any other TypeError raised INSIDE the getter and mislabel a
+        # real bug as a harness mismatch.
         return Finding("security", f"psk-callable:{path}", ERROR,
-                       "http_get does not accept headers; cannot probe")
+                       f"probe could not call http_get with headers: {_safe(exc)}")
     except Exception as exc:  # noqa: BLE001
         return Finding("security", f"psk-callable:{path}", ERROR,
-                       f"{url} unreachable: {exc}")
+                       f"{url} unreachable: {_safe(exc)}")
 
     if without < 400:
         return Finding("security", f"psk-callable:{path}", FAIL,
                        f"reachable WITHOUT the secret ({without})")
+    if without not in (401, 403):
+        # "Not 2xx" is not the same as "rejected the caller". A 500 or a 429
+        # without the secret, followed by a 200 with it, would otherwise read
+        # as a clean pass while the endpoint is crashing or throttling — the
+        # gate would be certifying authentication it never observed.
+        return Finding(
+            "security", f"psk-callable:{path}", ERROR,
+            f"expected 401/403 without the secret, got {without}; the endpoint"
+            f" did not reject the caller, so nothing was proved about"
+            f" authentication")
     if with_secret >= 400:
         return Finding(
             "security", f"psk-callable:{path}", FAIL,
@@ -590,13 +640,34 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: --secrets-file {args.secrets_file}: expected a JSON "
                   f"object of name -> value", file=sys.stderr)
             return 2
-        secrets = {str(k): (v if isinstance(v, bytes) else str(v).encode())
+        # Only real string values. `str(v)` on a number or a nested object
+        # manufactures a plausible-looking secret that passes hygiene, so a
+        # malformed file would read as a clean bill of health for material
+        # that was never checked.
+        bad = sorted(k for k, v in raw.items() if not isinstance(v, str))
+        if bad:
+            print(f"Error: --secrets-file {args.secrets_file}: values must be "
+                  f"strings; not strings: {', '.join(bad)}", file=sys.stderr)
+            return 2
+        secrets = {str(k): v.encode("utf-8", "surrogateescape")
                    for k, v in raw.items()}
 
     psk_secret = os.environ.get(args.psk_secret_env) if args.psk_secret_env else None
     if args.psk_secret_env and not psk_secret:
         print(f"Error: --psk-secret-env {args.psk_secret_env} is unset or empty",
               file=sys.stderr)
+        return 2
+    # An explicitly requested probe must never quietly not run. Both of these
+    # otherwise end as SKIPPED or as no finding at all, and SKIPPED can never
+    # fail --gate — the operator asked for a check and got a green report
+    # without it.
+    if args.psk_paths and not args.psk_secret_env:
+        print("Error: --psk-path needs --psk-secret-env; without a secret the "
+              "probe can only test the negative direction, which is what "
+              "passes an endpoint nobody can call", file=sys.stderr)
+        return 2
+    if args.psk_paths and not args.base_url:
+        print("Error: --psk-path needs --base-url", file=sys.stderr)
         return 2
 
     report = run_gate(
