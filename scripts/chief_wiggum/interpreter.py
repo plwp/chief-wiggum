@@ -47,6 +47,13 @@ PACKAGE_FOR_IMPORT = {
     "google.cloud.aiplatform": "google-cloud-aiplatform",
     "anthropic": "anthropic",
     "yaml": "pyyaml",
+    # `whisper` is the trap in this table: PyPI's `whisper` is a DIFFERENT
+    # package that also provides a `whisper` module, so advising the import
+    # name installs something that imports cleanly and behaves wrongly — a
+    # remediation that manufactures a green check is worse than none.
+    "whisper": "openai-whisper",
+    "browser_use": "browser-use",
+    "langchain_anthropic": "langchain-anthropic",
 }
 
 # What each profile needs. Profiles mirror check_deps.py's vocabulary.
@@ -123,6 +130,29 @@ def remediation(python: str, missing: Sequence[str]) -> str:
     """The exact command to fix it. uv, because that is the house rule."""
     packages = sorted({PACKAGE_FOR_IMPORT.get(module, module) for module in missing})
     return f"uv pip install --python {python} {' '.join(packages)}"
+
+
+def missing_dependency_message(module: str, python: str | None = None) -> str:
+    """What a script should print instead of dying on an ImportError.
+
+    Names the INTERPRETER, not just the package: `python3` is unpinned across
+    the skills, so "install jsonschema" is useless advice when the question is
+    which of several interpreters is missing it. uv rather than pip because
+    installing into an externally-managed system Python is what stranded these
+    dependencies in the first place.
+
+    Shared so the call sites cannot drift into saying different things — the
+    same reason #420 extracted its journal append rather than fixing two
+    hand-rolled copies.
+    """
+    runtime = python or sys.executable
+    return (
+        f"Missing dependency: {module}\n"
+        f"  interpreter: {runtime}\n"
+        f"  fix:         {remediation(runtime, [module])}\n"
+        "  or point CW at a working interpreter:\n"
+        "               export CW_PYTHON=$(python3 scripts/env.py python)"
+    )
 
 
 def probe(python: str, modules: Sequence[str], *, timeout: float = 30.0) -> Candidate:
