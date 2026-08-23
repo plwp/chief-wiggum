@@ -976,6 +976,116 @@ def test_a_corrupt_journal_line_reads_as_tamper_not_a_traceback(tmp_path):
     assert "journal unreadable" in proc.stderr
 
 
+@pytest.mark.parametrize("tail", ["null", "[]", '"merged"', "123"])
+def test_a_valid_json_non_object_line_is_tamper_not_violated(tmp_path, tail):
+    """Raised in review, and it was real.
+
+    A corrupt line that happens to parse as valid JSON but is not an object
+    reached `rec.items()` in the chain loop and died with an AttributeError at
+    exit 1 — which is VIOLATED, the code for a real quality regression. So a
+    corrupt instrument read as a shrunken pass-set, the exact state confusion
+    the four-state discipline exists to prevent, and it was inconsistent with
+    the exit 4 an invalid-JSON line already produced.
+    """
+    cfg = make_repo(tmp_path)
+    scorecard = scorecard_from(cfg, {"s::t1"})
+    append_record(cfg, scorecard, merged=True)
+    _write_scorecard(cfg, scorecard)
+    with cfg.journal.open("a") as handle:
+        handle.write(tail + "\n")
+
+    with pytest.raises(ratchet.TamperError, match="must be a JSON object"):
+        ratchet.load_journal(cfg)
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ratchet.py"), "check", "--repo", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 4, proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
+def test_the_terminator_is_probed_on_the_handle_being_written(tmp_path, monkeypatch):
+    """A separator decision made before the open is a stale decision.
+
+    This is the race, simulated exactly: a competing writer lands an
+    unterminated record in the window between when this function would have
+    snapshotted the file and when it actually opens it. An implementation that
+    decided from the snapshot sees a terminated file, writes no separator, and
+    fuses onto the newcomer — the very bug it exists to prevent. Probing the
+    last byte on the handle being written through cannot be fooled this way.
+
+    The interposition is on `open`, so the test discriminates on WHEN the
+    decision is made rather than on which call the implementation happens to
+    use to make it.
+    """
+    journal = tmp_path / "ratchet-journal.jsonl"
+    ratchet.append_authority_event(journal, "g", "wire")
+    assert journal.read_text().endswith("\n")  # a snapshot would see this
+
+    stray = json.dumps({"record_id": "rec-stray", "event": "gate-authority",
+                        "ref": "g", "details": "wire", "merged": False,
+                        "record_hash": "z" * 64}, sort_keys=True)
+    real_open = Path.open
+    fired = []
+
+    def racing_open(self, *args, **kwargs):
+        # Fire only on the WRITE open, so the stray lands after any snapshot
+        # the implementation may have taken. Firing on a read open instead
+        # would let a stale-snapshot implementation observe the stray and pass
+        # for the wrong reason (Path.read_text opens the file itself).
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self == journal and not fired and ("a" in mode or "w" in mode):
+            fired.append(True)
+            with real_open(self, "a") as handle:
+                handle.write(stray)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", racing_open)
+    ratchet.append_journal_line(journal, {"record_id": "rec-00003",
+                                          "event": "gate-authority", "ref": "g",
+                                          "details": "unwire", "merged": False,
+                                          "record_hash": "y" * 64})
+    monkeypatch.undo()
+
+    assert fired, "the racing writer never ran; the test proves nothing"
+    lines = [ln for ln in journal.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 3, lines
+    for line in lines:
+        json.loads(line)  # every line still parses; nothing was fused
+
+
+def test_append_refuses_past_a_hash_mismatched_record(tmp_path):
+    """A well-formed record whose hash does not chain still blocks the append.
+
+    Raised in review as a suspected fail-open: `append_authority_event` reads
+    `verified_prefix` (which stops at the break) while `cmd_record` reads
+    `load_journal` (which raises), so the two were thought to disagree and let
+    an authority record be written after a corrupt one, invisible to every
+    later reader. They do not disagree: the length guard compares the verified
+    prefix against the raw non-empty line count, and a record that parses but
+    does not chain makes those differ.
+    """
+    journal = tmp_path / "ratchet-journal.jsonl"
+    first = {"record_id": "rec-00001", "event": "gate-authority", "ref": "g",
+             "details": "wire", "wired_rid": None, "merged": False}
+    first["record_hash"] = ratchet.stable_hash(
+        "genesis",
+        json.dumps({k: v for k, v in first.items() if k != "record_hash"},
+                   sort_keys=True))
+    # Parses cleanly, but its hash does not chain from the first record.
+    second = {"record_id": "rec-00002", "event": "gate-authority", "ref": "g",
+              "details": "unwire", "wired_rid": None, "merged": False,
+              "record_hash": "0" * 64}
+    journal.write_text(json.dumps(first, sort_keys=True) + "\n"
+                       + json.dumps(second, sort_keys=True) + "\n")
+
+    assert len(ratchet.verified_prefix(journal)) == 1
+    with pytest.raises(ratchet.TamperError):
+        ratchet.append_authority_event(journal, "gate_x", "wire")
+    assert len([ln for ln in journal.read_text().splitlines() if ln.strip()]) == 2
+
+
 def test_both_journal_writers_refuse_a_garbage_tail_the_same_way(tmp_path):
     """The two writers must not disagree about what a broken journal is.
 

@@ -1036,7 +1036,18 @@ def load_journal(cfg: Config) -> list[dict]:
         if not line:
             continue
         try:
-            records.append(json.loads(line))
+            parsed = json.loads(line)
+            if not isinstance(parsed, dict):
+                # Valid JSON, wrong shape. Without this the chain loop below
+                # reaches `rec.items()` on a `null`/`[]`/`"x"` and dies with an
+                # AttributeError at exit 1 — which is VIOLATED, the code for a
+                # real quality regression. A corrupt instrument reading as a
+                # shrunken pass-set is exactly the state confusion #289 is
+                # about, so the shape is checked where the parse is.
+                raise json.JSONDecodeError(
+                    f"journal record must be a JSON object, got"
+                    f" {type(parsed).__name__}", line, 0)
+            records.append(parsed)
         except json.JSONDecodeError as exc:
             # A corrupt line is a broken chain, and must read as one. The
             # append path already holds this invariant ("a garbage tail must
@@ -1191,14 +1202,33 @@ def append_journal_line(journal_path: str | Path, body: dict) -> None:
     already have been rejected as a broken chain above. Only the separator is
     missing, and only the separator is added. An empty journal gets no leading
     blank line.
+
+    The terminator is probed on the SAME handle the record is written through,
+    at the real end of file, rather than from a `read_text()` snapshot taken
+    beforehand. A snapshot is a stale decision: another writer (or a crashed
+    one) can leave an unterminated tail in the window between the read and the
+    open, and this function would then fuse onto it while believing the file
+    was terminated — reintroducing the exact bug it exists to prevent.
+
+    That narrows the window rather than closing it. Genuinely atomic appends
+    would need an exclusive lock, and the journal has never taken one; the
+    dominant pre-existing hazard is anyway two writers computing `prev` from
+    the same snapshot, which forks the chain and is out of this function's
+    reach. A stray blank line from an interleaving is harmless: both readers
+    skip blank lines.
     """
     path = Path(journal_path)
-    existing = path.read_text() if path.is_file() else ""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        if existing and not existing.endswith("\n"):
-            f.write("\n")
-        f.write(json.dumps(body, sort_keys=True) + "\n")
+    record = json.dumps(body, sort_keys=True) + "\n"
+    # Binary, so the last-byte probe is a byte and not a decoded character.
+    with path.open("a+b") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        if size:
+            f.seek(size - 1)
+            if f.read(1) != b"\n":
+                record = "\n" + record
+        f.write(record.encode("utf-8"))
 
 
 def derive_highwater(records: list[dict]) -> dict:
