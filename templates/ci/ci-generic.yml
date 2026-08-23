@@ -1,7 +1,7 @@
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # No recognized stack (go.mod / pyproject.toml / package.json) was found.
       # Replace this placeholder with the project's real build, test, and lint steps.
       - name: Placeholder
