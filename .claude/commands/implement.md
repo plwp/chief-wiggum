@@ -90,6 +90,24 @@ TICKET_TMP="$CW_TMP/$issue_number"
 mkdir -p "$TICKET_TMP"
 ```
 
+**Preflight the providers — before any phase needs one** (chief-wiggum#375). This is the single highest-leverage thing in Step 1: roughly 15 of a 25-minute consult phase once went on environment failures discovered *serially*, one relaunch at a time, after the prompt was already built.
+
+```bash
+python3 "$CW_HOME/scripts/provider_preflight.py" --human --usage \
+  --role explorer --role reviewer --role implementer \
+  | tee "$TICKET_TMP/preflight.txt"
+```
+
+Exit codes are distinct: `0` every role can run, `1` a role is **blocked** by a down required provider, `2` a provider could not be verified at all, `3` the config is unreadable.
+
+Read the result before proceeding, and act on it *here* rather than mid-phase:
+
+- **A blocked role** — decide now whether to proceed on the named healthy fallback voices or to fix the provider. Either is fine; discovering it in Phase A is not.
+- **`unknown`** is not `ok`. A provider whose probe could not run is unverified, and treating it as healthy is how a preflight becomes a rubber stamp.
+- **`exhausted` (`[SPENT]`)** means installed, authenticated, answering `--version`, and out of budget. `--usage` is what surfaces it: a quota-exhausted CLI passes every structural check there is, so without that flag it reports `ok` and fails on the first real call. The probe costs a tiny call when a provider is healthy and nothing at all when it is exhausted, because the provider refuses before doing any work.
+
+Whatever it says, **record the degraded set** — if the quorum runs without a voice, that belongs in the PR body rather than left implicit (see `synthesize_reviews.py --manifest`, chief-wiggum#416).
+
 **Meter this build** (per-ticket implementation cost, `docs/ticket-cost.md`): enable telemetry so consults log their token cost, and stamp the build-start time — Step 11 slices the ledger from this stamp to price the PR's `## Implementation Cost` section:
 
 ```bash

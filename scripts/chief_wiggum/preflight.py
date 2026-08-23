@@ -32,6 +32,13 @@ class Health(StrEnum):
     UNAVAILABLE = "unavailable"   # a hard requirement is missing, and we know which
     UNKNOWN = "unknown"           # the probe itself could not run
     DISABLED = "disabled"         # switched off in config; a real answer, not a fault
+    # Installed, authenticated, answering `--version` — and unable to serve a
+    # single request. A quota-exhausted CLI passes every structural check
+    # there is, so without its own state it reports `ok` and the operator
+    # discovers the truth mid-phase, serially, which is the cost #375 is
+    # about. Distinct from UNAVAILABLE because nothing is missing, and from
+    # UNKNOWN because the probe ran and got a definite answer.
+    EXHAUSTED = "exhausted"
 
 
 class RoleStatus(StrEnum):
@@ -221,6 +228,8 @@ def check_all(
     probes: Probes | None = None,
     *,
     max_workers: int = 8,
+    usage: bool = False,
+    usage_probe: Callable[[str], tuple[Health, str]] | None = None,
 ) -> dict[str, ProviderReport]:
     """Check every provider at once.
 
@@ -235,7 +244,36 @@ def check_all(
         reports = pool.map(
             lambda name: check_provider(name, providers[name], probes), names
         )
-    return dict(zip(names, reports, strict=True))
+    result = dict(zip(names, reports, strict=True))
+    if usage:
+        result = _apply_usage_probes(result, max_workers=max_workers,
+                                     usage_probe=usage_probe)
+    return result
+
+
+def _apply_usage_probes(
+    reports: dict[str, ProviderReport], *, max_workers: int = 8,
+    usage_probe: Callable[[str], tuple[Health, str]] | None = None,
+) -> dict[str, ProviderReport]:
+    """Re-classify structurally-OK providers that cannot actually serve.
+
+    Only OK providers are asked: there is nothing to learn from spending a
+    call on one already known to be missing a requirement, and nothing to
+    gain from asking a disabled one.
+    """
+    probe = usage_probe or (lambda name: probe_command_usable(name))
+    askable = [name for name, report in reports.items()
+               if report.health is Health.OK and name in USAGE_PROBE_COMMANDS]
+    if not askable:
+        return reports
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(askable))) as pool:
+        answers = dict(zip(askable, pool.map(probe, askable), strict=True))
+    for name, (health, detail) in answers.items():
+        if health is Health.OK:
+            continue
+        reports[name] = ProviderReport(name, health, detail=detail,
+                                       duration_ms=reports[name].duration_ms)
+    return reports
 
 
 def role_report(
@@ -282,6 +320,8 @@ def preflight(
     probes: Probes | None = None,
     *,
     roles: Sequence[str] | None = None,
+    usage: bool = False,
+    usage_probe: Callable[[str], tuple[Health, str]] | None = None,
 ) -> dict[str, Any]:
     """Full preflight: every provider, then every role's readiness."""
     providers = dict(config.get("providers") or {})
@@ -289,7 +329,8 @@ def preflight(
     if roles is not None:
         role_specs = {name: spec for name, spec in role_specs.items() if name in roles}
 
-    reports = check_all(providers, probes)
+    reports = check_all(providers, probes, usage=usage,
+                        usage_probe=usage_probe)
     role_reports = {
         name: role_report(name, spec, reports) for name, spec in sorted(role_specs.items())
     }
@@ -302,6 +343,65 @@ def preflight(
         "blocked_roles": blocked,
         "unverifiable_providers": unknown,
     }
+
+
+# Markers that mean "this account cannot serve a request right now", as
+# distinct from "this call was malformed". Matched case-insensitively against
+# the provider's own stderr/stdout.
+EXHAUSTION_MARKERS = (
+    "usage limit",
+    "quota",
+    "rate limit exceeded",
+    "insufficient_quota",
+    "billing",
+    "credit balance is too low",
+    "429",
+)
+
+# How to ask each CLI to do the smallest real unit of work. `--version` cannot
+# answer this question: the binary is installed and answering in exactly the
+# case that matters.
+USAGE_PROBE_COMMANDS: dict[str, tuple[str, ...]] = {
+    "codex": ("codex", "exec", "--sandbox", "read-only", "-"),
+}
+
+
+def probe_command_usable(
+    name: str, *, timeout: float = 60.0, prompt: str = "Reply with: ok",
+) -> tuple[Health, str]:
+    """Ask the provider to do the smallest real thing, and classify the answer.
+
+    Opt-in, because it costs a genuine (tiny) call when the provider is
+    healthy. On an exhausted account it costs nothing — the provider refuses
+    before doing any work, which is exactly why this is worth asking.
+
+    Returns UNKNOWN rather than guessing when the probe cannot run or the
+    output does not clearly say why it failed. A provider that failed for an
+    unnameable reason is not `ok`, and it is not `exhausted` either.
+    """
+    argv = USAGE_PROBE_COMMANDS.get(name)
+    if argv is None:
+        return Health.UNKNOWN, f"no usage probe defined for {name!r}"
+    if shutil.which(argv[0]) is None:
+        return Health.UNAVAILABLE, f"command:{argv[0]}"
+    try:
+        result = subprocess.run(
+            list(argv), input=prompt, capture_output=True, text=True,
+            timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return Health.UNKNOWN, f"{name} usage probe did not complete: {exc}"
+
+    blob = f"{result.stdout}\n{result.stderr}".lower()
+    hit = next((m for m in EXHAUSTION_MARKERS if m in blob), None)
+    if hit:
+        return Health.EXHAUSTED, f"{name} reports {hit!r} — installed and out of budget"
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout).strip().splitlines()
+        return Health.UNKNOWN, (
+            f"{name} usage probe exited {result.returncode}: "
+            f"{tail[-1][:160] if tail else '(no output)'}")
+    return Health.OK, ""
 
 
 def probe_command_alive(name: str, *, timeout: float = 10.0) -> bool:
