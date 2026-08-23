@@ -70,8 +70,9 @@ def append_experiment_record(journal_path: str | Path, arm: str, *,
     # Robust broken-chain detection: compare the verified prefix against the
     # raw non-empty line count WITHOUT a full JSON parse, so a garbage tail
     # raises here rather than as a JSONDecodeError deep in the reader.
-    raw_lines = ([line for line in path.read_text().splitlines() if line.strip()]
-                 if path.is_file() else [])
+    existing = path.read_text() if path.is_file() else ""
+    raw_lines = [line for line in existing.splitlines() if line.strip()]
+    needs_separator = bool(existing) and not existing.endswith("\n")
     verified = verified_prefix(path)
     if len(verified) != len(raw_lines):
         raise ExperimentJournalError(
@@ -97,6 +98,23 @@ def append_experiment_record(journal_path: str | Path, arm: str, *,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as handle:
+        # Separate from an unterminated last line before writing.
+        #
+        # Without this, a journal whose final record lost its newline (a
+        # writer that did not finish, a hand edit) does not fail the chain
+        # check above: the record is complete and verifies, it simply has no
+        # line ending. The append then FUSES the two records onto one line,
+        # reports success, and destroys the record that was already
+        # journaled - `experiment_records` drops from N to 0 because the
+        # fused line no longer parses. Silent loss of the evidence this
+        # module exists to protect.
+        #
+        # Repairing rather than refusing is sound precisely because the chain
+        # verified: the record hash covers the whole body, so a truncated
+        # tail would already have been rejected as a broken chain. Only the
+        # separator is missing, and only the separator is added.
+        if needs_separator:
+            handle.write("\n")
         handle.write(json.dumps(body, sort_keys=True) + "\n")
     return body["record_id"]
 

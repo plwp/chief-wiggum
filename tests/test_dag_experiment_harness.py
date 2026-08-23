@@ -334,6 +334,29 @@ def test_unknown_and_duplicate_outcomes_are_counted_not_scored():
     assert run.result.accepted == 3
 
 
+def test_an_arm_that_scored_nothing_reports_no_data_rather_than_crashing():
+    """Zero scored outcomes must reach suppression, not a traceback.
+
+    An arm whose records are all for tasks outside the corpus scores nothing.
+    Every proportion is then N=0, and the report has to survive long enough to
+    say PARTIAL_RUN: a crash here would read to the operator as a tool bug
+    rather than as an incomplete arm.
+    """
+    run = build_arm_run(
+        arm="arm-1", model_tier="frontier-tier", process="static factory",
+        manifest=manifest("arm-1"), outcomes=[outcome("ghost", True)],
+        strata_by_task=STRATA,
+    )
+    assert run.coverage.attempted == 0
+    assert run.result.quality.render() == "no data (N=0)"
+    assert conformance_rate(run).render() == "no data (N=0)"
+    assert run.results_digest().startswith("sha256:")
+
+    report = assemble_report(corpus=CORPUS, runs=[run], non_inferiority=MARGIN)
+    assert report["gap_closure"]["suppressed"] == str(ClosureSuppression.PARTIAL_RUN)
+    assert "no data (N=0)" in render_report(report)
+
+
 def test_strata_come_from_the_corpus_not_from_the_arms_own_records():
     strata = {"t0": "feature/high/large", "t1": "bugfix/low/small"}
     run = build_arm_run(
@@ -775,6 +798,9 @@ def test_experiment_record_chains_onto_the_ratchet_journal(tmp_path):
     second = ej.append_experiment_record(
         journal, "arm-2", **digests(results_digest="sha256:other"))
     assert (first, second) == ("rec-00001", "rec-00002")
+    # A fresh journal gets no leading blank line: the separator is for an
+    # unterminated PREVIOUS line, and there is none before the first record.
+    assert not journal.read_text().startswith("\n")
 
     records = ratchet.verified_prefix(journal)
     assert len(records) == 2
@@ -799,6 +825,27 @@ def test_experiment_record_fails_closed_on_a_broken_chain(tmp_path):
         ej.append_experiment_record(journal, "arm-2", **digests())
     # The torn tail is not evidence: the reader stops before it.
     assert len(ej.experiment_records(journal)) == 1
+
+
+def test_append_does_not_fuse_onto_an_unterminated_last_line(tmp_path):
+    """A missing newline must not destroy the record already journaled.
+
+    The last record verifies and the chain is intact, so the broken-chain
+    guard does not fire; without a separator the append fuses both records
+    onto one line, reports success, and the fused line no longer parses. The
+    journal silently drops to zero readable records.
+    """
+    from chief_wiggum import experiment_journal as ej
+
+    journal = tmp_path / "ratchet-journal.jsonl"
+    ej.append_experiment_record(journal, "arm-1", **digests())
+    journal.write_text(journal.read_text().rstrip("\n"))
+    assert not journal.read_text().endswith("\n")
+
+    ej.append_experiment_record(journal, "arm-2",
+                                **digests(results_digest="sha256:two"))
+    assert [record["ref"] for record in ej.experiment_records(journal)] == [
+        "arm-1", "arm-2"]
 
 
 def test_reader_refuses_a_well_formed_but_unchained_record(tmp_path):
