@@ -136,6 +136,12 @@ class Epic:
         raw = lines[line - 1].strip()
         # Strip markdown heading/bold markers; keep the trailing prose.
         raw = re.sub(r"^#{1,6}\s*", "", raw)
+        # Strip a list/checkbox prefix BEFORE the bold marker. Without this the
+        # `^\*\*` strip below misses on `- [ ] **CTR-x-001**: prose` (the line
+        # shape contract-assertions.md uses), and the split then returns the
+        # LABEL rather than the prose after it — agent-facing output read
+        # `CTR-fh-040**: Verify ...` instead of `Verify ...`.
+        raw = re.sub(r"^[-*+]\s*(\[[ xX]\]\s*)?", "", raw)
         raw = re.sub(r"^\*\*\s*", "", raw)
         raw = raw.split("**", 1)[-1] if "**" in raw else raw
         return raw.strip(" :*")
