@@ -20,6 +20,26 @@
       "type": "string",
       "description": "Repository path or owner/repo"
     },
+    "applicability": {
+      "type": "string",
+      "enum": ["applicable", "inapplicable", "error"],
+      "description": "Whether the scan had anything to measure (#289). `error` means an artifact was present and could not be read — never a pass."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["pass", "findings", "inapplicable", "error"],
+      "description": "The standard four-state gate outcome (#289), DERIVED from applicability plus the finding counts — never stored independently, so 'failed to run' and 'found nothing' cannot drift into two fields that disagree."
+    },
+    "measured": {
+      "type": "object",
+      "description": "The denominators behind the counts — files scanned, models loaded, transitions compared — so a zero is never ambiguous about why it is zero (#289).",
+      "additionalProperties": true
+    },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Artifacts that were present and could not be read. A non-empty list forces applicability=error."
+    },
     "summary": {
       "$ref": "#/$defs/summary"
     }
