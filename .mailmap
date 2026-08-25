@@ -1,0 +1,19 @@
+# Canonical author identities (chief-wiggum#171's human_contributors_gte).
+#
+# Several deferred-rigor triggers key off "a second human contributor". That
+# check counted distinct author EMAILS, and one human commonly commits under
+# several — so it read CANDIDATE on this repo's whole history purely because
+# the same person has a work address, a personal address, a plus-addressed
+# alias and a GitHub noreply. A trigger that is permanently CANDIDATE on noise
+# cannot signal the thing it exists to signal: a genuine second contributor
+# would look exactly the same.
+#
+# Git's own mechanism fixes it. `--use-mailmap` collapses these to one identity,
+# so the count means humans rather than addresses.
+#
+# The canonical address is deliberately NOT the GitHub noreply one: that string
+# matches BOT_EMAIL_MARKERS and would filter the author out entirely, taking
+# the count to zero.
+Pat Prendergast <plwprendergast@gmail.com> <47509024+plwp@users.noreply.github.com>
+Pat Prendergast <plwprendergast@gmail.com> <plwprendergast+github@gmail.com>
+Pat Prendergast <plwprendergast@gmail.com> <pat.prendergast@rollerdigital.com>

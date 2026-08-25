@@ -28,7 +28,7 @@ Check kinds:
 - ``file_count_gt``: git-tracked file count in ``--repo`` exceeds ``value``.
 - ``module_count_gt``: heuristic — directories (depth <= 2, excluding
   tests/vendor/node_modules/hidden) containing source files in ``--repo``.
-- ``human_contributors_gte``: distinct non-bot author emails on ``--repo``'s
+- ``human_contributors_gte``: distinct non-bot MAILMAP-CANONICAL authors on ``--repo``'s
   history (heuristic: excludes emails containing bot/noreply markers).
 - ``validated_gates_gt``: gate-validation records in
   ``<cw>/docs/quality/validation/*.json``.
@@ -87,17 +87,30 @@ def check_module_count_gt(repo: Path | None, value: int) -> tuple[str, str]:
 
 
 def check_human_contributors_gte(repo: Path | None, value: int) -> tuple[str, str]:
-    """Heuristic (one human commonly commits under several emails) — CANDIDATE
-    at most, never FIRED: email identity must be confirmed by a human."""
+    """Heuristic — CANDIDATE at most, never FIRED: identity is a human's call.
+
+    Counts MAILMAP-CANONICAL authors (`--use-mailmap`, `%aE`), not raw emails.
+    Counting raw addresses made this permanently CANDIDATE on chief-wiggum's
+    own history — one person with a work address, a personal one, a
+    plus-addressed alias and a GitHub noreply reads as four contributors. A
+    trigger that is always CANDIDATE cannot signal what it exists to signal,
+    because a genuine second contributor looks identical to the noise
+    (chief-wiggum#171).
+
+    A repo with no .mailmap is unaffected: git falls back to the raw address,
+    so this is strictly an improvement where the map exists and a no-op where
+    it does not.
+    """
     if repo is None:
         return "UNEVALUATED", "needs --repo"
-    out = subprocess.run(["git", "-C", str(repo), "log", "--format=%ae"],
+    out = subprocess.run(["git", "-C", str(repo), "log", "--use-mailmap", "--format=%aE"],
                          capture_output=True, text=True, check=True)
     humans = sorted({e.strip().lower() for e in out.stdout.splitlines() if e.strip()
                      and not any(m in e.lower() for m in BOT_EMAIL_MARKERS)})
     n = len(humans)
     return ("CANDIDATE" if n >= value else "QUIET"), \
-        f"{n} distinct non-bot author email(s) {humans} (threshold {value}) — may be one human under several emails"
+        f"{n} distinct non-bot author identit(ies) {humans} (threshold {value}, " \
+        f"mailmap-canonical) — one human may still commit under several unmapped emails"
 
 
 def check_validated_gates_gt(value: int) -> tuple[str, str]:
