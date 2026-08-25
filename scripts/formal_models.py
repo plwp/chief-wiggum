@@ -84,6 +84,12 @@ def _load_schema(name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# Marks a recognised artifact type that has no schema to validate against.
+# `validate` reports these as UNSUPPORTED and exits 3 — never 0, because
+# "nothing was checked" is not a pass.
+UNSCHEMAD_PREFIX = "unschema'd:"
+
+
 def detect_schema_type(data: dict) -> str:
     """Heuristic detection of which schema a JSON document conforms to."""
     if "nodes" in data and "edges" in data:
@@ -102,6 +108,12 @@ def detect_schema_type(data: dict) -> str:
     # XState format has 'id' and 'states' but no 'transitions' array
     if "id" in data and "states" in data:
         return "xstate"
+    # Known artifact types that have NO schema. Naming them is what separates
+    # "no schema exists for this" from "this document is broken" — without the
+    # list, both exit the same way and read the same (chief-wiggum#289's
+    # four-state discipline, applied to schema detection).
+    if "paths" in data and "summary" in data:
+        return UNSCHEMAD_PREFIX + "test-paths"
     raise ValueError("Cannot detect schema type from document structure")
 
 
@@ -765,6 +777,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     raw_text = Path(args.model).read_text()
     data = json.loads(raw_text)
     schema_type = args.type or detect_schema_type(data)
+
+    if schema_type.startswith(UNSCHEMAD_PREFIX):
+        kind = schema_type[len(UNSCHEMAD_PREFIX):]
+        print(
+            f"UNSUPPORTED ({kind}): no schema exists for this artifact type, so "
+            f"nothing was validated. This is NOT a pass — it means the checker "
+            f"had nothing to check (chief-wiggum#289)."
+        )
+        return 3
+
     errors = validate(data, schema_type)
     # chief-wiggum#293: report-only by default (docs/gate-rollout.md) — a
     # malformed id never hard-fails `validate` unless --strict-ids is passed,
