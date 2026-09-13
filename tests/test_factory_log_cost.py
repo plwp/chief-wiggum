@@ -508,10 +508,13 @@ def test_count_transcript_turns_since_filters_by_turn_ts_with_mtime_as_cheap_pre
     stale_file = proj / "stale.jsonl"
     stale_file.write_text(
         _turn("stale-file-in-window-ts", cwd="/repos/app", ts="2026-08-04T12:00:00.000Z") + "\n")
-    old_mtime = time.time() - 30 * 86400
+    # The mtime must predate the FIXED window below, not "now": a clock-relative
+    # 30 days drifted past `since` on 2026-09-01 and the pre-filter stopped
+    # skipping the file, so the test broke by calendar rather than by code.
+    since = factory_log._parse_iso_ts("2026-08-02T00:00:00.000Z")
+    old_mtime = since.timestamp() - 86400
     os.utime(stale_file, (old_mtime, old_mtime))
 
-    since = factory_log._parse_iso_ts("2026-08-02T00:00:00.000Z")
     result = factory_log.count_transcript_turns(root, since=since)
     assert result["scanned"] is True
     assert result["repl_main_thread"] == 1  # only "in-window"
