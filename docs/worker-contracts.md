@@ -56,7 +56,7 @@ scope / isolation / stop) is what another harness implements.
 
 - **Role**: explore the target repo / context; read-only.
 - **Inputs**: a focus area (ticket description, labels, paths to investigate).
-- **Output artifact paths**: a findings file (e.g. `$TICKET_TMP/codebase-context.md`)
+- **Output artifact paths**: a findings file of `file:line` handles with one-line statements (e.g. `$CW_TMP/codebase-context.md` in `/architect`) — a locator, never a prose re-telling of the code
   plus, when run in the background, a status file under `$TICKET_TMP/workers/`.
 - **Write scope**: its own output/status artifacts only.
 - **Isolation**: none required (read-only); must not modify repo files.
