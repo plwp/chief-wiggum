@@ -237,8 +237,19 @@ Every other ticket kind proceeds as below.
 
 The manifest (`$TICKET_TMP/formal-artifacts-manifest.json`) lists what was generated; a non-zero exit means a present model failed validation — fix the model first. The worker adapts these to the repo's test framework rather than inventing tests.
 
-Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) in its own isolated checkout. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it:
-- The implementation plan; epic contracts and traceability matrix if they exist; the repo's test framework and conventions
+**Load the target's own authoring authorities first (#264)** — a brownfield repo's house rules, often packaged as harness skills, that a worker cannot infer from a diff:
+
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
+  --phase authoring > "$TICKET_TMP/authoring-authorities.txt" || {
+  echo "review-authorities binding is malformed — refusing to build against CW defaults while the target's own conventions are unreadable" >&2
+  exit 2; }
+```
+
+Exit 2 = binding exists but is unreadable: stop and fix it. Empty output = none recorded (normal greenfield). For each skill id printed, load it and fold its conventions into the worker prompt as binding constraints alongside the epic contracts.
+
+**Steps 5 and 6 are ONE worker session.** The worker writes the failing tests, commits them, then continues into the implementation without a second launch — TDD is preserved by the commit order (the `test:` commit precedes the implementation commits) and by the ratchet, not by spinning up a second session that has to re-orient in the same worktree. Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) in its own isolated checkout. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it both this step's brief and Step 6's:
+- The implementation plan; epic contracts and traceability matrix if they exist; the repo's test framework and conventions; the authoring authorities loaded above
 - With formal models: everything in `$TICKET_TMP/formal-artifacts-manifest.json` (test plan, test paths, contract assertions, Hypothesis skeleton, guard templates)
 - With a UI spec (`$HAS_UI_SPEC == true`): the pages, component trees, and interaction contracts this ticket touches from `$MODELS_DIR/ui-spec.json` — structural decisions ("sidebar-panel", "3-dot-menu") and interactions (trigger → action → target) are binding. If the spec has a `design` section, pass its tokens, component-library binding, assets, and voice; bind tokens as CSS variables/theme values, never the library's defaults (Step 9 reviews screenshots against this).
 
@@ -252,22 +263,11 @@ The worker:
 2. Writes test files FIRST: model-derived tests (each path in `test-paths.json` a case, each invalid transition a negative case, each contract assertion a pre/postcondition check — tagged `# DERIVED: model`); one or more tests per AC (following the traceability matrix if present); contract tests for each REQUIRES/ENSURES touched; state-machine tests (adapt the Hypothesis skeleton to the real API); at least one property test for pure functions where a property library exists; at least one error-path test per endpoint/operation
 3. Runs them — **all should fail**. A test that passes before implementation isn't testing new behaviour; investigate.
 4. Commits: `test: add failing tests for #[number] — [title]`
-5. Reports which tests were written (model-derived vs authored), frameworks used, traceability gaps, and the worktree path + branch — Step 6 works in the SAME worktree.
+5. Records in its final report which tests were written (model-derived vs authored), frameworks used, traceability gaps, and the worktree path + branch — then continues straight into Step 6 in the same session.
 
 ### Step 6: Implement
 
-**Load the target's own authoring authorities first (#264)** — a brownfield repo's house rules, often packaged as harness skills, that a worker cannot infer from a diff:
-
-```bash
-"${CW_PY:-python3}" "$CW_HOME/scripts/review_authorities.py" show "$TARGET_REPO" \
-  --phase authoring > "$TICKET_TMP/authoring-authorities.txt" || {
-  echo "review-authorities binding is malformed — refusing to build against CW defaults while the target's own conventions are unreadable" >&2
-  exit 2; }
-```
-
-Exit 2 = binding exists but is unreadable: stop and fix it. Empty output = none recorded (normal greenfield). For each skill id printed, load it and fold its conventions into the worker prompt as binding constraints alongside the epic contracts.
-
-Launch an **implementation worker** (contract: `docs/worker-contracts.md#implementation-worker`) in the same checkout as Step 5. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `isolation: "worktree"`. Pass it the plan, any user feedback, and the fact that failing tests already exist on the branch. Same worker rules as Step 5, plus:
+Same worker, same session, same rules — this is the second half of the Step 5 brief, entered after the `test:` commit. Plus:
 
 - **Found ≠ fixed (adopted repos — `$IS_ADOPTED`)**: anything discovered mid-ticket that the ticket doesn't cover is filed the same turn as a `DEBT-` candidate and left untouched in the diff:
   ```bash
@@ -302,7 +302,9 @@ The worker:
 PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
 ```
 
-Runs at every change size. Run the whole step inside a **review worker** (contract: `docs/worker-contracts.md#review-worker`); the orchestrator receives only the synthesized summary. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`.
+Runs at every change size. Run the whole step inside a **review worker** (contract: `docs/worker-contracts.md#review-worker`) launched in the background; the orchestrator receives only the synthesized summary. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "sonnet"`, `run_in_background: true`.
+
+**Do not wait for it.** The reviewer quorum is the longest deterministic-free wait in the loop, and nothing in Step 8a depends on its output — go straight to 8a (static analysis, the suite, the ratchet, services, the AC walk) and kick off Steps 9 and 10 while the review runs. Collect the summary at 8b.
 
 The worker:
 
@@ -391,10 +393,10 @@ The worker:
 PHASE_T0=$("${CW_PY:-python3}" "$CW_HOME/scripts/factory_log.py" now)
 ```
 
-Apply clear-cut fixes, flag ambiguous ones, then **the orchestrator verifies the final state itself** — not delegable.
+Two halves. **8a runs concurrently with Step 7's review** — none of it needs the review's output, and it starts Steps 9 and 10 the moment services are up. **8b waits for the review summary**, applies the fixes, and re-verifies what they touched. Either way **the orchestrator verifies the final state itself** — not delegable.
 
-1. **Apply clear-cut fixes** directly (no worker for trivial changes)
-2. **Flag ambiguous feedback** for the user — only what genuinely needs input
+#### 8a: Mechanical verification (while the review runs)
+
 3. **Static analysis** on changed files: LSP diagnostics first where available (`lsp_query.py ... diagnostics <file>`), then the linter (`golangci-lint run ./...`, `npx eslint --no-warn-ignored`/`npx biome check`, `ruff check`/`flake8`). Fix violations; gate on zero high-severity findings.
 4. **Full test suite**, once, as JSON — Step 4b and the PR body both reuse this run:
    ```bash
@@ -428,7 +430,7 @@ Apply clear-cut fixes, flag ambiguous ones, then **the orchestrator verifies the
      --base "$DEFAULT_BRANCH" --pathset-file "$TICKET_TMP/pathset.json" --report-only
    ```
    Named files go in the PR body under "Out of declared pathset": a legitimate late addition updates the declaration with a one-line reason; an illegitimate one is dropped and filed via `append-candidate`.
-5. **Start services** and verify: `docker compose up -d` if a compose file exists (start Docker itself if it's down); hit health checks and the endpoints the ticket names; check responses.
+5. **Start services** and verify: `docker compose up -d` if a compose file exists (start Docker itself if it's down); hit health checks and the endpoints the ticket names; check responses. **The moment they are healthy, start Step 9 (capture + UX review worker) and Step 10 (browser-use)** — both are read-only over this build and overlap with the rest of 8a and with the review; their findings are applied in 8b together with the review's.
 6. **Walk the acceptance criteria**: each one verified as "it works", not "code exists" — curl the endpoint, run the tests yourself.
 7. **Verify contract enforcement** (with epic context): REQUIRES present as guards; an invalid transition actually rejected (try one); ENSURES hold after operations.
 8. **Formal model conformance** (`$HAS_FORMAL_MODELS == true`) — mechanical, independent of worker self-reports. Count test paths covered / total, invalid transitions tested / total, guard clauses present per REQUIRES / total, invariants checked / total, and produce:
@@ -459,6 +461,12 @@ Apply clear-cut fixes, flag ambiguous ones, then **the orchestrator verifies the
 
 **Leave services running** — Steps 9 and 10 need them (#324); teardown is at the end of Step 10.
 
+#### 8b: Apply findings and re-verify (when the review summary lands)
+
+1. **Apply clear-cut fixes** directly (no worker for trivial changes) — the review's high-confidence items and Step 9's high/medium findings together, one pass
+2. **Flag ambiguous feedback** for the user — only what genuinely needs input
+3. **Re-verify what the fixes touched**: if any code changed, re-run static analysis and the suite (refresh `verify.json` — Step 11 prices and evidences the final state, and 4b's ratchet score must see the final report), re-walk the affected AC, and re-run the relevant Playwright specs. No fixes → 8a's evidence stands as is.
+
 If any verification fails: fix it directly, or re-launch the implementation worker (contract: `docs/worker-contracts.md#implementation-worker`) with specific instructions. Do not ship until it passes.
 
 **Log a real finding as an escape** — a bug this step catches that TDD, review, or static analysis should have (measures gate recall; no-op unless telemetry is on):
@@ -476,7 +484,7 @@ If any verification fails: fix it directly, or re-launch the implementation work
 
 ### Step 9: UX sanity + design-fidelity gate
 
-The tested gate does the mechanical setup — frontend-impact detection, ui-spec design-binding check, reference-screenshot discovery, capture planning — and emits a manifest:
+Started from 8a item 5, as soon as services are healthy — Phases 1–2 overlap with the review and the rest of 8a; Phase 3 (apply) happens in 8b. The tested gate does the mechanical setup — frontend-impact detection, ui-spec design-binding check, reference-screenshot discovery, capture planning — and emits a manifest:
 
 ```bash
 git diff "$DEFAULT_BRANCH"...HEAD --name-only > "$TICKET_TMP/changed.txt"
@@ -545,7 +553,7 @@ It writes `$TICKET_TMP/ux-review.md` and returns findings by confidence: **high*
 
 #### Phase 3: Apply findings
 
-High: fix directly. Medium: check the domain model or prose, apply if confirmed. Low: PR body under "UX observations". Re-run the relevant Playwright specs afterwards.
+In 8b, alongside the review fixes: high — fix directly; medium — check the domain model or prose, apply if confirmed; low — PR body under "UX observations". Re-run the relevant Playwright specs afterwards.
 
 Add a `## UX & design fidelity` section to the PR body: the flow walked, findings fixed, low-confidence observations, token-check results, and the key screenshots (commit them or upload via `gh` — the reviewer sees what shipped, not just that tests passed).
 
@@ -553,7 +561,7 @@ No screenshots at all is a **blocker for frontend tickets with a design contract
 
 ### Step 10: Browser-use validation
 
-Skip only if `--skip-browser-use` was passed. Look for the target's setup:
+Started from 8a item 5, in parallel with Step 9. Skip only if `--skip-browser-use` was passed. Look for the target's setup:
 
 ```bash
 ls "$TARGET_REPO/tests/browser-use/run.py" "$TARGET_REPO/e2e/" "$TARGET_REPO/tests/e2e/" "$TARGET_REPO/ui/tests/" 2>/dev/null
@@ -563,7 +571,7 @@ ls "$TARGET_REPO/tests/browser-use/run.py" "$TARGET_REPO/e2e/" "$TARGET_REPO/tes
 - **browser-use**: run the relevant scenarios (`cd "$TARGET_REPO" && python3 tests/browser-use/run.py --scenario <ids>`); capture results and screenshots.
 - Neither: note the gap in the final summary.
 
-**Clean up** — stop the services you started (`docker compose down`), now that Steps 9 and 10 are done with them.
+**Clean up** — once 8b's re-verification and Steps 9 and 10 are all done with them, stop the services you started (`docker compose down`).
 
 ### Step 11: Ship PR
 

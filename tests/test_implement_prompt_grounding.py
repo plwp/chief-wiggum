@@ -94,3 +94,38 @@ def test_wave_preflight_uses_provider_preflight_not_shell_probes():
     assert 'provider_preflight.py" --human --usage' in text
     assert "codex exec --sandbox read-only" not in text
     assert "gemini --yolo" not in text
+
+
+# --- scheduling: one worker session for 5+6; review, verification, UX and
+# browser-use overlap instead of running as seven serial LLM sessions -------
+
+
+def test_steps_5_and_6_are_one_worker_launch():
+    text = _text("implement.md")
+    section = text.split("### Step 5:")[1].split("### Step 7:")[0]
+    assert section.count("Launch an **implementation worker**") == 1
+    assert "ONE worker session" in section
+    # Step 6 no longer launches anything or re-loads the authorities.
+    step6 = section.split("### Step 6:")[1]
+    assert "Launch an" not in step6
+    assert "review_authorities.py" not in step6
+
+
+def test_review_runs_in_the_background_and_8a_does_not_wait():
+    text = _text("implement.md")
+    step7 = text.split("### Step 7:")[1].split("### Step 8:")[0]
+    assert "run_in_background: true" in step7
+    assert "Do not wait for it" in step7
+    step8 = text.split("### Step 8:")[1].split("### Step 9:")[0]
+    assert "#### 8a:" in step8 and "#### 8b:" in step8
+    assert step8.index("#### 8a:") < step8.index("run_verification.py") < step8.index("#### 8b:")
+    assert step8.index("#### 8b:") < step8.index("Apply clear-cut fixes")
+
+
+def test_ux_and_browser_use_start_from_services_up_not_after_verification():
+    text = _text("implement.md")
+    step8 = text.split("### Step 8:")[1].split("### Step 9:")[0]
+    start_services = step8.split("5. **Start services**")[1].split("\n")[0]
+    assert "start Step 9" in start_services and "Step 10" in start_services
+    assert "Started from 8a item 5" in text.split("### Step 9:")[1].split("### Step 10:")[0]
+    assert "Started from 8a item 5" in text.split("### Step 10:")[1].split("### Step 11:")[0]

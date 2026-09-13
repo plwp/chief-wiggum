@@ -260,10 +260,9 @@ For each ticket in the current wave (up to `--max-parallel`):
    - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the worker: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
    - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
      - Step 4: run the `explorer` quorum on approach, reconcile into a plan of decisions
-     - Step 5: Write failing tests (TDD) — **use model-derived test cases as the starting point**, supplement with LLM-written tests for edge cases
-     - Step 6: Implement to make tests green
-     - Step 7: the `reviewer` quorum via `run_review.py`
-     - Step 8: Apply review fixes, run full test suite, run linting, verify acceptance criteria
+     - Steps 5+6 (one session): write failing tests — **model-derived cases as the starting point**, LLM-written tests for edge cases — commit them red, then implement to green
+     - Step 7: the `reviewer` quorum via `run_review.py`, in the background
+     - Step 8a, concurrent with Step 7: full test suite, linting, ratchet, acceptance criteria; 8b: apply review + UX findings, re-verify what changed
      - Step 9: UX sanity + design-fidelity gate for frontend tickets — render the app, capture screenshots to `$TICKET_TMP/ux-screenshots/`, review against the ui-spec design contract. Save the screenshots; the orchestrator attaches them to the wave report.
      - Step 10: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
    - **Costing attribution** (chief-wiggum#345): if the worker's own `/implement` flow reaches its Step-11 transcript ingest, it MUST pass `--cwd-prefix "<its own worktree path>"` (never bare `--repo`) — every worker in this wave shares the same target repo, so a cwd-derived repo match alone would cross-bill a sibling ticket's spend onto this one. `ticket_cost.py actual` should get the matching `--cwd-prefix`/`--since-ts` pair for the same reason.
