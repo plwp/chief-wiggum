@@ -24,9 +24,7 @@ Individual ticket quality is handled by `/implement`. This skill validates what 
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-# Pin the interpreter CW scripts run under. A bare `python3` is whatever
-# the shell resolves, so a Homebrew bump silently strands keyring /
-# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+# Pinned interpreter (chief-wiggum#374).
 CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
 # Capture first and check status so a resolver failure aborts cleanly.
@@ -162,7 +160,7 @@ Any surviving `TBD:`/`UNRESOLVED:`/`PLACEHOLDER` marker is a finding: either the
 
 ### Step 2c2: Gate-validation check (docs/gate-validation.md)
 
-Before Steps 2d and 2e pass `--gate coverage` to `check_traceability.py` / `check_single_writer.py`, and before Step 2f passes `--gate-verifier-tests` to `ratchet.py check`, confirm each checker has EARNED that blocking authority — a passing gate-validation-protocol record proving it fires on seeded defects (including the mandatory evasion classes) and stays clean on a known-good corpus with coverage evidence, not just an assertion in a ledger. The records for CW's own gate suite ship **with chief-wiggum** at `$CW_HOME/docs/quality/validation/` (corroborated by the ratchet journal beside them), so this normally passes and Steps 2d/2e/2f keep their existing enforcement unchanged. **One process checks all three gates** (#323) — `check_gate_validation.py` accepts multiple gate names and verifies the shared ratchet journal chain once for the whole call, instead of three separate processes each re-walking the same chain from genesis:
+Before Steps 2d/2e pass `--gate coverage` and Step 2f passes `--gate-verifier-tests`, confirm each checker has a passing gate-validation record (`docs/gate-validation.md`). CW's own records ship at `$CW_HOME/docs/quality/validation/`, so this normally passes. One invocation checks all three gates (#323):
 
 ```bash
 GATE_VALIDATION=$("${CW_PY:-python3}" "$CW_HOME/scripts/check_gate_validation.py" \
@@ -176,9 +174,9 @@ RATCHET_VALIDATED=$(echo "$GATE_VALIDATION" | jq -r '.gates.ratchet.passing')
 
 (A target repo that hosts gates of its own keeps their records at the same relative path in that repo — `docs/quality/validation/<gate>.json`, sibling to its ratchet journal — and this step checks them the same way.)
 
-**If a gate's `_VALIDATED` var is not `true` (no record, a stale/forged one, or a failing one), do not pass the corresponding blocking flag in the step below** — for `check_traceability`/`check_single_writer` that flag is `--gate coverage`; for `ratchet` it is `--gate-verifier-tests` (the ratchet's core pass-set/contract-hash check in Step 2f stays hard-blocking regardless — only the verifier-test dimension's blocking authority is governed by the record, per chief-wiggum#208) — run it report-only instead, surface a blocking finding in the close report ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol (or explicitly accept the risk at the human checkpoint). This is `/close-epic` refusing `--gate` for a checker lacking a passing validation record — the same "report-only until proven" posture as `docs/gate-rollout.md`, enforced mechanically here instead of by convention.
+**If a gate's `_VALIDATED` var is not `true`, do not pass its blocking flag below** (`--gate coverage` for the two checkers; `--gate-verifier-tests` for ratchet — the ratchet's core pass-set/contract-hash check stays hard-blocking regardless, chief-wiggum#208): run it report-only, surface a blocking finding ("`<checker>` is not validated under the gate-validation protocol — see docs/gate-validation.md"), and direct the operator to complete the protocol or accept the risk at the human checkpoint.
 
-If a checker that was previously wired blocking (`check_gate_validation.py ... --wire` was run for it earlier) shows `.gates.<name>.authority.demoted == true` in `$GATE_VALIDATION`, its record went stale or missing/invalid WHILE blocking — surface the printed `DEMOTION` instruction (`.gates.<name>.authority.instruction`, carrying `previous_authority`/`demotion_reason`) verbatim in the close report alongside the coverage finding above (see `docs/gate-validation.md`'s "Auto-demotion" section, chief-wiggum#198); this is the same instruction-surfacing pattern as the escape-driven `demotion_check` in "Demotion: an escape a seed class should have caught," just triggered by staleness instead of a production escape.
+If `.gates.<name>.authority.demoted == true`, a previously-wired gate's record went stale while blocking — surface its `authority.instruction` verbatim in the close report (`docs/gate-validation.md` "Auto-demotion", chief-wiggum#198).
 
 ### Step 2d: Traceability coverage gate
 
@@ -226,7 +224,7 @@ fi
 
 Pass `--gate-verifier-tests` only if Step 2c2's `$RATCHET_VALIDATED` is `true`; otherwise drop the flag (the check still *prints* `weakened_verifier_tests`/`removed_verifier_tests` findings report-only — surface them in the close report) and direct the operator to the gate-validation protocol, same as 2d/2e.
 
-A violation blocks the close: a regression means something merged that shouldn't have; a weakened/removed contract means the spec was edited outside the sanctioned path. A `weakened_verifier_tests`/`removed_verifier_tests` violation (chief-wiggum#206, channel C1c) means a test annotated `@cw-trace verifies` — the executable expression of a contract — was rewritten or dropped behind its still-green test ID; fix the code, or if the verifier test was *deliberately* revised, journal it via `ratchet.py record --amend-verifier <ref>` (a human act, same semantics as `--amend` for contracts). A `missing_tests` entry caused by a genuinely flaky/order-dependent case (not a real regression) is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead; state the quarantine count (and nearest expiry) in the close report so it isn't discovered later. `check`'s output also surfaces `suspect_links` (#169) — if `docs/quality/trace-links.json` exists, any link recorded against a contract whose definition hash just changed is printed explicitly, so a weakening is never silently absorbed into "the ratchet held"; this is report-only and does not change the exit code. If a contract revision was a *deliberate* decision made during the epic (confirm with the user — it should be visible in review threads, not discovered here), journal it explicitly so the baseline moves in the open, then re-check:
+A violation blocks the close. `missing_tests` = a regression merged; `weakened_contracts`/`removed_contracts` = the spec was edited outside the sanctioned path; `weakened_verifier_tests`/`removed_verifier_tests` (chief-wiggum#206) = a `@cw-trace verifies` test rewritten behind its green ID. Fix the code; a *deliberate* revision is journaled by a human (`record --amend` / `--amend-verifier`), a genuinely flaky `missing_tests` case by `record --retire-case` with reason and expiry (#278, user-approved, never `--force`) — state the quarantine count and nearest expiry in the close report. `suspect_links` (#169, report-only) names links recorded against a contract whose hash just changed. If a contract revision was a deliberate decision during the epic (confirm with the user), journal it so the baseline moves in the open, then re-check:
 
 ```bash
 "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" record --repo "$TARGET_REPO" --event epic-close \
@@ -303,7 +301,7 @@ This is **report-only** (per `docs/gate-rollout.md`): it computes code survival 
 
 ### Step 2j: Tutorial drift & coverage (report-only)
 
-An epic that changes the UI silently invalidates the product's tutorial videos — the flows still work but the recordings now show the old chrome, and a new user-facing journey the epic added (a new nav destination, a new settings/billing surface) has no tutorial at all. "Build + tests green" never catches this; only comparing the shipped UI against the tutorial library does. This step makes that review part of the close, so a UI-touching epic can't quietly leave a stale tutorial library behind (it did, once — a UX-hardening epic drifted every provider tutorial's visuals and added billing/settings journeys with no tutorial, and nothing flagged it until a human noticed).
+A UI-changing epic silently invalidates the product's tutorial videos (old chrome in the recordings; new journeys with no tutorial at all). Only comparing the shipped UI against the tutorial library catches it, so that comparison is part of the close.
 
 **Only runs when the target repo has a tutorial system.** Detect it:
 
@@ -326,7 +324,7 @@ If the repo has no `docs/tutorials/` (or no maintainer script), **skip and say s
 
 This is **report-only** — it never blocks the close (a stale tutorial is a follow-up, not a broken seam). Recommend `/tutorial-videos` to re-produce drifted ones and author the gaps, and **ticket the new-tutorial gaps** so they aren't lost. Do not attempt to record videos inside `/close-epic` — production needs a running instance and is its own workflow.
 
-**`CURRENT` is a weaker signal than it looks — say so in the report rather than implying it (chief-wiggum#365).** The maintainer's drift mapping keys off files the storyboard *directly references* plus test titles; it never resolves what a recorded route actually RENDERS — the layout shell wrapping it or the component tree beneath the page. A shared-layout or shared-component change therefore drifts nothing. Measured on a real re-record session: it reported 10 CURRENT / 1 MISSING while **two** tutorials genuinely needed re-recording, both UI changes having shipped onto "CURRENT" recordings. Manual triage then over-corrected in the other direction and would have paid for one unnecessary re-record. So report the count AND the limit: a `CURRENT` verdict means "no storyboard-referenced file changed", not "the recording still matches the product".
+**`CURRENT` is a weaker signal than it looks — say so in the report (chief-wiggum#365).** Drift keys off files the storyboard directly references; a shared-layout or shared-component change drifts nothing. Report the count AND the limit: `CURRENT` means "no storyboard-referenced file changed", not "the recording still matches the product".
 
 ### Step 2j2: EU AI Act check (report-only) — chief-wiggum#316
 
@@ -712,7 +710,7 @@ Prepare a findings prompt at `$CW_TMP/close-epic-review-prompt.md` containing:
   6. Are there any gaps the automated checks could not cover?
   7. Does this epic violate any of the target's own recorded review authorities above? Attribute each such finding to the skill it comes from, so a house-rule finding is distinguishable from a CW-checklist one.
 
-Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation):
+Run the `reviewer` quorum (roster from `config/providers.json`):
 
 ```bash
 "${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/close-epic-review-prompt.md \
@@ -726,8 +724,8 @@ Synthesise the reviews via the manifest, never by naming the files:
   --manifest "$CW_TMP/close-review/reviewer-manifest.json"
 ```
 
-Naming them drifts as the `reviewer` role's roster changes (this step read `reviewer-gemini.md` long after gemini left the role), and a file list cannot tell "every reviewer answered" from "one never did" — chief-wiggum#416. The manifest carries who was expected and in which tier, so an absent provider is reported instead of quietly shrinking the quorum. Categorise findings:
-- **Consensus risks**: Both AIs flagged the same area — high confidence, address before shipping
+The manifest knows who was expected, so an absent required reviewer is reported instead of quietly shrinking the quorum (chief-wiggum#416). Categorise findings:
+- **Consensus risks**: Several reviewers flagged the same area — high confidence, address before shipping
 - **Unique insights**: Only one AI flagged — investigate, may be a genuine blind spot or a false positive
 - **Recommendations**: Suggestions for the retrospective and future epics
 

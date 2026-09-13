@@ -28,19 +28,15 @@ Same principles as `/implement`: you own the solution, not just the code. The va
 
 ### Step 1: Resolve paths and load epic context
 
-**Prevent sleep**: Wave implementation runs for hours. Start `caffeinate` to keep the machine awake:
+Keep the machine awake where the tool exists (kill `$CAFFEINATE_PID` on exit):
 ```bash
-caffeinate -ims &
-CAFFEINATE_PID=$!
+command -v caffeinate >/dev/null && { caffeinate -ims & CAFFEINATE_PID=$!; }
 ```
-Kill it when the workflow completes (or fails): `kill $CAFFEINATE_PID 2>/dev/null`
 
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-# Pin the interpreter CW scripts run under. A bare `python3` is whatever
-# the shell resolves, so a Homebrew bump silently strands keyring /
-# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+# Pinned interpreter (chief-wiggum#374).
 CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
 # Capture first and check status so a resolver failure aborts cleanly.
@@ -173,9 +169,9 @@ Present the wave plan to the user:
 Before launching any implementation, verify all tools are working:
 
 ```bash
-# Verify AI tool auth
-echo "test" | codex exec --sandbox read-only - >/dev/null 2>&1 && echo "codex: OK" || echo "codex: FAIL"
-echo "test" | gemini --yolo --output-format text -p "" >/dev/null 2>&1 && echo "gemini: OK" || echo "gemini: FAIL"
+# Verify every role's providers (the roster comes from config/providers.json, never a hardcoded list)
+"${CW_PY:-python3}" "$CW_HOME/scripts/provider_preflight.py" --human --usage \
+  --role explorer --role reviewer --role implementer
 
 # Verify target repo is clean and on default branch
 cd "$TARGET_REPO"
@@ -235,21 +231,9 @@ The shared `$CW_TMP/formal-test-artifacts/formal-artifacts-manifest.json` lists 
 
 These artifacts are shared across all tickets in the wave — each worker receives the same test plan and adapts the relevant portions for its ticket.
 
-#### 4a-prime: One epic-scoped codebase exploration, shared across the wave (#333)
+#### 4a-prime: No shared prose description of the code
 
-`/implement` Step 4 Phase A launches a "codebase deep-dive" explorer per ticket — fine for a single sequential `/implement` run. Run the same wave's tickets **concurrently**, and N tickets touching the same subsystem each independently pay for their own "very thorough" explore of ground that hasn't moved since the wave started — the formal-test-artifacts pattern above (generate once, every worker adapts) already exists for mechanical test artifacts and simply wasn't applied to codebase exploration.
-
-**Before any worker in this wave starts**, run ONE exploration, scoped to the union of what this wave's tickets touch (their descriptions/labels), and stamp it with the HEAD it was derived at — every worker in this wave branches its worktree from this SAME `$DEFAULT_BRANCH` commit (Step 3's `assert-main-pristine` already proved main is clean and on `$DEFAULT_BRANCH` before any worktree is created), so the stamp is provably still valid for all of them:
-
-```bash
-WAVE_HEAD=$(git -C "$TARGET_REPO" rev-parse HEAD)
-```
-
-Launch a single **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`), *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough". Seed it the same way `/implement` Step 4 now does (#333): pass `docs/quality/hotspots.json` if present, and instruct it to run `code_query.py orient` on the files this wave's tickets name before free-exploring. Write findings to `$CW_TMP/wave-$wave_number-codebase-context.md`, prefixed with a one-line stamp (`<!-- HEAD: $WAVE_HEAD -->`).
-
-Pass every worker in 4b the **path** to this file (not its content inlined into the prompt) plus instructions to use `code_query.py` for anything ticket-specific it doesn't cover — never re-launch its own from-scratch codebase deep-dive; a worker's own `/implement` Step 4 Phase A task 3 is satisfied by reading this shared file instead. If a worker's ticket needs depth the shared file doesn't have (a subsystem no other ticket in the wave touches), it may still explore that gap — the shared artifact covers the OVERLAP, not a hard ceiling on what any worker may read.
-
-**Freshness**: this artifact is valid for exactly this wave (it was derived at `$WAVE_HEAD`, the commit every worker's worktree branches from). Once this wave promotes to main (4g), HEAD moves — the next wave regenerates its own, it does NOT reuse a previous wave's file. Never reuse it across waves; never treat `/architect`'s own `$CW_TMP/codebase-context.md` (a DIFFERENT session's ephemeral temp file, not provably fresh here — see #333's write-up) as a substitute. `docs/quality/hotspots.json` is the one artifact safe to pull forward from `/architect` unconditionally: it is committed to the target repo (not session-ephemeral) and is explicitly a measured-history prior, not a point-in-time snapshot that goes stale.
+Workers read the checkout itself (`code_query.py orient`, LSP, the files). The only `/architect` artifact carried into a wave is `docs/quality/hotspots.json` — committed, measured from history, not a snapshot that goes stale.
 
 #### 4b: Launch parallel implementations
 
@@ -261,7 +245,7 @@ For each ticket in the current wave (up to `--max-parallel`):
    mkdir -p "$TICKET_TMP"
    ```
 
-2. **Compute the shared dependency-cache plan** (#329) — `/implement`'s single-ticket rule ("symlink `node_modules`/`.venv` instead of reinstalling") is UNSAFE here: `--max-parallel` workers install concurrently in separate worktrees, and a raw symlink to a shared tree lets one worker's install (prune/relink/rewrite) race a sibling's read of the same files. Detect the worktree's ecosystem(s) and point each package manager at a SHARED, concurrency-safe cache **store** instead — never at the installed tree itself (`chief_wiggum/dep_provisioning.py` — every ecosystem's cache format uses its own per-entry locking and is designed for exactly this multi-process sharing):
+2. **Compute the shared dependency-cache plan** (#329) — `/implement`'s "symlink `node_modules`/`.venv`" rule is unsafe when `--max-parallel` tickets install concurrently (one install races a sibling's read). Point each package manager at a shared, concurrency-safe cache **store** instead, never at an installed tree (`chief_wiggum/dep_provisioning.py`):
    ```bash
    DEP_CACHE_ENV=$("${CW_PY:-python3}" "$CW_HOME/scripts/dep_cache.py" plan --worktree "<worker's worktree path>" --shell)
    ```
@@ -272,13 +256,13 @@ For each ticket in the current wave (up to `--max-parallel`):
    The worker prompt must include:
    - The full ticket details (title, body, acceptance criteria)
    - **The epic context, by reference, not by embedded copy (#333)**: `$EPIC_DIR`'s path, `$EPIC_SLUG`, and `$HAS_FORMAL_MODELS`. When `$HAS_FORMAL_MODELS == true`, instruct the worker to pull only what its own ticket touches via `code_query.py contract`/`state`/`orient` (each worker's own `/implement` Step 1 already does this — do not ALSO paste the full `contracts.md`/`invariants.md`/`state-machines.md`/`traceability.md` bodies into the prompt here, or every worker in the wave pays for the same unchanged documents a second time on top of what its own Step 1 already fetches). When it's `false` (prose-only epic), pass the epic doc paths and let the worker's own Step 1 read them once, per its own fallback rule.
-   - **The shared wave-scoped codebase exploration** (4a-prime): the path `$CW_TMP/wave-$wave_number-codebase-context.md` and an instruction to read it INSTEAD OF launching its own Step 4 Phase A codebase deep-dive from scratch, falling back to its own exploration only for ticket-specific gaps the shared file doesn't cover.
+   - `docs/quality/hotspots.json` (if present) — the one `/architect` artifact safe to carry forward: measured history, not a snapshot. Workers explore the checkout live; no shared prose description of the code is passed between them.
    - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the worker: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
    - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
-     - Step 4: Consult 3 AIs on approach (Codex + Gemini as background processes, self as the third perspective), reconcile into plan
+     - Step 4: run the `explorer` quorum on approach, reconcile into a plan of decisions
      - Step 5: Write failing tests (TDD) — **use model-derived test cases as the starting point**, supplement with LLM-written tests for edge cases
      - Step 6: Implement to make tests green
-     - Step 7: Multi-AI code review (Codex + Gemini in parallel)
+     - Step 7: the `reviewer` quorum via `run_review.py`
      - Step 8: Apply review fixes, run full test suite, run linting, verify acceptance criteria
      - Step 9: UX sanity + design-fidelity gate for frontend tickets — render the app, capture screenshots to `$TICKET_TMP/ux-screenshots/`, review against the ui-spec design contract. Save the screenshots; the orchestrator attaches them to the wave report.
      - Step 10: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
@@ -335,7 +319,7 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
 
 **Orchestrator independent verification**: For each successfully completed ticket, the orchestrator must independently verify (not just trust the worker's report):
 1. Check out the ticket's branch in its worktree
-2. **Verify the worker's own test-suite evidence instead of re-running the full suite from scratch** (chief-wiggum#322) — `/implement` Step 4/4b already ran the suite on this exact branch/worktree/commit via `run_verification.py` and wrote `$CW_TMP/$ticket_number/verify.json`. The distrust doctrine targets the worker's NARRATIVE ("tests pass" in prose), not this structured artifact (exit code, report path, junit case set) — verifying THAT is equally untrusting and nearly free. Trust the artifact only when it is BOTH fresh (written at or after the branch's last commit — a worker that committed further changes after verifying must be caught, not silently waved through on a stale green) and actually ran the test profile:
+2. **Verify the worker's structured test evidence instead of re-running the suite** (chief-wiggum#322) — its `/implement` Step 8 wrote `$CW_TMP/$ticket_number/verify.json` (exit code, report path, junit cases). Distrust targets the worker's narrative, not this artifact. Reuse it only when it is fresh (written at or after the branch's last commit) and actually ran the test profile:
    ```bash
    VERIFY_JSON="$CW_TMP/$ticket_number/verify.json"
    REUSE_OK=false
@@ -427,7 +411,7 @@ Run the integration check **on the staging branch, before promoting to main**:
      --source "$TARGET_REPO" ${BASE_URL:+--base-url "$BASE_URL"} --format text
    ```
    Report-only. `not_served` (404/405) means a declared route was never wired; `unreachable` means the service did not answer at all. Mutating methods are NOT probed by default (firing POST/DELETE at a live service has side effects) and parameterized paths need `--path-param id=123` rather than a guessed value. **Without `--base-url` this is `inapplicable`, not a pass** — "if services can be started" is exactly the conditional that let the wiring bug through, so record the skip in the wave log instead of treating it as a clean smoke.
-5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists — `$QUALITY_DIR` already resolved at Step 1, #324; see `docs/ratchet.md`) — the merged wave may not shrink the high-water pass-set, weaken any contract definition, or rewrite a verifier-test body behind its still-green test ID. **Reuse item 1's run instead of re-executing the suite on the identical staging commit** (chief-wiggum#322, same pattern as `/implement` Step 4b): when item 1's JSON names a `report` for its `test`-profile step and the ratchet config has exactly one suite of the matching parser, pass that report straight through with `--reuse-report`; otherwise fall back to a normal (re-run) `score` — never a silent skip of scoring:
+5. **Ratchet check** (if `$QUALITY_DIR/ratchet.json` exists; `docs/ratchet.md`) — the merged wave may not shrink the pass-set, weaken a contract, or rewrite a verifier test behind its green ID. Reuse item 1's junit report rather than re-running the suite (chief-wiggum#322); `--reuse-report` fails loudly when the report is missing or stale, which means a plain `score`, never a skip:
    ```bash
    REPORT=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$CW_TMP/wave-$wave_number-verify.json')); print(next((s['report'] for s in d['steps'] if s['profile']=='test' and s.get('report')), ''))")
    SUITE=$("${CW_PY:-python3}" -c "import json; d=json.load(open('$QUALITY_DIR/ratchet.json')); js=[s['name'] for s in d['suites'] if s['parser']=='junit-xml']; print(js[0] if len(js)==1 else '')")
@@ -438,7 +422,7 @@ Run the integration check **on the staging branch, before promoting to main**:
    fi
    "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" check --repo "$TARGET_REPO" --gate-verifier-tests
    ```
-   Pass `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (same record-gated posture as `/implement` Step 8 and `/close-epic` Step 2f, chief-wiggum#208); otherwise drop the flag and surface the printed `weakened_verifier_tests` findings in the wave log. A violation is a hard blocker exactly like a test failure: fix it on the staging branch (or drop the offending ticket's merge from the wave) before promoting. Never resolve a violation by editing the contract, a verifier test, or the journal — a deliberate revision is a journaled human act (`record --amend`/`--amend-verifier`). A `missing_tests` finding caused by a flaky/order-dependent case is fixed by `ratchet.py record --retire-case` with a reason and expiry (#278) — surface it to the user and get their approval; never self-approve it, and never `--force` past the gate instead.
+   `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (chief-wiggum#208); otherwise drop the flag and surface `weakened_verifier_tests` in the wave log. A violation blocks like a failing test: fix it on staging (or drop the offending ticket's merge) before promoting. Never edit the contract, verifier test, or journal to clear it — a deliberate revision is a journaled human act (`record --amend`/`--amend-verifier`); a genuinely flaky `missing_tests` case is `record --retire-case` with reason and expiry (#278), user-approved, never `--force`.
 6. **Single-writer / traceability quick check** (report-only, wave-scoped) — if the epic has `docs/epics/<slug>/`, scope both checkers to what THIS wave changed with `--changed-since "$DEFAULT_BRANCH"` (see `docs/single-writer.md`, `docs/traceability.md`):
    ```bash
    "${CW_PY:-python3}" "$CW_HOME/scripts/check_single_writer.py" "$EPIC_DIR" --source "$TARGET_REPO" \

@@ -26,9 +26,7 @@ Everything else runs autonomously.
 ```bash
 CW_HOME="${CHIEF_WIGGUM_HOME:-$HOME/repos/chief-wiggum}"
 CW_HOME=$(python3 "$CW_HOME/scripts/env.py" home)
-# Pin the interpreter CW scripts run under. A bare `python3` is whatever
-# the shell resolves, so a Homebrew bump silently strands keyring /
-# jsonschema / google-genai and kills consults mid-phase (chief-wiggum#374).
+# Pinned interpreter (chief-wiggum#374).
 CW_PY=$(python3 "$CW_HOME/scripts/env.py" python) || CW_PY=python3
 # One tested call resolves CW_HOME, CW_TMP, TARGET_REPO, DEFAULT_BRANCH, EPIC_SLUG, EPIC_DIR.
 # Capture first and check status so a resolver failure aborts cleanly.
@@ -85,7 +83,7 @@ else
 fi
 ```
 
-The fallback is a **default the operator can override**, not a proof — a repo can be effectively greenfield despite a stray artifact. If the signal looks wrong for this repo, say so at the Step 6 checkpoint and let the user decide. If `RATCHET_STATE` came back `invalid` or `error`, that is itself a finding — report it at Step 6 explicitly (the default treated it as established rather than guessing "new", but a repo with an unreadable ratchet needs the operator's eyes, not a silent classification either way). The adoption record itself is not overridable by vibes: an adopted repo stamps NO DST-readiness invariants (the DST stamping condition below keys off `IS_NEW_PRODUCT`, hence off the record) — retrofitting determinism seams onto adopted code is a separate, deliberate decision. If `IS_NEW_PRODUCT` is `true`, Step 4b's structured model gains DST-readiness invariants (rendered into `invariants.md` via Step 4e) and Step 4f's ADR notes the clock/random/IO seam scaffolding (see below). Skip both for an established repo — retrofitting the invariants onto existing code is a separate, deliberate decision, not something to silently stamp in.
+The fallback is a **default the operator can override** at the Step 6 checkpoint, not a proof. `RATCHET_STATE` of `invalid`/`error` is itself a finding to report there. An adopted repo never stamps DST-readiness invariants. If `IS_NEW_PRODUCT` is `true`, Step 4b's model gains the DST-readiness invariants (rendered into `invariants.md` via 4e) and Step 4f's ADR notes the clock/random/IO seams; skip both for an established repo — retrofitting is a separate, deliberate decision.
 
 `docs/domain-context.md` (written by `/seed` Step 2.5) is the **ground truth for data contracts**: canonical metric definitions, real schema names, source caveats, and mined use cases — each with citations. If the epic touches an existing data source and this file doesn't exist, run the `/seed` Step 2.5 ingestion now (semantic layer, schema introspection, transformation-repo history) before writing any data contract. Contracts authored from guessed table/column names are how query layers get built against names that don't exist.
 
@@ -107,7 +105,7 @@ Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-exp
 - Test infrastructure (what frameworks, what coverage exists)
 - Existing patterns and conventions in the affected areas
 
-Write findings to `$CW_TMP/codebase-context.md`.
+Write findings to `$CW_TMP/codebase-context.md` as `file:line` handles with one-line statements — a locator for the consultation prompt's repo-blind seats, not a prose re-telling of the code (the synthesis worker in Step 4 reads the repo itself).
 
 **Hotspot + coupling context (measured, not declared — #187).** Refresh `docs/quality/hotspots.json` so architectural scrutiny concentrates where change-risk is *measured* from git history, not guessed:
 
@@ -133,20 +131,18 @@ Prepare a consultation prompt at `$CW_TMP/architect-prompt.md` including:
   5. Where are the integration risks and how should we test them? Cross-reference the hotspot/coupling context above — a file this epic touches that's ALSO a measured top-decile hotspot (or tightly coupled to one) deserves deeper contract scrutiny than the hotspot report alone would suggest; the absence of a hotspot entry is not a reason to skip scrutiny elsewhere.
   6. What could go wrong between tickets? (dual sources of truth, race conditions, inconsistent reads)
 
-Fire the `architecture_critic` quorum (codex + gemini in parallel, with retries + output validation). Every provider gets the **identical** prompt above — the value is in natural divergence, not roleplay — but `config/providers.json` may additionally assign each provider a bounded **review lens** (`role.lenses`, e.g. `codex: refute-soundness`, `gemini: completeness`, `claude-interactive: adoption-cost`; charters live in `config/lenses.json`). When a lens is assigned, `consult_ai.py` appends that provider's charter as a clearly-delimited `## Your charter` section — the shared prompt itself never changes. This decorrelates the reviewers on purpose: a soundness-refuter and a completeness-checker reading the *same* context reliably surface disjoint findings instead of converging on the same top issue three times:
+Fire the `architecture_critic` quorum (roster, retries, and output validation come from `config/providers.json` — never a hardcoded provider list). Every provider gets the **identical** prompt; a per-provider **lens** (`role.lenses`, charters in `config/lenses.json`) is appended as a `## Your charter` section so reviewers surface disjoint findings instead of converging on the same top issue:
 
 ```bash
 "${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role architecture_critic $CW_TMP/architect-prompt.md \
   --output-dir "$CW_TMP/architect-consult" --cwd "$TARGET_REPO"
 ```
 
-Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` with status in `architecture_critic-manifest.json`. Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) in parallel to explore the codebase and produce its own architectural analysis at `$CW_TMP/architect-opus.md`. *Claude Code adapter:* `subagent_type: "general-purpose"`, `model: "opus"`.
-
-**HARD RULE**: Wait for ALL THREE before proceeding.
+Responses land at `$CW_TMP/architect-consult/architecture_critic-<provider>.md` with status in `architecture_critic-manifest.json`. A non-zero exit means a required provider never produced valid output — that exit is the quorum gate; fix and re-run rather than synthesising from the files that happen to exist.
 
 ### Step 4: Synthesise into architectural artifacts
 
-Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile all three consultations into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
+Launch a **synthesis worker** (contract: `docs/worker-contracts.md#synthesis-worker`) to reconcile the consultations — grounded against the live checkout, which it reads itself — into **structured formal models** (JSON) plus supporting prose artifacts. Each artifact is a separate file in `$CW_TMP/`.
 
 **Reconciliation expects disjoint findings, not convergence.** When the quorum is lensed (Step 3), agreement across providers is the exception, not the confirmation signal — each reviewer was scoped to look for something different. Reconcile by **union, then cross-verify contested items**: fold in every finding from every provider (a soundness issue the refuter caught is not weaker for being unique to it), and only for items where providers actively *disagree* on a fact (not merely "only one mentioned it") should the synthesis worker re-check against the codebase before deciding which side is right. Do not discard a lensed provider's finding for lacking a second vote — that would defeat the reason lenses were assigned.
 
@@ -555,7 +551,7 @@ Prepare a validation prompt at `$CW_TMP/validate-artifacts-prompt.md` containing
   6. Does every precondition have a corresponding error case? (REQUIRES without an ERROR CASE means a silent failure)
   7. Are the `expression` fields in preconditions/postconditions/invariants reasonable and implementable?
 
-Run the `reviewer` quorum (codex + gemini in parallel, with retries + output validation). As in Step 3, `reviewer` may carry a lens assignment in `config/providers.json` — check its `lenses` map before assuming two providers scoped alike:
+Run the `reviewer` quorum (roster from `config/providers.json`; lensed as in Step 3):
 
 ```bash
 "${CW_PY:-python3}" "$CW_HOME/scripts/consult_ai.py" --role reviewer $CW_TMP/validate-artifacts-prompt.md \
