@@ -89,7 +89,7 @@ python3 scripts/consult_ai.py codex prompt.md -o response.md                    
 python3 scripts/consult_ai.py --role reviewer prompt.md --output-dir "$CW_TMP/reviews"  # a configured quorum
 ```
 
-Required providers must succeed; optional ones may fail without blocking. `optional_timeout_seconds` caps an optional delegate (chief-wiggum#188). The `divergence` role (non-Western models over OpenRouter) is opt-in and exists to widen the quorum's pretraining distribution; `deepseek-flash` fills the code-quorum seat gemini vacated. OpenRouter providers are `reads_repo=false` — prompts to them must be self-contained.
+Full detail (role semantics, timeouts, the divergence role, secrets) is in the `provider-consult` skill, `.claude/skills/provider-consult/SKILL.md`. Required providers must succeed; optional ones may fail without blocking. `optional_timeout_seconds` caps an optional delegate (chief-wiggum#188). The `divergence` role (non-Western models over OpenRouter) is opt-in and exists to widen the quorum's pretraining distribution; `deepseek-flash` fills the code-quorum seat gemini vacated. OpenRouter providers are `reads_repo=false` — prompts to them must be self-contained.
 
 ## User Data Directory
 
@@ -126,14 +126,7 @@ python3 "$CW_HOME/scripts/repo.py" clean acme/app     # remove cache
 
 ## Repo Layout
 
-```
-.claude/commands/    # Claude Code slash-command adapter
-skills/              # Harness-portable skills and bundled resources
-scripts/             # Python helpers called by skills
-templates/           # Issue, PR, review, and checklist templates
-patterns/            # Registry of reusable product patterns (see docs/patterns-registry.md)
-models.md            # AI model IDs and library versions (refresh with /update)
-```
+Slash-command adapters in `.claude/commands/`, portable skills in `skills/`, Python helpers in `scripts/`, templates in `templates/`, the pattern registry in `patterns/` (see `docs/patterns-registry.md`), model ids in `models.md`.
 
 **Template placeholders** (chief-wiggum#347): `{{DOUBLE_BRACE}}` is machine-substituted (leaving one unsubstituted is a bug); `{SINGLE_BRACE}` is human-filled and expected to survive copying.
 
@@ -149,33 +142,7 @@ models.md            # AI model IDs and library versions (refresh with /update)
 
 Skills are invoked from any target repo with chief-wiggum configured as a skill source (`.claude/settings.local.json`: `{ "commandDirs": ["~/repos/chief-wiggum/.claude/commands"] }`):
 
-```bash
-/setup                          # Verify dependencies
-/transcribe path/to/audio.mp4   # Transcribe client conversation
-/create-issue owner/repo        # Create a GitHub issue
-/seed owner/repo                # Architecture brainstorm & issue seeding
-/design owner/repo              # Product design: mockups → human choice → docs/design/
-/apply-pattern owner/repo --pattern <id>  # Install a registry pattern's contract pack
-/adopt owner/repo               # Brownfield entry: survey → elect → baseline → adoption record
-
-# Epic flow (the core loop)
-/plan-epic owner/repo           # Group issues into epic with dependency graph
-/architect owner/repo --epic "Epic: Name"  # Define contracts, invariants, tests
-/implement owner/repo#42        # TDD implementation loop for a single ticket
-/implement-wave owner/repo --epic "Epic: Name"  # Parallel implementation in waves
-/close-epic owner/repo --epic "Epic: Name" # Epic-level quality gate
-
-/ship                           # Create PR with mermaid diagrams (standalone)
-/stitch-audit owner/repo --trace keyword   # Cross-layer data flow audit
-/code-metrics owner/repo                    # Churn/complexity/survival/duplication metrics
-/status owner/repo                          # Live target state: footprint, scope, gates, ratchet, patterns, debt
-/ux-review owner/repo [--base-url <url>]    # Persona walk-through → severity-ranked findings
-/reflect owner/repo                         # Mine a built repo → CW-improvement issues
-/tutorial-video owner/repo --feature "..."  # Narrated click-through tutorial video
-/saas-gate owner/repo --base-url <url>     # SaaS non-functional-requirements gate
-/business-consultant owner/repo             # Unit economics + pricing-model fit
-/update                         # Refresh model IDs and library versions
-```
+One file per `/command` under `.claude/commands/`; the listing (name and one-line description) is resident in every session, so it is not repeated here.
 
 Harness-portable skills live under `skills/`; install into Codex with a symlink:
 
