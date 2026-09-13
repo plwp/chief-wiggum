@@ -110,7 +110,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -254,7 +254,17 @@ class SingleWriterInvariant:
     persistence_only: bool = False
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        # Explicit, not dataclasses.asdict: asdict deep-copies every field
+        # (~40 µs per instance) and this is called once per invariant AND once
+        # per writer on every report — the dominant cost of a large report.
+        return {
+            "id": self.id,
+            "description": self.description,
+            "controls_field": list(self.controls_field),
+            "sanctioned_writers": list(self.sanctioned_writers),
+            "source": self.source,
+            "persistence_only": self.persistence_only,
+        }
 
     def field_tokens(self) -> set[str]:
         """Leaf identifiers that a write to a controlled field would use.
@@ -286,7 +296,16 @@ class Writer:
     is_test: bool
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return {
+            "invariant_id": self.invariant_id,
+            "field": self.field,
+            "file": self.file,
+            "line": self.line,
+            "text": self.text,
+            "symbol": self.symbol,
+            "sanctioned": self.sanctioned,
+            "is_test": self.is_test,
+        }
 
 
 @dataclass
@@ -783,7 +802,7 @@ def _scan_writers_and_unscanned(
             if blob_sha is not None and scanner_hash is not None:
                 findings_cache.store(
                     str(root), "check_single_writer", rel, blob_sha, scanner_hash,
-                    [asdict(s) for s in sites],
+                    [s.to_dict() for s in sites],
                 )
         scanned += 1
         if not sites:
@@ -1039,12 +1058,16 @@ def check(
             # .php/.cpp still triggers the coverage warning (scan_writers
             # filters back down to SOURCE_EXTS itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
+        elif Path(source_root).exists():
+            # ONE tree walk for this run: the scan and the unsupported-extension
+            # count below used to each walk the whole tree independently.
+            only_files = set(walk_source_files(source_root))
         writers, unscanned, scanned = _scan_writers_and_unscanned(
             source_root, invariants, exclude=scan_exclude, only_files=only_files
         )
         report.unscanned = unscanned
         report.source_files_scanned = scanned
-        if scanned == 0 and only_files is None:
+        if scanned == 0 and not changed_since:
             # #289 — THE fail-open this gate shipped with: invariants declared,
             # a source root given, and the scan read nothing (root absent, no
             # file of a scannable language, or an --exclude that swallowed the

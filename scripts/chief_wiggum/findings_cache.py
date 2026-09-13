@@ -1,4 +1,5 @@
-"""Per-file findings cache for the gate scanners (#327).
+"""Per-file findings cache for the gate scanners (#327), stored as ONE index
+per (repo, engine).
 
 ``check_traceability.py`` and ``check_single_writer.py`` both split scanning
 into per-file **emission** (a pure function of one file's path + content —
@@ -28,23 +29,32 @@ takes both halves of the key:
   parse the same way.
 
 Both are load-bearing. ``blob_sha`` alone is the exact stale-artifact bug
-this repo has hit repeatedly (a ratchet fabricating a pass count from an old
-junit report; a crashed rerun replaying the previous run's numbers instead of
-its own): editing ``write_emission.py``'s regex family, or
-``trace_emission.py``'s annotation grammar, would otherwise silently keep
-serving findings computed by the PREVIOUS scanner version for every file in
-the repo whose CONTENT never changed. A key that fails to prove freshness —
-no manifest entry (non-git ``--source``, or a path the manifest legitimately
-excludes — a gitignored-but-present file, a submodule), a missing cache
-entry, a corrupt one, or the escape hatch below — re-scans; it never assumes
-a hit.
+this repo has hit repeatedly; a key that fails to prove freshness — no
+manifest entry (non-git ``--source``, a gitignored-but-present file, a
+submodule), a missing entry, a corrupt index, or the escape hatch below —
+re-scans; it never assumes a hit.
 
 The key also covers ``rel`` (the file's repo-relative path), not just its
 content: emission is a function of ``(path, content)``, not content alone —
 the same bytes classify differently under a ``_test.go`` path (``is_test``)
 than a plain ``.go`` one, and different extensions dispatch to entirely
-different emitter modules. A content-only key would let two byte-identical
-files at different paths collide and serve each other's findings.
+different emitter modules.
+
+**Layout.** One JSON index per (repo, engine) at
+``<root>/<repo_id>/<engine>.json``::
+
+    {"scanner_hash": "<hash>", "entries": {"<rel>": {"blob_sha": "...", "findings": [...]}}}
+
+The first layout kept one file per ``(rel, blob_sha, scanner_hash)`` — a
+scan of a 3,000-file repo was 3,000 opens plus 3,000 ``mkdir`` calls before
+a single byte of source was read, and every commit added new blobs while
+nothing ever removed the old ones (31k files after three benchmark runs).
+The index is read once per process and written once at exit; a rel keeps
+only its LATEST blob, so the index is bounded by the file count; and a
+scanner change drops every entry, so a stale scanner's findings can never
+be served and the cache garbage-collects itself. Two processes flushing the
+same index merge (the file's entries under ours) and replace atomically —
+the loser of a race loses at most a re-scan, never correctness.
 
 Only genuine emission SUCCESSES are cached. A file that could not be read at
 all (``read_text_safe`` failure -> ``unscanned``) is never stored — callers
@@ -56,14 +66,12 @@ false-clean).
 Escape hatch: ``CW_FINDINGS_NO_CACHE=1`` disables both the read and the write
 (each checker's own ``--no-cache`` CLI flag sets it for its own process) — the
 dual-run (cached vs ``--no-cache``) zero-diff is the validation gate for this
-cache, exactly as PR #337's ``quality/cache.py`` (same discipline, this
-module's coarser-grained sibling — per-repo/per-corpus there, because those
-engines shell out to one external tool per call; per-FILE here, because a
-gate scanner's cost is dominated by per-file regex/parse work across
-thousands of files, not one external invocation)."""
+cache, exactly as PR #337's ``quality/cache.py``.
+"""
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -71,6 +79,11 @@ from pathlib import Path
 
 NO_CACHE_ENV = "CW_FINDINGS_NO_CACHE"
 CACHE_DIR_ENV = "CW_FINDINGS_CACHE_DIR"
+
+# In-process indexes, keyed by (repo_id, engine). Loaded lazily on first
+# access, mutated by ``store``, flushed once at exit.
+_INDEXES: dict[tuple[str, str], dict] = {}
+_FLUSH_REGISTERED = False
 
 
 def disabled() -> bool:
@@ -87,57 +100,119 @@ def _root() -> Path:
     return root
 
 
-def _entry_path(repo: str, engine: str, rel: str, blob_sha: str, scanner_hash: str) -> Path:
-    repo_id = hashlib.sha256(os.path.abspath(repo).encode()).hexdigest()[:16]
-    digest = hashlib.sha256(f"{rel}\x00{blob_sha}\x00{scanner_hash}".encode()).hexdigest()[:24]
-    d = _root() / repo_id / engine
+def _repo_id(repo: str) -> str:
+    return hashlib.sha256(os.path.abspath(repo).encode()).hexdigest()[:16]
+
+
+def _index_path(repo: str, engine: str) -> Path:
+    d = _root() / _repo_id(repo)
     d.mkdir(parents=True, exist_ok=True)
-    return d / f"{digest}.json"
+    return d / f"{engine}.json"
 
 
-def load(repo: str, engine: str, rel: str, blob_sha: str, scanner_hash: str) -> list[dict] | None:
-    """Cached findings — a list of plain dicts, one per emitted fact — for
-    ``(rel, blob_sha, scanner_hash)``, or ``None`` on a miss: disabled,
-    absent, unreadable/corrupt, or a defensive key mismatch (never raises —
-    a broken cache entry degrades to a fresh scan, never a crash)."""
-    if disabled():
-        return None
-    path = _entry_path(repo, engine, rel, blob_sha, scanner_hash)
+def _entry_path(repo: str, engine: str, rel: str, blob_sha: str, scanner_hash: str) -> Path:
+    """The on-disk file that holds this key. Kept for callers/tests that
+    corrupt or inspect the store directly; every key of one (repo, engine)
+    now lives in the same index file."""
+    return _index_path(repo, engine)
+
+
+def _read_index(path: Path) -> dict | None:
+    """The index on disk, or ``None`` when absent/unreadable/malformed — any
+    of which is a miss for every key, never a crash."""
     if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         return None
-    # The filename digest already encodes all three fields; this re-check
-    # guards a truncated-hash near-collision or a hand-edited file — treat
-    # either as a miss rather than risk serving a finding for the wrong key.
-    if (
-        data.get("rel") != rel
-        or data.get("blob_sha") != blob_sha
-        or data.get("scanner_hash") != scanner_hash
-    ):
+    if not isinstance(data.get("scanner_hash"), str):
         return None
-    findings = data.get("findings")
+    return data
+
+
+def _index(repo: str, engine: str) -> dict:
+    """The live in-process index for (repo, engine): ``{"path", "scanner_hash",
+    "entries", "dirty"}``. Read from disk on first access; an index the
+    current ``CACHE_DIR`` no longer points at (tests redirect it per test) is
+    re-read rather than served from a stale process-level copy."""
+    key = (_repo_id(repo), engine)
+    path = _index_path(repo, engine)
+    idx = _INDEXES.get(key)
+    if idx is not None and idx["path"] == path:
+        return idx
+    data = _read_index(path)
+    idx = {
+        "path": path,
+        "scanner_hash": data["scanner_hash"] if data else None,
+        "entries": dict(data["entries"]) if data else {},
+        "dirty": False,
+    }
+    _INDEXES[key] = idx
+    return idx
+
+
+def load(repo: str, engine: str, rel: str, blob_sha: str, scanner_hash: str) -> list[dict] | None:
+    """Cached findings — a list of plain dicts, one per emitted fact — for
+    ``(rel, blob_sha, scanner_hash)``, or ``None`` on a miss: disabled,
+    absent, unreadable/corrupt, a different scanner, or a different blob
+    (never raises — a broken index degrades to a fresh scan, never a crash)."""
+    if disabled():
+        return None
+    idx = _index(repo, engine)
+    if idx["scanner_hash"] != scanner_hash:
+        return None
+    entry = idx["entries"].get(rel)
+    if not isinstance(entry, dict) or entry.get("blob_sha") != blob_sha:
+        return None
+    findings = entry.get("findings")
     return findings if isinstance(findings, list) else None
 
 
 def store(
     repo: str, engine: str, rel: str, blob_sha: str, scanner_hash: str, findings: list[dict]
 ) -> None:
-    """Best-effort write of a GENUINE emission success. Callers must never
+    """Best-effort record of a GENUINE emission success. Callers must never
     call this for a file that could not be read, or whose emission raised —
-    only for output the scanner actually produced. A cache that can't be
-    written (read-only FS, disk full) must never fail the scan it memoizes."""
+    only for output the scanner actually produced. A scanner change empties
+    the index first (nothing from the old scanner may survive beside new
+    entries); the write itself happens once, at exit."""
+    global _FLUSH_REGISTERED
     if disabled():
         return
-    path = _entry_path(repo, engine, rel, blob_sha, scanner_hash)
-    try:
-        path.write_text(json.dumps({
-            "rel": rel, "blob_sha": blob_sha, "scanner_hash": scanner_hash,
-            "findings": findings,
-        }))
-    except OSError:
-        pass
+    idx = _index(repo, engine)
+    if idx["scanner_hash"] != scanner_hash:
+        idx["entries"] = {}
+        idx["scanner_hash"] = scanner_hash
+    idx["entries"][rel] = {"blob_sha": blob_sha, "findings": findings}
+    idx["dirty"] = True
+    if not _FLUSH_REGISTERED:
+        atexit.register(flush)
+        _FLUSH_REGISTERED = True
+
+
+def flush() -> None:
+    """Write every dirty index once, merging with whatever another process
+    wrote to the same file meanwhile (theirs under ours, same scanner only)
+    and replacing atomically. A cache that can't be written (read-only FS,
+    disk full) must never fail the scan it memoizes."""
+    for idx in list(_INDEXES.values()):
+        if not idx["dirty"] or idx["scanner_hash"] is None:
+            continue
+        entries = dict(idx["entries"])
+        on_disk = _read_index(idx["path"])
+        if on_disk is not None and on_disk["scanner_hash"] == idx["scanner_hash"]:
+            entries = {**on_disk["entries"], **entries}
+        tmp = idx["path"].with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps({"scanner_hash": idx["scanner_hash"], "entries": entries}))
+            os.replace(tmp, idx["path"])
+            idx["entries"] = entries
+            idx["dirty"] = False
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass

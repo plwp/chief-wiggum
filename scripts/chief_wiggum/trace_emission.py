@@ -15,7 +15,7 @@ keep working — this is a pure move, not a behavior change (golden parity; see
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 # canonical_id's home is chief_wiggum.trace_ids (#181: shared with the
@@ -42,7 +42,16 @@ class Annotation:
     source_id: str | None = None  # for realizes: the declaring contract/invariant ID
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        # Explicit rather than dataclasses.asdict (which deep-copies every
+        # field): called once per annotation on every cache store and report.
+        return {
+            "verb": self.verb,
+            "target": self.target,
+            "file": self.file,
+            "line": self.line,
+            "source_kind": self.source_kind,
+            "source_id": self.source_id,
+        }
 
 
 def kind_of(node_id: str) -> str:

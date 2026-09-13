@@ -914,6 +914,10 @@ def check(
             # .php/.cpp still triggers the coverage warning (scan_source
             # filters back down through _file_predicate itself).
             only_files = changed_paths(source_root, changed_since, predicate=_changed_since_predicate)
+        elif Path(source_root).exists():
+            # ONE tree walk for this run: the scan and the unsupported-extension
+            # count below used to each walk the whole tree independently.
+            only_files = set(walk_source_files(source_root))
         source_annotations, unscanned = _scan_source_and_unscanned(source_root, only_files=only_files)
         # Identity of the SOURCE-derived annotations, for #379 provenance. Under
         # --changed-since these are exactly the annotations in the diff.

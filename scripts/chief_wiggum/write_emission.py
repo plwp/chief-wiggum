@@ -240,6 +240,19 @@ class WriteSite:
     kind: int  # KIND_ASSIGN | KIND_STRUCT | KIND_QUOTED | KIND_SQL
     token: str  # the identifier exactly as it appears in source (case preserved)
 
+    def to_dict(self) -> dict:
+        # Explicit rather than dataclasses.asdict (which deep-copies): this
+        # runs once per emitted site on every cache store.
+        return {
+            "file": self.file,
+            "line": self.line,
+            "text": self.text,
+            "symbol": self.symbol,
+            "is_test": self.is_test,
+            "kind": self.kind,
+            "token": self.token,
+        }
+
 
 def emit_write_sites(path: str, text: str) -> list[WriteSite]:
     """Emission: every candidate write site in a single file's ``text``, with NO
