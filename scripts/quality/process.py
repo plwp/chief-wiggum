@@ -56,6 +56,17 @@ def is_code(p: str) -> bool:
 # composer) never silently diverge on what "coupled" means.
 DEFAULT_MIN_CO = 4
 
+# Commits touching more code files than this carry no temporal-coupling
+# signal — an initial import, a formatter sweep, a vendored drop, a rename
+# storm — and they are the whole cost of the pair walk: a commit with k files
+# contributes k(k-1)/2 pairs, so ONE 12,000-file import commit is 72M pairs
+# (measured: >70 s, unbounded on a monorepo) while every real coupling pair
+# lives in the small commits. code-maat and Tornhill's own analyses exclude
+# such bulk commits for the same reason. Excluded commits count for nothing
+# here (neither pairs nor per-file commit totals), so confidence stays a
+# ratio over the commits that could have expressed coupling.
+BULK_COMMIT_MAX_FILES = 50
+
 
 def _parse_commits(repo: str) -> list[dict]:
     """Parse ``git log --numstat`` into ``[{author, subject, files:[(path, churn)]}]``,
@@ -84,17 +95,24 @@ def _parse_commits(repo: str) -> list[dict]:
     return commits
 
 
-def _coupling_from_commits(commits: list[dict], min_co: int = DEFAULT_MIN_CO) -> list[dict]:
+def _coupling_from_commits(
+    commits: list[dict], min_co: int = DEFAULT_MIN_CO,
+    bulk_max_files: int = BULK_COMMIT_MAX_FILES,
+) -> list[dict]:
     """Change-coupling pairs (Tornhill co-change) from already-parsed ``commits``.
     Full pair list, sorted (confidence, co_changes) desc — NOT truncated. This is
     the single computation both ``analyze()`` (which keeps its own top-8 report
     slice) and ``compute_coupling()`` (the full-set entry point #187's
     ``hotspots.py`` calls) share, so there is exactly one co-change definition
-    (INV-fh-001)."""
+    (INV-fh-001). Commits touching more than ``bulk_max_files`` code files are
+    skipped entirely (see ``BULK_COMMIT_MAX_FILES``), which bounds the walk at
+    O(commits × bulk_max_files²) instead of O(Σ files_per_commit²)."""
     pair_co: Counter = Counter()
     file_commits: Counter = Counter()
     for c in commits:
         fs = [f for f, _ in c["files"]]
+        if len(set(fs)) > bulk_max_files:
+            continue
         for f in set(fs):
             file_commits[f] += 1
         for a, b in combinations(sorted(set(fs)), 2):
@@ -113,7 +131,9 @@ def _coupling_from_commits(commits: list[dict], min_co: int = DEFAULT_MIN_CO) ->
     return coupling
 
 
-def compute_coupling(repo: str, min_co: int = DEFAULT_MIN_CO) -> list[dict]:
+def compute_coupling(
+    repo: str, min_co: int = DEFAULT_MIN_CO, bulk_max_files: int = BULK_COMMIT_MAX_FILES,
+) -> list[dict]:
     """
     Public, standalone change-coupling entry point: the FULL pair set (no
     top-8 truncation), for consumers that need every file's coupled partners
@@ -125,7 +145,7 @@ def compute_coupling(repo: str, min_co: int = DEFAULT_MIN_CO) -> list[dict]:
 
     @cw-trace guards CTR-fh-030 INV-fh-001
     """
-    return _coupling_from_commits(_parse_commits(repo), min_co=min_co)
+    return _coupling_from_commits(_parse_commits(repo), min_co=min_co, bulk_max_files=bulk_max_files)
 
 
 def partners_by_file(pairs: list[dict]) -> dict[str, list[dict]]:

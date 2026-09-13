@@ -707,7 +707,9 @@ _SUSPECT_NOTE = (
 
 
 def governing_facts_for_file(
-    repo_root: Path, rel: str, epics: list[Epic]
+    repo_root: Path, rel: str, epics: list[Epic],
+    *, prov_index: ProvenanceIndex | None = None,
+    external: tuple[list[dict], list[dict]] | None = None,
 ) -> tuple[list[Fact], list[str], str | None]:
     """Shared computation behind `orient` and `governs <path>`: every fact that
     governs `rel`, tagged `exact` (direct annotation / precise code_location
@@ -718,7 +720,12 @@ def governing_facts_for_file(
     naming the file when it exists but could not be decoded (#282/#289) — the
     caller turns that into an `error`-applicability envelope rather than
     letting a bare ``read_text()`` crash the whole query with an uncaught
-    ``UnicodeDecodeError``."""
+    ``UnicodeDecodeError``.
+
+    ``prov_index`` / ``external`` (optional) let a batch caller (``orient``
+    over N paths) build the provenance index and verify the external-link
+    store ONCE instead of per file — same answers, fewer git processes and
+    one ``verify_links`` pass; omitted, each is computed here as before."""
     root = Path(repo_root)
     full = root / rel
     text, skip_reason = read_text_safe(full)
@@ -726,12 +733,12 @@ def governing_facts_for_file(
         return [], [], f"{rel}: {skip_reason}"
     suffix = full.suffix
     direct_anns = check_traceability.emit_source_annotations(rel, text, suffix)
-    all_ext, all_unresolved = _external_link_entries(root)
+    all_ext, all_unresolved = external if external is not None else _external_link_entries(root)
     ext_entries = [e for e in all_ext if _norm(e.get("file", "")) == rel]
     warnings = _external_unresolved_warnings(
         [e for e in all_unresolved if _norm(e.get("file", "")) == rel]
     )
-    prov = _file_provenance(root, rel)
+    prov = _file_provenance(root, rel, prov_index)
 
     facts: list[Fact] = []
     for epic in epics:
@@ -1120,7 +1127,9 @@ def _debt_facts_for_file(repo_root: Path, rel: str) -> list[Fact]:
     return facts
 
 
-def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
+def cmd_orient(repo_root: Path, path: str | list[str], epic: str | None, limit: int = DEFAULT_LIMIT, cursor: str | None = None) -> dict:
+    if not isinstance(path, str):
+        return _cmd_orient_batch(repo_root, list(path), epic, limit=limit, cursor=cursor)
     epics = discover_epics(repo_root, epic)
     rel = _norm(path)
     full = Path(repo_root) / rel
@@ -1151,6 +1160,60 @@ def cmd_orient(repo_root: Path, path: str, epic: str | None, limit: int = DEFAUL
         facts, verb="orient", summary=summary, warnings=warnings,
         query_provenance=_query_provenance(repo_root, epics),
         limit=limit, cursor=cursor,
+    )
+
+
+def _cmd_orient_batch(
+    repo_root: Path, paths: list[str], epic: str | None,
+    limit: int = DEFAULT_LIMIT, cursor: str | None = None,
+) -> dict:
+    """``orient`` over N paths in ONE process: the epic artifacts are parsed
+    once, the provenance index built once (a handful of git processes for the
+    whole batch rather than two per file), the external-link store verified
+    once. The workflows call this over every file in a diff, so the per-call
+    fixed cost used to multiply by the diff size. Facts are the union of the
+    per-file answers (each handle names its file); a path that does not exist
+    or cannot be read is a WARNING here, never a silent drop — the single-path
+    form keeps its ``inapplicable``/``error`` envelope semantics untouched."""
+    root = Path(repo_root)
+    epics = discover_epics(repo_root, epic)
+    qprov = _query_provenance(repo_root, epics)
+    prov_index = _build_provenance_index(root)
+    external = _external_link_entries(root)
+    facts: list[Fact] = []
+    warnings: list[str] = [w for e in epics for w in e.warnings]
+    scanned = missing = unreadable = 0
+    for p in paths:
+        rel = _norm(p)
+        if not (root / rel).is_file():
+            warnings.append(f"unscanned — {rel} not found under {repo_root}")
+            missing += 1
+            continue
+        got, ext_warnings, unscanned_reason = governing_facts_for_file(
+            repo_root, rel, epics, prov_index=prov_index, external=external,
+        )
+        if unscanned_reason is not None:
+            warnings.append(f"unscanned — could not read {unscanned_reason}")
+            unreadable += 1
+            continue
+        scanned += 1
+        facts += got
+        facts += _hotspot_facts_for_file(repo_root, rel)
+        facts += _debt_facts_for_file(repo_root, rel)
+        warnings += ext_warnings
+    if not epics:
+        warnings.append("no docs/epics/* found — orienting on annotations/design only would need epic context")
+    if scanned == 0:
+        applicability = "error" if unreadable else "inapplicable"
+    else:
+        applicability = "applicable"
+    tail = "".join(
+        s for s, n in ((f", {missing} not found", missing), (f", {unreadable} unreadable", unreadable)) if n
+    )
+    summary = f"orient: {len(facts)} governing fact(s) across {scanned} file(s) in {len(epics)} epic(s){tail}"
+    return build_envelope(
+        facts, verb="orient", summary=summary, warnings=warnings,
+        query_provenance=qprov, limit=limit, cursor=cursor, applicability=applicability,
     )
 
 
@@ -2113,7 +2176,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="verb")
 
     p = sub.add_parser("orient")
-    p.add_argument("path")
+    p.add_argument("path", nargs="+", help="one path (per-file envelope) or many (one batched envelope)")
     p = sub.add_parser("governs")
     p.add_argument("target")
     p = sub.add_parser("writers")
@@ -2160,7 +2223,8 @@ def main(argv: list[str] | None = None) -> int:
 
     kw = {"limit": args.limit, "cursor": args.cursor}
     dispatch = {
-        "orient": lambda: cmd_orient(repo_root, args.path, args.epic, **kw),
+        "orient": lambda: cmd_orient(
+            repo_root, args.path[0] if len(args.path) == 1 else args.path, args.epic, **kw),
         "governs": lambda: cmd_governs(repo_root, args.target, args.epic, **kw),
         "writers": lambda: cmd_writers(repo_root, args.target, args.epic, **kw),
         "guards": lambda: cmd_guards(repo_root, args.ctr_id, args.epic, **kw),
@@ -2175,6 +2239,8 @@ def main(argv: list[str] | None = None) -> int:
 
     target_arg = getattr(args, "path", None) or getattr(args, "target", None) or getattr(args, "ctr_id", None) \
         or getattr(args, "id", None) or getattr(args, "query", None) or getattr(args, "handle", None)
+    if isinstance(target_arg, list):
+        target_arg = ",".join(target_arg)
     try:  # factory telemetry; no-op unless enabled, never breaks the query
         import os
         _here = os.path.dirname(os.path.abspath(__file__))

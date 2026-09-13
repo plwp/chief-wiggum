@@ -325,13 +325,12 @@ The worker:
    ```bash
    PROSE_ARTIFACTS=()
    if [ "$HAS_FORMAL_MODELS" = "true" ]; then
-     : > "$TICKET_TMP/reviews/governing.md"
-     for f in $(git diff --name-only "$DEFAULT_BRANCH"...HEAD); do
-       out=$("${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" --repo "$(git rev-parse --show-toplevel)" \
-         --epic "$EPIC_SLUG" --format text orient "$f")
-       printf '%s\n' "$out" >> "$TICKET_TMP/reviews/governing.md"
-       grep -q '^- (hotspot)' <<<"$out" && echo "$f: measured hotspot — escalate review depth" >> "$TICKET_TMP/reviews/review-context-extra.md"
-     done
+     # One batched orient over the whole diff — epic parse + provenance index once, not per file.
+     git diff --name-only "$DEFAULT_BRANCH"...HEAD | xargs "${CW_PY:-python3}" "$CW_HOME/scripts/code_query.py" \
+       --repo "$(git rev-parse --show-toplevel)" --epic "$EPIC_SLUG" --format text --limit 1000 orient \
+       > "$TICKET_TMP/reviews/governing.md"
+     grep -o '^- (hotspot).*hotspots\[[^]]*\]' "$TICKET_TMP/reviews/governing.md" | sed 's/.*hotspots\[\(.*\)\]/\1: measured hotspot — escalate review depth/' \
+       >> "$TICKET_TMP/reviews/review-context-extra.md"
    elif [ -n "${EPIC_DIR:-}" ]; then   # prose-only epic: no cheaper slice exists
      PROSE_ARTIFACTS=(--epic-artifact "Contracts=$EPIC_DIR/contracts.md" --epic-artifact "Invariants=$EPIC_DIR/invariants.md")
    fi

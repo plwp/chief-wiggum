@@ -109,8 +109,31 @@ from factory_log import DEFAULT_VALIDATION_DIR  # noqa: E402
 # Blocking authority (wire/unwire) is journaled in the ratchet chain, not a
 # forgeable sidecar (chief-wiggum#198). The journal's format/chain is owned by
 # ratchet.py; these are its path-based read/append primitives.
+from ratchet import _AUTHORITY_ACTIONS, GATE_AUTHORITY  # noqa: E402
 from ratchet import append_authority_event as _append_authority  # noqa: E402
 from ratchet import last_authority_action as ratchet_last_authority_action  # noqa: E402
+from ratchet import verified_prefix as ratchet_verified_prefix  # noqa: E402
+
+
+def _last_authority_action_cached(journal: Path, gate: str, chain_cache: dict | None) -> str | None:
+    """``ratchet.last_authority_action`` with the verified prefix computed ONCE
+    per journal per process. Every gate in a multi-gate run reads the same
+    journal, and the prefix walk is O(journal) — hash-chained from genesis,
+    with a ``json.dumps`` per record — so without this a three-gate call
+    verified the same append-only file four times (three prefix walks plus
+    ``_load_and_verify_chain``). Same verdict logic as the ratchet original:
+    only a genuine ``wire``/``unwire`` counts; anything else is skipped."""
+    if chain_cache is None:
+        return ratchet_last_authority_action(journal, gate)
+    key = ("verified_prefix", str(journal))
+    if key not in chain_cache:
+        chain_cache[key] = ratchet_verified_prefix(journal)
+    for rec in reversed(chain_cache[key]):
+        if rec.get("event") == GATE_AUTHORITY and rec.get("ref") == gate:
+            action = rec.get("details")
+            if action in _AUTHORITY_ACTIONS:
+                return action
+    return None
 
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "templates" / "gate-validation-record-schema.json"
 JOURNAL_NAME = "ratchet-journal.jsonl"
@@ -618,7 +641,7 @@ def check_and_transition(
     @cw-trace guards INV-fh-003"""
     report = check(gate, validation_dir, schema=schema, scripts_dir=scripts_dir, chain_cache=chain_cache)
     journal = _journal_path(validation_dir)
-    was_wired = ratchet_last_authority_action(journal, gate) == "wire"
+    was_wired = _last_authority_action_cached(journal, gate, chain_cache) == "wire"
     append_action: str | None = None  # 'wire' | 'unwire', journaled AFTER the emit
     append_rid: str | None = None
 
