@@ -1,0 +1,27 @@
+{
+  "entities": [
+    {
+      "name": "Venue",
+      "operations": [
+        {
+          "name": "Fetch venue info",
+          "method": "GET",
+          "path": "/venue-info",
+          "external": true,
+          "external_system": "SCP",
+          "derived_from": [
+            {
+              "type": "observed_fact",
+              "ref": "capture 2026-08-23, results/scp-venue-info.json"
+            }
+          ]
+        },
+        {
+          "name": "List own bookings",
+          "method": "GET",
+          "path": "/api/bookings"
+        }
+      ]
+    }
+  ]
+}

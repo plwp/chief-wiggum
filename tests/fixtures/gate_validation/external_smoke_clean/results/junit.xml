@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="scp" tests="2">
+  <testcase classname="internal/scp" name="TestSCPLiveVenueInfo" file="internal/scp/live_smoke_test.go"/>
+  <testcase classname="internal/scp" name="TestClientUnit" file="internal/scp/client_test.go"/>
+</testsuite>

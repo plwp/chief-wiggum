@@ -209,7 +209,14 @@ def test_gate_ledger_against_this_repos_real_validation_dir(user_dir):
     and the wired state comes from the real journal's gate-authority events."""
     st = status.gather(ROOT)
     gates = {g["gate"]: g for g in st["gates"]}
-    assert len(gates) == 7, f"expected the 7 shipped records, got {sorted(gates)}"
+    # A named set plus a floor, rather than an exact count: a record VANISHING
+    # is the regression worth catching, and a legitimate new gate should not
+    # have to bump a magic number to land (chief-wiggum#353 added the eighth).
+    known = {"check_architecture", "check_single_writer", "check_traceability",
+             "ci_scaffold", "quality_slop_gate", "ratchet", "saas_gate",
+             "check_external_smoke"}
+    assert known <= set(gates), f"shipped record(s) missing: {sorted(known - set(gates))}"
+    assert len(gates) >= len(known), f"expected at least {len(known)} records, got {sorted(gates)}"
     failing = [n for n, g in gates.items() if g["verdict"] != "passing"]
     assert not failing, f"stale/failing validation record(s): {failing}"
     # ratchet was journaled-wired in the real journal (chief-wiggum#198 era).
@@ -219,7 +226,7 @@ def test_gate_ledger_against_this_repos_real_validation_dir(user_dir):
 def test_gate_ledger_verifies_shared_journal_chain_once(user_dir, monkeypatch):
     """#323: every gate under one validation_dir shares the SAME ratchet
     journal — gate_ledger() must hash-verify that chain ONCE for the whole
-    7-gate ledger, not once per gate (the amplification the ticket flagged
+    ledger, not once per gate (the amplification the ticket flagged
     at status.py:91-101)."""
     import check_gate_validation as gv
 
@@ -232,7 +239,10 @@ def test_gate_ledger_verifies_shared_journal_chain_once(user_dir, monkeypatch):
 
     monkeypatch.setattr(gv, "_load_and_verify_chain", spy)
     st = status.gather(ROOT)
-    assert len(st["gates"]) == 7
+    # The claim under test is the ONE walk, not the gate count — but the count
+    # still needs a floor, or a ledger that collapsed to zero gates would
+    # "verify the chain once" by never verifying it at all.
+    assert len(st["gates"]) >= 8
     assert calls == [1], f"expected the journal to be verified exactly once, got {len(calls)} walks"
 
 
