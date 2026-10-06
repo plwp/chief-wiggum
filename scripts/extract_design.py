@@ -149,6 +149,36 @@ def _swatch_rows(colors: dict[str, str]) -> str:
     return "\n".join(rows)
 
 
+_GENERIC_FAMILIES = {
+    "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+    "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji",
+    "georgia", "arial", "helvetica", "helvetica neue", "times", "times new roman",
+    "courier", "courier new", "verdana", "tahoma", "trebuchet ms", "menlo", "monaco",
+    "consolas", "segoe ui", "roboto", "-apple-system", "blinkmacsystemfont", "inherit",
+}
+
+
+def google_font_links(fonts: dict) -> str:
+    """One Google Fonts <link> per leading family in the token stacks.
+
+    The design contract allows web fonts from Google Fonts only, so the first
+    family of each stack is requested there; generic and system families are
+    skipped. One link per family, so a family Google does not host fails alone
+    instead of taking the whole request down with a 400.
+    """
+    families: list[str] = []
+    for stack in fonts.values():
+        first = stack.split(",")[0].strip().strip("'\"")
+        if not first or first.lower() in _GENERIC_FAMILIES or first in families:
+            continue
+        families.append(first)
+    return "".join(
+        '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family='
+        f'{html.escape(family.replace(" ", "+"), quote=True)}&display=swap">\n'
+        for family in families
+    )
+
+
 def render_styleguide(design: dict) -> str:
     """Self-contained styleguide.html: token sheet rendered with the tokens themselves."""
     tokens = design.get("tokens", {})
@@ -220,7 +250,7 @@ def render_styleguide(design: dict) -> str:
 <head>
 <meta charset="utf-8">
 <title>Style Guide</title>
-<style>
+{google_font_links(fonts)}<style>
   body {{ font-family: {body_font}; margin: 0; padding: 2rem 3rem; color: #1a1a1a; }}
   h1 {{ font-family: {heading_font}; border-bottom: 4px solid {primary}; padding-bottom: .5rem; }}
   h2 {{ font-family: {heading_font}; color: {primary}; margin-top: 2.5rem; }}

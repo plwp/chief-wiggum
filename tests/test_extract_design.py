@@ -88,6 +88,24 @@ def test_styleguide_renders_tokens(tmp_path):
     assert "Fraunces" in page
     assert "warm, encouraging" in page
     assert page.startswith("<!doctype html>")
+    assert "—" not in page  # outward artifacts carry no em dashes
+
+
+def test_styleguide_loads_declared_web_fonts():
+    fonts = {
+        "heading": "'IM Fell English', Georgia, serif",
+        "body": "\"EB Garamond\", Georgia, serif",
+        "mono": "Courier Prime, ui-monospace, monospace",
+        "ui": "system-ui, sans-serif",
+        "dup": "'IM Fell English', serif",
+    }
+    links = ed.google_font_links(fonts)
+    assert links.count("<link") == 3  # generic/system families skipped, duplicate collapsed
+    assert "family=IM+Fell+English&display=swap" in links
+    assert "family=EB+Garamond" in links and "family=Courier+Prime" in links
+    assert "system-ui" not in links
+    page = ed.render_styleguide({"tokens": {"colors": {"primary": "#123456"}, "typography": {"fonts": fonts}}})
+    assert page.index("fonts.googleapis.com") < page.index("<style>")
 
 
 def test_cli_extract_and_validate_roundtrip(tmp_path):
