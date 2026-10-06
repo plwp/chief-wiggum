@@ -171,7 +171,7 @@ def render_styleguide(design: dict) -> str:
     if fonts or scale:
         font_rows = "".join(
             f'<p style="font-family:{html.escape(stack, quote=True)}"><code>{html.escape(role)}</code> '
-            f"— The quick brown fox jumps over the lazy dog <em>({html.escape(stack)})</em></p>"
+            f"The quick brown fox jumps over the lazy dog <em>({html.escape(stack)})</em></p>"
             for role, stack in fonts.items()
         )
         scale_rows = "".join(
