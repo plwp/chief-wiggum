@@ -226,7 +226,7 @@ class _TextExtractor(HTMLParser):
         self.parts: list[str] = []
         self._depth = 0
 
-    def handle_starttag(self, tag, _attrs):
+    def handle_starttag(self, tag, attrs):  # noqa: ARG002
         if tag in self._skip:
             self._depth += 1
         elif tag in {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
@@ -339,7 +339,7 @@ def search_uids(conn: imaplib.IMAP4, folder: str, criteria: list[str | bytes]) -
     words: list[str] = []
     for c in criteria:
         if isinstance(c, bytes):
-            conn.literal = c
+            conn.literal = c  # type: ignore[assignment]  # imaplib sends bytes literals
         else:
             words.append(c)
     status, data = conn.uid("SEARCH", *words)
@@ -358,7 +358,7 @@ def _imap_date(d: str) -> str:
 
 def _check_addresses(addrs: list[str]) -> None:
     for a in addrs:
-        name, addr = email.utils.parseaddr(a)
+        _name, addr = email.utils.parseaddr(a)
         if not addr or "@" not in addr or any(ch in a for ch in "\r\n\x00"):
             raise SystemExit(f"Not a usable address: {a!r}")
 
@@ -632,14 +632,18 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--from", dest="from_addr", required=True, help="default From address")
     c.add_argument("--name", help="display name")
     c.add_argument("--provider", choices=sorted(PROVIDERS), default="icloud")
-    c.add_argument("--imap-host"); c.add_argument("--imap-port", type=int)
-    c.add_argument("--smtp-host"); c.add_argument("--smtp-port", type=int)
+    c.add_argument("--imap-host")
+    c.add_argument("--imap-port", type=int)
+    c.add_argument("--smtp-host")
+    c.add_argument("--smtp-port", type=int)
     c.add_argument("--send-as", nargs="*", help="addresses this account may send as")
     c.set_defaults(func=cmd_configure)
 
     sub.add_parser("check", help="verify IMAP and SMTP login; sends nothing").set_defaults(func=cmd_check)
 
-    f = sub.add_parser("folders"); f.add_argument("--json", action="store_true"); f.set_defaults(func=cmd_folders)
+    f = sub.add_parser("folders")
+    f.add_argument("--json", action="store_true")
+    f.set_defaults(func=cmd_folders)
 
     ls = sub.add_parser("list", help="list messages (newest first)")
     ls.add_argument("--folder", default="INBOX")
@@ -673,14 +677,19 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--confirm", action="store_true", help="the human approved this exact message")
         s.set_defaults(func=func)
 
-    mk = sub.add_parser("mark"); mk.add_argument("uid"); mk.add_argument("--folder", default="INBOX")
+    mk = sub.add_parser("mark")
+    mk.add_argument("uid")
+    mk.add_argument("--folder", default="INBOX")
     g = mk.add_mutually_exclusive_group(required=True)
     for st in ("seen", "unseen", "flag", "unflag"):
         g.add_argument(f"--{st}", dest="state", action="store_const", const=st)
     mk.set_defaults(func=cmd_mark)
 
-    mv = sub.add_parser("move"); mv.add_argument("uid"); mv.add_argument("--folder", default="INBOX")
-    mv.add_argument("--to", required=True); mv.set_defaults(func=cmd_move)
+    mv = sub.add_parser("move")
+    mv.add_argument("uid")
+    mv.add_argument("--folder", default="INBOX")
+    mv.add_argument("--to", required=True)
+    mv.set_defaults(func=cmd_move)
 
     w = sub.add_parser("watch", help="poll a folder; one JSON line per new message")
     w.add_argument("--folder", default="INBOX")

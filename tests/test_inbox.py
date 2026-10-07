@@ -238,8 +238,8 @@ def test_send_with_confirm_transmits_and_copies_to_sent(wired, monkeypatch, tmp_
 
 def test_watch_once_replay_emits_json_lines(wired, capsys):
     assert inbox.main(["watch", "--once", "--replay", "--since", "2026-10-01"]) == 0
-    lines = [json.loads(l) for l in capsys.readouterr().out.splitlines()]
-    assert [l["uid"] for l in lines] == ["1", "2"]
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r["uid"] for r in rows] == ["1", "2"]
 
 
 def test_missing_secret_names_the_keychain_command(wired, monkeypatch, capsys):
@@ -259,7 +259,10 @@ def test_quote_escapes_imap_specials():
 
 def test_criteria_sends_non_ascii_term_as_utf8_literal():
     class A:
-        unseen = True; since = None; from_ = None; subject = "Café"
+        unseen = True
+        since = None
+        from_ = None
+        subject = "Café"
     assert inbox._criteria(A()) == ["CHARSET", "UTF-8", "UNSEEN", "SUBJECT", "Café".encode()]
     A.subject = "plain"
     assert inbox._criteria(A()) == ["UNSEEN", "SUBJECT", '"plain"']
