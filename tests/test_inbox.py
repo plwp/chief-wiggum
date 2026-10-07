@@ -247,3 +247,106 @@ def test_missing_secret_names_the_keychain_command(wired, monkeypatch, capsys):
     assert inbox.main(["list"]) == inbox.EXIT_USAGE
     err = capsys.readouterr().err
     assert "keychain.py set ICLOUD_MAIL_APP_PASSWORD" in err
+
+
+# ---------------------------------------------------------------- review follow-ups
+
+
+def test_quote_escapes_imap_specials():
+    assert inbox._quote("Sent Messages") == '"Sent Messages"'
+    assert inbox._quote('a"b\\c') == '"a\\"b\\\\c"'
+
+
+def test_criteria_sends_non_ascii_term_as_utf8_literal():
+    class A:
+        unseen = True; since = None; from_ = None; subject = "Café"
+    assert inbox._criteria(A()) == ["CHARSET", "UTF-8", "UNSEEN", "SUBJECT", "Café".encode()]
+    A.subject = "plain"
+    assert inbox._criteria(A()) == ["UNSEEN", "SUBJECT", '"plain"']
+    A.from_, A.subject = "Zoë", "Café"
+    with pytest.raises(SystemExit, match="Only one"):
+        inbox._criteria(A())
+
+
+def test_search_uids_passes_bytes_as_imap_literal(wired):
+    seen = {}
+    orig = wired.uid
+
+    def uid(cmd, *args):
+        seen["literal"] = getattr(wired, "literal", None)
+        seen["args"] = args
+        return orig(cmd, *args)
+
+    wired.uid = uid
+    inbox.search_uids(wired, "INBOX", ["CHARSET", "UTF-8", "SUBJECT", "Café".encode()])
+    assert seen == {"literal": "Café".encode(), "args": ("CHARSET", "UTF-8", "SUBJECT")}
+
+
+@pytest.mark.parametrize("bad", ["a@b.c\r\nBcc: v@e.c", "not-an-address", "", "x@y.z\x00"])
+def test_build_message_rejects_bad_addresses(bad):
+    with pytest.raises(SystemExit, match="Not a usable address"):
+        inbox.build_message(_cfg(), [bad], "s", "b")
+
+
+def test_build_message_rejects_multiline_subject():
+    with pytest.raises(SystemExit, match="line breaks"):
+        inbox.build_message(_cfg(), ["a@b.c"], "s\r\nBcc: v@e.c", "b")
+
+
+def test_auth_error_redacts_echoed_secret(monkeypatch):
+    class Echoing(FakeIMAP):
+        def login(self, user, pw):
+            raise imaplib.IMAP4.error(f"NO bad credentials {pw}")
+    monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: Echoing({}))
+    with pytest.raises(SystemExit) as exc:
+        inbox.imap_connect(_cfg(), "hunter2")
+    assert "hunter2" not in str(exc.value) and "[redacted]" in str(exc.value)
+
+
+def test_mark_stores_the_right_flag(wired, capsys):
+    assert inbox.main(["mark", "2", "--flag"]) == 0
+    assert wired.stored == [("2", "+FLAGS", "(\\Flagged)")]
+    assert inbox.main(["mark", "2", "--unseen"]) == 0
+    assert wired.stored[-1] == ("2", "-FLAGS", "(\\Seen)")
+
+
+def test_move_falls_back_to_copy_delete_expunge(wired, capsys):
+    calls = []
+    orig_uid = wired.uid
+
+    def uid(cmd, *args):
+        calls.append((cmd, *args))
+        if cmd == "MOVE":
+            return "NO", [b"unsupported"]
+        if cmd == "COPY":
+            return "OK", [b""]
+        return orig_uid(cmd, *args)
+
+    wired.uid = uid
+    wired.expunge = lambda: calls.append(("EXPUNGE",))
+    assert inbox.main(["move", "1", "--to", "Archive"]) == 0
+    assert calls == [("MOVE", "1", '"Archive"'), ("COPY", "1", '"Archive"'),
+                     ("STORE", "1", "+FLAGS", "(\\Deleted)"), ("EXPUNGE",)]
+
+
+def test_configure_roundtrip_keeps_secret_out(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "inbox.json"
+    monkeypatch.setattr(inbox, "CONFIG_PATH", path)
+    rc = inbox.main(["configure", "--user", "o@icloud.com", "--from", "p@ex.au", "--name", "P",
+                     "--send-as", "p@ex.au", "g@ex.au"])
+    assert rc == 0
+    data = json.loads(path.read_text())
+    assert data["user"] == "o@icloud.com" and data["from_addr"] == "p@ex.au"
+    assert data["send_as"] == ["p@ex.au", "g@ex.au"]
+    assert data["imap_host"] == "imap.mail.me.com" and data["smtp_port"] == 587
+    assert "password" not in path.read_text().lower()
+    cfg = inbox.load_config(path)
+    assert cfg.sender == "P <p@ex.au>"
+
+
+def test_watch_logs_out_when_fetch_fails(wired, monkeypatch):
+    outs = []
+    wired.logout = lambda: outs.append("bye") or ("BYE", [])
+    monkeypatch.setattr(inbox, "fetch_message", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    assert inbox.main(["watch", "--once", "--replay", "--since", "2026-10-01"]) == inbox.EXIT_AUTH
+    assert outs == ["bye"]

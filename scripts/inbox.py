@@ -129,6 +129,16 @@ def _login_candidates(user: str) -> list[str]:
     return [local, user] if local != user else [user]
 
 
+def _redact(exc: Exception | None, secret: str) -> str:
+    """A server may echo the credential in its failure line; never relay it."""
+    return str(exc).replace(secret, "[redacted]") if exc else ""
+
+
+def _quote(value: str) -> str:
+    """IMAP quoted string: backslash-escape the two characters that end one."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def imap_connect(cfg: Config, password: str) -> imaplib.IMAP4_SSL:
     conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port, ssl_context=ssl.create_default_context())
     last: Exception | None = None
@@ -139,7 +149,8 @@ def imap_connect(cfg: Config, password: str) -> imaplib.IMAP4_SSL:
         except imaplib.IMAP4.error as exc:  # wrong username form; try the next
             last = exc
     conn.logout()
-    raise SystemExit(f"IMAP login failed for {cfg.user} (tried local part and full address): {last}")
+    raise SystemExit(f"IMAP login failed for {cfg.user} (tried local part and full address): "
+                     f"{_redact(last, password)}")
 
 
 def smtp_connect(cfg: Config, password: str) -> smtplib.SMTP:
@@ -155,7 +166,7 @@ def smtp_connect(cfg: Config, password: str) -> smtplib.SMTP:
         except smtplib.SMTPAuthenticationError as exc:
             last = exc
     conn.quit()
-    raise SystemExit(f"SMTP login failed for {cfg.user}: {last}")
+    raise SystemExit(f"SMTP login failed for {cfg.user}: {_redact(last, password)}")
 
 
 # ----------------------------------------------------------------------------
@@ -317,11 +328,21 @@ def fetch_message(conn: imaplib.IMAP4, uid: str, headers_only: bool = False) -> 
     return msg, _parse_flags(meta)
 
 
-def search_uids(conn: imaplib.IMAP4, folder: str, criteria: list[str]) -> list[str]:
-    status, _ = conn.select(f'"{folder}"', readonly=True)
+def search_uids(conn: imaplib.IMAP4, folder: str, criteria: list[str | bytes]) -> list[str]:
+    """criteria may end in one ``bytes`` item: it is sent as an IMAP literal,
+    which is how a non-ASCII search term reaches a server without UTF8=ACCEPT
+    (iCloud has neither ENABLE nor UTF8=ACCEPT; imaplib would otherwise fail
+    encoding the command as ASCII)."""
+    status, _ = conn.select(_quote(folder), readonly=True)
     if status != "OK":
         raise SystemExit(f"Cannot open folder {folder!r}")
-    status, data = conn.uid("SEARCH", *criteria)
+    words: list[str] = []
+    for c in criteria:
+        if isinstance(c, bytes):
+            conn.literal = c
+        else:
+            words.append(c)
+    status, data = conn.uid("SEARCH", *words)
     if status != "OK":
         raise SystemExit(f"SEARCH failed: {status}")
     return data[0].decode().split() if data and data[0] else []
@@ -335,8 +356,18 @@ def _imap_date(d: str) -> str:
 # Composing
 
 
+def _check_addresses(addrs: list[str]) -> None:
+    for a in addrs:
+        name, addr = email.utils.parseaddr(a)
+        if not addr or "@" not in addr or any(ch in a for ch in "\r\n\x00"):
+            raise SystemExit(f"Not a usable address: {a!r}")
+
+
 def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: list[str] | None = None,
                   reply_to: EmailMessage | None = None) -> EmailMessage:
+    _check_addresses([*to, *(cc or [])])
+    if any(ch in subject for ch in "\r\n"):
+        raise SystemExit("Subject may not contain line breaks")
     msg = EmailMessage()
     msg["From"] = cfg.sender
     msg["To"] = ", ".join(to)
@@ -360,7 +391,7 @@ def check_send_as(cfg: Config) -> None:
 
 
 def append_message(conn: imaplib.IMAP4, folder: str, msg: EmailMessage, flags: str) -> None:
-    status, _ = conn.append(f'"{folder}"', flags, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    status, _ = conn.append(_quote(folder), flags, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
     if status != "OK":
         raise SystemExit(f"APPEND to {folder} failed: {status}")
 
@@ -384,7 +415,7 @@ def cmd_configure(args) -> int:
                  imap_host=args.imap_host or base["imap_host"], imap_port=args.imap_port or base["imap_port"],
                  smtp_host=args.smtp_host or base["smtp_host"], smtp_port=args.smtp_port or base["smtp_port"],
                  send_as=args.send_as or None)
-    save_config(cfg)
+    save_config(cfg, CONFIG_PATH)
     print(f"Wrote {CONFIG_PATH} (login {cfg.user}, sending as {cfg.from_addr}). "
           f"Secret stays in the keyring as {SECRET_NAME}.")
     return EXIT_OK
@@ -420,16 +451,24 @@ def cmd_folders(args) -> int:
     return EXIT_OK
 
 
-def _criteria(args) -> list[str]:
-    crit: list[str] = []
+def _criteria(args) -> list[str | bytes]:
+    """Build SEARCH criteria. At most one text term may be non-ASCII; it goes
+    last as a UTF-8 literal with CHARSET UTF-8 in front."""
+    crit: list[str | bytes] = []
     if getattr(args, "unseen", False):
         crit.append("UNSEEN")
     if getattr(args, "since", None):
         crit += ["SINCE", _imap_date(args.since)]
-    if getattr(args, "from_", None):
-        crit += ["FROM", f'"{args.from_}"']
-    if getattr(args, "subject", None):
-        crit += ["SUBJECT", f'"{args.subject}"']
+    terms = [(k, v) for k, v in (("FROM", getattr(args, "from_", None)), ("SUBJECT", getattr(args, "subject", None))) if v]
+    non_ascii = [t for t in terms if not t[1].isascii()]
+    if len(non_ascii) > 1:
+        raise SystemExit("Only one of --from/--subject may contain non-ASCII characters")
+    for k, v in terms:
+        if v.isascii():
+            crit += [k, _quote(v)]
+    if non_ascii:
+        k, v = non_ascii[0]
+        crit = ["CHARSET", "UTF-8", *crit, k, v.encode("utf-8")]
     return crit or ["ALL"]
 
 
@@ -450,7 +489,7 @@ def cmd_list(args) -> int:
 def cmd_read(args) -> int:
     cfg = load_config()
     conn = imap_connect(cfg, _password())
-    conn.select(f'"{args.folder}"', readonly=not args.mark_seen)
+    conn.select(_quote(args.folder), readonly=not args.mark_seen)
     msg, flags = fetch_message(conn, args.uid)
     if args.mark_seen:
         conn.uid("STORE", args.uid, "+FLAGS", "(\\Seen)")
@@ -481,7 +520,7 @@ def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
     body = Path(args.body_file).read_text() if args.body_file else sys.stdin.read()
     parent = None
     if args.reply_to:
-        conn.select(f'"{args.folder}"', readonly=True)
+        conn.select(_quote(args.folder), readonly=True)
         parent, _ = fetch_message(conn, args.reply_to, headers_only=True)
         if not args.to:
             reply_addr = parent["Reply-To"] or parent["From"]
@@ -524,7 +563,7 @@ def cmd_send(args) -> int:
     sent = special_folder(conn, "\\Sent", ("Sent Messages", "Sent"))
     append_message(conn, sent, msg, "(\\Seen)")
     if args.reply_to:
-        conn.select(f'"{args.folder}"')
+        conn.select(_quote(args.folder))
         conn.uid("STORE", args.reply_to, "+FLAGS", "(\\Answered)")
     conn.logout()
     print(f"Sent to {msg['To']} as {cfg.from_addr}; copy in {sent!r}; Message-ID {msg['Message-ID']}")
@@ -534,7 +573,7 @@ def cmd_send(args) -> int:
 def cmd_mark(args) -> int:
     cfg = load_config()
     conn = imap_connect(cfg, _password())
-    conn.select(f'"{args.folder}"')
+    conn.select(_quote(args.folder))
     op, flag = {"seen": ("+FLAGS", "\\Seen"), "unseen": ("-FLAGS", "\\Seen"),
                 "flag": ("+FLAGS", "\\Flagged"), "unflag": ("-FLAGS", "\\Flagged")}[args.state]
     status, _ = conn.uid("STORE", args.uid, op, f"({flag})")
@@ -546,10 +585,10 @@ def cmd_mark(args) -> int:
 def cmd_move(args) -> int:
     cfg = load_config()
     conn = imap_connect(cfg, _password())
-    conn.select(f'"{args.folder}"')
-    status, _ = conn.uid("MOVE", args.uid, f'"{args.to}"')
+    conn.select(_quote(args.folder))
+    status, _ = conn.uid("MOVE", args.uid, _quote(args.to))
     if status != "OK":  # servers without MOVE: copy + delete + expunge
-        status, _ = conn.uid("COPY", args.uid, f'"{args.to}"')
+        status, _ = conn.uid("COPY", args.uid, _quote(args.to))
         if status == "OK":
             conn.uid("STORE", args.uid, "+FLAGS", "(\\Deleted)")
             conn.expunge()
@@ -565,15 +604,16 @@ def cmd_watch(args) -> int:
     rounds = 0
     while True:
         conn = imap_connect(cfg, pw)
-        uids = set(search_uids(conn, args.folder, ["SINCE", _imap_date(args.since or date.today().isoformat())]))
-        if seen is None:
-            seen = uids if not args.replay else set()
-        new = sorted(uids - seen, key=int)
-        for uid in new:
-            msg, flags = fetch_message(conn, uid, headers_only=True)
-            print(json.dumps(message_summary(uid, msg, flags)), flush=True)
-        seen |= uids
-        conn.logout()
+        try:
+            uids = set(search_uids(conn, args.folder, ["SINCE", _imap_date(args.since or date.today().isoformat())]))
+            if seen is None:
+                seen = uids if not args.replay else set()
+            for uid in sorted(uids - seen, key=int):
+                msg, flags = fetch_message(conn, uid, headers_only=True)
+                print(json.dumps(message_summary(uid, msg, flags)), flush=True)
+            seen |= uids
+        finally:
+            conn.logout()
         rounds += 1
         if args.once or (args.max_rounds and rounds >= args.max_rounds):
             return EXIT_OK
