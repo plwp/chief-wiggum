@@ -74,7 +74,7 @@ api_key = get_secret("ANTHROPIC_API_KEY")  # fetched from the keyring, never env
 client = Anthropic(api_key=api_key)        # passed directly to the constructor
 ```
 
-Secrets: `ANTHROPIC_API_KEY` (browser-use); optionally `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`. Vertex AI: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` (default `us-central1`), `gcloud auth application-default login`; use `gemini-vertex` as the tool name in `consult_ai.py`.
+Secrets: `ANTHROPIC_API_KEY` (browser-use); optionally `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`; `ICLOUD_MAIL_APP_PASSWORD` for the company inbox (`scripts/inbox.py`, `docs/inbox.md`: `draft` by default, `send` only with `--confirm`). Vertex AI: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` (default `us-central1`), `gcloud auth application-default login`; use `gemini-vertex` as the tool name in `consult_ai.py`.
 
 ## AI Models Reference
 
