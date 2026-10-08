@@ -349,7 +349,7 @@ The worker:
      --epic-artifact "Target review authorities=$TICKET_TMP/review-authorities.md" \
      "${PROSE_ARTIFACTS[@]}"
    ```
-   `--epic-artifact` silently skips a path that doesn't exist, so the fixed lines are safe unconditionally. `--ticket` attributes the quorum's spend to this ticket (chief-wiggum#345). Outputs: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `review-manifest.json`. Non-zero exit = a required provider never produced valid output.
+   `--epic-artifact` silently skips a path that doesn't exist, so the fixed lines are safe unconditionally. `--ticket` attributes the quorum's spend to this ticket (chief-wiggum#345). Outputs: `impl-diff.txt`, `review-prompt.md`, `reviewer-<provider>.md`, `review-manifest.json`. Non-zero exit = a required provider never produced valid output. It also exits non-zero, before any provider runs, when the diff is over the review cap (200 KB by default): it refuses to review a truncated diff. Take bookkeeping out of the branch (a ratchet journal commit once produced a 1.17 MB diff) or split the change. Raise `--max-diff-bytes` only for a genuinely large change, never to get past the refusal.
 
 3b. **Prevention signals (#216, report-only)** — new duplication, dead exports, assertion-free tests, appended for the reviewers' eyes:
    ```bash
@@ -415,6 +415,7 @@ Two halves. **8a runs concurrently with Step 7's review** — none of it needs t
    fi
    "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" check --repo "$REPO_ROOT" --gate-verifier-tests
    ```
+   Before trusting a green `check`, prove it bites: `"${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" self-test` and `"${CW_PY:-python3}" "$CW_HOME/scripts/check_traceability.py" --self-test` must both exit 0. An empty pass-set (`(no suites configured in ratchet.json)`) fails closed; declare the suite rather than accept it.
    `--gate-verifier-tests` only if `check_gate_validation.py ratchet --validation-dir "$CW_HOME/docs/quality/validation" --gate` passes (it ships with CW); otherwise drop the flag and surface `weakened_verifier_tests` report-only. A violation blocks like a failing test: `missing_tests` = a passing case regressed; `weakened_contracts`/`removed_contracts` = a contract edited to make code pass; `weakened_verifier_tests`/`removed_verifier_tests` (#206) = a `@cw-trace verifies` test rewritten behind its green ID. Fix the code, never the contract or its verifier. A genuine revision is a human decision journaled via `record --amend`/`--retire` (contracts) or `--amend-verifier`/`--retire-verifier`; a genuinely flaky `missing_tests` case via `record --retire-case` with reason and expiry (#278) — user-approved, never self-approved, never `--force`.
 4c. **Single-writer / traceability quick check** (with `$EPIC_DIR`), scoped to this branch's files — an early signal, not the coverage gate (`/close-epic` scans the whole repo):
    ```bash
@@ -634,8 +635,9 @@ gh pr create --repo "$owner_repo" --title "$pr_title" --body-file "$TICKET_TMP/p
 
 Not done until all checks pass.
 
-1. `gh pr checks <pr_number> --repo "$owner_repo" --watch` (or run the checks locally if CI is unavailable)
+1. `gh pr checks <pr_number> --repo "$owner_repo" --watch`. If the repo has no CI, say "no remote CI" in the summary; a local run is not a substitute that can be reported as green.
 2. Fix any failure — pre-existing ones included — push, re-check, repeat.
+3. Whenever this flow pushes or merges to `$DEFAULT_BRANCH`, wait for the remote verdict on that sha: `"${CW_PY:-python3}" "$CW_HOME/scripts/remote_ci.py" wait --repo "$owner_repo" --sha "<merged sha>" --branch "$DEFAULT_BRANCH"`. Exit 1 (RED) is stop-the-line: nothing else merges until it is green. Exit 3 (NO_CI) goes in the summary.
 3. Then the final summary: what was implemented; CI status and TDD stats; review feedback addressed/deferred; checklist scorecard; browser-use results; pre-existing fixes; traceability update; lingering questions; the PR URL.
 
 ### Step 13: Update traceability matrix

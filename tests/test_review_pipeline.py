@@ -635,6 +635,30 @@ def test_capture_diff_returns_truncated(tmp_path):
     assert "diff truncated" in out
 
 
+def test_capture_diff_refuses_truncation_when_asked(tmp_path):
+    runner = _runner({"rev-parse --verify": (0, "abc"), "diff": (0, "y" * 5000)})
+    with pytest.raises(review.ReviewError, match="refusing to review a truncated diff"):
+        review.capture_diff(tmp_path, "main", runner=runner, max_bytes=1000,
+                            refuse_truncation=True)
+
+
+def test_run_review_refuses_an_oversized_diff_before_any_provider_runs(tmp_path, monkeypatch):
+    """A reviewer handed the first 200 KB of a diff reviews a different change
+    and never says so. run_review must fail loudly, not review the prefix."""
+    runner = _runner({
+        "rev-parse --show-toplevel": (0, str(tmp_path)),
+        "rev-parse --verify": (0, "abc"),
+        "diff": (0, "diff --git a b\n" + "+x\n" * 2000),
+    })
+    monkeypatch.setattr(review.providers, "plan_role", lambda r, c: _plan())
+    called = []
+    with pytest.raises(review.ReviewError, match="--max-diff-bytes"):
+        review.run_review(_ticket(), tmp_path, "main", tmp_path / "o", template=TEMPLATE,
+                          config={}, runner=runner, max_diff_bytes=500,
+                          execute=lambda *a, **k: called.append(a) or "x")
+    assert called == []
+
+
 # --- #269: base resolution against a remote-tracking ref (merge-base) ------
 #
 # `run_review.py --base main` used to trust the LOCAL `main` ref, which a

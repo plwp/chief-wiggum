@@ -63,6 +63,13 @@ def main(argv: list[str] | None = None) -> int:
             "number in --ticket-context."
         ),
     )
+    parser.add_argument(
+        "--max-diff-bytes",
+        type=int,
+        default=review.DEFAULT_MAX_DIFF_BYTES,
+        help="Review diff cap. A diff over the cap is REFUSED (exit 1), never "
+        "silently truncated; raise this deliberately for a large change.",
+    )
     args = parser.parse_args(argv)
 
     # CTR-fh-002: a production ticket.json missing the `comments` key entirely
@@ -131,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             execute=execute,
             force_fresh=args.fresh,
             epic_slug=epic_slug,
+            max_diff_bytes=args.max_diff_bytes,
         )
     except review.ReviewError as exc:
         print(f"Error: {exc}", file=sys.stderr)
