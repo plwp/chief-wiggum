@@ -95,6 +95,15 @@ The fallback is a **default the operator can override** at the Step 6 checkpoint
 
 Each adopted pattern reports its `id`, its invariant cluster (stable `INV-<ABBR>-NNN` ids + statements), its `contract_pack` doc (`docs/patterns/<id>/invariants.md`), and any `unresolved` (unbound required) parameters. Note which of these patterns **this epic realizes** — you'll fold their clusters into `invariants.md` (Step 4e) by their existing stable ids, thread their integration tests (Step 4g), and any `unresolved` parameter is a hard blocker to resolve before contracts depend on it (`check_unresolved.py` already gates the stamped `TBD:` markers).
 
+### Step 1.5: Reality probe and direction gate (before any contracts)
+
+Contracts written before anyone looks at real data describe a product nobody has checked is needed. Write `$EPIC_DIR/reality-probe.md` from `$CW_HOME/templates/reality-probe.md`; for a new product, start from `docs/reality-probe.md` written by `/seed` Step 2.6. It needs the epic's success question, a hand check against **real** data (a source you actually opened, cited by path or URL; fixtures do not count) answering it as well as possible today, and the baseline: what the simplest script or manual check finds. Then run the gate, which also enforces any recorded stop verdict or open operator question for this epic or the product:
+```bash
+mkdir -p "$EPIC_DIR"
+"${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" check --repo "$TARGET_REPO" --epic "$EPIC_SLUG" --action architect
+```
+**On exit 1, STOP.** Do not write contracts. Fix the probe, or relay the blocked stop/question and its `rule` command to the operator (only they can clear it; a generic "go" is not a ruling; see `/implement-wave` Step 1). The probe passing is presence plus content, not evidence: read the hand-check answer against the baseline result before going on. If the baseline already answers the success question, tell the operator before designing anything, and record a stop (`direction_gate.py stop`) if they agree. Once the gate is clear, commit the probe on its own (embedded mode; in sidecar mode `$EPIC_DIR` is outside the tree), so the Step 7 installer still finds a clean repo: `git -C "$TARGET_REPO" add "$EPIC_DIR/reality-probe.md" && git -C "$TARGET_REPO" commit -m "docs: reality probe for $EPIC_SLUG"`.
+
 ### Step 2: Explore the codebase
 
 Launch an **explorer worker** (contract: `docs/worker-contracts.md#read-only-explorer-worker`) to understand the current state of the areas this epic will touch. *Claude Code adapter:* `subagent_type: "Explore"`, thoroughness "very thorough". The worker should report:

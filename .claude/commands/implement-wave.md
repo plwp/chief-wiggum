@@ -63,6 +63,26 @@ export CW_TELEMETRY=1
 
 **If epic artifacts don't exist, STOP.** Run `/architect` first. Wave implementation without contracts is unsafe — parallel tickets will diverge on design decisions.
 
+**Direction gate: stop verdicts and open questions bind.** One product ran 19 days and 75 tickets past its own `stop_expanding` evaluation, then resumed its old queue on a general "go" while a re-scope question sat unanswered for a week. Both times the prose said to honour the verdict. This check is the mechanism instead:
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" check --repo "$TARGET_REPO" --epic "$EPIC_SLUG" --action wave
+```
+It exits 1 while any stop verdict or open operator question is recorded for this epic or the whole product, or while the epic has no acceptable reality probe (`$EPIC_DIR/reality-probe.md`, written by `/architect`). **On exit 1, STOP the wave.** Relay each blocked item to the operator verbatim, including the question text and the `rule` command it prints, and end the turn. Do not plan waves, start any implementation or file tickets in the meantime.
+
+- **Only the operator clears it.** `direction_gate.py rule` refuses without an interactive terminal, so you cannot run it yourself, and you must not try (no pty tricks, no editing `docs/direction/rulings.jsonl`; the ledger is hash-chained and a ratchet-protected path). Hand the operator the printed command to run in their own terminal.
+- **Silence is not a yes, and neither is a generic go.** "keep going", "go", "continue", "carry on" or a fresh `/implement-wave` invocation does **not** answer an open question. Only a recorded ruling does. If the operator says something like that while a question is open, repeat the question and the command; do not resume.
+- **Record a stop the moment one exists.** When an evaluation, a council, or your own analysis concludes stop / narrow / freeze / re-scope for this epic or product, record it before doing anything else, then stop:
+  ```bash
+  "${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" stop --repo "$TARGET_REPO" --epic "$EPIC_SLUG" \
+    --verdict "<verdict, quoted>" --source evaluation|council|orchestrator --evidence "<path or URL>"
+  ```
+  Use `--product` instead of `--epic` when the verdict is about the whole product.
+- **Record every direction question you raise** to the operator (re-scope, freeze, change of milestone, "is this still worth building?") as an open ruling, so it blocks until answered:
+  ```bash
+  "${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" ask --repo "$TARGET_REPO" --epic "$EPIC_SLUG" \
+    --question "<the question, as asked>" --evidence "<path to the analysis>"
+  ```
+
 **Build the artifact inventory** — one tested pass that discovers prose/model/design artifacts, sets `HAS_FORMAL_MODELS`/`HAS_UI_SPEC`/`HAS_TRANSITION_MAP`, validates model JSON, and runs the unresolved-marker scan:
 
 ```bash
@@ -162,7 +182,7 @@ Present the wave plan to the user:
 - Total tickets: 5
 ```
 
-**CHECKPOINT**: Ask the user to confirm the wave plan. They may want to adjust (move a ticket between waves, split a wave, etc.).
+**CHECKPOINT**: Ask the user to confirm the wave plan. They may want to adjust (move a ticket between waves, split a wave, etc.). Confirming the plan is not a ruling on an open direction question; Step 1's gate must already be clear.
 
 ### Step 3: Pre-flight checks
 
@@ -203,7 +223,7 @@ git pull --ff-only
 
 For each wave, in order:
 
-**Before launching a wave**, re-run the unresolved scan (`check_unresolved.py "$EPIC_DIR" --format json`) — artifacts may have changed since the plan was made. Any ticket in the wave that is still blocked by an unresolved marker is held back (resolve it or defer it; never implement on a guess).
+**Before launching a wave**, re-run the direction gate (`direction_gate.py check --repo $TARGET_REPO --epic $EPIC_SLUG --action wave`, the full command is in Step 1). A stop or question recorded mid-run blocks the next wave exactly like one recorded before it; on exit 1, finish collecting the current wave's workers and stop. Then re-run the unresolved scan (`check_unresolved.py "$EPIC_DIR" --format json`) — artifacts may have changed since the plan was made. Any ticket in the wave that is still blocked by an unresolved marker is held back (resolve it or defer it; never implement on a guess).
 
 Also check for failed dependencies. If any ticket in a previous wave failed, remove all downstream dependents from the current and future waves. Recompute the wave plan with the remaining tickets. Report to the user which tickets were dropped and why:
 
@@ -258,13 +278,14 @@ For each ticket in the current wave (up to `--max-parallel`):
    - **The epic context, by reference, not by embedded copy (#333)**: `$EPIC_DIR`'s path, `$EPIC_SLUG`, and `$HAS_FORMAL_MODELS`. When `$HAS_FORMAL_MODELS == true`, instruct the worker to pull only what its own ticket touches via `code_query.py contract`/`state`/`orient` (each worker's own `/implement` Step 1 already does this — do not ALSO paste the full `contracts.md`/`invariants.md`/`state-machines.md`/`traceability.md` bodies into the prompt here, or every worker in the wave pays for the same unchanged documents a second time on top of what its own Step 1 already fetches). When it's `false` (prose-only epic), pass the epic doc paths and let the worker's own Step 1 read them once, per its own fallback rule.
    - `docs/quality/hotspots.json` (if present) — the one `/architect` artifact safe to carry forward: measured history, not a snapshot. Workers explore the checkout live; no shared prose description of the code is passed between them.
    - **Formal test artifacts** (if they exist): the test plan (`$CW_TMP/formal-test-artifacts/test-plan.md`), test paths (`test-paths.json`), contract assertions (`contract-assertions.md`), guard templates, and Hypothesis skeleton. Instruct the worker: "Adapt the model-derived test cases to the target repo's test framework. Each test path becomes a test case. Each invalid transition becomes a negative test. Tag model-derived tests with `// DERIVED: model` for traceability."
-   - The implementation plan approach: run the **full `/implement` Steps 4-9** internally:
+   - **Division of labour: workers implement, the orchestrator judges.** Three workers in a row once ran out of budget before review and floor, and handed back nothing usable. The worker runs `/implement` Steps 4-6 plus removal probes; the reviewer quorum and the floor are the orchestrator's (4c):
      - Step 4: run the `explorer` quorum on approach, reconcile into a plan of decisions
      - Steps 5+6 (one session): write failing tests — **model-derived cases as the starting point**, LLM-written tests for edge cases — commit them red, then implement to green
-     - Step 7: the `reviewer` quorum via `run_review.py`, in the background
-     - Step 8a, concurrent with Step 7: full test suite, linting, ratchet, acceptance criteria; 8b: apply review + UX findings, re-verify what changed
+     - **Removal probes**: for each fix or guard the ticket claims, revert it, run the tests, and confirm at least one fails; then restore it. A fix whose removal leaves everything green has no guarding test. Write one, or report the gap. Report each probe (what was reverted, which test failed).
      - Step 9: UX sanity + design-fidelity gate for frontend tickets — render the app, capture screenshots to `$TICKET_TMP/ux-screenshots/`, review against the ui-spec design contract. Save the screenshots; the orchestrator attaches them to the wave report.
      - Step 10: Browser-use/E2E validation (unless `--skip-browser-use` was passed)
+     - The worker does **not** run Step 7 (reviewer quorum) or Step 8a's full floor; it runs the tests it wrote and the ones they touch.
+     - **Hand back by ~70% of budget**: committed work on the branch, test results, probe results, and what is left. A worker that runs out mid-step hands back nothing the orchestrator can use.
    - **Costing attribution** (chief-wiggum#345): if the worker's own `/implement` flow reaches its Step-11 transcript ingest, it MUST pass `--cwd-prefix "<its own worktree path>"` (never bare `--repo`) — every worker in this wave shares the same target repo, so a cwd-derived repo match alone would cross-bill a sibling ticket's spend onto this one. `ticket_cost.py actual` should get the matching `--cwd-prefix`/`--since-ts` pair for the same reason.
    - **HARD RULES**:
      - Do NOT create or merge pull requests. Return the branch name and a summary.
@@ -287,7 +308,7 @@ For each ticket in the current wave (up to `--max-parallel`):
      - If you encounter a blocking error after 3 retries, report it and stop — do not silently skip steps.
      - Do NOT run `gh pr create`, `gh pr merge`, or `git push`. The orchestrator handles all of this.
    - The target repo path and default branch name
-   - Instructions to report back: branch name, test results, review findings, any issues
+   - Instructions to report back: branch name, test results, removal-probe results, what is left undone, any issues
 
 4. If the wave has more tickets than `--max-parallel`, queue the excess. As each worker completes, launch the next queued ticket.
 
@@ -300,7 +321,7 @@ For each ticket in the current wave (up to `--max-parallel`):
 As each worker in the wave completes, collect:
 - **Branch name** and worktree path
 - **Test results**: did the full suite pass?
-- **Review findings**: what was flagged, what was fixed?
+- **Removal probes**: which fixes were reverted, and which test failed for each
 - **Issues**: any blockers or unresolved items?
 
 If a worker reports failure:
@@ -346,6 +367,9 @@ If any PRs were created by a worker during this wave (matching ticket branch nam
    ```
    If it exits non-zero, **park the ticket**: do NOT merge it this wave. Surface the touched files and the diff to the user — a worker editing a contract to make its implementation pass is exactly what this guard exists to catch. If the user approves the contract change, journal it with `ratchet.py record --amend/--retire` and re-admit the ticket next wave.
 6. **For frontend tickets**: verify screenshots exist in `$TICKET_TMP/ux-screenshots/` and LOOK at them. A worker reporting "design review passed" without screenshots is a worker that skipped the gate. If the epic has a design contract and the screenshots show default-theme output, the ticket is not done.
+
+7. **Reviewer quorum (orchestrator-run).** Workers do not review their own work (4b). For each ticket, run `/implement` Step 7 against the ticket's worktree (`run_review.py --worktree "$worktree" --base "$DEFAULT_BRANCH" --output-dir "$CW_TMP/$ticket_number/reviews" ...`), then apply its findings per Step 8b, in the background while other tickets verify. Cap it at one review round, plus one more on a fix for a genuine defect.
+8. **Check the removal probes.** A claimed fix with no probe, or whose probe left every test green, is not done; send it back, or write the guarding test before merging.
 
 This is the same principle as `/implement` Step 8 — the orchestrator is the quality gate, not the worker.
 

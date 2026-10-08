@@ -81,6 +81,16 @@ If the product has no existing data source and no usage history (true greenfield
 
 Write this to `$CW_TMP/eu-scope.md` (one paragraph: value, reason, limb) — `/architect` reads it when producing `docs/compliance/ai-act.json`.
 
+### Step 2.6: Reality probe (before any architecture)
+
+One product CW built ran 18 days before anyone checked its target against real data. When someone finally did, a 22-pair hand check found what the product was built to find, and a grep found as much as the product did. Do that hand check now, before the brainstorm, while it is cheap.
+
+Fill `$CW_HOME/templates/reality-probe.md` into `$CW_TMP/reality-probe.md`: the operator's success question in their words; a hand check against **real** data (a production or production-like source you actually opened, never a fixture), answering the question as well as it can be answered today; and the baseline, meaning what the simplest script or manual check finds. Then:
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" probe-check "$CW_TMP/reality-probe.md"
+```
+Do not start Step 3 until it exits 0. Passing only proves the sections are filled in and a real source is cited; a presence check is not evidence. Show the operator the hand-check answer and the baseline result. If the baseline already answers the success question, say so plainly: the product has to beat it or should not be built. If the operator decides to stop or narrow, record it with `direction_gate.py stop --product` (see `/implement-wave` Step 1).
+
 ### Step 3: Interactive architecture brainstorm
 
 Work through the key architecture decisions with the user. Don't assume — ask. Cover:
@@ -183,12 +193,18 @@ mkdir -p docs
 cp "$CW_TMP/domain-context.md" docs/domain-context.md 2>/dev/null || true
 cp "$CW_TMP/compliance-requirements.md" docs/compliance-requirements.md 2>/dev/null || true
 cp "$CW_TMP/eu-scope.md" docs/eu-scope.md 2>/dev/null || true
-git add ARCHITECTURE.md CLAUDE.md docs/domain-context.md docs/compliance-requirements.md docs/eu-scope.md docs/patterns docs/quality/ratchet.json
+cp "$CW_TMP/reality-probe.md" docs/reality-probe.md
+git add ARCHITECTURE.md CLAUDE.md docs/reality-probe.md docs/domain-context.md docs/compliance-requirements.md docs/eu-scope.md docs/patterns docs/quality/ratchet.json
 git commit -m "Add architecture decisions from seed session"
 git push
 ```
 
 ### Step 8: Seed the backlog
+
+A product-wide stop verdict or open direction question blocks seeding tickets. Run the gate first and stop on exit 1 (see `/implement-wave` Step 1):
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" check --repo "$TARGET_DIR" --action file-ticket
+```
 
 Based on the architecture decisions, domain context, and requirements docs, plan out the initial issues. Where Step 2.5 mined real use cases, fold them in: derived question patterns become acceptance criteria and golden eval cases, and team-stated caveats become explicit constraints on the relevant issues. Organise by:
 - **Foundation** — Repo scaffold, infrastructure, database, auth, audit trail
