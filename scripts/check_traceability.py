@@ -1298,6 +1298,39 @@ def replay_clean_corpus() -> dict:
     }
 
 
+# Expected outcome per seeded defect: every planted break must fire, and the
+# decoy the checker is certified NOT to see (annotation presence, not semantic
+# truth) must not. Mirrors docs/quality/validation/check_traceability.json.
+SELF_TEST_EXPECTED = {
+    "tr-direct-01": "fired",
+    "tr-omission-01": "fired",
+    "tr-config-indirection-01": "not-fired",
+    "tr-sampling-gap-01": "fired",
+    "tr-instrument-broken-01": "fired",
+}
+
+
+def self_test() -> int:
+    """Replay every seeded defect and the clean corpus live; exit 1 if the gate
+    no longer bites (a planted break goes unreported) or cries wolf (the clean
+    corpus reports findings). The floor runs this before trusting the gate."""
+    failures = 0
+    for seed_id, expected in SELF_TEST_EXPECTED.items():
+        got = replay_seeded_trial({"seed_id": seed_id})
+        ok = got == expected
+        failures += not ok
+        print(f"traceability self-test: {'ok  ' if ok else 'FAIL'} {seed_id}: {got}, "
+              f"expected {expected}")
+    clean = replay_clean_corpus()
+    failures += not clean["passed"]
+    print(f"traceability self-test: {'ok  ' if clean['passed'] else 'FAIL'} clean corpus: "
+          f"{clean['findings']} finding(s), expected 0")
+    if failures:
+        print(f"traceability self-test: {failures} case(s) wrong — the gate does not bite; "
+              "do not trust a green run until this is fixed", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Traceability graph checker (TIM/DbC)")
     parser.add_argument(
@@ -1370,11 +1403,19 @@ def main(argv: list[str] | None = None) -> int:
         "links for unchanged files). Not hand-maintained; see docs/traceability.md.",
     )
     parser.add_argument("--format", choices=["text", "json"], default="text")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Replay the seeded defects and the clean corpus; exit 1 unless every planted "
+        "break fires and the clean corpus stays clean. No epic_dir needed.",
+    )
     args = parser.parse_args(argv)
 
     if args.scanner_version:
         print(_scanner_version())
         return 0
+    if args.self_test:
+        return self_test()
 
     if args.no_cache:
         os.environ[findings_cache.NO_CACHE_ENV] = "1"

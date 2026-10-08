@@ -607,14 +607,28 @@ def capture_diff(
     *,
     runner: Runner = subprocess.run,
     max_bytes: int = DEFAULT_MAX_DIFF_BYTES,
+    refuse_truncation: bool = False,
 ) -> str:
-    """Capture ``base...HEAD`` diff, refusing if the base ref can't be resolved."""
+    """Capture ``base...HEAD`` diff, refusing if the base ref can't be resolved.
+
+    ``refuse_truncation`` raises instead of truncating: a reviewer handed the
+    first ``max_bytes`` of a diff reviews a different change than the one being
+    merged, and says so nowhere (a 200 KB cap once blinded five review rounds
+    of one ticket and produced two false findings)."""
     check = _git(["rev-parse", "--verify", base], worktree, runner)
     if check.returncode != 0:
         raise ReviewError(f"base ref cannot be resolved: {base}")
     result = _git(["diff", f"{base}...HEAD"], worktree, runner)
     if result.returncode != 0:
         raise ReviewError(f"git diff failed: {(result.stderr or '').strip()}")
+    size = len(result.stdout.encode("utf-8"))
+    if refuse_truncation and size > max_bytes:
+        raise ReviewError(
+            f"diff is {size} bytes, over the {max_bytes}-byte review cap — refusing to "
+            "review a truncated diff. Drop bookkeeping files (ratchet journal, generated "
+            "artifacts) from the branch, split the change, or re-run with "
+            f"--max-diff-bytes {size}."
+        )
     return truncate_diff(result.stdout, max_bytes)
 
 
@@ -852,7 +866,8 @@ def run_review(
     # ref rather than trusting the local ref name, which a fresh worktree
     # routinely leaves stale the moment anything else merges upstream.
     resolved = resolve_review_base(worktree, base, runner=runner)
-    diff = capture_diff(worktree, resolved.ref, runner=runner, max_bytes=max_diff_bytes)
+    diff = capture_diff(worktree, resolved.ref, runner=runner, max_bytes=max_diff_bytes,
+                        refuse_truncation=True)
     diff_path = out / "impl-diff.txt"
     diff_path.write_text(diff)
     diff_stat = diff_shortstat(worktree, resolved.ref, runner=runner)

@@ -368,12 +368,42 @@ def test_no_tests_flag_is_inapplicable_not_error(tmp_path):
     assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
 
 
-def test_no_suites_configured_is_inapplicable_not_error(tmp_path):
+def test_no_suites_configured_is_an_error_and_check_fails_closed(tmp_path):
+    """The stub ratchet.json (no suites) once let a ratchet report OK across 21
+    merged records while its pass-set measured nothing. An empty pass-set is a
+    broken instrument, not a greenfield: `check` must fail closed."""
     make_repo(tmp_path)
     ratchet.cmd_score(_score_ns(tmp_path, no_tests=False))
     sc = json.loads((tmp_path / "docs" / "quality" / ratchet.SCORECARD_NAME).read_text())
-    assert sc["suite_measurement"]["status"] == "inapplicable"
-    assert ratchet.cmd_check(_check_ns(tmp_path)) == 0
+    assert sc["suite_measurement"]["status"] == "error"
+    assert sc["suite_measurement"]["broken"][0]["suite"] == ratchet.NO_SUITES_CONFIGURED
+    assert ratchet.cmd_check(_check_ns(tmp_path)) == 1
+
+
+def test_self_test_passes_on_the_real_gate(capsys):
+    assert ratchet.cmd_self_test(argparse.Namespace()) == 0
+    assert "empty pass-set" in capsys.readouterr().out
+
+
+def test_self_test_fails_when_the_empty_pass_set_stops_blocking(monkeypatch):
+    """Removal probe: put back the old 'no suites = inapplicable' behaviour and
+    the self-test must say the gate no longer bites."""
+    real = ratchet.suite_measurement
+
+    def lenient(entries, *, tests_run, suites_configured):
+        if not suites_configured:
+            return {"status": ratchet.SUITE_STATUS_INAPPLICABLE, "suites": [], "broken": [],
+                    "total_passing": 0, "reason": "no suites"}
+        return real(entries, tests_run=tests_run, suites_configured=suites_configured)
+
+    monkeypatch.setattr(ratchet, "suite_measurement", lenient)
+    assert ratchet.cmd_self_test(argparse.Namespace()) == 1
+
+
+def test_direction_ledger_is_a_protected_path(tmp_path):
+    cfg = make_repo(tmp_path)
+    assert ratchet.protected_hits(cfg, ["docs/direction/rulings.jsonl"]) == [
+        "docs/direction/rulings.jsonl"]
 
 
 def test_scorecard_predating_suite_measurement_is_tolerated(tmp_path):
