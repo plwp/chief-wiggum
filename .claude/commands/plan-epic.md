@@ -93,6 +93,12 @@ working directory. `$backend` (`github`, `local`, ...) gates the
 GitHub-specific milestone plumbing below — when the repo is configured
 `local`, this workflow must never mutate GitHub.
 
+**Direction gate.** A product-wide stop verdict or open direction question blocks planning any epic (see `/implement-wave` Step 1 for what the gate is and why only the operator can clear it):
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" check --repo "$target_root" --action plan-epic
+```
+On exit 1, STOP: relay each blocked item and its `rule` command to the operator and end the turn. A generic "go ahead" is not a ruling.
+
 ### Step 1: Load the backlog
 
 Resolve the backlog via `tracker.py` instead of calling `gh issue` directly —
@@ -134,6 +140,12 @@ Present the candidate epic:
 - **Candidate tickets**: List with number, title, type, effort estimate
 
 Ask the user to confirm or adjust the ticket set.
+
+Once the epic is named, check the gate for that epic too. A stop on an epic blocks re-planning it, and blocks filing new tickets into it, until the operator rules:
+```bash
+EPIC_SLUG=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" slug "Epic: [Name]")
+"${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" check --repo "$target_root" --epic "$EPIC_SLUG" --action plan-epic
+```
 
 ### Step 3: Build the dependency graph
 

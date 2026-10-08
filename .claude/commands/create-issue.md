@@ -84,6 +84,14 @@ Show the user the full issue markdown and ask:
 
 ### Step 4: Create the issue
 
+**Into an epic? Check the direction gate first.** A stop verdict or open operator question on that epic (or on the whole product) blocks filing new tickets into it; on exit 1, do not create the issue. Relay the blocked item and its `rule` command to the operator instead:
+```bash
+if [ -n "$milestone" ]; then
+  "${CW_PY:-python3}" "$CW_HOME/scripts/direction_gate.py" check --repo "$target_root" \
+    --epic "$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" slug "$milestone")" --action file-ticket || exit 1
+fi
+```
+
 Resolve the issue ref via `tracker.py` instead of calling `gh issue` directly —
 this is what makes the workflow backend-agnostic (GitHub today, `local` or
 others per `docs/cw/tracker.json` in the target repo). See `docs/tracker.md`
