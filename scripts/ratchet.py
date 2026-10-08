@@ -203,6 +203,10 @@ DEFAULT_PROTECTED = [
     # grandfather its own new findings. Embedded-mode location; a sidecar
     # election keeps them outside the tree (unwritable by workers) entirely.
     "docs/adoption/*.json",
+    # The direction ledger (direction_gate.py) holds stop verdicts and open
+    # operator questions; a worker diff that touches it is trying to unblock
+    # itself and parks like any other goalpost edit.
+    "docs/direction/**",
 ]
 
 # Quarantine default length. Mirrors adopt.DEFAULT_EXPIRY_DAYS' posture: an
@@ -425,6 +429,8 @@ def contract_measurement(cfg: Config, contract_hashes: dict[str, str], model=Non
 
 SUITE_STATUS_APPLICABLE = "applicable"
 SUITE_STATUS_INAPPLICABLE = "inapplicable"
+# The `suite` name a no-suites config reports under in `broken`.
+NO_SUITES_CONFIGURED = "(no suites configured in ratchet.json)"
 SUITE_STATUS_ERROR = "error"
 
 
@@ -440,18 +446,24 @@ def suite_measurement(entries: list[dict], *, tests_run: bool, suites_configured
     rootdir slip runs the wrong tree — and it is indistinguishable, today,
     from a healthy greenfield.
 
-    ``inapplicable`` is reserved for the honest absences: ``--no-tests`` (an
-    explicit operator choice) and a config declaring no suites at all. A
-    CONFIGURED suite yielding nothing is ``error``.
+    ``inapplicable`` is reserved for the one honest absence: ``--no-tests``
+    (an explicit operator choice). A CONFIGURED suite yielding nothing is
+    ``error`` — and so is a config declaring NO suites at all. That is the
+    stub ``apply_pattern``/``init`` leave behind, and it once let a ratchet
+    "measure" an empty pass-set across 21 merged records while `check` said
+    OK every time. An empty pass-set fails closed; the fix is to declare the
+    suite, never to accept the empty set.
     """
     if not tests_run:
         return {"status": SUITE_STATUS_INAPPLICABLE, "suites": [], "broken": [],
                 "total_passing": 0,
                 "reason": "--no-tests: the pass-set dimension was not measured"}
     if not suites_configured:
-        return {"status": SUITE_STATUS_INAPPLICABLE, "suites": [], "broken": [],
+        return {"status": SUITE_STATUS_ERROR, "suites": [],
+                "broken": [{"suite": NO_SUITES_CONFIGURED, "source": "config",
+                            "exit_code": None, "passing_cases": 0}],
                 "total_passing": 0,
-                "reason": "no suites configured; the pass-set has nothing to measure"}
+                "reason": "no suites configured; the pass-set measures nothing"}
     broken = [e for e in entries if not e["passing_cases"]]
     return {
         "status": SUITE_STATUS_ERROR if broken else SUITE_STATUS_APPLICABLE,
@@ -2402,6 +2414,63 @@ def _scanner_version() -> str:
     )
 
 
+# ---- self-test: prove the gate bites ---------------------------------------------
+
+_SELF_TEST_JUNIT = ('<testsuites><testsuite name="s" tests="1">'
+                    '<testcase classname="selftest" name="t1"/></testsuite></testsuites>')
+
+# (name, suites, expected `check` exit). Each planted-bad case must FAIL check;
+# the healthy control must PASS, so a gate that blocks everything fails too.
+SELF_TEST_CASES = (
+    ("empty pass-set (no suites configured)", [], 1),
+    ("suite command dies", [{"name": "dead", "cmd": "exit 137", "cwd": ".",
+                             "parser": "pass-fail-lines"}], 1),
+    ("suite collects zero tests", [{"name": "zero", "parser": "junit-xml", "cwd": ".",
+                                    "report": "r.xml",
+                                    "cmd": "printf '<testsuites/>' > r.xml"}], 1),
+    ("healthy control", [{"name": "ok", "parser": "junit-xml", "cwd": ".", "report": "r.xml",
+                          "cmd": f"printf '{_SELF_TEST_JUNIT}' > r.xml"}], 0),
+)
+
+
+def cmd_self_test(args) -> int:
+    """Plant each bad input in a throwaway repo and assert `check` fails on it.
+
+    A gate that has only ever been seen passing has not been shown to check
+    anything: a stub ratchet.json with no suites once let this ratchet report
+    OK across 21 merged records while measuring nothing. The floor runs this
+    before trusting `check`; exit 1 means the gate no longer bites."""
+    import contextlib
+    import io
+    import tempfile
+
+    failures = 0
+    for name, suites, expected in SELF_TEST_CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "docs" / "quality").mkdir(parents=True)
+            (repo / "docs" / "quality" / CONFIG_NAME).write_text(json.dumps(
+                {"suites": suites, "epic_docs": "docs/epics"}))
+            ns = argparse.Namespace(repo=str(repo), no_tests=False, no_quality=True,
+                                    venv=None, gobin=None, format="text",
+                                    gate_verifier_tests=False, gate_quality=False)
+            sink = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    cmd_score(ns)
+                    got = cmd_check(ns)
+            except RatchetError:
+                got = 1
+        ok = got == expected
+        failures += not ok
+        print(f"ratchet self-test: {'ok  ' if ok else 'FAIL'} {name}: check exit {got}, "
+              f"expected {expected}")
+    if failures:
+        print(f"ratchet self-test: {failures} case(s) wrong — the ratchet gate does not "
+              "bite; do not trust a green `check` until this is fixed", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main() -> int:
     # ratchet's CLI is subcommand-based (dest="cmd", required=True below), so
     # --scanner-version can't be reached via `args.scanner_version` after
@@ -2544,11 +2613,15 @@ def main() -> int:
              "consumes this first)",
     )
 
+    sub.add_parser("self-test", help="plant bad inputs (empty pass-set, dead suite) and "
+                   "prove `check` fails on each; exit 1 if the gate no longer bites")
+
     args = p.parse_args()
     dispatch = {
         "init": cmd_init, "state": cmd_state, "score": cmd_score, "check": cmd_check,
         "regressed": cmd_regressed, "record": cmd_record, "recent": cmd_recent,
         "highwater": cmd_highwater, "protected": cmd_protected, "pathset": cmd_pathset,
+        "self-test": cmd_self_test,
     }
     try:
         return dispatch[args.cmd](args)

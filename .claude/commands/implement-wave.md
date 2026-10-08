@@ -396,6 +396,12 @@ done
 
 Run the integration check **on the staging branch, before promoting to main**:
 
+0. **Prove the gates bite before trusting them.** A gate only ever seen passing has not been shown to check anything (a stub `ratchet.json` once reported OK across 21 merged records while measuring nothing). Each self-test plants bad inputs in a throwaway copy and exits 1 if the gate lets one through:
+   ```bash
+   "${CW_PY:-python3}" "$CW_HOME/scripts/ratchet.py" self-test
+   "${CW_PY:-python3}" "$CW_HOME/scripts/check_traceability.py" --self-test
+   ```
+   A failing self-test stops the wave: every later item in this list is unproven until it is fixed. A ratchet `check` that fails on `(no suites configured in ratchet.json)` is the empty pass-set failing closed. Declare the suite in `ratchet.json`; never accept the empty set.
 1. **Full test suite**, captured as structured evidence (chief-wiggum#284) rather than bare prose — this is the run item 5 below reuses instead of paying for the suite twice:
    ```bash
    "${CW_PY:-python3}" "$CW_HOME/scripts/run_verification.py" --repo "$TARGET_REPO" --profile test,lint,build --json > "$CW_TMP/wave-$wave_number-verify.json"
@@ -524,7 +530,17 @@ git branch -d "wave-$wave_number-staging"
 
 If the fast-forward fails (someone pushed to main in the meantime), rebase the staging branch and re-run the integration check.
 
-Only proceed to the next wave after the push succeeds.
+**Remote CI is the floor, not the local check.** One product ran 11 days with `main` red on GitHub while ~35 tickets merged on a green local floor. After every push to `$DEFAULT_BRANCH`, wait for the Actions verdict on the pushed sha:
+```bash
+"${CW_PY:-python3}" "$CW_HOME/scripts/remote_ci.py" wait --repo "$owner_repo" \
+  --sha "$(git rev-parse HEAD)" --branch "$DEFAULT_BRANCH"
+```
+- exit 0 (GREEN): go on.
+- exit 1 (RED): **stop the line.** Do not start the next wave and do not merge anything else to `$DEFAULT_BRANCH` until a fix is pushed and `remote_ci.py` reports GREEN on it. Red that was already red before this wave is still red; fix it first.
+- exit 2 (PENDING, including "no run appeared"): not green. Keep waiting or find out why CI did not run; do not stack a wave on top.
+- exit 3 (NO_CI): the repo has no workflows. Say so in the wave report ("no remote CI — local floor only") rather than skipping silently.
+
+Only proceed to the next wave after the push succeeds and remote CI is GREEN (or NO_CI is reported).
 
 **Remove this wave's merged-ticket worktrees** (#329) — every ticket branch just merged into `$DEFAULT_BRANCH` above; its worktree has no more local work to do. `gc-worktrees` only removes a worktree whose branch is provably merged, so a PARKED ticket (protected-path violation, unresolved conflict — never merged this wave) survives without any separate bookkeeping; pass `--keep` for any ticket branch you know is parked as defense in depth:
 ```bash
@@ -591,6 +607,9 @@ For frontend tickets, link the screenshot directories so the human can see what 
 
 ### Merge conflicts resolved: N
 - [Details of each conflict and how it was resolved]
+
+### Remote CI on the default branch
+[GREEN on <sha> | RED — line stopped at <sha> | NO_CI — no workflows, local floor only]
 
 ### Integration check results
 - All waves passed integration checks

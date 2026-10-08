@@ -1376,3 +1376,18 @@ def test_write_links_sidecar_stamps_target_sha(tmp_path):
     reloaded = load_sidecar(links_path)
     assert reloaded["target_sha"] == head
     assert ct.check(epic, src, links_path=links_path).suspect_links == []
+
+
+# ---- --self-test: the gate proves it bites -------------------------------------
+
+
+def test_self_test_passes_on_the_real_gate(capsys):
+    assert ct.main(["--self-test"]) == 0
+    assert "clean corpus" in capsys.readouterr().out
+
+
+def test_self_test_fails_when_a_planted_break_goes_unreported(monkeypatch):
+    """Removal probe: if the direct seed stops planting a break (or the checker
+    stops seeing it), the self-test must fail rather than report a green gate."""
+    monkeypatch.setitem(ct.SEED_EXECUTORS, "tr-direct-01", lambda corpus: None)
+    assert ct.main(["--self-test"]) == 1
