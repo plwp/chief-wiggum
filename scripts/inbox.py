@@ -365,8 +365,12 @@ def _check_addresses(addrs: list[str]) -> None:
 
 
 def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: list[str] | None = None,
-                  reply_to: EmailMessage | None = None, html: str | None = None) -> EmailMessage:
-    """Plain text by default; with ``html`` the message is multipart/alternative (text first, HTML second)."""
+                  reply_to: EmailMessage | None = None, html: str | None = None,
+                  inline_images: dict[str, bytes] | None = None) -> EmailMessage:
+    """Plain text by default; with ``html`` the message is multipart/alternative (text first, HTML second).
+
+    ``inline_images`` maps a Content-ID name to PNG bytes; the HTML refers to each as ``cid:NAME``.
+    They are attached as related parts of the HTML alternative, so the text fallback carries none of them."""
     _check_addresses([*to, *(cc or [])])
     if any(ch in subject for ch in "\r\n"):
         raise SystemExit("Subject may not contain line breaks")
@@ -386,6 +390,12 @@ def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: li
     msg.set_content(body)
     if html:
         msg.add_alternative(html, subtype="html")
+        if inline_images:
+            html_part = msg.get_payload()[-1]
+            for name, data in inline_images.items():
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                    raise SystemExit(f"Inline image name must be a plain token: {name!r}")
+                html_part.add_related(data, "image", "png", cid=f"<{name}>", filename=f"{name}.png")
     return msg
 
 
@@ -523,6 +533,12 @@ def cmd_read(args) -> int:
 def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
     body = Path(args.body_file).read_text() if args.body_file else sys.stdin.read()
     html = Path(args.html_file).read_text() if getattr(args, "html_file", None) else None
+    images = {}
+    for spec in getattr(args, "inline_image", None) or []:
+        name, _, path = spec.partition("=")
+        if not path:
+            raise SystemExit(f"--inline-image wants NAME=PATH, got {spec!r}")
+        images[name] = Path(path).read_bytes()
     parent = None
     if args.reply_to:
         conn.select(_quote(args.folder), readonly=True)
@@ -535,7 +551,8 @@ def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
             args.subject = subj if subj.lower().startswith("re:") else f"Re: {subj}"
     if not args.to or not args.subject:
         raise SystemExit("--to and --subject are required (or --reply-to to derive them)")
-    return build_message(cfg, args.to, args.subject, body, cc=args.cc, reply_to=parent, html=html)
+    return build_message(cfg, args.to, args.subject, body, cc=args.cc, reply_to=parent, html=html,
+                         inline_images=images or None)
 
 
 def cmd_draft(args) -> int:
@@ -677,6 +694,8 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--subject")
         s.add_argument("--body-file", help="plain-text body; stdin if omitted")
         s.add_argument("--html-file", help="HTML body sent as the alternative to the plain text (the plain text stays the fallback)")
+        s.add_argument("--inline-image", action="append", metavar="NAME=PATH",
+                       help="PNG embedded in the HTML as cid:NAME (repeatable; needs --html-file)")
         s.add_argument("--reply-to", metavar="UID", help="thread onto this message; derives --to/--subject")
         s.add_argument("--folder", default="INBOX", help="folder of --reply-to")
         if name == "send":

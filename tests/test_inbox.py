@@ -154,6 +154,27 @@ def test_build_message_html_is_an_alternative_with_plain_fallback():
     assert msg.get_body(preferencelist=("html",)).get_content_type() == "text/html"
 
 
+def test_build_message_inline_images_are_related_to_the_html_part():
+    png = b"\x89PNG\r\n\x1a\nfake"
+    msg = inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain", html='<img src="cid:chart">',
+                              inline_images={"chart": png})
+    assert msg.get_content_type() == "multipart/alternative"
+    plain, rich = list(msg.iter_parts())
+    assert plain.get_content_type() == "text/plain"
+    assert rich.get_content_type() == "multipart/related"
+    html_part, img = list(rich.iter_parts())
+    assert html_part.get_content_type() == "text/html"
+    assert img.get_content_type() == "image/png"
+    assert img["Content-ID"] == "<chart>"
+    assert img.get_content() == png
+
+
+def test_build_message_rejects_odd_inline_image_names():
+    import pytest
+    with pytest.raises(SystemExit):
+        inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain", html="<p>x</p>", inline_images={"bad name": b"x"})
+
+
 def test_build_message_without_html_stays_plain():
     msg = inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain words")
     assert msg.get_content_type() == "text/plain"
