@@ -144,6 +144,22 @@ def test_build_message_threads_a_reply():
     assert msg.get_content().strip() == "thanks"
 
 
+def test_build_message_html_is_an_alternative_with_plain_fallback():
+    msg = inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain words", html="<p><b>rich</b> words</p>")
+    assert msg.get_content_type() == "multipart/alternative"
+    parts = list(msg.iter_parts())
+    assert [p.get_content_type() for p in parts] == ["text/plain", "text/html"]
+    assert parts[0].get_content().strip() == "plain words"
+    assert "<b>rich</b>" in parts[1].get_content()
+    assert msg.get_body(preferencelist=("html",)).get_content_type() == "text/html"
+
+
+def test_build_message_without_html_stays_plain():
+    msg = inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain words")
+    assert msg.get_content_type() == "text/plain"
+    assert msg.get_content().strip() == "plain words"
+
+
 def test_check_send_as_refuses_unlisted_from():
     with pytest.raises(SystemExit, match="refusing"):
         inbox.check_send_as(_cfg(from_addr="ceo@example.com.au"))

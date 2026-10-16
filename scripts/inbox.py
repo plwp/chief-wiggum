@@ -35,6 +35,7 @@ Usage::
     python3 inbox.py read 1234 [--save-attachments "$CW_TMP/mail/1234"]
     python3 inbox.py draft --to a@b.c --subject "Re: x" --body-file reply.md [--reply-to 1234]
     python3 inbox.py send  --to a@b.c --subject "x" --body-file msg.md --confirm
+    python3 inbox.py send  --to a@b.c --subject "x" --body-file msg.txt --html-file msg.html --confirm
     python3 inbox.py mark 1234 --seen | --unseen | --flag | --unflag
     python3 inbox.py move 1234 --to Archive
     python3 inbox.py watch --interval 300
@@ -364,7 +365,8 @@ def _check_addresses(addrs: list[str]) -> None:
 
 
 def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: list[str] | None = None,
-                  reply_to: EmailMessage | None = None) -> EmailMessage:
+                  reply_to: EmailMessage | None = None, html: str | None = None) -> EmailMessage:
+    """Plain text by default; with ``html`` the message is multipart/alternative (text first, HTML second)."""
     _check_addresses([*to, *(cc or [])])
     if any(ch in subject for ch in "\r\n"):
         raise SystemExit("Subject may not contain line breaks")
@@ -382,6 +384,8 @@ def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: li
         refs = (reply_to["References"] or "").split()
         msg["References"] = " ".join([*refs, parent])
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")
     return msg
 
 
@@ -518,6 +522,7 @@ def cmd_read(args) -> int:
 
 def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
     body = Path(args.body_file).read_text() if args.body_file else sys.stdin.read()
+    html = Path(args.html_file).read_text() if getattr(args, "html_file", None) else None
     parent = None
     if args.reply_to:
         conn.select(_quote(args.folder), readonly=True)
@@ -530,7 +535,7 @@ def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
             args.subject = subj if subj.lower().startswith("re:") else f"Re: {subj}"
     if not args.to or not args.subject:
         raise SystemExit("--to and --subject are required (or --reply-to to derive them)")
-    return build_message(cfg, args.to, args.subject, body, cc=args.cc, reply_to=parent)
+    return build_message(cfg, args.to, args.subject, body, cc=args.cc, reply_to=parent, html=html)
 
 
 def cmd_draft(args) -> int:
@@ -671,6 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--cc", nargs="*")
         s.add_argument("--subject")
         s.add_argument("--body-file", help="plain-text body; stdin if omitted")
+        s.add_argument("--html-file", help="HTML body sent as the alternative to the plain text (the plain text stays the fallback)")
         s.add_argument("--reply-to", metavar="UID", help="thread onto this message; derives --to/--subject")
         s.add_argument("--folder", default="INBOX", help="folder of --reply-to")
         if name == "send":
