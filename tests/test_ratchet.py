@@ -2872,6 +2872,27 @@ def test_rebase_aborts_when_the_journal_changes_before_the_replace(tmp_path, mon
     assert list(cfg.journal.parent.glob("*.tmp")) == []
 
 
+def test_rebase_aborts_when_the_journal_changes_during_the_initial_load(tmp_path, monkeypatch, capsys):
+    cfg = _rich_journal(tmp_path)
+    real = ratchet.load_journal
+    fired = []
+
+    def load_then_append(c):
+        records = real(c)
+        if not fired:
+            fired.append(True)
+            append_record(cfg, scorecard_from(cfg, {"s::late"}))
+        return records
+
+    monkeypatch.setattr(ratchet, "load_journal", load_then_append)
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "rebase", "--repo", str(tmp_path)])
+    assert ratchet.main() == 2
+    assert "journal changed during rebase" in capsys.readouterr().err
+    records = real(cfg)
+    assert len(records) == 4 and "s::late" in records[-1]["scorecard"]["pass_set"]
+    assert list(cfg.journal.parent.glob("*.tmp")) == []
+
+
 def test_rebase_is_exactly_one_line(tmp_path):
     cfg = _rich_journal(tmp_path)
     ratchet.cmd_rebase(_rebase_ns(tmp_path))

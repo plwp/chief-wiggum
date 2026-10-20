@@ -2204,15 +2204,18 @@ def cmd_rebase(args) -> int:
     A broken chain fails closed (TamperError, journal untouched); an empty or
     absent journal is a usage error. The new journal is written to a temp file
     in the same directory and moved into place with ``os.replace``. The journal
-    takes no lock (see ``append_journal_line``), so the source is re-read just
-    before the replace and the rebase aborts if it changed; this narrows the
+    takes no lock (see ``append_journal_line``), so the source bytes are
+    snapshotted before the journal is verified and compared again just before the
+    replace, and the rebase aborts if they differ. This narrows the
     race with a concurrent append rather than closing it.
     """
     cfg = load_config(repo_root(args.repo))
+    # Snapshot the raw bytes before verifying them, so an append landing at any
+    # point after this read (load, fold, temp write) fails the pre-replace compare.
+    source_bytes = cfg.journal.read_bytes() if cfg.journal.exists() else b""
     records = load_journal(cfg)
     if not records:
         raise RatchetError(f"nothing to rebase: {cfg.journal} has no records")
-    source_bytes = cfg.journal.read_bytes()
     old_bytes = len(source_bytes)
     gated = sorted({r.get("event") for r in records} & {"gate-validation", GATE_AUTHORITY})
     if gated:
