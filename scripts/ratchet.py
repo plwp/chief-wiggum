@@ -93,10 +93,13 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
@@ -1040,10 +1043,15 @@ def quality_regressions(quality: dict, hw: dict, tolerance: dict) -> list[dict]:
 
 def load_journal(cfg: Config) -> list[dict]:
     """Read the journal and verify the hash chain. Fail closed on tamper."""
-    if not cfg.journal.is_file():
+    return _load_chain(cfg.journal)
+
+
+def _load_chain(journal: Path) -> list[dict]:
+    """Strictly parse and verify the chain in `journal`; any bad line raises."""
+    if not journal.is_file():
         return []
     records = []
-    for lineno, line in enumerate(cfg.journal.read_text().splitlines(), 1):
+    for lineno, line in enumerate(journal.read_text().splitlines(), 1):
         line = line.strip()
         if not line:
             continue
@@ -1070,7 +1078,7 @@ def load_journal(cfg: Config) -> list[dict]:
             # It failed closed either way — this is about the operator being
             # told what is wrong, not about whether the gate blocks.
             raise TamperError(
-                f"journal unreadable at {cfg.journal}:{lineno}: {exc}."
+                f"journal unreadable at {journal}:{lineno}: {exc}."
                 " The chain is broken — fail closed. If two records were"
                 " joined onto one line, split them at the '}{' boundary and"
                 " re-verify."
@@ -2172,6 +2180,116 @@ def cmd_record(args) -> int:
     return 0
 
 
+def _replace_if_unchanged(tmp: Path, journal: Path, source_bytes: bytes) -> None:
+    """Move `tmp` over `journal` unless `journal` no longer holds `source_bytes`."""
+    if journal.read_bytes() != source_bytes:
+        raise RatchetError("journal changed during rebase — re-run")
+    os.replace(tmp, journal)
+
+
+def cmd_rebase(args) -> int:
+    """Fold the whole journal into one baseline record.
+
+    The journal is an anti-cheat chain, not an audit trail, and it grows
+    without bound (GitHub rejects files over 100 MB). `rebase` verifies the
+    chain, folds it with ``derive_highwater``, and rewrites the journal as a
+    single merged ``baseline`` record hashed against ``genesis`` whose scorecard
+    and ``retired_cases`` reproduce that fold exactly: ``derive_highwater`` of
+    the new journal equals the old one (pass_set, contract_hashes,
+    verifier_test_hashes, quality, quarantined, removed_cases), so ``check``
+    gives identical results before and after. Quarantine and permanent-
+    retirement entries are copied verbatim, keeping their dates, owner, reason
+    and kind.
+
+    A journal holding any ``gate-validation`` or ``gate-authority`` event is
+    refused (RatchetError, exit 2, journal untouched): gate-validation
+    provenance resolves ``ratchet_record_id`` against journal record ids, which
+    a rebase would erase and then reissue from rec-00001, so gate-governed
+    journals are not rebased. The baseline's ``notes`` name the previous tip and
+    record count.
+
+    A broken chain fails closed (TamperError, journal untouched); an empty or
+    absent journal is a usage error. The new journal is written to a temp file
+    in the same directory and moved into place with ``os.replace``. The journal
+    takes no lock (see ``append_journal_line``), so the source bytes are
+    snapshotted before the journal is verified and compared again just before the
+    replace, and the rebase aborts if they differ. This narrows the
+    race with a concurrent append rather than closing it.
+    """
+    cfg = load_config(repo_root(args.repo))
+    # Snapshot the raw bytes before verifying them, so an append landing at any
+    # point after this read (load, fold, temp write) fails the pre-replace compare.
+    source_bytes = cfg.journal.read_bytes() if cfg.journal.exists() else b""
+    records = load_journal(cfg)
+    if not records:
+        raise RatchetError(f"nothing to rebase: {cfg.journal} has no records")
+    old_bytes = len(source_bytes)
+    gated = sorted({r.get("event") for r in records} & {"gate-validation", GATE_AUTHORITY})
+    if gated:
+        raise RatchetError(
+            f"cannot rebase {cfg.journal}: it holds {', '.join(gated)} event(s); "
+            "gate-validation provenance resolves record ids that a rebase would erase "
+            "or reuse, so gate-governed journals are not rebased")
+    hw = derive_highwater(records)
+    tip = records[-1]
+    scorecard = {
+        "passed": len(hw["pass_set"]),
+        "pass_set": hw["pass_set"],
+        "contract_hashes": hw["contract_hashes"],
+        "verifier_test_hashes": hw["verifier_test_hashes"],
+        "tests_run": True,
+    }
+    if hw["quality"]:
+        scorecard["quality"] = hw["quality"]
+    retired_cases = [*hw["quarantined"].values(), *hw["removed_cases"].values()]
+    body = {
+        "record_id": "rec-00001",
+        "event": "baseline",
+        "ref": "rebase",
+        "gate_result": "pass",
+        "merged": True,
+        "scorecard": scorecard,
+        "amended": {},
+        "retired": [],
+        "amended_verifiers": {},
+        "retired_verifiers": [],
+        "retired_cases": retired_cases,
+        "ratchet_status": "held",
+        "notes": (
+            f"rebased from {len(records)} record(s); previous tip "
+            f"{tip.get('record_id', '?')} {tip.get('record_hash', '?')}"
+        ),
+    }
+    body["record_hash"] = stable_hash(
+        "genesis", json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True))
+
+    # A per-run temp file: a fixed shared name lets two concurrent rebases
+    # both write a genesis-hashed baseline into one file.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=cfg.journal.parent, prefix=cfg.journal.name + ".", suffix=".rebase.tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        os.chmod(tmp, stat.S_IMODE(cfg.journal.stat().st_mode))
+        append_journal_line(tmp, body)
+        # Fail closed before replacing anything: the folded journal must
+        # verify strictly (load_journal, not the tolerant verified_prefix, so a
+        # bad tail raises) and reproduce the old fold.
+        new_records = _load_chain(tmp)
+        if len(new_records) != 1 or derive_highwater(new_records) != hw:
+            raise RatchetError("rebase would not preserve the high-water mark; journal untouched")
+        _replace_if_unchanged(tmp, cfg.journal, source_bytes)
+    finally:
+        tmp.unlink(missing_ok=True)
+    _write_json(cfg.highwater, derive_highwater(load_journal(cfg)))  # display cache
+    print(
+        f"ratchet: rebased {len(records)} records ({old_bytes} bytes) -> "
+        f"{len(new_records)} record(s) ({cfg.journal.stat().st_size} bytes); "
+        f"previous tip {tip.get('record_id', '?')} {tip.get('record_hash', '?')}"
+    )
+    return 0
+
+
 def cmd_recent(args) -> int:
     cfg = load_config(repo_root(args.repo))
     for rec in load_journal(cfg)[-args.n:]:
@@ -2433,6 +2551,94 @@ SELF_TEST_CASES = (
 )
 
 
+def _rebase_self_test() -> tuple[bool, str]:
+    """Build a multi-record journal in a throwaway repo (merged and unmerged
+    records, an amendment, a contract retirement, a quarantine, a permanent
+    removal, quality numbers, a verifier hash), then prove
+    `rebase` collapses it to a baseline without changing what `check` or the
+    high-water fold report, and that tampering with the baseline fails closed."""
+    import contextlib
+    import io
+    import tempfile
+
+    junit = ('<testsuites><testsuite name="s" tests="2">'
+             '<testcase classname="st" name="t1"/><testcase classname="st" name="t4"/>'
+             '</testsuite></testsuites>')
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        epic = repo / "docs" / "epics" / "e"
+        epic.mkdir(parents=True)
+        (epic / "contracts.md").write_text(
+            "### CTR-e-001 — first\nREQUIRES: a\n\n### CTR-e-002 — second\nREQUIRES: b\n")
+        state = repo / "docs" / "quality"
+        state.mkdir(parents=True)
+        (state / CONFIG_NAME).write_text(json.dumps({
+            "suites": [{"name": "ok", "parser": "junit-xml", "cwd": ".", "report": "r.xml",
+                        "cmd": f"printf '{junit}' > r.xml"}],
+            "epic_docs": "docs/epics"}))
+        cfg = load_config(repo)
+        ns = argparse.Namespace(repo=str(repo), no_tests=False, no_quality=True, venv=None,
+                                gobin=None, format="json", gate_verifier_tests=False,
+                                gate_quality=False)
+
+        def run_check() -> tuple[int, str, dict]:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = cmd_check(ns)
+            return code, out.getvalue(), derive_highwater(load_journal(cfg))
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            cmd_score(ns)
+        cur = _read_scorecard(cfg)
+        ids = sorted(cur["pass_set"])
+        t1, t4 = ids[0], ids[-1]
+        hashes = cur["contract_hashes"]
+        quarantine = {"id": "ok::q", "reason": "flaky", "owner": "me", "expiry": "2999-01-01"}
+        removed = {"id": "ok::gone", "reason": "renamed", "owner": "me", "kind": "removed"}
+        bodies = [
+            ("ticket", True, {"pass_set": [t1, t4, "ok::q", "ok::gone"],
+                              "contract_hashes": {"CTR-e-001": "old", "CTR-e-002": hashes["CTR-e-002"],
+                                                  "CTR-e-009": "x"},
+                              "verifier_test_hashes": {"t.py::v": "vh"},
+                              "quality": {"ccn_mean": 4.0, "pct_ccn_gt10": 5.0,
+                                          "relative_churn": 0.3}}, {}, [], []),
+            ("ticket", False, {"pass_set": ["ok::unmerged"],
+                               "quality": {"ccn_mean": 1.0}}, {}, [], []),
+            ("ticket", True, {"pass_set": [], "quality": {"ccn_mean": 3.0}},
+             {"CTR-e-001": hashes["CTR-e-001"]}, ["CTR-e-009"], [quarantine, removed]),
+        ]
+        prev = "genesis"
+        for i, (event, merged, sc, amended, retired, rc) in enumerate(bodies, 1):
+            body = {"record_id": f"rec-{i:05d}", "event": event, "ref": f"#{i}",
+                    "gate_result": "pass", "merged": merged, "scorecard": sc,
+                    "amended": amended, "retired": retired, "retired_cases": rc,
+                    "ratchet_status": "held", "notes": ""}
+            body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
+            append_journal_line(cfg.journal, body)
+            prev = body["record_hash"]
+
+        before = run_check()
+        if before[0] != 0:
+            return False, f"setup: check exit {before[0]}, expected 0"
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_rebase(argparse.Namespace(repo=str(repo)))
+        lines = [ln for ln in cfg.journal.read_text().splitlines() if ln.strip()]
+        after = run_check()
+        if len(lines) != 1:
+            return False, f"expected exactly one baseline line, journal has {len(lines)} line(s)"
+        if before != after:
+            return False, "check output or high-water fold changed across rebase"
+        first = json.loads(lines[0])
+        first["scorecard"]["pass_set"].append("ok::forged")
+        lines[0] = json.dumps(first, sort_keys=True)
+        cfg.journal.write_text("\n".join(lines) + "\n")
+        try:
+            run_check()
+        except TamperError:
+            return True, "3 records folded to 1 line, check identical, tamper exit 4"
+        return False, "tampered baseline was not rejected"
+
+
 def cmd_self_test(args) -> int:
     """Plant each bad input in a throwaway repo and assert `check` fails on it.
 
@@ -2465,6 +2671,9 @@ def cmd_self_test(args) -> int:
         failures += not ok
         print(f"ratchet self-test: {'ok  ' if ok else 'FAIL'} {name}: check exit {got}, "
               f"expected {expected}")
+    ok, detail = _rebase_self_test()
+    failures += not ok
+    print(f"ratchet self-test: {'ok  ' if ok else 'FAIL'} rebase preserves check: {detail}")
     if failures:
         print(f"ratchet self-test: {failures} case(s) wrong — the ratchet gate does not "
               "bite; do not trust a green `check` until this is fixed", file=sys.stderr)
@@ -2591,6 +2800,13 @@ def main() -> int:
                          "--retire-case-owner (not the 'unassigned' default); rejects "
                          "--retire-case-expiry/--retire-case-expiry-days as a usage error")
 
+    sp = sub.add_parser(
+        "rebase",
+        help="fold the whole journal into one baseline record; `check` is unchanged — "
+             "run when the journal passes 20 MB (refused for gate-governed journals)",
+    )
+    common(sp)
+
     sp = sub.add_parser("protected", help="flag branch diffs touching the protected pathset")
     common(sp)
     sp.add_argument("--base", default="origin/main")
@@ -2620,7 +2836,7 @@ def main() -> int:
     dispatch = {
         "init": cmd_init, "state": cmd_state, "score": cmd_score, "check": cmd_check,
         "regressed": cmd_regressed, "record": cmd_record, "recent": cmd_recent,
-        "highwater": cmd_highwater, "protected": cmd_protected, "pathset": cmd_pathset,
+        "highwater": cmd_highwater, "rebase": cmd_rebase, "protected": cmd_protected, "pathset": cmd_pathset,
         "self-test": cmd_self_test,
     }
     try:
