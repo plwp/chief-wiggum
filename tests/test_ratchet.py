@@ -2761,3 +2761,141 @@ def test_cmd_state_cli_word_on_stdout(tmp_path, capsys):
     assert rc == 0
     assert out.out.strip() == "unbaselined"
     assert "ratchet: state=" in out.err
+
+
+# ---- rebase: fold the journal to one baseline record ------------------------------
+
+QUARANTINE = {"id": "s::flaky", "reason": "order-dependent", "owner": "plwp",
+              "expiry": "2999-01-01", "recorded": "2026-01-02"}
+REMOVED = {"id": "s::gone", "reason": "renamed", "owner": "plwp", "kind": "removed",
+           "recorded": "2026-01-03"}
+
+
+def _rebase_ns(tmp_path):
+    return argparse.Namespace(repo=str(tmp_path))
+
+
+def _rich_journal(tmp_path):
+    """Merged + unmerged records, an amendment, a contract retirement, a
+    quarantine, a permanent removal, quality numbers and a verifier hash."""
+    cfg = make_repo(tmp_path)
+    hashes = ratchet.load_contract_hashes(cfg)
+    first = {**scorecard_from(cfg, {"s::t1", "s::t2", "s::flaky", "s::gone"}),
+             "contract_hashes": {**hashes, "CTR-order-009": "retired-later"},
+             "verifier_test_hashes": {"t.py::v": "h1"},
+             "quality": {"ccn_mean": 4.0, "pct_ccn_gt10": 5.0, "relative_churn": 0.3}}
+    append_record(cfg, first)
+    append_record(cfg, {**scorecard_from(cfg, {"s::unmerged"}),
+                        "quality": {"ccn_mean": 0.1}}, merged=False)
+    append_record(cfg, {**scorecard_from(cfg, {"s::t3"}), "quality": {"ccn_mean": 3.0}},
+                  amended={"CTR-order-001": hashes["CTR-order-001"]},
+                  retired=["CTR-order-009"], retired_cases=[QUARANTINE, REMOVED])
+    return cfg
+
+
+def _current_scorecard(cfg):
+    return {**scorecard_from(cfg, {"s::t1", "s::t2", "s::t3"}),
+            "verifier_test_hashes": {"t.py::v": "h1"}}
+
+
+def _check_json(tmp_path, capsys):
+    capsys.readouterr()
+    code = ratchet.cmd_check(_check_ns(tmp_path, format="json"))
+    return code, capsys.readouterr().out
+
+
+def test_rebase_folds_to_one_record_and_preserves_the_fold(tmp_path, capsys):
+    cfg = _rich_journal(tmp_path)
+    _write_scorecard(cfg, _current_scorecard(cfg))
+    before_hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    before_check = _check_json(tmp_path, capsys)
+    assert before_check[0] == 0
+    assert ratchet.cmd_rebase(_rebase_ns(tmp_path)) == 0
+    records = ratchet.load_journal(cfg)
+    assert [r["record_id"] for r in records] == ["rec-00001"]
+    assert records[0]["event"] == "baseline" and records[0]["merged"] is True
+    assert "rec-00003" in records[0]["notes"]
+    assert ratchet.derive_highwater(records) == before_hw
+    assert before_hw["quality"] == {"ccn_mean": 3.0, "pct_ccn_gt10": 5.0, "relative_churn": 0.3}
+    assert before_hw["verifier_test_hashes"] == {"t.py::v": "h1"}
+    assert json.loads(cfg.highwater.read_text()) == before_hw
+    assert _check_json(tmp_path, capsys) == before_check
+
+
+def test_rebase_preserves_quarantine_dates_and_removed_cases(tmp_path):
+    cfg = _rich_journal(tmp_path)
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert hw["quarantined"] == {"s::flaky": QUARANTINE}
+    assert hw["removed_cases"] == {"s::gone": REMOVED}
+    assert "s::flaky" not in hw["pass_set"] and "s::gone" not in hw["pass_set"]
+    # an expired quarantine still re-blocks after the fold
+    assert "s::flaky" in ratchet.effective_pass_set(hw, today=date(3000, 1, 1))
+    assert "s::gone" not in ratchet.effective_pass_set(hw, today=date(3000, 1, 1))
+
+
+def test_rebase_keeps_wired_gates_wired_and_drops_unwired(tmp_path):
+    cfg = _rich_journal(tmp_path)
+    ratchet.append_authority_event(cfg.journal, "gate_a", "wire", wired_rid="rec-00002")
+    ratchet.append_authority_event(cfg.journal, "gate_b", "wire")
+    ratchet.append_authority_event(cfg.journal, "gate_b", "unwire")
+    ratchet.append_authority_event(cfg.journal, "gate_c", "wire")
+    ratchet.append_authority_event(cfg.journal, "gate_c", "unwire")
+    ratchet.append_authority_event(cfg.journal, "gate_c", "wire", wired_rid="rec-00004")
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    records = ratchet.load_journal(cfg)
+    assert [r["event"] for r in records] == ["baseline", "gate-authority", "gate-authority"]
+    assert ratchet.last_authority_action(cfg.journal, "gate_a") == "wire"
+    assert ratchet.last_authority_action(cfg.journal, "gate_b") is None
+    assert ratchet.last_authority_action(cfg.journal, "gate_c") == "wire"
+    assert {r["ref"]: r["wired_rid"] for r in records[1:]} == {
+        "gate_a": "rec-00002", "gate_c": "rec-00004"}
+
+
+def test_rebase_without_wired_gates_is_exactly_one_line(tmp_path):
+    cfg = _rich_journal(tmp_path)
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    assert len([ln for ln in cfg.journal.read_text().splitlines() if ln.strip()]) == 1
+
+
+def test_rebase_then_record_continues_the_chain(tmp_path):
+    cfg = _rich_journal(tmp_path)
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    append_record(cfg, scorecard_from(cfg, {"s::t9"}))
+    hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
+    assert "s::t9" in hw["pass_set"] and "s::t1" in hw["pass_set"]
+
+
+def test_rebase_tampered_baseline_exits_4(tmp_path, monkeypatch, capsys):
+    cfg = _rich_journal(tmp_path)
+    _write_scorecard(cfg, _current_scorecard(cfg))
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    doctored = json.loads(cfg.journal.read_text())
+    doctored["scorecard"]["pass_set"] = []
+    cfg.journal.write_text(json.dumps(doctored, sort_keys=True) + "\n")
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "check", "--repo", str(tmp_path)])
+    assert ratchet.main() == 4
+
+
+def test_rebase_of_a_broken_journal_exits_4_and_leaves_it_untouched(tmp_path, monkeypatch):
+    cfg = _rich_journal(tmp_path)
+    lines = cfg.journal.read_text().splitlines()
+    doctored = json.loads(lines[0])
+    doctored["scorecard"]["pass_set"] = []
+    lines[0] = json.dumps(doctored, sort_keys=True)
+    cfg.journal.write_text("\n".join(lines) + "\n")
+    snapshot = cfg.journal.read_bytes()
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "rebase", "--repo", str(tmp_path)])
+    assert ratchet.main() == 4
+    assert cfg.journal.read_bytes() == snapshot
+    assert list(cfg.journal.parent.glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize("create", [False, True])
+def test_rebase_of_an_empty_or_absent_journal_exits_2(tmp_path, monkeypatch, create):
+    cfg = make_repo(tmp_path)
+    if create:
+        cfg.journal.write_text("")
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "rebase", "--repo", str(tmp_path)])
+    assert ratchet.main() == 2
+    assert not cfg.journal.exists() or cfg.journal.read_text() == ""
