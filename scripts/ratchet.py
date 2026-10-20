@@ -2173,14 +2173,11 @@ def cmd_record(args) -> int:
     return 0
 
 
-def _wired_gates(records: list[dict]) -> dict[str, str | None]:
-    """Gate -> ``wired_rid`` of its last ``wire`` event, for every gate whose
-    last genuine authority action in `records` is ``wire``."""
-    last: dict[str, dict] = {}
-    for rec in records:
-        if rec.get("event") == GATE_AUTHORITY and rec.get("details") in _AUTHORITY_ACTIONS:
-            last[rec.get("ref")] = rec
-    return {g: r.get("wired_rid") for g, r in sorted(last.items()) if r["details"] == "wire"}
+def _replace_if_unchanged(tmp: Path, journal: Path, source_bytes: bytes) -> None:
+    """Move `tmp` over `journal` unless `journal` no longer holds `source_bytes`."""
+    if journal.read_bytes() != source_bytes:
+        raise RatchetError("journal changed during rebase — re-run")
+    os.replace(tmp, journal)
 
 
 def cmd_rebase(args) -> int:
@@ -2197,22 +2194,32 @@ def cmd_rebase(args) -> int:
     retirement entries are copied verbatim, keeping their dates, owner, reason
     and kind.
 
-    A plain fold would erase gate-authority events, and ``last_authority_action``
-    would then read a wired gate as never wired. So for each gate whose last
-    authority action is ``wire``, one ``wire`` event is re-appended after the
-    baseline; with no wired gates the journal is exactly one line. Every other
-    event (tickets, amendments, gate-validation records, unwires) is dropped;
-    the baseline's ``notes`` name the previous tip and record count.
+    A journal holding any ``gate-validation`` or ``gate-authority`` event is
+    refused (RatchetError, exit 2, journal untouched): gate-validation
+    provenance resolves ``ratchet_record_id`` against journal record ids, which
+    a rebase would erase and then reissue from rec-00001, so gate-governed
+    journals are not rebased. The baseline's ``notes`` name the previous tip and
+    record count.
 
     A broken chain fails closed (TamperError, journal untouched); an empty or
     absent journal is a usage error. The new journal is written to a temp file
-    in the same directory and moved into place with ``os.replace``.
+    in the same directory and moved into place with ``os.replace``. The journal
+    takes no lock (see ``append_journal_line``), so the source is re-read just
+    before the replace and the rebase aborts if it changed; this narrows the
+    race with a concurrent append rather than closing it.
     """
     cfg = load_config(repo_root(args.repo))
     records = load_journal(cfg)
     if not records:
         raise RatchetError(f"nothing to rebase: {cfg.journal} has no records")
-    old_bytes = cfg.journal.stat().st_size
+    source_bytes = cfg.journal.read_bytes()
+    old_bytes = len(source_bytes)
+    gated = sorted({r.get("event") for r in records} & {"gate-validation", GATE_AUTHORITY})
+    if gated:
+        raise RatchetError(
+            f"cannot rebase {cfg.journal}: it holds {', '.join(gated)} event(s); "
+            "gate-validation provenance resolves record ids that a rebase would erase "
+            "or reuse, so gate-governed journals are not rebased")
     hw = derive_highwater(records)
     tip = records[-1]
     scorecard = {
@@ -2245,23 +2252,17 @@ def cmd_rebase(args) -> int:
     }
     body["record_hash"] = stable_hash(
         "genesis", json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True))
-    wired = _wired_gates(records)
 
     tmp = cfg.journal.with_name(cfg.journal.name + ".rebase.tmp")
     tmp.unlink(missing_ok=True)
     try:
         append_journal_line(tmp, body)
-        for gate, wired_rid in wired.items():
-            append_authority_event(tmp, gate, "wire", wired_rid=wired_rid)
         # Fail closed before replacing anything: the folded journal must
-        # verify and reproduce the old fold, and keep every wired gate wired.
+        # verify and reproduce the old fold.
         new_records = verified_prefix(tmp)
-        if len(new_records) != 1 + len(wired) or derive_highwater(new_records) != hw:
+        if len(new_records) != 1 or derive_highwater(new_records) != hw:
             raise RatchetError("rebase would not preserve the high-water mark; journal untouched")
-        for gate in wired:
-            if last_authority_action(tmp, gate) != "wire":
-                raise RatchetError(f"rebase would unwire gate {gate!r}; journal untouched")
-        os.replace(tmp, cfg.journal)
+        _replace_if_unchanged(tmp, cfg.journal, source_bytes)
     finally:
         tmp.unlink(missing_ok=True)
     _write_json(cfg.highwater, derive_highwater(load_journal(cfg)))  # display cache
@@ -2269,7 +2270,6 @@ def cmd_rebase(args) -> int:
         f"ratchet: rebased {len(records)} records ({old_bytes} bytes) -> "
         f"{len(new_records)} record(s) ({cfg.journal.stat().st_size} bytes); "
         f"previous tip {tip.get('record_id', '?')} {tip.get('record_hash', '?')}"
-        + (f"; wired gates kept: {', '.join(wired)}" if wired else "")
     )
     return 0
 
@@ -2538,7 +2538,7 @@ SELF_TEST_CASES = (
 def _rebase_self_test() -> tuple[bool, str]:
     """Build a multi-record journal in a throwaway repo (merged and unmerged
     records, an amendment, a contract retirement, a quarantine, a permanent
-    removal, quality numbers, a verifier hash, a wired gate), then prove
+    removal, quality numbers, a verifier hash), then prove
     `rebase` collapses it to a baseline without changing what `check` or the
     high-water fold report, and that tampering with the baseline fails closed."""
     import contextlib
@@ -2600,9 +2600,6 @@ def _rebase_self_test() -> tuple[bool, str]:
             body["record_hash"] = stable_hash(prev, json.dumps(body, sort_keys=True))
             append_journal_line(cfg.journal, body)
             prev = body["record_hash"]
-        append_authority_event(cfg.journal, "gate_a", "wire", wired_rid="rec-00001")
-        append_authority_event(cfg.journal, "gate_b", "wire")
-        append_authority_event(cfg.journal, "gate_b", "unwire")
 
         before = run_check()
         if before[0] != 0:
@@ -2611,13 +2608,10 @@ def _rebase_self_test() -> tuple[bool, str]:
             cmd_rebase(argparse.Namespace(repo=str(repo)))
         lines = [ln for ln in cfg.journal.read_text().splitlines() if ln.strip()]
         after = run_check()
-        if len(lines) != 2:
-            return False, f"expected baseline + one wire event, journal has {len(lines)} line(s)"
+        if len(lines) != 1:
+            return False, f"expected exactly one baseline line, journal has {len(lines)} line(s)"
         if before != after:
             return False, "check output or high-water fold changed across rebase"
-        if (last_authority_action(cfg.journal, "gate_a") != "wire"
-                or last_authority_action(cfg.journal, "gate_b") is not None):
-            return False, "gate-authority state changed across rebase"
         first = json.loads(lines[0])
         first["scorecard"]["pass_set"].append("ok::forged")
         lines[0] = json.dumps(first, sort_keys=True)
@@ -2625,7 +2619,7 @@ def _rebase_self_test() -> tuple[bool, str]:
         try:
             run_check()
         except TamperError:
-            return True, "3 records + 3 authority events folded to 2 lines, check identical, tamper exit 4"
+            return True, "3 records folded to 1 line, check identical, tamper exit 4"
         return False, "tampered baseline was not rejected"
 
 
@@ -2792,8 +2786,8 @@ def main() -> int:
 
     sp = sub.add_parser(
         "rebase",
-        help="fold the whole journal into one baseline record (plus one wire event per "
-             "wired gate); `check` is unchanged — run when the journal passes 20 MB",
+        help="fold the whole journal into one baseline record; `check` is unchanged — "
+             "run when the journal passes 20 MB (refused for gate-governed journals)",
     )
     common(sp)
 

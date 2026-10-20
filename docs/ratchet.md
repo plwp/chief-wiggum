@@ -231,10 +231,16 @@ empty journal is exit 2), folds it with the same `derive_highwater` that
 against `genesis`. Quarantine and permanent-retirement entries are carried over
 verbatim, so `check` gives identical results before and after. The baseline's
 `notes` name the previous tip's `record_id`/`record_hash` and the old record
-count. A gate whose last authority action was `wire` keeps one re-appended
-`wire` event after the baseline; every other event is dropped, including
-`gate-validation` records, so re-run a gate's validation record against the new
-journal if it still cites an old `ratchet_record_id`.
+count. The result is always exactly one line.
+
+Rebase **refuses** (exit 2, journal untouched) when the journal holds any
+`gate-validation` or `gate-authority` event: gate-validation provenance
+resolves `ratchet_record_id` against journal record ids, which a rebase would
+erase and then reissue from `rec-00001`, so gate-governed journals are not
+rebased. The journal takes no lock, so the source is also re-read just before
+the replace and the rebase aborts (exit 2, "journal changed during rebase")
+if it changed; this narrows the race with a concurrent append rather than
+closing it.
 
 **Rule:** rebase whenever the journal passes 20 MB, in a ratchet "mark merged"
 chore PR of its own.

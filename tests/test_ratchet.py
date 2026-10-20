@@ -91,11 +91,12 @@ def scorecard_from(cfg, pass_set):
     }
 
 
-def append_record(cfg, sc, merged=True, amended=None, retired=None, retired_cases=None):
+def append_record(cfg, sc, merged=True, amended=None, retired=None, retired_cases=None,
+                  event="ticket"):
     records = ratchet.load_journal(cfg)
     body = {
         "record_id": f"rec-{len(records) + 1:05d}",
-        "event": "ticket",
+        "event": event,
         "ref": "#1",
         "gate_result": "pass",
         "merged": merged,
@@ -2834,25 +2835,44 @@ def test_rebase_preserves_quarantine_dates_and_removed_cases(tmp_path):
     assert "s::gone" not in ratchet.effective_pass_set(hw, today=date(3000, 1, 1))
 
 
-def test_rebase_keeps_wired_gates_wired_and_drops_unwired(tmp_path):
+def _gate_event_journal(tmp_path, kind):
     cfg = _rich_journal(tmp_path)
-    ratchet.append_authority_event(cfg.journal, "gate_a", "wire", wired_rid="rec-00002")
-    ratchet.append_authority_event(cfg.journal, "gate_b", "wire")
-    ratchet.append_authority_event(cfg.journal, "gate_b", "unwire")
-    ratchet.append_authority_event(cfg.journal, "gate_c", "wire")
-    ratchet.append_authority_event(cfg.journal, "gate_c", "unwire")
-    ratchet.append_authority_event(cfg.journal, "gate_c", "wire", wired_rid="rec-00004")
-    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    if kind == "gate-authority":
+        ratchet.append_authority_event(cfg.journal, "gate_a", "wire", wired_rid="rec-00002")
+    else:
+        append_record(cfg, scorecard_from(cfg, {"s::t1"}), event="gate-validation")
+    return cfg
+
+
+@pytest.mark.parametrize("kind", ["gate-validation", "gate-authority"])
+def test_rebase_refuses_gate_governed_journals(tmp_path, monkeypatch, capsys, kind):
+    cfg = _gate_event_journal(tmp_path, kind)
+    snapshot = cfg.journal.read_bytes()
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "rebase", "--repo", str(tmp_path)])
+    assert ratchet.main() == 2
+    assert "gate-governed" in capsys.readouterr().err
+    assert cfg.journal.read_bytes() == snapshot
+    assert list(cfg.journal.parent.glob("*.tmp")) == []
+
+
+def test_rebase_aborts_when_the_journal_changes_before_the_replace(tmp_path, monkeypatch, capsys):
+    cfg = _rich_journal(tmp_path)
+    real = ratchet._replace_if_unchanged
+
+    def append_then_replace(tmp, journal, source_bytes):
+        append_record(cfg, scorecard_from(cfg, {"s::late"}))
+        real(tmp, journal, source_bytes)
+
+    monkeypatch.setattr(ratchet, "_replace_if_unchanged", append_then_replace)
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "rebase", "--repo", str(tmp_path)])
+    assert ratchet.main() == 2
+    assert "journal changed during rebase" in capsys.readouterr().err
     records = ratchet.load_journal(cfg)
-    assert [r["event"] for r in records] == ["baseline", "gate-authority", "gate-authority"]
-    assert ratchet.last_authority_action(cfg.journal, "gate_a") == "wire"
-    assert ratchet.last_authority_action(cfg.journal, "gate_b") is None
-    assert ratchet.last_authority_action(cfg.journal, "gate_c") == "wire"
-    assert {r["ref"]: r["wired_rid"] for r in records[1:]} == {
-        "gate_a": "rec-00002", "gate_c": "rec-00004"}
+    assert len(records) == 4 and "s::late" in records[-1]["scorecard"]["pass_set"]
+    assert list(cfg.journal.parent.glob("*.tmp")) == []
 
 
-def test_rebase_without_wired_gates_is_exactly_one_line(tmp_path):
+def test_rebase_is_exactly_one_line(tmp_path):
     cfg = _rich_journal(tmp_path)
     ratchet.cmd_rebase(_rebase_ns(tmp_path))
     assert len([ln for ln in cfg.journal.read_text().splitlines() if ln.strip()]) == 1
