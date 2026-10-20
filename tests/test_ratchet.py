@@ -2872,6 +2872,42 @@ def test_rebase_aborts_when_the_journal_changes_before_the_replace(tmp_path, mon
     assert list(cfg.journal.parent.glob("*.tmp")) == []
 
 
+def test_rebase_rejects_a_second_baseline_in_its_temp_file(tmp_path, monkeypatch, capsys):
+    """A concurrent rebase sharing the temp path can append a second
+    genesis-hashed baseline; the tolerant prefix read would pass it."""
+    cfg = _rich_journal(tmp_path)
+    before = cfg.journal.read_bytes()
+    real = ratchet.append_journal_line
+
+    def append_twice(path, body):
+        real(path, body)
+        with open(path, "a") as fh:
+            fh.write(json.dumps(body) + "\n")
+
+    monkeypatch.setattr(ratchet, "append_journal_line", append_twice)
+    monkeypatch.setattr(sys, "argv", ["ratchet.py", "rebase", "--repo", str(tmp_path)])
+    assert ratchet.main() in (2, 4)
+    assert cfg.journal.read_bytes() == before
+    assert list(cfg.journal.parent.glob("*.tmp")) == []
+
+
+def test_rebase_uses_a_distinct_temp_path_per_run(tmp_path, monkeypatch):
+    cfg = _rich_journal(tmp_path)
+    seen = []
+    real = ratchet._replace_if_unchanged
+
+    def record_path(tmp, journal, source_bytes):
+        seen.append(tmp)
+        real(tmp, journal, source_bytes)
+
+    monkeypatch.setattr(ratchet, "_replace_if_unchanged", record_path)
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    append_record(cfg, scorecard_from(cfg, {"s::more"}))
+    ratchet.cmd_rebase(_rebase_ns(tmp_path))
+    assert len(seen) == 2 and seen[0] != seen[1]
+    assert all(t.parent == cfg.journal.parent for t in seen)
+
+
 def test_rebase_aborts_when_the_journal_changes_during_the_initial_load(tmp_path, monkeypatch, capsys):
     cfg = _rich_journal(tmp_path)
     real = ratchet.load_journal

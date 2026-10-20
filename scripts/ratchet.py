@@ -96,8 +96,10 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
@@ -1041,10 +1043,15 @@ def quality_regressions(quality: dict, hw: dict, tolerance: dict) -> list[dict]:
 
 def load_journal(cfg: Config) -> list[dict]:
     """Read the journal and verify the hash chain. Fail closed on tamper."""
-    if not cfg.journal.is_file():
+    return _load_chain(cfg.journal)
+
+
+def _load_chain(journal: Path) -> list[dict]:
+    """Strictly parse and verify the chain in `journal`; any bad line raises."""
+    if not journal.is_file():
         return []
     records = []
-    for lineno, line in enumerate(cfg.journal.read_text().splitlines(), 1):
+    for lineno, line in enumerate(journal.read_text().splitlines(), 1):
         line = line.strip()
         if not line:
             continue
@@ -1071,7 +1078,7 @@ def load_journal(cfg: Config) -> list[dict]:
             # It failed closed either way — this is about the operator being
             # told what is wrong, not about whether the gate blocks.
             raise TamperError(
-                f"journal unreadable at {cfg.journal}:{lineno}: {exc}."
+                f"journal unreadable at {journal}:{lineno}: {exc}."
                 " The chain is broken — fail closed. If two records were"
                 " joined onto one line, split them at the '}{' boundary and"
                 " re-verify."
@@ -2256,13 +2263,19 @@ def cmd_rebase(args) -> int:
     body["record_hash"] = stable_hash(
         "genesis", json.dumps({k: v for k, v in body.items() if k != "record_hash"}, sort_keys=True))
 
-    tmp = cfg.journal.with_name(cfg.journal.name + ".rebase.tmp")
-    tmp.unlink(missing_ok=True)
+    # A per-run temp file: a fixed shared name lets two concurrent rebases
+    # both write a genesis-hashed baseline into one file.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=cfg.journal.parent, prefix=cfg.journal.name + ".", suffix=".rebase.tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
+        os.chmod(tmp, stat.S_IMODE(cfg.journal.stat().st_mode))
         append_journal_line(tmp, body)
         # Fail closed before replacing anything: the folded journal must
-        # verify and reproduce the old fold.
-        new_records = verified_prefix(tmp)
+        # verify strictly (load_journal, not the tolerant verified_prefix, so a
+        # bad tail raises) and reproduce the old fold.
+        new_records = _load_chain(tmp)
         if len(new_records) != 1 or derive_highwater(new_records) != hw:
             raise RatchetError("rebase would not preserve the high-water mark; journal untouched")
         _replace_if_unchanged(tmp, cfg.journal, source_bytes)
