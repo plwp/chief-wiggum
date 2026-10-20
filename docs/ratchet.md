@@ -219,6 +219,26 @@ Records also serve as **amnesia context**: `ratchet.py recent` replays the
 last N iterations' notes so a fresh session doesn't oscillate on decisions a
 previous one already made.
 
+### Rebasing a large journal (`rebase`)
+
+The journal is an anti-cheat chain, not an audit trail: only the folded
+high-water mark matters, and git history keeps the rest. It still grows
+without bound, and GitHub rejects files over 100 MB.
+
+`ratchet.py rebase` verifies the chain (a broken one fails closed, exit 4; an
+empty journal is exit 2), folds it with the same `derive_highwater` that
+`check` uses, and rewrites the journal as one merged `baseline` record hashed
+against `genesis`. Quarantine and permanent-retirement entries are carried over
+verbatim, so `check` gives identical results before and after. The baseline's
+`notes` name the previous tip's `record_id`/`record_hash` and the old record
+count. A gate whose last authority action was `wire` keeps one re-appended
+`wire` event after the baseline; every other event is dropped, including
+`gate-validation` records, so re-run a gate's validation record against the new
+journal if it still cites an old `ratchet_record_id`.
+
+**Rule:** rebase whenever the journal passes 20 MB, in a ratchet "mark merged"
+chore PR of its own.
+
 ### One record per line is load-bearing (#420)
 
 The chain's integrity assumes each record occupies its own line, and that
@@ -478,6 +498,7 @@ python3 scripts/ratchet.py record --event ticket --ref "#42" \
     --retire-case-owner plwp --retire-case-permanent          # permanent retirement, no expiry (#290)
 python3 scripts/ratchet.py highwater      # includes `quarantined` (live expiry) + `removed_cases`
 python3 scripts/ratchet.py recent --n 5                # amnesia context for the next session
+python3 scripts/ratchet.py rebase                      # fold the journal to one baseline record (past 20 MB)
 ```
 
 Exit codes are UNCHANGED by #278/#290: `0` ok, `1` gate violation, `2`
