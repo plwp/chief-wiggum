@@ -106,6 +106,7 @@ See `AGENTS.md` and `docs/harnesses.md` for the portable core and adapter model.
 | `/ship` | PR creation with mermaid architecture diagrams |
 | `/stitch-audit` | Cross-layer data flow analysis |
 | `/code-metrics` | Literature-grounded code-quality metrics: churn, complexity, code survival, duplication, process signals |
+| `/docx-review` | Word formatting review before a file leaves the building: XML checks (page size, page numbers, empty template shapes, table rules, fragile fonts, placeholders, foreign properties), a rendered page-by-page look, and word-preserving fixes |
 | `/status` | Live one-screen target state: footprint mode, domain scope, gate ledger, ratchet high-water, adopted patterns, debt counts |
 | `/adopt` | Brownfield entry for repos CW didn't build: shape survey → footprint election → real-test-run ratchet baseline + debt baseline → grandfathering with expiry → adoption record |
 | `/tutorial-video` | Narrated click-through tutorial video: script → recording → TTS narration → .mp4 + .srt |

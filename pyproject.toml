@@ -16,7 +16,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "python-docx>=1.1",
   "ruff>=0.8",
+]
+docx = [
+  "python-docx>=1.1",
 ]
 transcribe = [
   "openai-whisper",

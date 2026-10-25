@@ -54,6 +54,8 @@ PACKAGE_FOR_IMPORT = {
     "whisper": "openai-whisper",
     "browser_use": "browser-use",
     "langchain_anthropic": "langchain-anthropic",
+    # Same trap as whisper: PyPI's `docx` is an abandoned package that also provides `docx`.
+    "docx": "python-docx",
 }
 
 # What each profile needs. Profiles mirror check_deps.py's vocabulary.

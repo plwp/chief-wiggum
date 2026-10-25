@@ -12,7 +12,7 @@ Portable workflow contracts, scripts, and Claude Code slash-command adapters tha
 - **Epic level**: `/plan-epic` → `/architect` → (implement tickets) → `/close-epic` — contracts, invariants, and integration tests before implementation; cross-cutting gates after.
 - **Ticket level**: `/implement` — TDD, multi-AI consultation, structured review, static analysis, independent verification.
 - **Wave level**: `/implement-wave` — an epic's tickets in dependency-ordered waves, each wave running `/implement` loops in parallel worktrees.
-- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/adopt`, `/ship`, `/update`, `/stitch-audit`, `/code-metrics`, `/status`, `/ux-review`, `/tutorial-video`, `/business-consultant`.
+- **Supporting**: `/setup`, `/transcribe`, `/seed`, `/create-issue`, `/adopt`, `/ship`, `/update`, `/stitch-audit`, `/code-metrics`, `/docx-review`, `/status`, `/ux-review`, `/tutorial-video`, `/business-consultant`.
 
 ## Key Principles
 
