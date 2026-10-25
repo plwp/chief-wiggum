@@ -97,6 +97,14 @@ WORKFLOW_REQUIREMENTS = {
         "pkgs": {"browser-use", "playwright", "langchain-anthropic"},
         "secrets": {"ANTHROPIC_API_KEY"},
     },
+    "docx-review": {
+        # Rendering (soffice or Pages, then pdftoppm) is checked as OPTIONAL: without it
+        # `docx_review.py render` reports `unverified`, never a pass.
+        "extends": {"core"},
+        "cmds": set(),
+        "pkgs": {"python-docx"},
+        "secrets": set(),
+    },
     "vertex": {
         "cmds": set(),
         "pkgs": {"langchain-google-vertexai", "google-cloud-aiplatform"},
@@ -413,6 +421,7 @@ WORKFLOW_PROFILES = {
     "update": ["core"],
     "keep-going": ["core"],
     "reflect": ["core", "telemetry"],
+    "docx-review": ["docx-review"],
 }
 
 
@@ -613,6 +622,12 @@ def main():
         "langchain_anthropic",
         is_required("pkgs", "langchain-anthropic", workflows),
     )
+
+    print("\n--- Python Packages (docx-review — for /docx-review) ---")
+    check_python_pkg("python-docx", "docx", is_required("pkgs", "python-docx", workflows),
+                     python=runtime)
+    check_cmd("soffice", "soffice", "--version", False)
+    check_cmd("pdftoppm", "pdftoppm", "-v", False)
 
     print("\n--- Python Packages (quality-metrics — for /code-metrics) ---")
     check_python_pkg("lizard", "lizard", is_required("pkgs", "lizard", workflows))
