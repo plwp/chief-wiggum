@@ -39,6 +39,12 @@ Usage::
     python3 inbox.py mark 1234 --seen | --unseen | --flag | --unflag
     python3 inbox.py move 1234 --to Archive
     python3 inbox.py watch --interval 300
+    python3 inbox.py --account eve list --unseen   # ~/.chief-wiggum/inbox-eve.json
+
+``--account NAME`` selects a second mailbox (an agent's own): its settings
+live in ``~/.chief-wiggum/inbox-NAME.json`` and its password in the keyring
+under the ``secret_name`` that file records, so each account has its own
+credential.
 """
 
 from __future__ import annotations
@@ -75,6 +81,12 @@ PROVIDERS = {
         "smtp_host": "smtp.mail.me.com",
         "smtp_port": 587,
     },
+    "purelymail": {
+        "imap_host": "imap.purelymail.com",
+        "imap_port": 993,
+        "smtp_host": "smtp.purelymail.com",
+        "smtp_port": 587,
+    },
 }
 
 EXIT_OK, EXIT_USAGE, EXIT_AUTH, EXIT_REFUSED = 0, 1, 2, 3
@@ -92,13 +104,16 @@ class Config:
     # Addresses this account may send as. Checked before any SMTP call so a
     # typo in --from fails here, not as a 550 from the provider.
     send_as: list[str] | None = None
+    # Keyring entry holding this account's password (never the password itself).
+    secret_name: str = SECRET_NAME
 
     @property
     def sender(self) -> str:
         return email.utils.formataddr((self.name, self.from_addr)) if self.name else self.from_addr
 
 
-def load_config(path: Path = CONFIG_PATH) -> Config:
+def load_config(path: Path | None = None) -> Config:
+    path = path or CONFIG_PATH
     if not path.exists():
         raise SystemExit(
             f"No inbox config at {path}. Run: inbox.py configure --user ... --from ..."
@@ -107,25 +122,32 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     return Config(**data)
 
 
-def save_config(cfg: Config, path: Path = CONFIG_PATH) -> None:
+def save_config(cfg: Config, path: Path | None = None) -> None:
+    path = path or CONFIG_PATH
+    data = asdict(cfg)
+    if data["secret_name"] == SECRET_NAME:  # the default; keep old configs byte-identical
+        del data["secret_name"]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(cfg), indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def _password() -> str:
-    secret = get_secret(SECRET_NAME)
+def _password(cfg: Config) -> str:
+    name = cfg.secret_name
+    secret = get_secret(name)
     if not secret:
-        raise SystemExit(
-            f"{SECRET_NAME} is not in the keyring. Generate an app-specific password "
-            f"(account.apple.com > Sign-In and Security > App-Specific Passwords) and store it "
-            f"with: python3 scripts/keychain.py set {SECRET_NAME}"
-        )
+        hint = (" Generate an app-specific password (account.apple.com > Sign-In and Security > "
+                "App-Specific Passwords) and store it" if name == SECRET_NAME else " Store it")
+        raise SystemExit(f"{name} is not in the keyring.{hint} with: "
+                         f"python3 scripts/keychain.py set {name}")
     return secret.strip()
 
 
-def _login_candidates(user: str) -> list[str]:
+def _login_candidates(user: str, host: str = PROVIDERS["icloud"]["imap_host"]) -> list[str]:
     """iCloud documents the username as the local part of the iCloud address,
-    with the full address as the fallback; try both, local part first."""
+    with the full address as the fallback; try both, local part first. Other
+    providers log in with the full address only."""
+    if not host.endswith("mail.me.com"):
+        return [user]
     local = user.split("@", 1)[0]
     return [local, user] if local != user else [user]
 
@@ -143,7 +165,7 @@ def _quote(value: str) -> str:
 def imap_connect(cfg: Config, password: str) -> imaplib.IMAP4_SSL:
     conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port, ssl_context=ssl.create_default_context())
     last: Exception | None = None
-    for candidate in _login_candidates(cfg.user):
+    for candidate in _login_candidates(cfg.user, cfg.imap_host):
         try:
             conn.login(candidate, password)
             return conn
@@ -160,7 +182,7 @@ def smtp_connect(cfg: Config, password: str) -> smtplib.SMTP:
     conn.starttls(context=ssl.create_default_context())
     conn.ehlo()
     last: Exception | None = None
-    for candidate in _login_candidates(cfg.user):
+    for candidate in _login_candidates(cfg.user, cfg.imap_host):
         try:
             conn.login(candidate, password)
             return conn
@@ -428,16 +450,16 @@ def cmd_configure(args) -> int:
     cfg = Config(user=args.user, from_addr=args.from_addr, name=args.name or "",
                  imap_host=args.imap_host or base["imap_host"], imap_port=args.imap_port or base["imap_port"],
                  smtp_host=args.smtp_host or base["smtp_host"], smtp_port=args.smtp_port or base["smtp_port"],
-                 send_as=args.send_as or None)
-    save_config(cfg, CONFIG_PATH)
+                 send_as=args.send_as or None, secret_name=args.secret_name or SECRET_NAME)
+    save_config(cfg)
     print(f"Wrote {CONFIG_PATH} (login {cfg.user}, sending as {cfg.from_addr}). "
-          f"Secret stays in the keyring as {SECRET_NAME}.")
+          f"Secret stays in the keyring as {cfg.secret_name}.")
     return EXIT_OK
 
 
 def cmd_check(_args) -> int:
     cfg = load_config()
-    pw = _password()
+    pw = _password(cfg)
     try:
         conn = imap_connect(cfg, pw)
     except SystemExit as exc:
@@ -458,7 +480,7 @@ def cmd_check(_args) -> int:
 
 def cmd_folders(args) -> int:
     cfg = load_config()
-    conn = imap_connect(cfg, _password())
+    conn = imap_connect(cfg, _password(cfg))
     rows = list_folders(conn)
     conn.logout()
     print(json.dumps(rows, indent=2) if args.json else "\n".join(f["name"] for f in rows))
@@ -488,7 +510,7 @@ def _criteria(args) -> list[str | bytes]:
 
 def cmd_list(args) -> int:
     cfg = load_config()
-    conn = imap_connect(cfg, _password())
+    conn = imap_connect(cfg, _password(cfg))
     uids = search_uids(conn, args.folder, _criteria(args))
     uids = uids[-args.limit:] if args.limit else uids
     rows = []
@@ -502,7 +524,7 @@ def cmd_list(args) -> int:
 
 def cmd_read(args) -> int:
     cfg = load_config()
-    conn = imap_connect(cfg, _password())
+    conn = imap_connect(cfg, _password(cfg))
     conn.select(_quote(args.folder), readonly=not args.mark_seen)
     msg, flags = fetch_message(conn, args.uid)
     if args.mark_seen:
@@ -558,7 +580,7 @@ def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
 def cmd_draft(args) -> int:
     cfg = load_config()
     check_send_as(cfg)
-    conn = imap_connect(cfg, _password())
+    conn = imap_connect(cfg, _password(cfg))
     msg = _compose(args, cfg, conn)
     drafts = special_folder(conn, "\\Drafts", ("Drafts",))
     append_message(conn, drafts, msg, "(\\Draft \\Seen)")
@@ -574,7 +596,7 @@ def cmd_send(args) -> int:
         return EXIT_REFUSED
     cfg = load_config()
     check_send_as(cfg)
-    pw = _password()
+    pw = _password(cfg)
     conn = imap_connect(cfg, pw)
     msg = _compose(args, cfg, conn)
     smtp = smtp_connect(cfg, pw)
@@ -594,7 +616,7 @@ def cmd_send(args) -> int:
 
 def cmd_mark(args) -> int:
     cfg = load_config()
-    conn = imap_connect(cfg, _password())
+    conn = imap_connect(cfg, _password(cfg))
     conn.select(_quote(args.folder))
     op, flag = {"seen": ("+FLAGS", "\\Seen"), "unseen": ("-FLAGS", "\\Seen"),
                 "flag": ("+FLAGS", "\\Flagged"), "unflag": ("-FLAGS", "\\Flagged")}[args.state]
@@ -606,7 +628,7 @@ def cmd_mark(args) -> int:
 
 def cmd_move(args) -> int:
     cfg = load_config()
-    conn = imap_connect(cfg, _password())
+    conn = imap_connect(cfg, _password(cfg))
     conn.select(_quote(args.folder))
     status, _ = conn.uid("MOVE", args.uid, _quote(args.to))
     if status != "OK":  # servers without MOVE: copy + delete + expunge
@@ -621,7 +643,7 @@ def cmd_move(args) -> int:
 
 def cmd_watch(args) -> int:
     cfg = load_config()
-    pw = _password()
+    pw = _password(cfg)
     seen: set[str] | None = None
     rounds = 0
     while True:
@@ -647,6 +669,8 @@ def cmd_watch(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    p.add_argument("--account", metavar="NAME",
+                   help="use ~/.chief-wiggum/inbox-NAME.json instead of inbox.json")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("configure", help="write ~/.chief-wiggum/inbox.json (no secrets)")
@@ -659,6 +683,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--smtp-host")
     c.add_argument("--smtp-port", type=int)
     c.add_argument("--send-as", nargs="*", help="addresses this account may send as")
+    c.add_argument("--secret-name", help=f"keyring entry for the password (default {SECRET_NAME})")
     c.set_defaults(func=cmd_configure)
 
     sub.add_parser("check", help="verify IMAP and SMTP login; sends nothing").set_defaults(func=cmd_check)
@@ -728,7 +753,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global CONFIG_PATH
     args = build_parser().parse_args(argv)
+    if args.account and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.account):
+        print(f"bad --account {args.account!r}: lowercase letters, digits and hyphens", file=sys.stderr)
+        return EXIT_USAGE
+    default_path = CONFIG_PATH
+    if args.account:
+        CONFIG_PATH = default_path.with_name(f"inbox-{args.account}.json")
     try:
         return args.func(args)
     except SystemExit as exc:
@@ -739,6 +771,8 @@ def main(argv: list[str] | None = None) -> int:
     except (imaplib.IMAP4.error, smtplib.SMTPException, OSError) as exc:
         print(f"mail error: {exc}", file=sys.stderr)
         return EXIT_AUTH
+    finally:
+        CONFIG_PATH = default_path
 
 
 if __name__ == "__main__":

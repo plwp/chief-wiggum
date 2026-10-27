@@ -390,3 +390,42 @@ def test_watch_logs_out_when_fetch_fails(wired, monkeypatch):
     monkeypatch.setattr(inbox, "fetch_message", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     assert inbox.main(["watch", "--once", "--replay", "--since", "2026-10-01"]) == inbox.EXIT_AUTH
     assert outs == ["bye"]
+
+
+def test_purelymail_logs_in_with_full_address_only(monkeypatch):
+    fake = FakeIMAP({}, accepted_users=("eve@ex.net",))
+    monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: fake)
+    cfg = inbox.Config(user="eve@ex.net", from_addr="eve@ex.net", **{
+        k: v for k, v in inbox.PROVIDERS["purelymail"].items()})
+    assert inbox.imap_connect(cfg, "pw") is fake
+    assert fake.logins == ["eve@ex.net"]
+
+
+def test_account_uses_its_own_config_and_secret(tmp_path, monkeypatch, capsys):
+    default = tmp_path / "inbox.json"
+    monkeypatch.setattr(inbox, "CONFIG_PATH", default)
+    rc = inbox.main(["--account", "eve", "configure", "--provider", "purelymail",
+                     "--user", "eve@ex.net", "--from", "eve@ex.net", "--secret-name", "EVE_MAIL_PASSWORD"])
+    assert rc == 0
+    data = json.loads((tmp_path / "inbox-eve.json").read_text())
+    assert data["secret_name"] == "EVE_MAIL_PASSWORD" and data["imap_host"] == "imap.purelymail.com"
+    assert not default.exists() and inbox.CONFIG_PATH == default
+    capsys.readouterr()
+
+    asked = []
+    fake = FakeIMAP({"1": _raw(_plain(subject="Your code"))}, accepted_users=("eve@ex.net",))
+    monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: fake)
+    monkeypatch.setattr(inbox, "get_secret", lambda name: asked.append(name) or "pw")
+    assert inbox.main(["--account", "eve", "list", "--json"]) == 0
+    assert asked == ["EVE_MAIL_PASSWORD"]
+    assert json.loads(capsys.readouterr().out)[0]["subject"] == "Your code"
+
+
+def test_bad_account_name_is_refused(capsys):
+    assert inbox.main(["--account", "../x", "check"]) == inbox.EXIT_USAGE
+
+
+def test_old_config_without_secret_name_uses_icloud_secret(tmp_path):
+    path = tmp_path / "inbox.json"
+    path.write_text(json.dumps({"user": "o@icloud.com", "from_addr": "p@ex.au"}))
+    assert inbox.load_config(path).secret_name == "ICLOUD_MAIL_APP_PASSWORD"
