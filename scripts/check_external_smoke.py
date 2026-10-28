@@ -95,6 +95,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chief_wiggum.annotations import SMOKE_TAG_RE  # noqa: E402
+from chief_wiggum.hashing import scanner_version  # noqa: E402
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -482,13 +483,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Every declared external system needs one real round-trip (chief-wiggum#353)"
     )
-    parser.add_argument("targets", nargs="+", help="Epic directory or contracts.json file(s)")
-    parser.add_argument("--source", required=True, help="Repo root to scan for @cw-smoke sites")
+    parser.add_argument("targets", nargs="*",
+                        help="Epic directory or contracts.json file(s); "
+                             "not required with --scanner-version")
+    parser.add_argument("--source", help="Repo root to scan for @cw-smoke sites")
     parser.add_argument("--results", help="junit-xml results, to verify the smoke actually ran")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     parser.add_argument("--gate", action="store_true",
                         help="Block (exit 1) on findings. Report-only without it.")
+    parser.add_argument(
+        "--scanner-version", action="store_true",
+        help="Print the hash-derived scanner version and exit. The "
+             "gate-validation protocol probes this to detect a record that has "
+             "gone stale against the code it certifies (INV-fh-005).",
+    )
     args = parser.parse_args(argv)
+
+    if args.scanner_version:
+        print(_scanner_version())
+        return EXIT_OK
+
+    if not args.targets or not args.source:
+        parser.error("the following arguments are required: targets, --source")
 
     targets = [Path(t) for t in args.targets]
     missing = [t for t in targets if not t.exists()]
@@ -533,6 +549,166 @@ def main(argv: list[str] | None = None) -> int:
     if report.findings and args.gate:
         return EXIT_FINDINGS
     return EXIT_OK
+
+
+# --- gate-validation replay (docs/gate-validation.md, chief-wiggum#410) -------
+#
+# The seeded trials this gate's validation record cites, as executable
+# mutations of a pinned fixture corpus. `gate_validation_designer.py
+# revalidate check_external_smoke` re-runs every one of them, so a record can
+# never drift into asserting a trial nobody has executed since.
+
+GV_CORPUS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / \
+    "gate_validation" / "external_smoke_clean"
+
+_SKIPPED_CASE = ('<testcase classname="internal/scp" name="TestSCPLiveVenueInfo" '
+                 'file="internal/scp/live_smoke_test.go"/>')
+
+
+def _gv_paths(corpus: Path) -> tuple[Path, Path, Path]:
+    return corpus / "epic", corpus / "src", corpus / "results" / "junit.xml"
+
+
+def _seed_direct(corpus: Path) -> None:
+    """THE defect: the smoke was SKIPPED — credentials absent, build tag off —
+    and a suite that collapses skipped into "not failed" reads green."""
+    results = corpus / "results" / "junit.xml"
+    text = results.read_text()
+    assert _SKIPPED_CASE in text
+    results.write_text(text.replace(
+        _SKIPPED_CASE,
+        _SKIPPED_CASE.replace("/>", "><skipped/></testcase>")))
+
+
+def _seed_omission(corpus: Path) -> None:
+    """Evasion by omission at THIS gate's layer: the @cw-smoke annotation is
+    deleted while the system stays declared external. Nothing then claims to
+    exercise SCP at all."""
+    src = corpus / "src" / "internal" / "scp" / "live_smoke_test.go"
+    text = src.read_text()
+    assert "@cw-smoke" in text
+    src.write_text("\n".join(
+        line for line in text.split("\n") if "@cw-smoke" not in line))
+
+
+def _seed_config_indirection(corpus: Path) -> None:
+    """Disabled by CONFIG, not by editing the assertion: the smoke stays
+    annotated and fully intact in the tree, and a build tag keeps it out of the
+    run entirely, so it never appears in the results."""
+    results = corpus / "results" / "junit.xml"
+    text = results.read_text()
+    assert _SKIPPED_CASE in text
+    results.write_text(text.replace(_SKIPPED_CASE, ""))
+
+
+def _seed_sampling_gap(corpus: Path) -> None:
+    """A passing sibling must not vouch for a skipped one. A second smoke is
+    added for the SAME system and skipped; the original still passes, so a gate
+    that samples any-one-passes reports clean."""
+    src = corpus / "src" / "internal" / "scp" / "second_smoke_test.go"
+    src.write_text(
+        "package scp\n\nimport \"testing\"\n\n"
+        "// @cw-smoke SCP case=TestSCPLiveBookings\n"
+        "func TestSCPLiveBookings(t *testing.T) {}\n")
+    results = corpus / "results" / "junit.xml"
+    text = results.read_text()
+    results.write_text(text.replace(
+        "</testsuite>",
+        '  <testcase classname="internal/scp" name="TestSCPLiveBookings" '
+        'file="internal/scp/second_smoke_test.go"><skipped/></testcase>\n</testsuite>'))
+
+
+def _seed_instrument_broken(corpus: Path) -> None:
+    """The instrument itself breaks: the results file is present and
+    unparseable. Its verdicts are UNKNOWN, which is never a pass — the #289
+    broken-instrument class."""
+    results = corpus / "results" / "junit.xml"
+    results.write_text("<testsuite><testcase name=\"truncated\"")
+
+
+def _seed_boundary_unrelated_skip(corpus: Path) -> None:
+    """A NO-FIRE trial proving the stated boundary: this gate speaks only about
+    DECLARED external systems. An unrelated skipped test, and a non-external
+    operation with no smoke, must not produce a finding."""
+    results = corpus / "results" / "junit.xml"
+    text = results.read_text()
+    results.write_text(text.replace(
+        "</testsuite>",
+        '  <testcase classname="internal/api" name="TestBookingsHandler" '
+        'file="internal/api/bookings_test.go"><skipped/></testcase>\n</testsuite>'))
+
+
+SEED_EXECUTORS = {
+    "es-direct-01": _seed_direct,
+    "es-omission-01": _seed_omission,
+    "es-config-indirection-01": _seed_config_indirection,
+    "es-sampling-gap-01": _seed_sampling_gap,
+    "es-instrument-broken-01": _seed_instrument_broken,
+    "es-sampling-gap-02": _seed_boundary_unrelated_skip,
+}
+
+
+def _gv_outcome(corpus: Path) -> str:
+    """fired / not-fired for a prepared corpus.
+
+    ``error`` counts as FIRED (#289): a harness that only accepted `findings`
+    would score a broken instrument as a clean run, which is the precise
+    conflation this gate exists to prevent.
+    """
+    epic, src, results = _gv_paths(corpus)
+    report = check([epic], src, results if results.is_file() else None)
+    return "fired" if (report.findings or report.unparsed) else "not-fired"
+
+
+def replay_seeded_trial(seed: dict) -> str:
+    """Re-run one seeded trial against a throwaway copy of the pinned corpus."""
+    import shutil
+    import tempfile
+
+    seed_id = str(seed.get("seed_id", ""))
+    if seed_id not in SEED_EXECUTORS:
+        raise KeyError(f"no seed executor for {seed_id!r}")
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        shutil.copytree(GV_CORPUS, corpus)
+        SEED_EXECUTORS[seed_id](corpus)
+        return _gv_outcome(corpus)
+
+
+def replay_clean_corpus() -> dict:
+    """Re-run the clean corpus, deriving coverage from the live run."""
+    import shutil
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        shutil.copytree(GV_CORPUS, corpus)
+        epic, src, results = _gv_paths(corpus)
+        report = check([epic], src, results)
+    return {
+        "repo": "tests/fixtures/gate_validation/external_smoke_clean",
+        "findings": len(report.findings),
+        "coverage": {
+            "external_operations": report.measured["external_operations"],
+            "systems_declared": report.measured["systems_declared"],
+            "source_files_scanned": report.measured["source_files_scanned"],
+            "results_cases": report.measured["results_cases"],
+        },
+        # `applicable` matters as much as the zero: a clean corpus that the gate
+        # found INAPPLICABLE exercised nothing, and would certify the checker on
+        # the strength of a run that never looked at anything.
+        "passed": not report.findings and report.applicability == "applicable",
+    }
+
+
+def _scanner_version() -> str:
+    """Hash-derived ``scanner_version``: this module plus its finding-affecting
+    dependencies. ``annotations.py`` carries the @cw-smoke grammar, so a change
+    there changes which sites this gate sees. No hand-bumped constant to forget
+    (INV-fh-005)."""
+    here = Path(__file__).resolve()
+    cw_dir = here.parent / "chief_wiggum"
+    return scanner_version(here, cw_dir / "annotations.py")
 
 
 if __name__ == "__main__":

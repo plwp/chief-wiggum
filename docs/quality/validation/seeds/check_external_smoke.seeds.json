@@ -1,0 +1,61 @@
+{
+  "gate": "check_external_smoke",
+  "extracted_from": "check_external_smoke.json",
+  "note": "Derived artifact (chief-wiggum#218): seeds versioned separately from gate code. Regenerate with `gate_validation_designer.py extract-seeds check_external_smoke` whenever the record's trials change \u2014 `audit` reports drift between record and seeds file otherwise.",
+  "seeds": [
+    {
+      "seed_id": "es-direct-01",
+      "seed_class": "direct",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/external_smoke_clean",
+      "corpus_digest": "sha256:977045c2256ddff0d6eedab15ca32e414654a5a9cc4502293018a378d35e3afa",
+      "injected": "the smoke's junit case is marked <skipped/> \u2014 credentials absent or the build tag off. The test file, the annotation and the declaration are all untouched; only the RESULT changes, which is exactly how this reaches production behind a green suite.",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "es-omission-01",
+      "seed_class": "evasion-omission",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/external_smoke_clean",
+      "corpus_digest": "sha256:977045c2256ddff0d6eedab15ca32e414654a5a9cc4502293018a378d35e3afa",
+      "injected": "the `@cw-smoke SCP` annotation line is deleted while SCP stays declared external and the test body remains. Nothing then claims to exercise the system at all.",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "es-config-indirection-01",
+      "seed_class": "evasion-config-indirection",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/external_smoke_clean",
+      "corpus_digest": "sha256:977045c2256ddff0d6eedab15ca32e414654a5a9cc4502293018a378d35e3afa",
+      "injected": "the smoke stays annotated and fully intact in the tree; a build tag keeps it out of the run, so its case never appears in the results. Disabled by CONFIG rather than by editing the assertion.",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "es-sampling-gap-01",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/external_smoke_clean",
+      "corpus_digest": "sha256:977045c2256ddff0d6eedab15ca32e414654a5a9cc4502293018a378d35e3afa",
+      "injected": "a SECOND smoke is added for the same system and skipped, while the original still passes. A gate that samples any-one-passes reports clean; a system is only as verified as its weakest smoke.",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "es-instrument-broken-01",
+      "seed_class": "instrument-broken",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/external_smoke_clean",
+      "corpus_digest": "sha256:977045c2256ddff0d6eedab15ca32e414654a5a9cc4502293018a378d35e3afa",
+      "injected": "the results file is present and unparseable. Its verdicts are UNKNOWN, which is never a pass (chief-wiggum#289's broken-instrument class).",
+      "expected": "fire"
+    },
+    {
+      "seed_id": "es-sampling-gap-02",
+      "seed_class": "evasion-sampling-gap",
+      "seed_version": "1",
+      "corpus": "tests/fixtures/gate_validation/external_smoke_clean",
+      "corpus_digest": "sha256:977045c2256ddff0d6eedab15ca32e414654a5a9cc4502293018a378d35e3afa",
+      "injected": "BOUNDARY (no-fire) trial: an unrelated NON-external test is skipped in the same results, alongside a non-external declared operation carrying no smoke. Proves the gate samples only DECLARED external systems \u2014 a skip elsewhere in the suite is outside its authority and must not produce a finding.",
+      "expected": "no-fire"
+    }
+  ]
+}
