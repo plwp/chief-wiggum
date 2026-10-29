@@ -429,3 +429,17 @@ def test_old_config_without_secret_name_uses_icloud_secret(tmp_path):
     path = tmp_path / "inbox.json"
     path.write_text(json.dumps({"user": "o@icloud.com", "from_addr": "p@ex.au"}))
     assert inbox.load_config(path).secret_name == "ICLOUD_MAIL_APP_PASSWORD"
+
+
+def test_build_message_attaches_files(tmp_path):
+    from pathlib import Path
+    import inbox
+    f = tmp_path / "scores.xlsx"
+    f.write_bytes(b"PK\x03\x04fake")
+    cfg = inbox.Config(user="u", from_addr="pat@example.com.au", name="Pat")
+    msg = inbox.build_message(cfg, ["a@example.com"], "Subj", "Body", attachments=[f])
+    parts = [p for p in msg.iter_attachments()]
+    assert [p.get_filename() for p in parts] == ["scores.xlsx"]
+    assert parts[0].get_content_type() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert parts[0].get_payload(decode=True) == b"PK\x03\x04fake"
+    assert msg.get_body(preferencelist=("plain",)).get_content().strip() == "Body"
