@@ -56,6 +56,7 @@ import email.utils
 import html
 import imaplib
 import json
+import mimetypes
 import re
 import smtplib
 import ssl
@@ -64,7 +65,6 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from email.header import decode_header, make_header
-import mimetypes
 from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
@@ -136,10 +136,15 @@ def _password(cfg: Config) -> str:
     name = cfg.secret_name
     secret = get_secret(name)
     if not secret:
-        hint = (" Generate an app-specific password (account.apple.com > Sign-In and Security > "
-                "App-Specific Passwords) and store it" if name == SECRET_NAME else " Store it")
-        raise SystemExit(f"{name} is not in the keyring.{hint} with: "
-                         f"python3 scripts/keychain.py set {name}")
+        hint = (
+            " Generate an app-specific password (account.apple.com > Sign-In and Security > "
+            "App-Specific Passwords) and store it"
+            if name == SECRET_NAME
+            else " Store it"
+        )
+        raise SystemExit(
+            f"{name} is not in the keyring.{hint} with: python3 scripts/keychain.py set {name}"
+        )
     return secret.strip()
 
 
@@ -173,8 +178,10 @@ def imap_connect(cfg: Config, password: str) -> imaplib.IMAP4_SSL:
         except imaplib.IMAP4.error as exc:  # wrong username form; try the next
             last = exc
     conn.logout()
-    raise SystemExit(f"IMAP login failed for {cfg.user} (tried local part and full address): "
-                     f"{_redact(last, password)}")
+    raise SystemExit(
+        f"IMAP login failed for {cfg.user} (tried local part and full address): "
+        f"{_redact(last, password)}"
+    )
 
 
 def smtp_connect(cfg: Config, password: str) -> smtplib.SMTP:
@@ -226,7 +233,9 @@ def special_folder(conn: imaplib.IMAP4, use: str, fallbacks: tuple[str, ...]) ->
     for fb in fallbacks:
         if fb in names:
             return fb
-    raise SystemExit(f"No folder with {use} and none of {fallbacks} exist; folders: {sorted(names)}")
+    raise SystemExit(
+        f"No folder with {use} and none of {fallbacks} exist; folders: {sorted(names)}"
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -302,8 +311,13 @@ def message_body(msg: EmailMessage) -> tuple[str, list[dict]]:
         filename = part.get_filename()
         ctype = part.get_content_type()
         if disposition == "attachment" or (filename and ctype not in {"text/plain", "text/html"}):
-            attachments.append({"filename": _decode(filename) or "unnamed", "content_type": ctype,
-                                "size": len(_payload_bytes(part))})
+            attachments.append(
+                {
+                    "filename": _decode(filename) or "unnamed",
+                    "content_type": ctype,
+                    "size": len(_payload_bytes(part)),
+                }
+            )
             continue
         try:
             content = part.get_content()
@@ -342,7 +356,9 @@ def _parse_flags(fetch_meta: bytes) -> list[str]:
     return m.group(1).decode().split() if m else []
 
 
-def fetch_message(conn: imaplib.IMAP4, uid: str, headers_only: bool = False) -> tuple[EmailMessage, list[str]]:
+def fetch_message(
+    conn: imaplib.IMAP4, uid: str, headers_only: bool = False
+) -> tuple[EmailMessage, list[str]]:
     what = "(FLAGS BODY.PEEK[HEADER])" if headers_only else "(FLAGS BODY.PEEK[])"
     status, data = conn.uid("FETCH", uid, what)
     if status != "OK" or not data or data[0] is None:
@@ -387,10 +403,18 @@ def _check_addresses(addrs: list[str]) -> None:
             raise SystemExit(f"Not a usable address: {a!r}")
 
 
-def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: list[str] | None = None,
-                  reply_to: EmailMessage | None = None, html: str | None = None,
-                  inline_images: dict[str, bytes] | None = None,
-                  attachments: list[Path] | None = None) -> EmailMessage:
+def build_message(
+    cfg: Config,
+    to: list[str],
+    subject: str,
+    body: str,
+    *,
+    cc: list[str] | None = None,
+    reply_to: EmailMessage | None = None,
+    html: str | None = None,
+    inline_images: dict[str, bytes] | None = None,
+    attachments: list[Path] | None = None,
+) -> EmailMessage:
     """Plain text by default; with ``html`` the message is multipart/alternative (text first, HTML second).
 
     ``inline_images`` maps a Content-ID name to PNG bytes; the HTML refers to each as ``cid:NAME``.
@@ -424,7 +448,9 @@ def build_message(cfg: Config, to: list[str], subject: str, body: str, *, cc: li
     for path in attachments or []:
         ctype, _ = mimetypes.guess_type(path.name)
         maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
-        msg.add_attachment(path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name)
+        msg.add_attachment(
+            path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name
+        )
     return msg
 
 
@@ -434,7 +460,9 @@ def check_send_as(cfg: Config) -> None:
 
 
 def append_message(conn: imaplib.IMAP4, folder: str, msg: EmailMessage, flags: str) -> None:
-    status, _ = conn.append(_quote(folder), flags, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    status, _ = conn.append(
+        _quote(folder), flags, imaplib.Time2Internaldate(time.time()), msg.as_bytes()
+    )
     if status != "OK":
         raise SystemExit(f"APPEND to {folder} failed: {status}")
 
@@ -454,13 +482,22 @@ def _emit(rows, as_json: bool) -> None:
 
 def cmd_configure(args) -> int:
     base = PROVIDERS[args.provider]
-    cfg = Config(user=args.user, from_addr=args.from_addr, name=args.name or "",
-                 imap_host=args.imap_host or base["imap_host"], imap_port=args.imap_port or base["imap_port"],
-                 smtp_host=args.smtp_host or base["smtp_host"], smtp_port=args.smtp_port or base["smtp_port"],
-                 send_as=args.send_as or None, secret_name=args.secret_name or SECRET_NAME)
+    cfg = Config(
+        user=args.user,
+        from_addr=args.from_addr,
+        name=args.name or "",
+        imap_host=args.imap_host or base["imap_host"],
+        imap_port=args.imap_port or base["imap_port"],
+        smtp_host=args.smtp_host or base["smtp_host"],
+        smtp_port=args.smtp_port or base["smtp_port"],
+        send_as=args.send_as or None,
+        secret_name=args.secret_name or SECRET_NAME,
+    )
     save_config(cfg)
-    print(f"Wrote {CONFIG_PATH} (login {cfg.user}, sending as {cfg.from_addr}). "
-          f"Secret stays in the keyring as {cfg.secret_name}.")
+    print(
+        f"Wrote {CONFIG_PATH} (login {cfg.user}, sending as {cfg.from_addr}). "
+        f"Secret stays in the keyring as {cfg.secret_name}."
+    )
     return EXIT_OK
 
 
@@ -474,7 +511,9 @@ def cmd_check(_args) -> int:
         return EXIT_AUTH
     folders = [f["name"] for f in list_folders(conn)]
     conn.logout()
-    print(f"imap: ok ({len(folders)} folders: {', '.join(folders[:8])}{'...' if len(folders) > 8 else ''})")
+    print(
+        f"imap: ok ({len(folders)} folders: {', '.join(folders[:8])}{'...' if len(folders) > 8 else ''})"
+    )
     try:
         smtp = smtp_connect(cfg, pw)
         smtp.quit()
@@ -502,7 +541,14 @@ def _criteria(args) -> list[str | bytes]:
         crit.append("UNSEEN")
     if getattr(args, "since", None):
         crit += ["SINCE", _imap_date(args.since)]
-    terms = [(k, v) for k, v in (("FROM", getattr(args, "from_", None)), ("SUBJECT", getattr(args, "subject", None))) if v]
+    terms = [
+        (k, v)
+        for k, v in (
+            ("FROM", getattr(args, "from_", None)),
+            ("SUBJECT", getattr(args, "subject", None)),
+        )
+        if v
+    ]
     non_ascii = [t for t in terms if not t[1].isascii()]
     if len(non_ascii) > 1:
         raise SystemExit("Only one of --from/--subject may contain non-ASCII characters")
@@ -519,7 +565,7 @@ def cmd_list(args) -> int:
     cfg = load_config()
     conn = imap_connect(cfg, _password(cfg))
     uids = search_uids(conn, args.folder, _criteria(args))
-    uids = uids[-args.limit:] if args.limit else uids
+    uids = uids[-args.limit :] if args.limit else uids
     rows = []
     for uid in reversed(uids):
         msg, flags = fetch_message(conn, uid, headers_only=True)
@@ -546,12 +592,21 @@ def cmd_read(args) -> int:
     if args.save_attachments:
         saved = [str(p) for p in save_attachments(msg, Path(args.save_attachments))]
     if args.json:
-        print(json.dumps({**summary, "body": body, "attachments": attachments, "saved": saved}, indent=2))
+        print(
+            json.dumps(
+                {**summary, "body": body, "attachments": attachments, "saved": saved}, indent=2
+            )
+        )
         return EXIT_OK
     for k in ("from", "to", "date", "subject"):
         print(f"{k.capitalize()}: {summary[k]}")
     if attachments:
-        print("Attachments: " + ", ".join(f"{a['filename']} ({a['content_type']}, {a['size']} B)" for a in attachments))
+        print(
+            "Attachments: "
+            + ", ".join(
+                f"{a['filename']} ({a['content_type']}, {a['size']} B)" for a in attachments
+            )
+        )
     if saved:
         print("Saved: " + ", ".join(saved))
     print()
@@ -584,8 +639,17 @@ def _compose(args, cfg: Config, conn: imaplib.IMAP4) -> EmailMessage:
     for p in attachments:
         if not p.is_file():
             raise SystemExit(f"--attach: not a file: {p}")
-    return build_message(cfg, args.to, args.subject, body, cc=args.cc, reply_to=parent, html=html,
-                         inline_images=images or None, attachments=attachments or None)
+    return build_message(
+        cfg,
+        args.to,
+        args.subject,
+        body,
+        cc=args.cc,
+        reply_to=parent,
+        html=html,
+        inline_images=images or None,
+        attachments=attachments or None,
+    )
 
 
 def cmd_draft(args) -> int:
@@ -596,14 +660,18 @@ def cmd_draft(args) -> int:
     drafts = special_folder(conn, "\\Drafts", ("Drafts",))
     append_message(conn, drafts, msg, "(\\Draft \\Seen)")
     conn.logout()
-    print(f"Draft saved to {drafts!r}: to={msg['To']} subject={msg['Subject']!r}. Review and send from Mail.")
+    print(
+        f"Draft saved to {drafts!r}: to={msg['To']} subject={msg['Subject']!r}. Review and send from Mail."
+    )
     return EXIT_OK
 
 
 def cmd_send(args) -> int:
     if not args.confirm:
-        print("Refusing to send without --confirm. Use `draft` to stage it for human review instead.",
-              file=sys.stderr)
+        print(
+            "Refusing to send without --confirm. Use `draft` to stage it for human review instead.",
+            file=sys.stderr,
+        )
         return EXIT_REFUSED
     cfg = load_config()
     check_send_as(cfg)
@@ -621,7 +689,9 @@ def cmd_send(args) -> int:
         conn.select(_quote(args.folder))
         conn.uid("STORE", args.reply_to, "+FLAGS", "(\\Answered)")
     conn.logout()
-    print(f"Sent to {msg['To']} as {cfg.from_addr}; copy in {sent!r}; Message-ID {msg['Message-ID']}")
+    print(
+        f"Sent to {msg['To']} as {cfg.from_addr}; copy in {sent!r}; Message-ID {msg['Message-ID']}"
+    )
     return EXIT_OK
 
 
@@ -629,8 +699,12 @@ def cmd_mark(args) -> int:
     cfg = load_config()
     conn = imap_connect(cfg, _password(cfg))
     conn.select(_quote(args.folder))
-    op, flag = {"seen": ("+FLAGS", "\\Seen"), "unseen": ("-FLAGS", "\\Seen"),
-                "flag": ("+FLAGS", "\\Flagged"), "unflag": ("-FLAGS", "\\Flagged")}[args.state]
+    op, flag = {
+        "seen": ("+FLAGS", "\\Seen"),
+        "unseen": ("-FLAGS", "\\Seen"),
+        "flag": ("+FLAGS", "\\Flagged"),
+        "unflag": ("-FLAGS", "\\Flagged"),
+    }[args.state]
     status, _ = conn.uid("STORE", args.uid, op, f"({flag})")
     conn.logout()
     print(f"{args.uid}: {args.state} ({status})")
@@ -660,7 +734,11 @@ def cmd_watch(args) -> int:
     while True:
         conn = imap_connect(cfg, pw)
         try:
-            uids = set(search_uids(conn, args.folder, ["SINCE", _imap_date(args.since or date.today().isoformat())]))
+            uids = set(
+                search_uids(
+                    conn, args.folder, ["SINCE", _imap_date(args.since or date.today().isoformat())]
+                )
+            )
             if seen is None:
                 seen = uids if not args.replay else set()
             for uid in sorted(uids - seen, key=int):
@@ -680,8 +758,11 @@ def cmd_watch(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    p.add_argument("--account", metavar="NAME",
-                   help="use ~/.chief-wiggum/inbox-NAME.json instead of inbox.json")
+    p.add_argument(
+        "--account",
+        metavar="NAME",
+        help="use ~/.chief-wiggum/inbox-NAME.json instead of inbox.json",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("configure", help="write ~/.chief-wiggum/inbox.json (no secrets)")
@@ -697,7 +778,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--secret-name", help=f"keyring entry for the password (default {SECRET_NAME})")
     c.set_defaults(func=cmd_configure)
 
-    sub.add_parser("check", help="verify IMAP and SMTP login; sends nothing").set_defaults(func=cmd_check)
+    sub.add_parser("check", help="verify IMAP and SMTP login; sends nothing").set_defaults(
+        func=cmd_check
+    )
 
     f = sub.add_parser("folders")
     f.add_argument("--json", action="store_true")
@@ -719,24 +802,41 @@ def build_parser() -> argparse.ArgumentParser:
     rd.add_argument("--raw", action="store_true", help="full RFC822 source")
     rd.add_argument("--json", action="store_true")
     rd.add_argument("--mark-seen", action="store_true")
-    rd.add_argument("--save-attachments", metavar="DIR", help="save attachments into a NEW directory")
+    rd.add_argument(
+        "--save-attachments", metavar="DIR", help="save attachments into a NEW directory"
+    )
     rd.set_defaults(func=cmd_read)
 
-    for name, func, helptext in (("draft", cmd_draft, "stage a message in Drafts for human review"),
-                                 ("send", cmd_send, "send over SMTP (requires --confirm)")):
+    for name, func, helptext in (
+        ("draft", cmd_draft, "stage a message in Drafts for human review"),
+        ("send", cmd_send, "send over SMTP (requires --confirm)"),
+    ):
         s = sub.add_parser(name, help=helptext)
         s.add_argument("--to", nargs="*")
         s.add_argument("--cc", nargs="*")
         s.add_argument("--subject")
         s.add_argument("--body-file", help="plain-text body; stdin if omitted")
-        s.add_argument("--html-file", help="HTML body sent as the alternative to the plain text (the plain text stays the fallback)")
-        s.add_argument("--inline-image", action="append", metavar="NAME=PATH",
-                       help="PNG embedded in the HTML as cid:NAME (repeatable; needs --html-file)")
-        s.add_argument("--attach", action="append", metavar="PATH", help="file to attach (repeatable)")
-        s.add_argument("--reply-to", metavar="UID", help="thread onto this message; derives --to/--subject")
+        s.add_argument(
+            "--html-file",
+            help="HTML body sent as the alternative to the plain text (the plain text stays the fallback)",
+        )
+        s.add_argument(
+            "--inline-image",
+            action="append",
+            metavar="NAME=PATH",
+            help="PNG embedded in the HTML as cid:NAME (repeatable; needs --html-file)",
+        )
+        s.add_argument(
+            "--attach", action="append", metavar="PATH", help="file to attach (repeatable)"
+        )
+        s.add_argument(
+            "--reply-to", metavar="UID", help="thread onto this message; derives --to/--subject"
+        )
         s.add_argument("--folder", default="INBOX", help="folder of --reply-to")
         if name == "send":
-            s.add_argument("--confirm", action="store_true", help="the human approved this exact message")
+            s.add_argument(
+                "--confirm", action="store_true", help="the human approved this exact message"
+            )
         s.set_defaults(func=func)
 
     mk = sub.add_parser("mark")
@@ -757,8 +857,12 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--folder", default="INBOX")
     w.add_argument("--interval", type=int, default=300, help="seconds between polls")
     w.add_argument("--since", help="YYYY-MM-DD window (default: today)")
-    w.add_argument("--replay", action="store_true", help="emit messages already present on the first poll")
-    w.add_argument("--once", action="store_true", help="single poll (use with --replay for a snapshot)")
+    w.add_argument(
+        "--replay", action="store_true", help="emit messages already present on the first poll"
+    )
+    w.add_argument(
+        "--once", action="store_true", help="single poll (use with --replay for a snapshot)"
+    )
     w.add_argument("--max-rounds", type=int, default=0)
     w.set_defaults(func=cmd_watch)
     return p
@@ -768,7 +872,10 @@ def main(argv: list[str] | None = None) -> int:
     global CONFIG_PATH
     args = build_parser().parse_args(argv)
     if args.account and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.account):
-        print(f"bad --account {args.account!r}: lowercase letters, digits and hyphens", file=sys.stderr)
+        print(
+            f"bad --account {args.account!r}: lowercase letters, digits and hyphens",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     default_path = CONFIG_PATH
     if args.account:
