@@ -13,8 +13,12 @@ import inbox  # noqa: E402
 
 
 def _cfg(**over):
-    base = dict(user="owner@icloud.com", from_addr="pat@example.com.au", name="Pat",
-                send_as=["pat@example.com.au", "go@example.com.au"])
+    base = dict(
+        user="owner@icloud.com",
+        from_addr="pat@example.com.au",
+        name="Pat",
+        send_as=["pat@example.com.au", "go@example.com.au"],
+    )
     base.update(over)
     return inbox.Config(**base)
 
@@ -46,9 +50,11 @@ class FakeIMAP:
 
     # folders
     def list(self):
-        return "OK", [b'(\\HasNoChildren) "/" INBOX',
-                      b'(\\HasNoChildren \\Drafts) "/" Drafts',
-                      b'(\\HasNoChildren \\Sent) "/" "Sent Messages"']
+        return "OK", [
+            b'(\\HasNoChildren) "/" INBOX',
+            b'(\\HasNoChildren \\Drafts) "/" Drafts',
+            b'(\\HasNoChildren \\Sent) "/" "Sent Messages"',
+        ]
 
     def select(self, folder, readonly=False):
         self.selected = folder
@@ -99,8 +105,10 @@ def test_message_body_prefers_plain_over_html():
 def test_message_body_falls_back_to_html_text_and_lists_attachments():
     m = EmailMessage()
     m["Subject"] = "x"
-    m.set_content("<html><style>p{}</style><body><p>Line one</p><p>Line &amp; two</p></body></html>",
-                  subtype="html")
+    m.set_content(
+        "<html><style>p{}</style><body><p>Line one</p><p>Line &amp; two</p></body></html>",
+        subtype="html",
+    )
     m.add_attachment(b"%PDF-1.4", maintype="application", subtype="pdf", filename="cert.pdf")
     body, attachments = inbox.message_body(m)
     assert body == "Line one\nLine & two"
@@ -145,7 +153,9 @@ def test_build_message_threads_a_reply():
 
 
 def test_build_message_html_is_an_alternative_with_plain_fallback():
-    msg = inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain words", html="<p><b>rich</b> words</p>")
+    msg = inbox.build_message(
+        _cfg(), ["alice@example.org"], "Digest", "plain words", html="<p><b>rich</b> words</p>"
+    )
     assert msg.get_content_type() == "multipart/alternative"
     parts = list(msg.iter_parts())
     assert [p.get_content_type() for p in parts] == ["text/plain", "text/html"]
@@ -156,8 +166,14 @@ def test_build_message_html_is_an_alternative_with_plain_fallback():
 
 def test_build_message_inline_images_are_related_to_the_html_part():
     png = b"\x89PNG\r\n\x1a\nfake"
-    msg = inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain", html='<img src="cid:chart">',
-                              inline_images={"chart": png})
+    msg = inbox.build_message(
+        _cfg(),
+        ["alice@example.org"],
+        "Digest",
+        "plain",
+        html='<img src="cid:chart">',
+        inline_images={"chart": png},
+    )
     assert msg.get_content_type() == "multipart/alternative"
     plain, rich = list(msg.iter_parts())
     assert plain.get_content_type() == "text/plain"
@@ -171,8 +187,16 @@ def test_build_message_inline_images_are_related_to_the_html_part():
 
 def test_build_message_rejects_odd_inline_image_names():
     import pytest
+
     with pytest.raises(SystemExit):
-        inbox.build_message(_cfg(), ["alice@example.org"], "Digest", "plain", html="<p>x</p>", inline_images={"bad name": b"x"})
+        inbox.build_message(
+            _cfg(),
+            ["alice@example.org"],
+            "Digest",
+            "plain",
+            html="<p>x</p>",
+            inline_images={"bad name": b"x"},
+        )
 
 
 def test_build_message_without_html_stays_plain():
@@ -210,8 +234,10 @@ def test_imap_login_failure_exits_without_echoing_password(monkeypatch):
 
 @pytest.fixture
 def wired(monkeypatch, tmp_path):
-    msgs = {"1": _raw(_plain(subject="First", msgid="<one@ex>")),
-            "2": _raw(_plain(subject="Second", body="read me", msgid="<two@ex>"))}
+    msgs = {
+        "1": _raw(_plain(subject="First", msgid="<one@ex>")),
+        "2": _raw(_plain(subject="Second", body="read me", msgid="<two@ex>")),
+    }
     fake = FakeIMAP(msgs)
     monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: fake)
     monkeypatch.setattr(inbox, "load_config", lambda path=None: _cfg())
@@ -300,6 +326,7 @@ def test_criteria_sends_non_ascii_term_as_utf8_literal():
         since = None
         from_ = None
         subject = "Café"
+
     assert inbox._criteria(A()) == ["CHARSET", "UTF-8", "UNSEEN", "SUBJECT", "Café".encode()]
     A.subject = "plain"
     assert inbox._criteria(A()) == ["UNSEEN", "SUBJECT", '"plain"']
@@ -337,6 +364,7 @@ def test_auth_error_redacts_echoed_secret(monkeypatch):
     class Echoing(FakeIMAP):
         def login(self, user, pw):
             raise imaplib.IMAP4.error(f"NO bad credentials {pw}")
+
     monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: Echoing({}))
     with pytest.raises(SystemExit) as exc:
         inbox.imap_connect(_cfg(), "hunter2")
@@ -365,15 +393,31 @@ def test_move_falls_back_to_copy_delete_expunge(wired, capsys):
     wired.uid = uid
     wired.expunge = lambda: calls.append(("EXPUNGE",))
     assert inbox.main(["move", "1", "--to", "Archive"]) == 0
-    assert calls == [("MOVE", "1", '"Archive"'), ("COPY", "1", '"Archive"'),
-                     ("STORE", "1", "+FLAGS", "(\\Deleted)"), ("EXPUNGE",)]
+    assert calls == [
+        ("MOVE", "1", '"Archive"'),
+        ("COPY", "1", '"Archive"'),
+        ("STORE", "1", "+FLAGS", "(\\Deleted)"),
+        ("EXPUNGE",),
+    ]
 
 
 def test_configure_roundtrip_keeps_secret_out(tmp_path, monkeypatch, capsys):
     path = tmp_path / "inbox.json"
     monkeypatch.setattr(inbox, "CONFIG_PATH", path)
-    rc = inbox.main(["configure", "--user", "o@icloud.com", "--from", "p@ex.au", "--name", "P",
-                     "--send-as", "p@ex.au", "g@ex.au"])
+    rc = inbox.main(
+        [
+            "configure",
+            "--user",
+            "o@icloud.com",
+            "--from",
+            "p@ex.au",
+            "--name",
+            "P",
+            "--send-as",
+            "p@ex.au",
+            "g@ex.au",
+        ]
+    )
     assert rc == 0
     data = json.loads(path.read_text())
     assert data["user"] == "o@icloud.com" and data["from_addr"] == "p@ex.au"
@@ -387,6 +431,80 @@ def test_configure_roundtrip_keeps_secret_out(tmp_path, monkeypatch, capsys):
 def test_watch_logs_out_when_fetch_fails(wired, monkeypatch):
     outs = []
     wired.logout = lambda: outs.append("bye") or ("BYE", [])
-    monkeypatch.setattr(inbox, "fetch_message", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(
+        inbox, "fetch_message", lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+    )
     assert inbox.main(["watch", "--once", "--replay", "--since", "2026-10-01"]) == inbox.EXIT_AUTH
     assert outs == ["bye"]
+
+
+def test_purelymail_logs_in_with_full_address_only(monkeypatch):
+    fake = FakeIMAP({}, accepted_users=("eve@ex.net",))
+    monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: fake)
+    cfg = inbox.Config(
+        user="eve@ex.net",
+        from_addr="eve@ex.net",
+        **{k: v for k, v in inbox.PROVIDERS["purelymail"].items()},
+    )
+    assert inbox.imap_connect(cfg, "pw") is fake
+    assert fake.logins == ["eve@ex.net"]
+
+
+def test_account_uses_its_own_config_and_secret(tmp_path, monkeypatch, capsys):
+    default = tmp_path / "inbox.json"
+    monkeypatch.setattr(inbox, "CONFIG_PATH", default)
+    rc = inbox.main(
+        [
+            "--account",
+            "eve",
+            "configure",
+            "--provider",
+            "purelymail",
+            "--user",
+            "eve@ex.net",
+            "--from",
+            "eve@ex.net",
+            "--secret-name",
+            "EVE_MAIL_PASSWORD",
+        ]
+    )
+    assert rc == 0
+    data = json.loads((tmp_path / "inbox-eve.json").read_text())
+    assert data["secret_name"] == "EVE_MAIL_PASSWORD" and data["imap_host"] == "imap.purelymail.com"
+    assert not default.exists() and inbox.CONFIG_PATH == default
+    capsys.readouterr()
+
+    asked = []
+    fake = FakeIMAP({"1": _raw(_plain(subject="Your code"))}, accepted_users=("eve@ex.net",))
+    monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *a, **k: fake)
+    monkeypatch.setattr(inbox, "get_secret", lambda name: asked.append(name) or "pw")
+    assert inbox.main(["--account", "eve", "list", "--json"]) == 0
+    assert asked == ["EVE_MAIL_PASSWORD"]
+    assert json.loads(capsys.readouterr().out)[0]["subject"] == "Your code"
+
+
+def test_bad_account_name_is_refused(capsys):
+    assert inbox.main(["--account", "../x", "check"]) == inbox.EXIT_USAGE
+
+
+def test_old_config_without_secret_name_uses_icloud_secret(tmp_path):
+    path = tmp_path / "inbox.json"
+    path.write_text(json.dumps({"user": "o@icloud.com", "from_addr": "p@ex.au"}))
+    assert inbox.load_config(path).secret_name == "ICLOUD_MAIL_APP_PASSWORD"
+
+
+def test_build_message_attaches_files(tmp_path):
+    import inbox
+
+    f = tmp_path / "scores.xlsx"
+    f.write_bytes(b"PK\x03\x04fake")
+    cfg = inbox.Config(user="u", from_addr="pat@example.com.au", name="Pat")
+    msg = inbox.build_message(cfg, ["a@example.com"], "Subj", "Body", attachments=[f])
+    parts = [p for p in msg.iter_attachments()]
+    assert [p.get_filename() for p in parts] == ["scores.xlsx"]
+    assert (
+        parts[0].get_content_type()
+        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert parts[0].get_payload(decode=True) == b"PK\x03\x04fake"
+    assert msg.get_body(preferencelist=("plain",)).get_content().strip() == "Body"
