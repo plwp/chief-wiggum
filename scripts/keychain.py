@@ -51,6 +51,18 @@ KNOWN_KEYS = [
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
     "ICLOUD_MAIL_APP_PASSWORD",
+    # Agent mailboxes (inbox.py --account kit|eve|robbie)
+    "AGENT_MAIL_KIT_PASSWORD",
+    "AGENT_MAIL_EVE_PASSWORD",
+    "AGENT_MAIL_ROBBIE_PASSWORD",
+    # Tender portals (tenders tools/fetch_pack.py)
+    "VENDORPANEL_PASSWORD",
+    "TENDERS_VIC_PASSWORD",
+    "SL360_PASSWORD",
+    # Other services
+    "DOCUMENSO_API_TOKEN",
+    "BLUESKY_DTD_APP_PASSWORD",
+    "TELNYX_API_KEY",
 ]
 
 
