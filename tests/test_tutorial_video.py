@@ -260,3 +260,54 @@ def test_narrate_with_setup_reaches_engine_resolution(tmp_path, monkeypatch):
                               engine="say", voice=None, tts_model=None)
     tv.cmd_narrate(args)
     assert calls == ["Welcome to the demo."]
+
+
+def test_storage_state_validated():
+    board = {"title": "t", "storage_state": "", "scenes": [{"id": "a", "narration": "n", "actions": [{"type": "goto", "url": "/"}]}]}
+    assert any("storage_state" in e for e in tv.validate_storyboard(board))
+    board["storage_state"] = "{{var:state}}"
+    assert tv.validate_storyboard(board) == []
+
+
+class _FakeLocator:
+    def __init__(self, input_type):
+        self.input_type, self.calls = input_type, []
+        self.first = self
+
+    def get_attribute(self, name):
+        return self.input_type
+
+    def __getattr__(self, name):
+        return lambda *a, **k: self.calls.append((name, a))
+
+
+class _FakePage:
+    def __init__(self, locator):
+        self.loc = locator
+
+    def locator(self, selector):
+        return self.loc
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+@pytest.mark.parametrize("input_type", ["date", "time"])
+def test_fill_sets_date_and_time_inputs_whole(input_type):
+    loc = _FakeLocator(input_type)
+    tv.run_action(_FakePage(loc), {"type": "fill", "selector": "x", "value": "2026-11-14"}, None, 0, {})
+    assert ("fill", ("2026-11-14",)) in loc.calls
+    assert not any(name == "press_sequentially" for name, _ in loc.calls)
+
+
+def test_fill_types_text_inputs():
+    loc = _FakeLocator("text")
+    tv.run_action(_FakePage(loc), {"type": "fill", "selector": "x", "value": "Biscuit"}, None, 0, {})
+    assert ("press_sequentially", ("Biscuit",)) in loc.calls
+
+
+def test_dialogs_validated():
+    board = {"title": "t", "dialogs": "maybe", "scenes": [{"id": "a", "narration": "n", "actions": [{"type": "goto", "url": "/"}]}]}
+    assert any("dialogs" in e for e in tv.validate_storyboard(board))
+    board["dialogs"] = "accept"
+    assert tv.validate_storyboard(board) == []

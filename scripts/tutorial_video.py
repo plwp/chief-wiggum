@@ -79,6 +79,9 @@ ACTION_TYPES = {
     "upload": {"selector", "file"},
 }
 
+# Input types a `fill` action sets in one step (ISO value) instead of typing.
+TYPED_AS_WHOLE_VALUE = {"date", "time", "datetime-local", "month", "week"}
+
 # Visible cursor + click ripple, injected before any page script so the
 # recording shows where the mouse is. Playwright's synthetic input fires real
 # mousemove/mousedown events, which this listens for at the document level.
@@ -136,6 +139,11 @@ def validate_storyboard(board: dict) -> list[str]:
     else:
         for j, action in enumerate(setup):
             errors.extend(validate_action(action, f"setup[{j}]"))
+    storage_state = board.get("storage_state")
+    if storage_state is not None and not (isinstance(storage_state, str) and storage_state.strip()):
+        errors.append("'storage_state' must be a non-empty path string")
+    if board.get("dialogs", "dismiss") not in ("accept", "dismiss"):
+        errors.append("'dialogs' must be 'accept' or 'dismiss'")
     pronunciations = board.get("pronunciations", {})
     if not (
         isinstance(pronunciations, dict)
@@ -400,9 +408,19 @@ def run_action(page, action: dict, base_url: str | None, pace: float, variables:
         locator.click(delay=120)
     elif atype == "fill":
         locator = page.locator(action["selector"]).first
-        locator.click()
-        locator.fill("")  # replace, don't append to, any existing value
-        locator.press_sequentially(resolve_value(str(action["value"]), variables), delay=45)
+        value = resolve_value(str(action["value"]), variables)
+        input_type = (locator.get_attribute("type") or "").lower()
+        if input_type in TYPED_AS_WHOLE_VALUE:
+            # Date/time pickers are segmented: keystrokes land in whichever
+            # segment the click hit, so typed digits build nonsense values
+            # (year 0014, then 14112). Set the ISO value in one step instead.
+            locator.hover()
+            page.wait_for_timeout(300)
+            locator.fill(value)
+        else:
+            locator.click()
+            locator.fill("")  # replace, don't append to, any existing value
+            locator.press_sequentially(value, delay=45)
     elif atype == "press":
         page.locator(action["selector"]).first.press(action["key"])
     elif atype == "hover":
@@ -466,11 +484,26 @@ def cmd_record(args) -> None:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=not args.headed)
         context_kwargs: dict = {"viewport": viewport}
+        # storage_state: a Playwright storage-state file (cookies, localStorage,
+        # IndexedDB) the context starts from, for apps whose sign-in cannot be
+        # driven by clicks (popup OAuth, custom tokens). The file holds live
+        # session tokens, so storyboards name it via {{var:...}} and it stays
+        # out of the repo.
+        if board.get("storage_state"):
+            state_path = Path(resolve_value(str(board["storage_state"]), variables)).expanduser()
+            if not state_path.is_file():
+                raise SystemExit(f"storage_state file not found: {state_path}")
+            context_kwargs["storage_state"] = str(state_path)
         if not args.dry_run:
             context_kwargs["record_video_dir"] = str(out_dir)
             context_kwargs["record_video_size"] = viewport
         context = browser.new_context(**context_kwargs)
         context.add_init_script(CURSOR_OVERLAY_JS)
+        # Native alert/confirm/prompt dialogs: Playwright dismisses them by
+        # default, so a "Revoke? OK/Cancel" confirm silently cancels the
+        # action. "dialogs": "accept" answers OK on every page of the context.
+        if board.get("dialogs") == "accept":
+            context.on("page", lambda new_page: new_page.on("dialog", lambda dialog: dialog.accept()))
         # Storyboards may click a "Copy to clipboard" affordance and wait for its
         # UI to flip to a "Copied" confirmation. Headless Chromium denies
         # navigator.clipboard.writeText() by default (NotAllowedError), which the
