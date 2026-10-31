@@ -129,6 +129,18 @@ starts, on a throwaway page whose footage is discarded — session state (e.g.
 sign-in) carries over to the recorded scenes. Use it so tutorials don't all
 open with a login: only a tutorial that *teaches* signing in should show it.
 
+`storage_state` (optional, top-level) is the path of a Playwright storage-state
+file (cookies, localStorage and IndexedDB, e.g. saved with
+`context.storageState({ path, indexedDB: true })`) that the recording context
+starts from. Use it when sign-in cannot be clicked through (an OAuth popup, a
+custom-token session). It holds live tokens: name it with `{{var:...}}`, keep the
+file in `$CW_TMP`, and never commit it.
+
+`dialogs` (optional, top-level): `"accept"` answers OK to every native
+`alert`/`confirm`/`prompt` (Playwright otherwise dismisses them, so a
+"Revoke this device?" confirm silently cancels the action). The dialog itself
+is not drawn in the recording, so the narration should say what it asks.
+
 `pronunciations` (optional) rewrites words for the TTS engine only — captions
 keep the real spelling. Use it when the product name or jargon is mispronounced
 (e.g. a compound-sounding brand name the TTS engine splits in two, `"Foxrun":
