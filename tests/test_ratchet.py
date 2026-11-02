@@ -5,7 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -2302,6 +2302,11 @@ def test_highwater_overlays_live_expiry(tmp_path, capsys):
 # instead of driving cmd_record. Each of these drives the REAL CLI.
 
 
+# The CLI rejects a past expiry against the real clock, so these are relative to it.
+_FUTURE_SOON = (date.today() + timedelta(days=30)).isoformat()
+_FUTURE_LATER = (date.today() + timedelta(days=120)).isoformat()
+
+
 def test_retire_case_renewal_through_the_cli(tmp_path):
     """A quarantined case must stay retirable so the documented renewal path
     (D7: 'renewal is a new record, not an edit') is reachable through the real
@@ -2311,16 +2316,16 @@ def test_retire_case_renewal_through_the_cli(tmp_path):
     cfg = _prep_quarantine_repo(tmp_path)
     base = [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
             "--event", "ticket", "--retire-case", "s::flaky", "--retire-case-reason", "flaky"]
-    first = subprocess.run(base + ["--retire-case-expiry", "2026-11-01"],
+    first = subprocess.run(base + ["--retire-case-expiry", _FUTURE_SOON],
                            capture_output=True, text=True)
     assert first.returncode == 0, first.stderr
 
-    renewal = subprocess.run(base + ["--retire-case-expiry", "2027-02-01"],
+    renewal = subprocess.run(base + ["--retire-case-expiry", _FUTURE_LATER],
                              capture_output=True, text=True)
     assert renewal.returncode == 0, renewal.stderr
     hw = ratchet.derive_highwater(ratchet.load_journal(cfg))
     # last-wins: the renewal's expiry is the live one.
-    assert hw["quarantined"]["s::flaky"]["expiry"] == "2027-02-01"
+    assert hw["quarantined"]["s::flaky"]["expiry"] == _FUTURE_LATER
     assert "s::flaky" not in hw["pass_set"]
 
 
@@ -2525,7 +2530,7 @@ def test_a_quarantined_case_can_graduate_to_permanent(tmp_path):
     quarantine = subprocess.run(
         [sys.executable, str(SCRIPTS / "ratchet.py"), "record", "--repo", str(tmp_path),
          "--event", "ticket", "--retire-case", "s::flaky", "--retire-case-reason", "flaky",
-         "--retire-case-expiry", "2026-11-01"],
+         "--retire-case-expiry", _FUTURE_SOON],
         capture_output=True, text=True,
     )
     assert quarantine.returncode == 0, quarantine.stderr

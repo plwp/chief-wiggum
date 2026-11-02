@@ -6,6 +6,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 import generate_formal_test_artifacts as gen
 
 REPO = Path(__file__).resolve().parents[1]
@@ -49,7 +51,15 @@ def test_contracts_only(tmp_path):
     assert _result(manifest, "state-machines.json").status == "missing"
     assert manifest.ok is True
 
+NODE_DEPS_MISSING = not (Path(__file__).resolve().parents[1] / "node_modules" / "xstate").is_dir()
+needs_node_deps = pytest.mark.skipif(
+    NODE_DEPS_MISSING,
+    reason="node_modules/xstate not installed (run `npm install` in the repo root; "
+           "a fresh worktree has none)",
+)
 
+
+@needs_node_deps
 def test_both_models(tmp_path):
     models = _models_dir(tmp_path, state_machine=True, contracts=True)
     out = tmp_path / "out"

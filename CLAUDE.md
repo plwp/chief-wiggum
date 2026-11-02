@@ -54,6 +54,7 @@ Portable workflow contracts, scripts, and Claude Code slash-command adapters tha
 ## Requirements
 
 - **Python >= 3.11**
+- **Node deps for the XState bridge** (`npm install` in the repo root; a fresh worktree has no `node_modules`). Without them `test_generate_formal_artifacts::test_both_models` and `test_generated_examples::test_state_machine_generated_artifacts_are_fresh` skip with that reason; with them they run.
 
 ## Required Tools
 
