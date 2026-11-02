@@ -1165,9 +1165,16 @@ def _backend_for_ref(
         if scheme == "task":
             if not mcp:
                 raise ValueError(f"task:{ident} names a task-service key; the target is not on the mcp backend")
-            owner_repo = resolve_mcp_config(root).get("repo") or ident.partition("#")[0]
-            if "/" not in owner_repo:
-                raise ValueError(f"task:{ident}: set mcp.repo (owner/repo) to resolve service keys")
+            # Which GitHub repo the key belongs to: a GitHub-shaped key says;
+            # a local#<n> key belongs to the target (mcp.repo, else origin).
+            prefix = ident.partition("#")[0]
+            owner_repo = prefix if "/" in prefix else (
+                resolve_mcp_config(root).get("repo") or _meta_location.derive_target_id(root)
+            )
+            if "/" not in owner_repo or owner_repo.startswith("local/"):
+                raise ValueError(
+                    f"task:{ident}: cannot tell the target's GitHub repo; set mcp.repo (owner/repo)"
+                )
         else:
             owner_repo, _ = GithubBackend._parse_ident(ident)
         if mcp:
@@ -1315,6 +1322,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_lease = sub.add_parser("lease", help="Show the current claim on an issue")
     p_lease.add_argument("ref")
 
+    p_beat = sub.add_parser(
+        "heartbeat", help="Renew the leases of a held claim (backends whose leases expire)"
+    )
+    p_beat.add_argument("ref")
+    p_beat.add_argument("--holder", help="Refuse unless this holder has the claim")
+
     p_service = sub.add_parser(
         "service",
         help="mcp backend: which verbs the task service serves, and a ref's service record",
@@ -1435,6 +1448,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "lease":
             backend = _ref_backend(args.ref, repo_root)
             print(json.dumps(backend.lease(args.ref).to_dict(), indent=2))
+
+        elif args.command == "heartbeat":
+            backend = _ref_backend(args.ref, repo_root)
+            if not hasattr(backend, "heartbeat"):
+                # github holds no claims; local claims do not expire.
+                print(json.dumps(backend.lease(args.ref).to_dict(), indent=2))
+            else:
+                print(json.dumps(backend.heartbeat(args.ref, args.holder).to_dict(), indent=2))
 
         elif args.command == "service":
             backend = get_tracker(args.target, repo_root=repo_root)

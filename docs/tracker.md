@@ -142,8 +142,9 @@ IDs auto-increment from the highest existing numeric filename in `docs/issues/`.
 
 ### `mcp` — a task service mirrored, GitHub the source of truth (chief-wiggum#498)
 
-For a team that runs an MCP task service (claims, run notes, statuses, a
-decision log with provenance). Selected per target:
+For a team that runs an MCP task service: tasks with claims and leases, run
+notes written by the holder, completion, and a decision log with provenance.
+Selected per target:
 
 ```jsonc
 // <target meta root>/cw/tracker.json  (docs/cw/tracker.json when embedded)
@@ -151,68 +152,86 @@ decision log with provenance). Selected per target:
 ```
 
 ```jsonc
-// ~/.chief-wiggum/config.json: the machine-local server command
+// ~/.chief-wiggum/config.json: the machine-local server command and identity
 { "tracker": { "mcp": { "command": ["/path/to/task-service", "serve"],
-                        "agent": "cw", "environment": "chief-wiggum" } } }
+                        "agent": "<the identity the server authenticates>" } } }
 ```
 
 The two `mcp` blocks merge key by key, the target's over CW's
 (`tracker.resolve_mcp_config`). No `backend` key anywhere means `github`.
-Keys: `command` (stdio MCP server argv, required), `mirror` (`strict`
-default, or `best_effort`), `agent` (author for comments), `environment` and
-`capabilities` (sent with a claim), `repo` (owner/repo, to resolve `task:`
-refs), `timeout_seconds`. No secrets: the server authenticates itself.
+
+| Key | Meaning |
+|---|---|
+| `command` | stdio MCP server argv (required) |
+| `agent` | the service identity; claims are made as this caller, and CW's holder (a wave or worker id) is kept locally |
+| `mirror` | `strict` (default) or `best_effort` |
+| `actor`, `priority`, `lane` | sent when a task is created (defaults `worker`, `P2`) |
+| `environment`, `capabilities`, `claim_state` | sent with a claim |
+| `repo` | owner/repo for `task:` refs, when the origin remote does not say |
+| `timeout_seconds` | transport timeout |
+
+No secrets pass through CW: the server authenticates itself.
 
 Until the service mirrors its own writes to GitHub:
 
 | Verb | GitHub | Task service |
 |---|---|---|
 | `get` / `list` / `members` / `ready` / `deps` / `context` | **read here** | never read |
-| `create` | first | `create_task` with the key, title, body, labels, link, and provenance class, source and creator |
-| `comment` | first | a run note (`log_work`) when this machine holds a run, else `comment_task` |
-| `status` | the note, as on `github` | `log_work` with the holder's run |
-| `complete` | `gh issue close --comment` | `complete_task` with the holder's run; the run is dropped |
-| `decision` | the decision comment | `log_decision` (`scope: task`, `provenance_class`, `provenance_source`; a relay is named in `channel`) |
-| `claim` / `release` / `lease` | nothing (GitHub holds no claims) | targeted `claim_task` / `release` |
+| `create` | first | a task with the title, provenance class and source, and a done-when naming the issue; the service mints the key |
+| `comment` | first | a run note when this machine holds a run; outside a run, skipped until the service supports it |
+| `status` | the note, as on `github` | a run-status note from the holder's run |
+| `complete` | `gh issue close --comment` | completes the holder's run; the run is dropped |
+| `decision` | the decision comment | the decision log, task-scoped, with provenance; a relayed human decision is recorded as `human:<name>` |
+| `claim` / `heartbeat` / `release` / `lease` | nothing (GitHub holds no claims) | a claim naming the task; every lease it returns is renewed or released |
 | `update` / `group` / `link` | only here | no service verb |
 
 **Failure.** GitHub is written first; if it fails nothing reaches the
-service. If the service then fails, `strict` raises `MirrorError` (CLI exit
-3: "GitHub updated, task service failed"), `best_effort` warns on stderr.
-Status and completion need the run this machine claimed, by the same holder;
-without one the call is a mirror failure that says "claim it first".
+service. If the service then refuses or fails, `strict` raises `MirrorError`
+(CLI exit 3: "GitHub updated, task service failed", with the service's
+reason), `best_effort` warns on stderr. Status and completion need the run
+this machine claimed, by the same holder; without one the call is a mirror
+failure that says "claim it first".
 
-**Declared gaps are not failures.** A verb whose tool the service does not
-expose yet, or a task the service does not know (an issue older than the
-adoption), skips the mirror with a stderr notice. `tracker.py service TARGET`
-lists the gaps, and `capabilities` reports `claim` only when `claim_task`
-accepts a `task_id`: the untargeted claim (next ready task) is never used,
-because it may hand over a different task.
+**Claims.** A claim always names its task: the untargeted form (next ready
+task) is never used, because it may hand over a different task, and
+`capabilities` reports `claim` only when the service accepts a named claim. A
+refusal meaning "held by someone else" or "not ready" returns false (CLI exit
+1, skip the ticket); any other refusal (identity, capability, capacity,
+hours, unknown task) raises with the service's reason. Leases expire: a
+long-running holder calls `tracker.py heartbeat REF`.
+
+**Declared gaps are not failures.** A verb the service does not support yet,
+or a task the service does not know (an issue older than the adoption),
+skips the mirror with a stderr notice. `tracker.py service TARGET` lists the
+gaps.
 
 **Provenance on create.** `create --provenance-class --provenance-source
-[--agent]` is carried to the service. An `agent`-class task is shown as an
-agent proposal (`service TARGET --ref REF` reports `agent_proposal`), and it
-can be claimed at once: nothing waits on a confirmation.
+[--agent]` is carried to the service, which requires it. A create with no
+stated provenance is sent as an `agent` proposal citing the configured agent
+and the date, never as a stronger class. An `agent`-class task is shown as a
+proposal (`service TARGET --ref REF` reports `agent_proposal`) and can be
+claimed at once: nothing waits on a confirmation.
 
-**Keys.** A GitHub issue's service key is `owner/repo#N`. A task created on
-the service side gets `local#<n>` and is not on GitHub until the service
-mirrors it, so GitHub-reading skills cannot see it: a `task:local#<n>` ref
-raises `NotVisibleOnGitHub` unless a key record maps it to an issue. Key and
-run records live in `~/.chief-wiggum/state/tracker/<owner>/<repo>.json`, so
+**Keys.** The service mints `local#<n>` keys, and such a task is not on
+GitHub until the service mirrors it. The adapter records which issue each
+key it created belongs to, so `task:local#<n>` resolves to that issue; a
+`local#<n>` task created on the service side has no issue, is not visible to
+GitHub-reading skills, and raises `NotVisibleOnGitHub`. An issue the service
+already knows by an `owner/repo#N` key is found by that key. Key and run
+records live in `~/.chief-wiggum/state/tracker/<owner>/<repo>.json`, so a
 `claim` and a later `complete` in separate invocations share the run.
 
-**The mapping is one class.** Tool names, argument shapes and result parsing
-are in `chief_wiggum.task_service.ServiceMapping`; when the service's real
-names and shapes are confirmed, that class is the only edit. Tests run the
-backend against `tests/fake_task_service.py`, which implements today's tools
-(`list_tasks`, `task`, `claim_task`, `log_work`, `complete_task`,
-`log_decision`, `release`) and the ones being added (`create_task`,
-`claim_task` with `task_id`, `comment_task`), both in process and as a stdio
-MCP server, and enforces holder-only run notes and provenance on decisions.
+**The mapping is one class.** The service's tool names, argument shapes,
+result parsing and refusal reasons are in
+`chief_wiggum.task_service.ServiceMapping` and nowhere else. Tests run the
+backend against `tests/fake_task_service.py`, in process and as a stdio MCP
+server; the fake rejects missing or unexpected arguments the way the service
+does, and enforces holder-only run notes, provenance on create and decision,
+the claiming identity, and one live claim per task.
 
-Pending on the service side: `create_task`, targeted claim, comment without
-a run, and mirroring its writes to GitHub. When mirroring lands, the backend
-can read from the service and stop writing GitHub itself.
+Pending on the service side: comments outside a run, and mirroring its
+writes to GitHub. When mirroring lands, the backend can read from the
+service and stop writing GitHub itself.
 
 ## Adding a backend
 

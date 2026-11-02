@@ -63,7 +63,9 @@ def result_payload(result: dict) -> Any:
         if isinstance(item, dict) and item.get("type") == "text"
     ]
     if result.get("isError"):
-        raise TaskServiceError("; ".join(texts) or "tool call failed")
+        structured = result.get("structuredContent")
+        reason = structured.get("reason") if isinstance(structured, dict) else None
+        raise TaskServiceError(reason or "; ".join(texts) or "tool call failed")
     if "structuredContent" in result:
         return result["structuredContent"]
     if len(texts) == 1:
@@ -159,32 +161,45 @@ class ToolSpec:
     # notice until the service exposes it.
     pending: bool = False
     # Properties the tool's input schema must have for the verb to be served,
-    # e.g. a targeted claim needs claim_task to accept a task_id.
+    # e.g. a targeted claim needs claim_task to accept a task.
     requires: tuple[str, ...] = ()
 
 
 _GH_KEY_RE = re.compile(r"^(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>\d+)$")
 _LOCAL_KEY_RE = re.compile(r"^local#\d+$")
 
+ACTORS = ("lead", "manager", "worker", "browser", "human")
+PRIORITIES = ("P1", "P2", "P3")
+
 
 class ServiceMapping:
-    """Tracker verbs -> service tool calls. Swap names and shapes here only."""
+    """Tracker verbs -> service tool calls. Swap names and shapes here only.
+
+    Shapes as confirmed by the service owner on 2026-11-03.
+    """
 
     TOOLS: dict[str, ToolSpec] = {
         "read": ToolSpec("task"),
         "list": ToolSpec("list_tasks"),
+        "create": ToolSpec("create_task"),
+        "claim": ToolSpec("claim_task", requires=("task",)),
         "status": ToolSpec("log_work"),
         "complete": ToolSpec("complete_task"),
         "decision": ToolSpec("log_decision"),
+        "heartbeat": ToolSpec("heartbeat"),
         "release": ToolSpec("release"),
-        "create": ToolSpec("create_task", pending=True),
-        "claim": ToolSpec("claim_task", pending=True, requires=("task_id",)),
+        # Not built yet on the service: a comment outside a run.
         "comment": ToolSpec("comment_task", pending=True),
     }
 
-    # CW status -> the service's run-status note. The service's log_work
-    # status is a {done, in_progress, next, blocked_on} note written by the
-    # run's holder, not a state enum.
+    # A claim refusal that means "not yours right now": the caller skips the
+    # task. Every other refusal (auth, actor, capability, capacity, hours,
+    # unknown task) is a configuration problem and raises.
+    LOST_CLAIM_REASONS = ("TaskHeld", "TaskNotReady")
+
+    # CW status -> the service's run-status note. log_work's status is a
+    # {done, in_progress, next, blocked_on} note written by the run's holder,
+    # not a state enum.
     def status_args(self, task_id: str, run_id: str, status: str, note: str, link: str) -> dict:
         return {
             "task_id": task_id,
@@ -200,7 +215,10 @@ class ServiceMapping:
         }
 
     def comment_with_run_args(self, task_id: str, run_id: str, body: str, link: str) -> dict:
-        return {"task_id": task_id, "run_id": run_id, "text": body, "links": [link]}
+        return {
+            "task_id": task_id, "run_id": run_id, "text": body, "links": [link],
+            "status": {"done": "", "in_progress": "", "next": ""},
+        }
 
     def comment_args(self, task_id: str, body: str, author: str | None) -> dict:
         args = {"task_id": task_id, "text": body}
@@ -209,17 +227,21 @@ class ServiceMapping:
         return args
 
     def complete_args(self, task_id: str, run_id: str, summary: str, link: str) -> dict:
-        return {"task_id": task_id, "run_id": run_id, "summary": summary, "links": [link]}
+        return {"task_id": task_id, "run_id": run_id, "summary": summary or "done", "links": [link]}
 
     def decision_args(self, task_id: str, decision: Any) -> dict:
+        decided_by = decision.decided_by
         channel = decision.channel or "cw-tracker"
         if decision.relayed_by:
-            # The service has no relay field yet; the channel names the relay.
+            # A relayed human decision is recorded as human:<name>; the relay
+            # is named in the channel.
+            if decision.provenance.klass == "human" and not decided_by.startswith("human:"):
+                decided_by = f"human:{decided_by}"
             channel = f"{channel} (relayed by {decision.relayed_by})"
         return {
             "scope": "task",
             "task_id": task_id,
-            "decided_by": decision.decided_by,
+            "decided_by": decided_by,
             "channel": channel,
             "what": decision.what,
             "provenance_class": decision.provenance.klass,
@@ -227,27 +249,33 @@ class ServiceMapping:
             "approval_words": decision.approval_words,
         }
 
-    def create_args(self, key: str, draft: Any, link: str) -> dict:
+    def create_args(self, draft: Any, link: str, provenance: Any, config: dict) -> dict:
+        """create_task takes no body, labels or key: the service mints a
+        ``local#<n>`` key, and done_when carries the GitHub link back."""
+        actor = config.get("actor", "worker")
+        priority = config.get("priority", "P2")
+        if actor not in ACTORS:
+            raise ValueError(f"mcp.actor must be one of {ACTORS}, got {actor!r}")
+        if priority not in PRIORITIES:
+            raise ValueError(f"mcp.priority must be one of {PRIORITIES}, got {priority!r}")
         args: dict[str, Any] = {
-            "key": key,
             "title": draft.title,
-            "body": draft.body or "",
-            "labels": list(draft.labels),
-            "links": [link],
+            "actor": actor,
+            "priority": priority,
+            "done_when": f"{link} is closed",
+            "provenance_class": provenance.klass,
+            "provenance_source": provenance.source,
         }
-        if draft.provenance is not None:
-            args["provenance_class"] = draft.provenance.klass
-            args["provenance_source"] = draft.provenance.source
-            if draft.provenance.actor:
-                args["created_by"] = draft.provenance.actor
+        if config.get("lane"):
+            args["lane"] = config["lane"]
         return args
 
     def claim_args(self, task_id: str, agent: str, config: dict) -> dict:
         return {
-            "task_id": task_id,
+            "task": task_id,
             "agent": agent,
             "environment": config.get("environment", "chief-wiggum"),
-            "state": "GREEN",
+            "state": config.get("claim_state", "GREEN"),
             "stale": False,
             "ceiling": False,
             "capabilities": list(config.get("capabilities", [])),
@@ -256,47 +284,58 @@ class ServiceMapping:
     def read_args(self, key: str) -> dict:
         return {"key": key}
 
-    def release_args(self, lease_id: str) -> dict:
+    def lease_args(self, lease_id: str) -> dict:
         return {"lease_id": lease_id}
 
     # --- results ---
 
     @staticmethod
-    def _get(result: Any, *names: str) -> Any:
-        if not isinstance(result, dict):
-            return None
-        for name in names:
-            if result.get(name) is not None:
-                return result[name]
-        for nested in ("task", "run", "lease"):
-            inner = result.get(nested)
-            if isinstance(inner, dict):
-                for name in names:
-                    if inner.get(name) is not None:
-                        return inner[name]
+    def _field(obj: Any, *names: str) -> Any:
+        if isinstance(obj, dict):
+            for name in names:
+                if obj.get(name) is not None:
+                    return obj[name]
         return None
 
+    def _task_row(self, result: Any) -> Any:
+        if isinstance(result, dict) and isinstance(result.get("task"), dict):
+            return result["task"]
+        return result
+
     def task_id_from(self, result: Any) -> str | None:
-        value = self._get(result, "task_id", "id")
+        value = self._field(self._task_row(result), "task_id", "id")
         return str(value) if value is not None else None
 
     def key_from(self, result: Any) -> str | None:
-        value = self._get(result, "key")
+        value = self._field(self._task_row(result), "key")
         return str(value) if value is not None else None
 
     def claim_from(self, result: Any) -> dict:
+        """{task, run, leases, reminder} -> the run and leases to hold."""
+        run = result.get("run") if isinstance(result, dict) else None
+        leases = result.get("leases") if isinstance(result, dict) else None
+        leases = [lease for lease in (leases or []) if isinstance(lease, dict)]
+        lease_ids = [
+            str(self._field(lease, "lease_id", "id")) for lease in leases
+            if self._field(lease, "lease_id", "id") is not None
+        ]
+        expiries = [str(lease["expires_at"]) for lease in leases if lease.get("expires_at")]
+        run_id = self._field(run, "run_id", "id")
         return {
-            "run_id": self._get(result, "run_id"),
-            "lease_id": self._get(result, "lease_id"),
-            "expires_at": self._get(result, "expires_at"),
-            "fencing_token": self._get(result, "fencing_token"),
-            "epoch": self._get(result, "epoch") or 0,
+            "run_id": str(run_id) if run_id is not None else None,
+            "lease_id": lease_ids[0] if lease_ids else None,
+            "lease_ids": lease_ids,
+            "expires_at": min(expiries) if expiries else None,
+            "fencing_token": self._field(run, "fencing_token"),
+            "epoch": self._field(run, "epoch") or 0,
         }
 
-    REFUSAL_MARKERS = ("held by", "already claimed", "not ready", "ClaimRefused")
+    def refusal_reason(self, message: str) -> str:
+        """The leading ``Reason`` word of a refusal (``TaskHeld: agent-x``)."""
+        return message.strip().split(":", 1)[0].strip()
 
-    def is_claim_refusal(self, message: str) -> bool:
-        return any(marker.lower() in message.lower() for marker in self.REFUSAL_MARKERS)
+    def is_lost_claim(self, message: str) -> bool:
+        return self.refusal_reason(message) in self.LOST_CLAIM_REASONS
 
     # --- keys: service task keys <-> GitHub refs, in one place ---
 
@@ -308,9 +347,10 @@ class ServiceMapping:
     def gh_ref_for_key(key: str) -> str | None:
         """A GitHub ref for a service key, or None for a local-only task.
 
-        ``local#<n>`` keys are tasks created on the service that are not on
-        GitHub until the service mirrors them; they are not visible to the
-        GitHub-reading skills, so there is no ref to give.
+        ``local#<n>`` keys are tasks the service minted; they are not on
+        GitHub until the service mirrors them, so unless the state file
+        records which issue one was created for, there is no ref to give and
+        GitHub-reading skills cannot see the task.
         """
         if _LOCAL_KEY_RE.match(key):
             return None

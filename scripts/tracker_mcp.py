@@ -12,10 +12,10 @@ Until the service mirrors its own writes to GitHub, this backend:
 - **claims on the service only.** GitHub has no compare-and-set, so it holds
   no claims (#371); the service's claim is the real one.
 
-A verb whose service tool is not exposed yet (create, targeted claim,
-comment without a run) is a declared gap, not a failure: the GitHub write
-happens, the mirror is skipped with a notice, and ``capabilities()`` reports
-what the service can actually do. A task the service does not know (an issue
+A verb whose service tool is not exposed yet (today: a comment outside a
+run) is a declared gap, not a failure: the GitHub write happens, the mirror
+is skipped with a notice, and ``capabilities()`` reports what the service can
+actually do. A task the service does not know (an issue
 older than the adoption) is skipped the same way.
 
 Service tool names and argument shapes live in
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import atexit
 import sys
+from datetime import date
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -237,15 +238,15 @@ class McpTaskBackend:
         ref = self.github.create(draft)
         owner_repo, number = self.github._gh_ref(ref)
         key = self.mapping.default_key(owner_repo, number)
-        provenance = draft.provenance.to_dict() if draft.provenance else None
-        self.state.remember_task(ref, key=key, provenance=provenance)
+        provenance = draft.provenance or self._agent_provenance()
+        self.state.remember_task(ref, key=key, provenance=provenance.to_dict())
         if not self.supports("create"):
             self._skip(ref, f"the service has no {self.mapping.TOOLS['create'].tool} yet")
             return ref
         try:
             result = self.transport.call(
                 self.mapping.TOOLS["create"].tool,
-                self.mapping.create_args(key, draft, self._link(ref)),
+                self.mapping.create_args(draft, self._link(ref), provenance, self.config),
             )
         except TaskServiceError as exc:
             self._fail(ref, "create", exc)
@@ -256,6 +257,17 @@ class McpTaskBackend:
             task_id=self.mapping.task_id_from(result),
         )
         return ref
+
+    def _agent_provenance(self) -> _t.Provenance:
+        """A create with no stated provenance is an agent proposal, said so.
+
+        The service requires provenance on every task; inventing a stronger
+        class than agent would launder the request.
+        """
+        agent = self.config.get("agent") or "chief-wiggum"
+        return _t.Provenance(
+            "agent", f"{agent} via tracker.py create, {date.today().isoformat()}", actor=agent
+        )
 
     def comment(self, ref: str, body: str) -> None:
         ref = self.resolve_ref(ref)
@@ -302,21 +314,26 @@ class McpTaskBackend:
             return True
         if not self.supports("claim"):
             raise _t.UnsupportedCapability(
-                f"the task service has no targeted claim yet ({self.mapping.TOOLS['claim'].tool}"
-                " with a task_id); it only claims the next ready task, which may not be this one"
+                f"the task service has no targeted claim ({self.mapping.TOOLS['claim'].tool}"
+                " naming a task); an untargeted claim takes the next ready task, which may"
+                " not be this one"
             )
         task_id = self._task_id(ref)
         if task_id is None:
             raise ToolUnavailable(f"the task service has no task {self.service_key(ref)} to claim")
+        # The service checks that the claiming agent is its authenticated
+        # caller, so the configured service identity claims; agent_id is the
+        # CW-side holder (a wave or worker) recorded locally.
+        service_agent = self.config.get("agent") or agent_id
         try:
             result = self.transport.call(
                 self.mapping.TOOLS["claim"].tool,
-                self.mapping.claim_args(task_id, agent_id, self.config),
+                self.mapping.claim_args(task_id, service_agent, self.config),
             )
         except TaskServiceError as exc:
-            if self.mapping.is_claim_refusal(str(exc)):
+            if self.mapping.is_lost_claim(str(exc)):
                 return False
-            raise
+            raise ClaimRefused(f"claim on {ref} refused: {exc}") from exc
         run = self.mapping.claim_from(result)
         if not run.get("run_id"):
             raise ClaimRefused(f"claim on {ref} returned no run: {result!r}")
@@ -329,12 +346,25 @@ class McpTaskBackend:
         run = self.state.run(ref)
         if run is None or run.get("holder") != agent_id:
             return False
-        if run.get("lease_id") and self.supports("release"):
-            self.transport.call(
-                self.mapping.TOOLS["release"].tool, self.mapping.release_args(run["lease_id"])
-            )
+        if self.supports("release"):
+            for lease_id in run.get("lease_ids") or ([run["lease_id"]] if run.get("lease_id") else []):
+                self.transport.call(
+                    self.mapping.TOOLS["release"].tool, self.mapping.lease_args(lease_id)
+                )
         self.state.drop(ref)
         return True
+
+    def heartbeat(self, ref: str, agent_id: str | None = None) -> _t.Lease:
+        """Renew every lease the held run carries (the service expires them)."""
+        ref = self.resolve_ref(ref)
+        run = self.state.run(ref)
+        if run is None or (agent_id and run.get("holder") != agent_id):
+            raise LookupError(f"{ref}: no run held here{f' by {agent_id}' if agent_id else ''}")
+        for lease_id in run.get("lease_ids") or ([run["lease_id"]] if run.get("lease_id") else []):
+            self.transport.call(
+                self.mapping.TOOLS["heartbeat"].tool, self.mapping.lease_args(lease_id)
+            )
+        return self.lease(ref)
 
     def lease(self, ref: str) -> _t.Lease:
         ref = self.resolve_ref(ref)
