@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,7 @@ TOOLS = {
     "create_task": _obj({
         "title": S, "actor": {"enum": ACTORS}, "priority": {"enum": ["P1", "P2", "P3"]},
         "done_when": S, "provenance_class": {"enum": PROVENANCE}, "provenance_source": S,
-        "lane": SN, "requires": LISTN, "deps": LISTN, "resources": LISTN,
+        "lane": SN, "requires": LISTN, "deps": LISTN, "resources": LISTN, "repo": SN,
     }, ["title", "actor", "priority", "done_when", "provenance_class", "provenance_source"]),
     "claim_task": _obj({
         "environment": S, "agent": S, "state": {"enum": ["GREEN", "AMBER", "RED"]},
@@ -113,7 +114,18 @@ PAGED_TOOLS = {
     "task": _obj({"task_id": S, "key": S, "notes_before": SN, "notes_limit": {"type": "integer"}}, []),
 }
 COMPACT = ("id", "key", "title", "state", "priority", "actor", "lane", "provenance_class",
-           "created_by")
+           "created_by", "repo")
+
+
+_REPO_PART = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def valid_repo(repo: str) -> bool:
+    """<owner>/<repo>: one slash, nonempty parts of [A-Za-z0-9._-], neither "." nor ".."."""
+    parts = repo.split("/")
+    return len(parts) == 2 and all(
+        _REPO_PART.fullmatch(p) and p not in (".", "..") for p in parts
+    )
 
 
 def _empty_db() -> dict:
@@ -215,11 +227,12 @@ class FakeTaskService:
                 return run
         return None
 
-    def add_service_task(self, title: str, *, key: str | None = None, source: str = "local") -> dict:
+    def add_service_task(self, title: str, *, key: str | None = None, source: str = "local",
+                         repo: str | None = None) -> dict:
         """A task created on the service side, not through the adapter."""
         row = self._create_task({
             "title": title, "actor": "worker", "priority": "P2", "done_when": "x",
-            "provenance_class": "human", "provenance_source": "test",
+            "provenance_class": "human", "provenance_source": "test", "repo": repo,
         })["task"]
         if key:
             row["key"] = key
@@ -234,6 +247,12 @@ class FakeTaskService:
     # --- tools -------------------------------------------------------------------
 
     def _create_task(self, a: dict) -> dict:
+        repo = a.get("repo")
+        if repo is not None:
+            if not isinstance(repo, str):
+                raise BadArguments("-32602 create_task: repo must be a string")
+            if not valid_repo(repo):
+                raise Refusal("InvalidRepo: repo must be <owner>/<repo>")
         if not (a.get("provenance_source") or "").strip():
             raise Refusal("MissingProvenance: provenance_source")
         if not a["title"].strip():
@@ -258,7 +277,7 @@ class FakeTaskService:
             "done_when": a["done_when"], "state": "blocked" if blocked else "ready",
             "created_by": self.caller, "provenance_class": a["provenance_class"],
             "provenance_source": a["provenance_source"], "lane": a.get("lane"),
-            "requires": a.get("requires"), "closed_at": None,
+            "repo": repo, "requires": a.get("requires"), "closed_at": None,
             "status_done": None, "status_in_progress": None, "status_next": None,
             "status_blocked_on": None, "status_by": None, "status_at": None,
         }
@@ -457,7 +476,7 @@ class FakeTaskService:
             if record is None:
                 if task["source"] == "github" and task["key"].startswith(prefix):
                     number = int(task["key"][len(prefix):])
-                elif task["source"] == "local":
+                elif task["source"] == "local" and task.get("repo") == repo:
                     number = gh._next_number.get(repo, 1)
                     gh._next_number[repo] = number + 1
                     gh.issues.setdefault(repo, {})[number] = {

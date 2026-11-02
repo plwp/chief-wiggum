@@ -410,7 +410,8 @@ class McpTaskBackend:
 
     def create(self, draft: _t.IssueDraft) -> str:
         provenance = draft.provenance or self._agent_provenance()
-        result = self._call("create", self.mapping.create_args(draft, provenance, self.config))
+        result = self._call("create", self.mapping.create_args(
+            draft, provenance, self.config, getattr(self.github, "repo", None) or self.repo))
         task = self.mapping.task_from(result)
         pending = {
             name: value for name, value in (
@@ -560,11 +561,13 @@ class McpTaskBackend:
             return {"held_by_service": False}
         record = dict(self.state.task(target.key))
         provenance = record.get("provenance") or {}
+        row = self._read(target.task_id)
         record.update({
             "held_by_service": True,
             "key": target.key,
             "task_id": target.task_id,
             "issue": target.issue,
+            "repo": row.repo if row else None,
             "agent_proposal": provenance.get("class") == "agent",
             "lease": self.lease(ref).to_dict(),
         })

@@ -117,6 +117,45 @@ class TestWrites:
         assert _cw_gh_writes(gh) == []
         assert backend.get(ref).title == "T"
 
+    def test_create_carries_the_target_repo(self, tmp_path):
+        backend, _, service = make_mcp(tmp_path)
+        ref = backend.create(IssueDraft(title="T", provenance=HUMAN))
+        assert service.calls[0][0] == "create_task"
+        assert service.calls[0][1]["repo"] == REPO
+        assert _only_task(service)["repo"] == REPO
+        assert backend.service_report(ref)["repo"] == REPO
+
+    def test_create_without_a_repo_is_refused_before_the_service(self, tmp_path):
+        backend, _, service = make_mcp(tmp_path)
+        backend.github.repo = None
+        backend.repo = ""
+        with pytest.raises(TaskServiceError, match="needs the target's GitHub repo"):
+            backend.create(IssueDraft(title="T", provenance=HUMAN))
+        assert service.calls == []
+
+    def test_an_invalid_repo_from_the_service_surfaces_as_invalid_repo(self, tmp_path):
+        for bad in ("widget", "a/b/c", "a/..", "ac me/w", "/w"):
+            backend, _, service = make_mcp(tmp_path)
+            backend.github.repo = bad
+            with pytest.raises(TaskServiceError, match="InvalidRepo: repo must be <owner>/<repo>"):
+                backend.create(IssueDraft(title="T", provenance=HUMAN))
+            assert service.db["tasks"] == {}
+
+    def test_a_non_string_repo_is_invalid_arguments(self, tmp_path):
+        _, _, service = make_mcp(tmp_path)
+        with pytest.raises(InvalidArguments, match="-32602"):
+            service.call("create_task", {
+                "title": "T", "actor": "worker", "priority": "P2", "done_when": "x",
+                "provenance_class": "human", "provenance_source": "s", "repo": 5})
+
+    def test_the_mirror_for_another_repo_leaves_the_task_alone(self, tmp_path):
+        backend, gh, service = make_mcp(tmp_path, auto_mirror=False)
+        backend.create(IssueDraft(title="T", provenance=HUMAN))
+        service.mirror("acme/other", gh)
+        assert service.db["mirrors"] == {}
+        service.mirror(REPO, gh)
+        assert len(service.db["mirrors"]) == 1
+
     def test_create_without_provenance_is_an_agent_proposal(self, tmp_path):
         backend, _, service = make_mcp(tmp_path)
         ref = backend.create(IssueDraft(title="T"))
