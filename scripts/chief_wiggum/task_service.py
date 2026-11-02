@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -199,6 +200,8 @@ class ServiceTask:
     status: dict = field(default_factory=dict)
     deps: list[str] = field(default_factory=list)
     runs: list[dict] = field(default_factory=list)
+    notes_total: int | None = None   # all notes the service holds, when it says
+    notes_before: str | None = None  # cursor to the notes older than those in ``notes``
 
     @property
     def closed(self) -> bool:
@@ -209,6 +212,16 @@ class ServiceTask:
             str(r["run"]["summary"]) for r in self.runs
             if isinstance(r.get("run"), dict) and r["run"].get("summary")
         ]
+
+
+@dataclass
+class TaskPage:
+    """One answer of ``list_tasks``: rows, and where the next page starts."""
+
+    tasks: list[ServiceTask]
+    next_cursor: str | None = None
+    total: int | None = None
+    paged: bool = False
 
 
 class ServiceMapping:
@@ -237,6 +250,17 @@ class ServiceMapping:
     # task. Every other refusal (identity, actor, capability, capacity, hours,
     # unknown task) is a configuration problem and raises.
     LOST_CLAIM_REASONS = ("TaskHeld", "TaskNotReady", "TaskStateConflict")
+
+    # list_tasks pages {tasks, next_cursor, total} (limit 50, compact rows unless
+    # full: true), and task returns the newest 20 notes (oldest first within the
+    # page) with notes_total and a notes_before cursor, null at the oldest page (chief-wiggum#506). Each is sent only when the tool's
+    # schema declares it, so a service still on the unpaged shapes keeps working.
+    LIST_PAGING_ARGS = ("cursor", "limit", "full")
+    LIST_PAGE_SIZE = 50
+    NOTES_CURSOR = "notes_before"
+    NOTES_LIMIT = "notes_limit"   # 1 to 100, default 20: ask for the most per page
+    NOTES_PAGE_SIZE = 100
+    LIST_MAX_LIMIT = 200
 
     # A read that finds nothing.
     NOT_FOUND_REASONS = ("TaskNotFound",)
@@ -343,13 +367,32 @@ class ServiceMapping:
         return args
 
     @staticmethod
-    def read_args(ident: str) -> dict:
+    def read_args(
+        ident: str, *, notes_before: str | None = None, notes_limit: int | None = None
+    ) -> dict:
         """``task`` takes exactly one of task_id or key; keys carry a ``#``."""
-        return {"key": ident} if "#" in ident else {"task_id": ident}
+        args: dict[str, Any] = {"key": ident} if "#" in ident else {"task_id": ident}
+        if notes_before:
+            args[ServiceMapping.NOTES_CURSOR] = notes_before
+        if notes_limit:
+            args[ServiceMapping.NOTES_LIMIT] = notes_limit
+        return args
 
     @staticmethod
-    def list_args(state: str | None = None) -> dict:
-        return {"state": state} if state else {}
+    def list_args(
+        state: str | None = None, *, cursor: str | None = None,
+        accepts: Iterable[str] = (),
+    ) -> dict:
+        """CW reads full rows (done_when, provenance, lane), so ``full: true``."""
+        accepts = set(accepts)
+        args: dict[str, Any] = {"state": state} if state else {}
+        if "full" in accepts:
+            args["full"] = True
+        if "limit" in accepts:
+            args["limit"] = ServiceMapping.LIST_PAGE_SIZE
+        if cursor and "cursor" in accepts:
+            args["cursor"] = cursor
+        return args
 
     @staticmethod
     def lease_args(lease_id: str) -> dict:
@@ -389,11 +432,28 @@ class ServiceMapping:
             status=record.get("status") if isinstance(record.get("status"), dict) else {},
             deps=deps,
             runs=[r for r in record.get("runs") or [] if isinstance(r, dict)],
+            notes_total=record.get("notes_total") if isinstance(record.get("notes_total"), int) else None,
+            notes_before=(
+                str(record["notes_before"]) if record.get("notes_before") not in (None, "") else None
+            ),
+        )
+
+    def page_from(self, result: Any) -> TaskPage:
+        """A ``list_tasks`` answer, paged ({tasks, next_cursor, total}) or the
+        old unpaged shape (``{tasks}`` or a bare list): detected, not configured."""
+        rows = result.get("tasks") if isinstance(result, dict) else result
+        paged = isinstance(result, dict) and ("next_cursor" in result or "total" in result)
+        cursor = result.get("next_cursor") if isinstance(result, dict) else None
+        total = result.get("total") if isinstance(result, dict) else None
+        return TaskPage(
+            tasks=[self.task_from(row) for row in rows or [] if isinstance(row, dict)],
+            next_cursor=str(cursor) if cursor not in (None, "") else None,
+            total=total if isinstance(total, int) else None,
+            paged=paged,
         )
 
     def tasks_from(self, result: Any) -> list[ServiceTask]:
-        rows = result.get("tasks") if isinstance(result, dict) else result
-        return [self.task_from(row) for row in rows or [] if isinstance(row, dict)]
+        return self.page_from(result).tasks
 
     def claim_from(self, result: Any) -> dict:
         """{task, run, leases, reminder} -> the run and leases to hold."""

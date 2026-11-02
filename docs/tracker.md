@@ -180,9 +180,30 @@ below on it.
 | `environment`, `capabilities`, `claim_state` | sent with a claim |
 | `repo` | owner/repo for `task:` refs, when the origin remote does not say |
 | `timeout_seconds`, `mirror_timeout_seconds` | transport and mirror timeouts |
+| `mirror_lock_timeout_seconds` | how long a writer waits for the repo's mirror lock (default 600) before a clear error; see below |
 
 No secrets pass through CW: the server and its mirror authenticate
 themselves.
+
+**One mirror at a time per repo.** Every mirror run takes a file lock at
+`~/.chief-wiggum/tmp/locks/<owner>__<repo>.lock` (`chief_wiggum/mirror_lock.py`),
+so parallel workers on one repo mirror in turn and different repos never wait
+on each other. The kernel releases it if a worker dies. A writer that cannot
+get it within `mirror_lock_timeout_seconds` fails like a failed mirror (raises
+under `strict`, warns under `best_effort`), naming the repo and lock file.
+
+**Paged reads.** `list_tasks` answers `{tasks, next_cursor, total}` (50 a
+page, compact rows unless `full: true`) and `task` answers the newest 20 notes
+with `notes_total` and a `notes_before` cursor. With `read: service`, CW passes
+`full: true` and pages until `next_cursor` is empty, and pages `task` back
+through `notes_before`. Arguments are sent only when the tool's schema declares
+them and the answer's shape is detected, so a service still on the unpaged
+shapes keeps working. The shapes live in `ServiceMapping`.
+
+**Launched per operation.** The service binary is replaced in place on each
+upgrade, so `StdioTransport` starts it lazily on first use and every CLI
+invocation owns its own process, closed on exit; nothing is held between
+operations (`tests/test_tracker_mcp_paging_lock.py`).
 
 #### Writes: the service, then its mirror
 

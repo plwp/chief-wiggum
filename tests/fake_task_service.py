@@ -22,7 +22,14 @@ writing nothing on a refusal:
   registered ``human:<name>`` it relays (``DecidedByMismatch``,
   ``UnknownHuman: <name>``), and relayed approval words are refused
   (``RelayedApprovalRefused``); ``task_id`` must be the task's id;
-- missing or unexpected arguments are JSON-RPC -32602.
+- missing or unexpected arguments are JSON-RPC -32602;
+- paged reads (default, ``paged=False`` for the older unpaged service):
+  ``list_tasks`` answers ``{tasks, next_cursor, total}``, ``limit`` rows a
+  page (50), compact rows unless ``full: true``; ``task`` answers the newest
+  20 notes (oldest first within the page, ``notes_limit`` 1 to 100) with
+  ``notes_total`` and a ``notes_before`` cursor, null at the oldest page, that
+  ``task`` accepts to page back; limit outside 1 to 200 and unissued cursors
+  are -32602 (chief-wiggum#506).
 
 ``mirror(repo, gh)`` is the operator's mirror command: it writes the
 service's tasks, comments, decisions, status and completion to a FakeGh
@@ -100,6 +107,15 @@ TOOLS = {
 }
 
 
+PAGED_TOOLS = {
+    "list_tasks": _obj({**TOOLS["list_tasks"]["properties"], "cursor": SN,
+                        "limit": {"type": "integer"}, "full": BOOL}, []),
+    "task": _obj({"task_id": S, "key": S, "notes_before": SN, "notes_limit": {"type": "integer"}}, []),
+}
+COMPACT = ("id", "key", "title", "state", "priority", "actor", "lane", "provenance_class",
+           "created_by")
+
+
 def _empty_db() -> dict:
     return {"tasks": {}, "runs": {}, "leases": {}, "comments": [], "decisions": [],
             "run_notes": [], "deps": {}, "mirrors": {}, "seq": 0,
@@ -109,8 +125,9 @@ def _empty_db() -> dict:
 class FakeTaskService:
     def __init__(
         self, *, caller: str = "cw-agent", state_file: Path | None = None,
-        db: dict | None = None,
+        db: dict | None = None, paged: bool = True, page_size: int = 50, notes_page: int = 20,
     ):
+        self.paged, self.page_size, self.notes_page = paged, page_size, notes_page
         self.caller = caller
         self.state_file = state_file
         if db is not None:
@@ -123,11 +140,12 @@ class FakeTaskService:
             if name not in self.db["agents"]:
                 self.db["agents"].append(name)
         self.calls: list[tuple[str, dict]] = []
-        self._tools = TOOLS
+        self._tools = {**TOOLS, **PAGED_TOOLS} if paged else TOOLS
 
     def as_caller(self, name: str) -> FakeTaskService:
         """The same service, another authenticated agent."""
-        return FakeTaskService(caller=name, state_file=self.state_file, db=self.db)
+        return FakeTaskService(caller=name, state_file=self.state_file, db=self.db, paged=self.paged,
+                               page_size=self.page_size, notes_page=self.notes_page)
 
     # --- Transport -----------------------------------------------------------
 
@@ -264,9 +282,27 @@ class FakeTaskService:
             if task["status_at"] else {"none": "no status yet"}
         )
         mirror = self.db["mirrors"].get(tid)
+        notes = [c for c in self.db["comments"] if c["task_id"] == tid]
+        paging: dict[str, Any] = {}
+        if self.paged:
+            end = len(notes)
+            limit = a.get("notes_limit") or 20
+            if not 1 <= limit <= 100:
+                raise BadArguments("-32602 task: notes_limit must be 1 to 100")
+            limit = min(limit, self.notes_page)  # the service also caps a page by size
+            if a.get("notes_before"):
+                end = next((i for i, n in enumerate(notes) if n["id"] == a["notes_before"]), None)
+                if end is None:
+                    raise BadArguments("-32602 task: notes_before was not issued by the server")
+            shown = notes[max(0, end - limit):end]
+            older = notes[:max(0, end - limit)]
+            paging = {"notes_total": len(notes),
+                      "notes_before": shown[0]["id"] if shown and older else None}
+            notes = shown
         return {
+            **paging,
             "task": task,
-            "notes": [c for c in self.db["comments"] if c["task_id"] == tid],
+            "notes": notes,
             "decisions": [d for d in self.db["decisions"] if d["task_id"] == tid],
             "runs": runs,
             "status": status,
@@ -277,8 +313,23 @@ class FakeTaskService:
         }
 
     def _list_tasks(self, a: dict) -> dict:
-        return {"tasks": [t for t in self.db["tasks"].values()
-                          if not a.get("state") or t["state"] == a["state"]]}
+        rows = [t for t in self.db["tasks"].values()
+                if not a.get("state") or t["state"] == a["state"]]
+        if not self.paged:
+            return {"tasks": rows}
+        if not 1 <= (a.get("limit") or 1) <= 200:
+            raise BadArguments("-32602 list_tasks: limit must be 1 to 200")
+        cursor = a.get("cursor")
+        if cursor is not None and not (str(cursor).isdigit() and int(cursor) <= len(rows)):
+            raise BadArguments("-32602 list_tasks: cursor was not issued by the server")
+        start = int(cursor or 0)
+        size = min(a.get("limit") or self.page_size, self.page_size)  # the service caps a page
+        page = rows[start:start + size]
+        if not a.get("full"):
+            page = [{k: t[k] for k in COMPACT} for t in page]
+        more = start + size < len(rows)
+        return {"tasks": page, "next_cursor": str(start + size) if more else None,
+                "total": len(rows)}
 
     def _claim_task(self, a: dict) -> dict:
         if a["agent"] != self.caller:
