@@ -84,7 +84,7 @@ date +%s > "$TICKET_TMP/build-start-ts"
 **Load epic context** (if this ticket belongs to an epic):
 
 ```bash
-MILESTONE=$(gh issue view "$issue_number" --repo "$owner_repo" --json milestone -q '.milestone.title // empty')
+MILESTONE=$("${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" get "$owner_repo#$issue_number" | jq -r '.epic // empty')
 if [ -n "$MILESTONE" ]; then
   EPIC_SLUG=$("${CW_PY:-python3}" "$CW_HOME/scripts/env.py" slug "$MILESTONE")
   EPIC_DIR="$CW_META_ROOT/epics/$EPIC_SLUG"    # $CW_META_ROOT already resolved above (#324)
@@ -122,8 +122,8 @@ All subsequent steps work within `$TARGET_REPO`, use `$CW_HOME` for scripts/temp
 ### Step 2: Pick and read the ticket
 
 ```bash
-gh issue view "$issue_number" --repo "$owner_repo" \
-  --json title,body,author,labels,assignees,milestone,comments \
+# title, body, author, labels, assignees, milestone, comments (docs/tracker.md)
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" context "$owner_repo#$issue_number" \
   | tee "$TICKET_TMP/issue-raw.json"
 ```
 
@@ -491,7 +491,7 @@ Started from 8a item 5, as soon as services are healthy — Phases 1–2 overlap
 git diff "$DEFAULT_BRANCH"...HEAD --name-only > "$TICKET_TMP/changed.txt"
 "${CW_PY:-python3}" "$CW_HOME/scripts/ux_gate.py" \
   --changed-files "$TICKET_TMP/changed.txt" \
-  $(gh issue view "$issue_number" --repo "$owner_repo" --json labels -q '.labels[].name' | sed 's/^/--label /') \
+  $(jq -r '.labels[].name' "$TICKET_TMP/issue-raw.json" | sed 's/^/--label /') \
   --ui-spec "$MODELS_DIR/ui-spec.json" --design-dir "$TARGET_REPO/docs/design" \
   --screenshot-dir "$TICKET_TMP/ux-screenshots" --markdown > "$TICKET_TMP/ux-manifest.md"
 ```

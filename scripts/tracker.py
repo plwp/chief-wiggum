@@ -99,9 +99,186 @@ class IssueDraft:
     labels: list[str] = field(default_factory=list)
     assignee: str | None = None
     epic: str | None = None
+    # Who asked for this work and on what authority (chief-wiggum#498). The
+    # GitHub backend does not render it (no behaviour change for today's
+    # skills); a task-service backend carries it on create so an
+    # agent-class task is shown as an agent proposal.
+    provenance: Provenance | None = None
 
 
 VALID_STATES = ("open", "closed")
+
+# --- work-tracking verbs (chief-wiggum#498) ----------------------------------
+
+# The four provenance classes a decision (or a created task) may carry. Order
+# is strongest first; "agent" is the weakest and is always shown as such.
+PROVENANCE_CLASSES = ("legal", "human", "customer", "agent")
+
+# CW's tracker-neutral work statuses for set_status(). "done" is not here:
+# finishing work is complete(), which closes the issue.
+STATUSES = ("ready", "in_progress", "blocked")
+
+# Lease states, deliberately the same vocabulary as the DAG contract's
+# ``lease_state`` (schemas/dag/v1/vocabulary.schema.json); a test pins it.
+LEASE_STATES = ("unclaimed", "active", "released", "expired", "revoked")
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where a requirement or ruling comes from.
+
+    ``klass`` is one of PROVENANCE_CLASSES. ``source`` cites it: the
+    instrument and provision for legal, who decided and their quoted words
+    for human, the REQ id and source line for customer, the proposing agent
+    and date for agent. ``actor`` is the agent that recorded it, when one did.
+    """
+
+    klass: str
+    source: str
+    actor: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.klass not in PROVENANCE_CLASSES:
+            raise ValueError(
+                f"invalid provenance class {self.klass!r}: must be one of "
+                + ", ".join(PROVENANCE_CLASSES)
+            )
+        if not (self.source or "").strip():
+            raise ValueError("provenance source is required: cite where this comes from")
+
+    @property
+    def is_agent_proposal(self) -> bool:
+        return self.klass == "agent"
+
+    def to_dict(self) -> dict:
+        return {"class": self.klass, "source": self.source, "actor": self.actor}
+
+
+@dataclass(frozen=True)
+class Decision:
+    """A ruling logged against one issue, with its provenance."""
+
+    what: str
+    decided_by: str
+    provenance: Provenance
+    channel: str = ""
+    approval_words: str | None = None
+    relayed_by: str | None = None
+
+    def __post_init__(self) -> None:
+        if not (self.what or "").strip():
+            raise ValueError("a decision needs its text (what was decided)")
+        if not (self.decided_by or "").strip():
+            raise ValueError("a decision needs decided_by")
+
+    def to_dict(self) -> dict:
+        return {
+            "what": self.what,
+            "decided_by": self.decided_by,
+            "channel": self.channel,
+            "approval_words": self.approval_words,
+            "relayed_by": self.relayed_by,
+            "provenance_class": self.provenance.klass,
+            "provenance_source": self.provenance.source,
+        }
+
+
+@dataclass
+class Lease:
+    """A claim on one issue, held by one agent.
+
+    Field-for-field this is the tracker's view of the DAG contract's
+    ``lease_record`` (docs/dag-contract.md); see ``to_dag_lease_fields``.
+    """
+
+    ref: str
+    holder: str | None
+    state: str = "active"
+    lease_id: str | None = None
+    run_id: str | None = None
+    expires_at: str | None = None
+    epoch: int = 0
+    fencing_token: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.state not in LEASE_STATES:
+            raise ValueError(
+                f"invalid lease state {self.state!r}: must be one of {', '.join(LEASE_STATES)}"
+            )
+
+    def to_dict(self) -> dict:
+        return {
+            "ref": self.ref,
+            "holder": self.holder,
+            "state": self.state,
+            "lease_id": self.lease_id,
+            "run_id": self.run_id,
+            "expires_at": self.expires_at,
+            "epoch": self.epoch,
+            "fencing_token": self.fencing_token,
+        }
+
+    def to_dag_lease_fields(self) -> dict:
+        """The lease-record fields this lease supplies (docs/tracker.md).
+
+        ``execution_node_id`` is not ours to mint: the DAG compiles execution
+        nodes from intent nodes, and an intent node pins the tracker ``ref``.
+        So the ref is returned as ``intent_ref`` for the compiler to resolve,
+        and the run is the attempt.
+        """
+        return {
+            "lease_id": self.lease_id,
+            "intent_ref": self.ref,
+            "attempt_id": self.run_id,
+            "epoch": self.epoch,
+            "state": self.state,
+            "fencing_token": self.fencing_token or self.lease_id or self.run_id,
+        }
+
+
+_DECISION_BLOCK = "<!-- CW-DECISION"
+
+
+def render_decision(decision: Decision) -> str:
+    """A decision as an issue comment: readable prose plus a parseable block."""
+    prov = decision.provenance
+    label = "agent proposal" if prov.is_agent_proposal else prov.klass
+    lines = [
+        f"**Decision** ({label}): {decision.what}",
+        "",
+        f"- Decided by: {decision.decided_by}"
+        + (f", via {decision.channel}" if decision.channel else ""),
+    ]
+    if decision.relayed_by:
+        lines.append(f"- Relayed by: {decision.relayed_by}")
+    if decision.approval_words:
+        lines.append(f"- Words: \"{decision.approval_words}\"")
+    lines.append(f"- Provenance: {prov.klass}, {prov.source}")
+    lines += ["", _DECISION_BLOCK, json.dumps(decision.to_dict(), sort_keys=True), "-->"]
+    return "\n".join(lines)
+
+
+def parse_decision_block(text: str) -> dict | None:
+    """Read back the machine block render_decision() wrote, or None."""
+    match = re.search(r"<!--\s*CW-DECISION\s*\n(.*?)\n-->", text or "", re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def render_status(status: str, holder: str, note: str) -> str:
+    return f"**Status: {status}** ({holder}): {note}"
+
+
+def _validate_status(status: str) -> None:
+    if status not in STATUSES:
+        raise ValueError(
+            f"invalid status {status!r}: must be one of {', '.join(STATUSES)}"
+            " (finish work with complete())"
+        )
 
 # --- dependency verb group (chief-wiggum#371) --------------------------------
 
@@ -518,6 +695,68 @@ class GithubBackend:
     def members(self, epic_name: str) -> list[Issue]:
         return self.list(query={"epic": epic_name})
 
+    # --- work-tracking verbs (chief-wiggum#498) ------------------------------
+
+    def _gh_ref(self, ref: str) -> tuple[str, int]:
+        scheme, ident = parse_ref(ref)
+        if scheme != "gh":
+            raise ValueError(f"GithubBackend cannot resolve ref with scheme {scheme!r}: {ref!r}")
+        return self._parse_ident(ident)
+
+    # The JSON fields /implement reads at Step 2 (ticket context, #83).
+    CONTEXT_FIELDS = "title,body,author,labels,assignees,milestone,comments"
+
+    def read_context(self, ref: str) -> dict:
+        """The issue as ``gh issue view --json`` returns it, comments included.
+
+        Passed through unchanged: write_ticket_context.py parses this shape,
+        and AC amendments live in the comments.
+        """
+        owner_repo, number = self._gh_ref(ref)
+        return json.loads(self.raw_view(number, self.CONTEXT_FIELDS, repo=owner_repo))
+
+    def set_status(self, ref: str, status: str, *, holder: str, note: str = "") -> None:
+        """GitHub has no work status, so only a note is recorded, as a comment.
+
+        No status label is invented: a label scheme the target never chose
+        would be a behaviour change. A status with no note writes nothing.
+        """
+        _validate_status(status)
+        if note:
+            self.comment(ref, render_status(status, holder, note))
+
+    def complete(self, ref: str, summary: str, *, holder: str | None = None) -> None:
+        """Close with a closing comment, in one ``gh issue close --comment``."""
+        owner_repo, number = self._gh_ref(ref)
+        args = ["issue", "close", str(number), "--repo", owner_repo]
+        if summary:
+            args += ["--comment", summary]
+        self._run(args)
+
+    def log_decision(self, ref: str, decision: Decision) -> None:
+        self.comment(ref, render_decision(decision))
+
+    def lease(self, ref: str) -> Lease:
+        raise UnsupportedCapability(
+            "the github backend holds no claims, so it has no lease to report"
+        )
+
+    # --- raw transport for chief_wiggum.github (the only other gh-issue user)
+
+    def raw_list(self, *, state: str, limit: int, fields: str, milestone: str | None = None) -> str:
+        args = [
+            "issue", "list", "--repo", self.repo, "--state", state,
+            "--limit", str(limit), "--json", fields,
+        ]
+        if milestone:
+            args += ["--milestone", milestone]
+        return self._run(args)
+
+    def raw_view(self, number: int, fields: str, *, repo: str | None = None) -> str:
+        return self._run(
+            ["issue", "view", str(number), "--repo", repo or self.repo, "--json", fields]
+        )
+
 
 # --- local backend ---------------------------------------------------------
 
@@ -773,6 +1012,48 @@ class LocalBackend:
         claim_path = self._claim_path(ref)
         return claim_path.read_text().strip() if claim_path.exists() else None
 
+    # --- work-tracking verbs (chief-wiggum#498) ------------------------------
+
+    def _comments(self, ref: str) -> list[str]:
+        _, full_body = _parse_frontmatter(self._resolve_path(ref).read_text())
+        _, section = _split_comments(full_body)
+        if not section:
+            return []
+        parts = section[len(_COMMENTS_HEADER):].split("\n\n---\n")
+        return [part.strip("\n") for part in parts if part.strip()]
+
+    def read_context(self, ref: str) -> dict:
+        """The same shape GithubBackend.read_context returns, from the file."""
+        issue = self.get(ref)
+        return {
+            "title": issue.title,
+            "body": issue.body,
+            "author": {"login": ""},
+            "labels": [{"name": label} for label in issue.labels],
+            "assignees": [{"login": issue.assignee}] if issue.assignee else [],
+            "milestone": {"title": issue.epic} if issue.epic else None,
+            "comments": [
+                {"author": {"login": ""}, "body": body} for body in self._comments(ref)
+            ],
+        }
+
+    def set_status(self, ref: str, status: str, *, holder: str, note: str = "") -> None:
+        _validate_status(status)
+        if note:
+            self.comment(ref, render_status(status, holder, note))
+
+    def complete(self, ref: str, summary: str, *, holder: str | None = None) -> None:
+        if summary:
+            self.comment(ref, summary)
+        self.update(ref, {"state": "closed"})
+
+    def log_decision(self, ref: str, decision: Decision) -> None:
+        self.comment(ref, render_decision(decision))
+
+    def lease(self, ref: str) -> Lease:
+        holder = self.claimant(ref)
+        return Lease(ref=ref, holder=holder, state="active" if holder else "unclaimed")
+
 
 Backend = GithubBackend | LocalBackend
 
@@ -854,6 +1135,23 @@ def _backend_for_ref(
     )
 
 
+def _ref_backend(ref: str, repo_root: str | None) -> Backend:
+    scheme, ident = parse_ref(ref)
+    return _backend_for_ref(scheme, ident, repo_root)
+
+
+def ref_number(ref: str) -> int:
+    """The issue number a ref carries: ``#N`` for GitHub, the file id for local."""
+    scheme, ident = parse_ref(ref)
+    if scheme == "gh":
+        return GithubBackend._parse_ident(ident)[1]
+    if scheme == "local":
+        stem = Path(ident).stem
+        if stem.isdigit():
+            return int(stem)
+    raise ValueError(f"ref {ref!r} carries no issue number")
+
+
 # --- CLI ---------------------------------------------------------------------
 
 
@@ -877,14 +1175,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("target", help="owner/repo (github) or local repo path")
     p_list.add_argument("--query", help="Substring filter over title/body")
     p_list.add_argument("--epic", help="Filter to issues in this epic")
+    p_list.add_argument(
+        "--state", choices=("open", "closed", "all"), default="all",
+        help="Filter by state (default: all)",
+    )
+    p_list.add_argument("--label", help="Only issues carrying this label")
+    p_list.add_argument(
+        "--numbers", action="store_true",
+        help="Print a comma-joined list of issue numbers instead of JSON",
+    )
 
     p_create = sub.add_parser("create", help="Create a new issue")
     p_create.add_argument("target")
     p_create.add_argument("--title", required=True)
     p_create.add_argument("--body", default="")
+    p_create.add_argument("--body-file", help="Read the body from this file instead")
     p_create.add_argument("--label", action="append", default=[], dest="labels")
     p_create.add_argument("--assignee")
     p_create.add_argument("--epic")
+    p_create.add_argument(
+        "--provenance-class", choices=PROVENANCE_CLASSES,
+        help="Who asked for this work (a task service records it; GitHub ignores it)",
+    )
+    p_create.add_argument("--provenance-source", help="Citation for --provenance-class")
+    p_create.add_argument("--agent", help="The agent recording the provenance, if any")
     p_create.add_argument(
         "--disclose-ai", action="store_true",
         help="Append the CW AI-authorship disclosure line to the issue body (#317) — "
@@ -909,6 +1223,36 @@ def _build_parser() -> argparse.ArgumentParser:
     p_members = sub.add_parser("members", help="List issues in an epic")
     p_members.add_argument("target")
     p_members.add_argument("epic")
+
+    p_context = sub.add_parser(
+        "context", help="Print the issue with author and comments (gh issue view --json shape)"
+    )
+    p_context.add_argument("ref")
+
+    p_status = sub.add_parser("status", help="Record a work status (ready/in_progress/blocked)")
+    p_status.add_argument("ref")
+    p_status.add_argument("status", choices=STATUSES)
+    p_status.add_argument("--holder", required=True, help="The agent holding the work")
+    p_status.add_argument("--note", default="", help="What changed")
+
+    p_complete = sub.add_parser("complete", help="Finish work: close with a summary comment")
+    p_complete.add_argument("ref")
+    p_complete.add_argument("--summary", default="")
+    p_complete.add_argument("--holder")
+
+    p_decision = sub.add_parser("decision", help="Log a decision with its provenance")
+    p_decision.add_argument("ref")
+    p_decision.add_argument("--what", required=True)
+    p_decision.add_argument("--decided-by", required=True)
+    p_decision.add_argument("--class", dest="provenance_class", required=True,
+                            choices=PROVENANCE_CLASSES)
+    p_decision.add_argument("--source", dest="provenance_source", required=True)
+    p_decision.add_argument("--channel", default="")
+    p_decision.add_argument("--words", dest="approval_words")
+    p_decision.add_argument("--relayed-by")
+
+    p_lease = sub.add_parser("lease", help="Show the current claim on an issue")
+    p_lease.add_argument("ref")
 
     p_caps = sub.add_parser(
         "capabilities", help="Print which optional verb groups a backend supports"
@@ -955,16 +1299,27 @@ def main(argv: list[str] | None = None) -> int:
             if args.epic:
                 query = {"epic": args.epic}
             issues = backend.list(query)
-            print(json.dumps([i.to_dict() for i in issues], indent=2))
+            if args.state != "all":
+                issues = [i for i in issues if i.state == args.state]
+            if args.label:
+                issues = [i for i in issues if args.label in i.labels]
+            if args.numbers:
+                print(",".join(str(ref_number(i.ref)) for i in issues))
+            else:
+                print(json.dumps([i.to_dict() for i in issues], indent=2))
 
         elif args.command == "create":
             backend = get_tracker(args.target, repo_root=repo_root)
-            body = args.body
+            body = Path(args.body_file).read_text() if args.body_file else args.body
             if args.disclose_ai:
                 body = ai_disclosure.ensure_disclosure(body)
             draft = IssueDraft(
                 title=args.title, body=body, labels=args.labels,
                 assignee=args.assignee, epic=args.epic,
+                provenance=(
+                    Provenance(args.provenance_class, args.provenance_source or "", args.agent)
+                    if args.provenance_class else None
+                ),
             )
             print(backend.create(draft))
 
@@ -986,6 +1341,32 @@ def main(argv: list[str] | None = None) -> int:
             scheme, ident = parse_ref(args.refs[0])
             backend = _backend_for_ref(scheme, ident, repo_root)
             backend.group(args.refs, args.epic)
+
+        elif args.command == "context":
+            backend = _ref_backend(args.ref, repo_root)
+            print(json.dumps(backend.read_context(args.ref), indent=2))
+
+        elif args.command == "status":
+            backend = _ref_backend(args.ref, repo_root)
+            backend.set_status(args.ref, args.status, holder=args.holder, note=args.note)
+
+        elif args.command == "complete":
+            backend = _ref_backend(args.ref, repo_root)
+            backend.complete(args.ref, args.summary, holder=args.holder)
+
+        elif args.command == "decision":
+            backend = _ref_backend(args.ref, repo_root)
+            decision = Decision(
+                what=args.what, decided_by=args.decided_by,
+                provenance=Provenance(args.provenance_class, args.provenance_source),
+                channel=args.channel, approval_words=args.approval_words,
+                relayed_by=args.relayed_by,
+            )
+            backend.log_decision(args.ref, decision)
+
+        elif args.command == "lease":
+            backend = _ref_backend(args.ref, repo_root)
+            print(json.dumps(backend.lease(args.ref).to_dict(), indent=2))
 
         elif args.command == "capabilities":
             backend = get_tracker(args.target, repo_root=repo_root)

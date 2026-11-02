@@ -192,15 +192,65 @@ GitHub-specific plumbing (e.g. milestone descriptions) on `backend == github`.
 
 ## Command migration
 
-`/create-issue` and `/plan-epic` resolve issue refs via `tracker.py` instead of
-calling `gh issue`/`gh api` directly (see their command markdown). In
-`/plan-epic`, the GitHub milestone plumbing is conditional on the resolved
-backend: for `github` the dependency-graph block lives in the milestone
-description (as today); for other backends it is written to
-`docs/epics/<slug>/epic.md` in the target repo, and epic membership is the
-frontmatter `epic` field set by `tracker.py group`. The remaining
-`gh`-calling commands (`/seed`, `/implement`, `/implement-wave`,
-`/close-epic`) are a later ticket.
+Every skill tracks work through `tracker.py`; none calls `gh issue`
+(chief-wiggum#498). `tests/test_tracker_boundary.py` fails if any file under
+`.claude/commands/`, `skills/`, `scripts/`, `templates/`, `config/` or
+`start/` shells out to `gh issue` (shell, argv or `gh api .../issues` form)
+outside `scripts/tracker.py`, and plants calls first to prove the scan
+bites. `gh` for PRs, repos, labels and milestones is unaffected.
+
+| Skill | Was | Now |
+|---|---|---|
+| `/implement` Step 1 | `gh issue view --json milestone` | `tracker.py get REF \| jq .epic` |
+| `/implement` Step 2 | `gh issue view --json title,body,author,labels,assignees,milestone,comments` | `tracker.py context REF` (same JSON) |
+| `/implement` Step 9 | `gh issue view --json labels` | labels from Step 2's `issue-raw.json` |
+| `/implement-wave` Step 2 | `gh issue list --milestone --state all/closed` | `tracker.py list --epic --state all/closed --numbers` |
+| `/implement-wave` Step 7 | `gh issue close --comment` | `tracker.py complete REF --summary` (one `gh issue close --comment`) |
+| `/seed` Step 8 | worker told to use `gh issue create` | `tracker.py create ... --disclose-ai` |
+| `/reflect` Step 5 | `gh --repo ... issue create --body-file` | `tracker.py create --body-file` |
+| `chief_wiggum.github.list_issues/view_issue` | own `gh issue` argv | `GithubBackend.raw_list/raw_view` (identical argv) |
+
+`/create-issue`, `/plan-epic`, `/architect` and `/close-epic` moved earlier
+(#158, #267). In `/plan-epic` the GitHub milestone plumbing stays
+conditional on the resolved backend.
+
+## Work-tracking verbs (chief-wiggum#498)
+
+| Verb | CLI | GitHub | local |
+|---|---|---|---|
+| `read_context(ref) -> dict` | `context REF` | `gh issue view --json title,body,author,labels,assignees,milestone,comments`, passed through | same shape from the file |
+| `set_status(ref, status, holder=, note=)` | `status REF ready\|in_progress\|blocked --holder H --note N` | the note as a comment; no note writes nothing; no status label is invented | same |
+| `complete(ref, summary, holder=)` | `complete REF --summary S` | `gh issue close N --comment S` | comment + `state: closed` |
+| `log_decision(ref, Decision)` | `decision REF --what --decided-by --class --source [--channel --words --relayed-by]` | a comment: prose plus a `<!-- CW-DECISION {json} -->` block | same |
+| `lease(ref) -> Lease` | `lease REF` | unsupported (no claims) | from the `.claim` file |
+| `create(draft)` with `draft.provenance` | `create --provenance-class --provenance-source [--agent]` | ignored (no behaviour change) | ignored |
+
+`status` takes `ready`, `in_progress` or `blocked`; finishing is `complete`.
+A `Decision` carries a `Provenance` whose class is one of `legal`, `human`,
+`customer`, `agent` (anything else, including "to confirm", is refused) and
+whose `source` cites it; an `agent` decision renders as "agent proposal".
+`parse_decision_block(text)` reads the block back.
+
+### Lease and claim, and the DAG contract
+
+`Lease` uses the DAG contract's `lease_state` vocabulary (`unclaimed`,
+`active`, `released`, `expired`, `revoked`; a test pins it to
+`schemas/dag/v1/vocabulary.schema.json`). `Lease.to_dag_lease_fields()`
+supplies a `lease_record`'s fields, so the DAG's lease is the tracker's claim
+rather than a second store:
+
+| `lease_record` (docs/dag-contract.md) | `Lease` |
+|---|---|
+| `lease_id` | `lease_id` (the service's lease id) |
+| `execution_node_id` | resolved by the DAG compiler from `intent_ref`: an execution node pins its intent node, which pins the tracker ref |
+| `attempt_id` | `run_id` (the claim's run) |
+| `epoch` | `epoch` |
+| `state` (`lease_state`) | `state` |
+| `fencing_token` | `fencing_token`, else `lease_id`, else `run_id` |
+| (none) | `holder`, `expires_at` |
+
+`claim(ref, agent_id) -> bool` and `release` keep their #371 meaning;
+`lease(ref)` reports the current claim.
 
 ## Dependency verb group (chief-wiggum#371)
 

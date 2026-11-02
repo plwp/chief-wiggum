@@ -74,7 +74,7 @@ class MissingCommentsWarning(UserWarning):
 
 @dataclass
 class TicketComment:
-    """One `gh issue view --json comments` entry (append-only, observed-context).
+    """One `comments` entry of the issue context JSON (`tracker.py context`) (append-only, observed-context).
 
     ``author_association`` and ``created_at`` drive the amendment-promotion
     predicate and deterministic supersession (ADR-fh-02) — never re-derived,
@@ -252,7 +252,7 @@ class TicketContext:
 def build_ticket_context_json(
     raw_issue: dict, *, number: int | None = None, acceptance_criteria: Iterable[str] = ()
 ) -> dict:
-    """Flatten `gh issue view --json title,body,author,comments` into ticket.json.
+    """Flatten the issue context JSON (`tracker.py context`: title, body, author, comments) into ticket.json.
 
     This is the upstream writer half of #83: the `/implement` shell (Step 2)
     calls this (via `scripts/write_ticket_context.py`) to produce the

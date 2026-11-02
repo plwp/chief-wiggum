@@ -102,8 +102,9 @@ Fetch **all** tickets in the epic milestone (both open and closed — closed tic
 
 ```bash
 # Full epic issue list, and the closed subset.
-EPIC_ISSUES=$(gh issue list --repo "$owner_repo" --milestone "$epic_name" --state all --limit 200 --json number -q 'map(.number) | join(",")')
-CLOSED_ISSUES=$(gh issue list --repo "$owner_repo" --milestone "$epic_name" --state closed --limit 200 --json number -q 'map(.number) | join(",")')
+# Through the tracker interface (docs/tracker.md), never `gh` directly.
+EPIC_ISSUES=$("${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" list "$owner_repo" --epic "$epic_name" --state all --numbers)
+CLOSED_ISSUES=$("${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" list "$owner_repo" --epic "$epic_name" --state closed --numbers)
 # Tickets gated by Step 1's unresolved-marker scan (comma-separated issue numbers).
 BLOCKED_TICKETS="${BLOCKED_TICKETS:-}"
 ```
@@ -650,7 +651,8 @@ After all waves complete:
 2. If some tickets remain open: list them and ask if they should be implemented in another wave
 3. Close implemented issues:
    ```bash
-   gh issue close $ticket_number --repo "$owner_repo" --comment "Implemented in wave $wave_number. Merged to $DEFAULT_BRANCH."
+   "${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" complete "$owner_repo#$ticket_number" \
+     --summary "Implemented in wave $wave_number. Merged to $DEFAULT_BRANCH."
    ```
 
 ## Key Principles
