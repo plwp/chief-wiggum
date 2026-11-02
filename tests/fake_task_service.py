@@ -75,6 +75,8 @@ S = {"type": "string"}
 SN = {"anyOf": [{"type": "string"}, {"type": "null"}]}
 LIST = {"type": "array", "items": S}
 LISTN = {"anyOf": [LIST, {"type": "null"}]}
+# dtd-cns docs/mcp-tools.md, Ticket #54: strict, no trimming or case folding.
+CITE_RE = re.compile(r"[a-z0-9-]+/REQ-[0-9]+@[0-9a-f]{64}")
 BOOL = {"type": "boolean"}
 
 TOOLS = {
@@ -84,7 +86,8 @@ TOOLS = {
     "create_task": _obj({
         "title": S, "actor": {"enum": ACTORS}, "priority": {"enum": ["P1", "P2", "P3"]},
         "done_when": S, "provenance_class": {"enum": PROVENANCE}, "provenance_source": S,
-        "lane": SN, "requires": LISTN, "deps": LISTN, "resources": LISTN, "repo": SN,
+        "lane": SN, "requires": LISTN, "deps": LISTN, "resources": LISTN, "cites": LISTN,
+        "repo": SN,
     }, ["title", "actor", "priority", "done_when", "provenance_class", "provenance_source"]),
     "claim_task": _obj({
         "environment": S, "agent": S, "state": {"enum": ["GREEN", "AMBER", "RED"]},
@@ -255,6 +258,9 @@ class FakeTaskService:
                 raise Refusal("InvalidRepo: repo must be <owner>/<repo>")
         if not (a.get("provenance_source") or "").strip():
             raise Refusal("MissingProvenance: provenance_source")
+        for cite in a.get("cites") or []:
+            if not CITE_RE.fullmatch(cite):
+                raise Refusal(f"InvalidCite: {cite} is not <slug>/REQ-<n>@<body_sha256>")
         if not a["title"].strip():
             raise Refusal("InvalidTask: title must be nonblank")
         if not a["done_when"].strip():
@@ -277,7 +283,8 @@ class FakeTaskService:
             "done_when": a["done_when"], "state": "blocked" if blocked else "ready",
             "created_by": self.caller, "provenance_class": a["provenance_class"],
             "provenance_source": a["provenance_source"], "lane": a.get("lane"),
-            "repo": repo, "requires": a.get("requires"), "closed_at": None,
+            "repo": repo, "requires": a.get("requires"), "cites": list(a.get("cites") or []),
+            "closed_at": None,
             "status_done": None, "status_in_progress": None, "status_next": None,
             "status_blocked_on": None, "status_by": None, "status_at": None,
         }

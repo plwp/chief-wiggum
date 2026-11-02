@@ -104,6 +104,13 @@ class IssueDraft:
     # skills); a task-service backend carries it on create so an
     # agent-class task is shown as an agent proposal.
     provenance: Provenance | None = None
+    # Task-service-only create fields (ignored by github and local): customer
+    # requirement refs (``<slug>/REQ-<n>@<body_sha256>``), service task keys
+    # this task waits on, and the task's own priority and done-when.
+    cites: list[str] = field(default_factory=list)
+    deps: list[str] = field(default_factory=list)
+    priority: str | None = None
+    done_when: str | None = None
 
 
 VALID_STATES = ("open", "closed")
@@ -1272,6 +1279,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Append the CW AI-authorship disclosure line to the issue body (#317) — "
         "pass this for issues published to a public repo (e.g. /create-issue, /plan-epic)",
     )
+    p_create.add_argument("--cite", dest="cites", action="append", default=[],
+                          help="A customer requirement ref, <slug>/REQ-<n>@<body_sha256>, "
+                               "sent with the task (task service only; repeatable)")
+    p_create.add_argument("--dep", dest="deps", action="append", default=[],
+                          help="A task-service task (id or key) this task waits on "
+                               "(task service only; repeatable)")
+    p_create.add_argument("--priority", choices=("P1", "P2", "P3"),
+                          help="The task's priority (task service only; default from config)")
+    p_create.add_argument("--done-when", dest="done_when",
+                          help="The task's done-when (task service only; default from config)")
 
     p_update = sub.add_parser("update", help="Update fields on an issue")
     p_update.add_argument("ref")
@@ -1406,6 +1423,8 @@ def main(argv: list[str] | None = None) -> int:
                     Provenance(args.provenance_class, args.provenance_source or "", args.agent)
                     if args.provenance_class else None
                 ),
+                cites=args.cites, deps=args.deps,
+                priority=args.priority, done_when=args.done_when,
             )
             print(backend.create(draft))
 
