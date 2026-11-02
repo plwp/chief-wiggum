@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402
 import tracker as _t  # noqa: E402
+from chief_wiggum.mirror_lock import DEFAULT_TIMEOUT_SECONDS, mirror_lock  # noqa: E402
 from chief_wiggum.task_service import (  # noqa: E402
     ClaimRefused,
     ServiceMapping,
@@ -145,12 +146,36 @@ class McpTaskBackend:
     def _read(self, ident: str) -> ServiceTask | None:
         """The service's record of a task (by key or id), or None."""
         try:
-            result = self._call("read", self.mapping.read_args(ident))
+            result = self._call("read", self._read_args(ident))
+            task = self.mapping.task_from(result)
+            # The newest notes come first; page back to the oldest while the
+            # service names an older cursor and accepts it.
+            seen: set[str] = set()
+            while (
+                task.notes_before
+                and task.notes_before not in seen
+                and self._accepts("read", self.mapping.NOTES_CURSOR)
+            ):
+                seen.add(task.notes_before)
+                older = self.mapping.task_from(
+                    self._call("read", self._read_args(ident, notes_before=task.notes_before))
+                )
+                task.notes = older.notes + task.notes
+                task.notes_before = older.notes_before
         except TaskServiceError as exc:
             if self.mapping.is_not_found(str(exc)):
                 return None
             raise
-        return self.mapping.task_from(result)
+        return task
+
+    def _read_args(self, ident: str, *, notes_before: str | None = None) -> dict:
+        limit = self.mapping.NOTES_PAGE_SIZE if self._accepts("read", self.mapping.NOTES_LIMIT) else None
+        return self.mapping.read_args(ident, notes_before=notes_before, notes_limit=limit)
+
+    def _accepts(self, verb: str, argument: str) -> bool:
+        """Does the service's tool for ``verb`` declare ``argument``?"""
+        schema = self.transport.tools().get(self.mapping.TOOLS[verb].tool) or {}
+        return argument in (schema.get("properties") or {})
 
     def _remember(self, task: ServiceTask) -> Target:
         issue = self.mapping.issue_ref(task.issue)
@@ -250,7 +275,13 @@ class McpTaskBackend:
                 self._lag_noted = True
             return
         try:
-            self.run_mirror()
+            # One mirror run at a time per repo: parallel workers must not both
+            # post before either records (chief-wiggum#506).
+            with mirror_lock(
+                artifacts.user_dir(), self.repo,
+                timeout=float(self.config.get("mirror_lock_timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            ):
+                self.run_mirror()
         except Exception as exc:  # noqa: BLE001 - any mirror failure is reported the same way
             message = f"the task service took the write; mirroring it to GitHub failed: {exc}"
             if self.mirror_mode == "strict":
@@ -293,7 +324,23 @@ class McpTaskBackend:
         return self.github.get(self.resolve_ref(ref))
 
     def _service_list(self, state: str | None = None) -> list[_t.Issue]:
-        tasks = self.mapping.tasks_from(self._call("list", self.mapping.list_args(state)))
+        """Every task, paging with next_cursor when the service pages (either
+        shape works: an unpaged answer is one page)."""
+        properties = {
+            name for name in self.mapping.LIST_PAGING_ARGS if self._accepts("list", name)
+        }
+        tasks: list[ServiceTask] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            page = self.mapping.page_from(
+                self._call("list", self.mapping.list_args(state, cursor=cursor, accepts=properties))
+            )
+            tasks.extend(page.tasks)
+            cursor = page.next_cursor
+            if not cursor or cursor in seen or "cursor" not in properties:
+                break
+            seen.add(cursor)
         return [self._issue_from_task(task) for task in tasks]
 
     def list(self, query=None) -> list[_t.Issue]:
