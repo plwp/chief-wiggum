@@ -22,6 +22,7 @@ from tracker import (
 )
 
 CW_ROOT = Path(__file__).resolve().parents[1]
+_REAL_RUN = subprocess.run
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +91,10 @@ class FakeGh:
         self.comments: dict[tuple[str, int], list[str]] = {}
 
     def __call__(self, args: list[str], **kwargs) -> subprocess.CompletedProcess:
-        assert args[0] == "gh"
+        if args[0] != "gh":
+            # Patched over subprocess.run, other tools still run: ref-addressed
+            # commands now resolve the target's tracker config (#498).
+            return _REAL_RUN(args, **kwargs)
         if args[1] == "issue":
             return self._issue(args[2], args[3:])
         if args[1] == "api":

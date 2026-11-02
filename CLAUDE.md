@@ -24,7 +24,7 @@ Portable workflow contracts, scripts, and Claude Code slash-command adapters tha
 - **Contracts are executable.** Every REQUIRES/ENSURES from `/architect` becomes a runtime guard; the review checklist verifies it.
 - **Traceability is mechanical.** `CTR-`/`INV-`/`BR-` stable IDs, `@cw-trace` annotations, `scripts/check_traceability.py` builds the graph and reports orphans — `docs/traceability.md`.
 - **Single write paths are inventoried.** A single-writer invariant names `controls_field` + `sanctioned_writers`; `scripts/check_single_writer.py` finds every other writer — `docs/single-writer.md`.
-- **Work tracking goes through one interface.** Skills create, read, claim, update, complete and log decisions through `scripts/tracker.py`, never `gh issue`; the backend is chosen per target in config, GitHub when absent — `docs/tracker.md`.
+- **Work tracking goes through one interface.** Skills create, read, claim, update, complete and log decisions through `scripts/tracker.py`, never `gh issue`; the backend is chosen per target in config, GitHub when absent; an MCP task service is mirrored while GitHub stays the source of truth — `docs/tracker.md`.
 - **Architecture knowledge is queried live, never cached or paraphrased.** `scripts/code_query.py` is a locator returning `file:line` handles, not a content store — `docs/code-query.md`.
 - **Meta location is resolved, never assumed.** `scripts/artifacts.py` says whether a target's CW meta is `embedded` (`<target>/docs/`) or `sidecar` (`~/.chief-wiggum/meta/<owner>/<repo>/`) — `docs/sidecar.md`.
 - **Quality ratchets, never slides.** The pass-set that has passed on main may not shrink; contract definitions are hashed; the journal is an append-only hash chain; workers can't touch goalposts — `docs/ratchet.md`.
