@@ -74,8 +74,8 @@ Given a target repo, which backend applies is resolved in this order:
 
 `backend` may be `github`, `local` or `mcp` (see below). On `mcp`,
 ref-addressed `gh:` operations also route through the mcp backend, so a
-comment or completion is mirrored, and `task:<service key>` refs resolve to
-their GitHub issue.
+comment or completion goes to the task service, which mirrors it to GitHub,
+and `task:<service key>` refs resolve to their GitHub issue.
 
 `tracker.resolve_backend_name(repo_root)` is the pure function; `get_tracker(target,
 repo_root=...)` builds the actual backend (a `GithubBackend` bound to `target`
@@ -140,98 +140,150 @@ YAML-aware tool, e.g. Obsidian) without pulling in a `pyyaml` dependency.
 
 IDs auto-increment from the highest existing numeric filename in `docs/issues/`.
 
-### `mcp` — a task service mirrored, GitHub the source of truth (chief-wiggum#498)
+### `mcp` — a task service that mirrors itself to GitHub (chief-wiggum#498)
 
 For a team that runs an MCP task service: tasks with claims and leases, run
-notes written by the holder, completion, and a decision log with provenance.
-Selected per target:
+notes and statuses written by the holder, comments, completion, and a
+decision log with provenance. The service mirrors its own writes to GitHub
+with an operator command, so CW writes each thing once, to the service.
+
+#### Switching a target
 
 ```jsonc
-// <target meta root>/cw/tracker.json  (docs/cw/tracker.json when embedded)
-{ "backend": "mcp", "mcp": { "mirror": "strict" } }
+// ~/.chief-wiggum/config.json: the machine-local server, identity and mirror
+{ "tracker": { "mcp": {
+    "command": ["/path/to/task-service", "mcp", "--agent", "<agent>", "--db", "<db>"],
+    "agent": "<the identity the server authenticates>",
+    "environment": "<the environment that agent is registered in>",
+    "mirror_command": ["/path/to/task-service", "mirror", "--repo", "{repo}", "--db", "<db>"]
+} } }
 ```
 
 ```jsonc
-// ~/.chief-wiggum/config.json: the machine-local server command and identity
-{ "tracker": { "mcp": { "command": ["/path/to/task-service", "serve"],
-                        "agent": "<the identity the server authenticates>" } } }
+// <target meta root>/cw/tracker.json  (docs/cw/tracker.json when embedded)
+{ "backend": "mcp", "mcp": { "read": "github" } }
 ```
 
 The two `mcp` blocks merge key by key, the target's over CW's
 (`tracker.resolve_mcp_config`). No `backend` key anywhere means `github`.
+Before switching a target's reads to `"service"`, run the round-trip check
+below on it.
 
 | Key | Meaning |
 |---|---|
 | `command` | stdio MCP server argv (required) |
-| `agent` | the service identity; claims are made as this caller, and CW's holder (a wave or worker id) is kept locally |
-| `mirror` | `strict` (default) or `best_effort` |
-| `actor`, `priority`, `lane` | sent when a task is created (defaults `worker`, `P2`) |
+| `agent` | the service identity: claims, comments and decisions are made as this caller; CW's holder (a wave or worker id) is kept locally |
+| `read` | where reads come from: `github` (default) or `service` |
+| `mirror_command` | the operator's mirror, run after every write; `{repo}` becomes `owner/repo`. The command must be idempotent |
+| `mirror` | what a failed mirror run does: `strict` (default) raises, `best_effort` warns |
+| `actor`, `priority`, `lane`, `done_when`, `requires` | sent when a task is created (defaults `worker`, `P2`, and a done-when that points at the issue body) |
 | `environment`, `capabilities`, `claim_state` | sent with a claim |
 | `repo` | owner/repo for `task:` refs, when the origin remote does not say |
-| `timeout_seconds` | transport timeout |
+| `timeout_seconds`, `mirror_timeout_seconds` | transport and mirror timeouts |
 
-No secrets pass through CW: the server authenticates itself.
+No secrets pass through CW: the server and its mirror authenticate
+themselves.
 
-Until the service mirrors its own writes to GitHub:
+#### Writes: the service, then its mirror
 
-| Verb | GitHub | Task service |
+| Verb | Task service | GitHub |
 |---|---|---|
-| `get` / `list` / `members` / `ready` / `deps` / `context` | **read here** | never read |
-| `create` | first | a task with the title, provenance class and source, and a done-when naming the issue; the service mints the key |
-| `comment` | first | a run note when this machine holds a run; outside a run, skipped until the service supports it |
-| `status` | the note, as on `github` | a run-status note from the holder's run |
-| `complete` | `gh issue close --comment` | completes the holder's run; the run is dropped |
-| `decision` | the decision comment | the decision log, task-scoped, with provenance; a relayed human decision is recorded as `human:<name>` |
-| `claim` / `heartbeat` / `release` / `lease` | nothing (GitHub holds no claims) | a claim naming the task; every lease it returns is renewed or released |
-| `update` / `group` / `link` | only here | no service verb |
+| `create` | a task with the title and provenance; the service mints a `local#<n>` key, state `ready` (or `blocked` behind an unfinished dependency) | the mirror creates the issue; CW then puts the draft's body above the mirror's block and applies its labels, assignee and milestone |
+| `comment` | a comment, by any registered agent, no claim needed, no state change | the mirror posts it |
+| `status` | a status note (done, in progress, blocked on, next) from the run's holder | the mirror keeps one status comment current |
+| `complete` | completes the holder's run | the mirror posts the summary and closes the issue |
+| `decision` | the decision log, task-scoped, with provenance | the mirror posts it |
+| `claim` / `heartbeat` / `release` / `lease` | a claim naming the task; its leases (including the environment slot) are renewed or released | nothing: GitHub holds no claims |
+| `update` / `group` / `link` / `unlink` | nothing: the service holds no body, labels, milestone or dependency edges after creation | written here, as on `github` |
 
-**Failure.** GitHub is written first; if it fails nothing reaches the
-service. If the service then refuses or fails, `strict` raises `MirrorError`
-(CLI exit 3: "GitHub updated, task service failed", with the service's
-reason), `best_effort` warns on stderr. Status and completion need the run
-this machine claimed, by the same holder; without one the call is a mirror
-failure that says "claim it first".
+CW never writes the same thing to both. After each service write it runs
+`mirror_command`; with none configured, GitHub catches up the next time the
+operator mirrors, and CW says so once per invocation. A service refusal
+(`MissingProvenance`, `InvalidComment`, `UnknownHuman`, ...) raises with the
+service's reason and nothing is written anywhere (CLI exit 1). A mirror run
+that fails after the service took the write raises `MirrorError` under
+`strict` (CLI exit 3, "the task service took the write; mirroring it to
+GitHub failed") or warns under `best_effort`.
 
-**Claims.** A claim always names its task: the untargeted form (next ready
-task) is never used, because it may hand over a different task, and
-`capabilities` reports `claim` only when the service accepts a named claim. A
-refusal meaning "held by someone else" or "not ready" returns false (CLI exit
-1, skip the ticket); any other refusal (identity, capability, capacity,
-hours, unknown task) raises with the service's reason. Leases expire: a
-long-running holder calls `tracker.py heartbeat REF`.
+**Holder only.** Status and completion need the run this machine claimed, by
+the same holder; without one CW refuses before writing ("claim it first").
 
-**Declared gaps are not failures.** A verb the service does not support yet,
-or a task the service does not know (an issue older than the adoption),
-skips the mirror with a stderr notice. `tracker.py service TARGET` lists the
-gaps.
+**Decisions.** The service checks who decided: `decided_by` is the caller, or
+a registered human the caller relays as `human:<name>`. A human decision is
+sent as `human:<name>` with "relayed by" in the channel; the service refuses
+relayed approval words, so they travel in the provenance source when it does
+not already quote them. A decision by another agent is logged by the caller
+"for" that agent, said so in the channel. An unregistered human is refused
+(`UnknownHuman`): register them on the service.
 
 **Provenance on create.** `create --provenance-class --provenance-source
 [--agent]` is carried to the service, which requires it. A create with no
 stated provenance is sent as an `agent` proposal citing the configured agent
-and the date, never as a stronger class. An `agent`-class task is shown as a
-proposal (`service TARGET --ref REF` reports `agent_proposal`) and can be
-claimed at once: nothing waits on a confirmation.
+and the date, never as a stronger class. Every class, `agent` included, can
+be claimed at once; `service TARGET --ref REF` reports `agent_proposal`.
 
-**Keys.** The service mints `local#<n>` keys, and such a task is not on
-GitHub until the service mirrors it. The adapter records which issue each
-key it created belongs to, so `task:local#<n>` resolves to that issue; a
-`local#<n>` task created on the service side has no issue, is not visible to
-GitHub-reading skills, and raises `NotVisibleOnGitHub`. An issue the service
-already knows by an `owner/repo#N` key is found by that key. Key and run
-records live in `~/.chief-wiggum/state/tracker/<owner>/<repo>.json`, so a
-`claim` and a later `complete` in separate invocations share the run.
+**Claims.** A claim always names its task (by id): the untargeted form (next
+ready task) is never used, and `capabilities` reports `claim` only when the
+service accepts a named claim. A refusal meaning "held by someone else" or
+"not ready" returns false (CLI exit 1, skip the ticket); any other refusal
+(identity, actor, capability, capacity, hours, unknown task) raises with the
+service's reason. Leases expire: a long-running holder calls
+`tracker.py heartbeat REF`.
 
-**The mapping is one class.** The service's tool names, argument shapes,
-result parsing and refusal reasons are in
-`chief_wiggum.task_service.ServiceMapping` and nowhere else. Tests run the
-backend against `tests/fake_task_service.py`, in process and as a stdio MCP
-server; the fake rejects missing or unexpected arguments the way the service
-does, and enforces holder-only run notes, provenance on create and decision,
-the claiming identity, and one live claim per task.
+#### Reads: one configured source
 
-Pending on the service side: comments outside a run, and mirroring its
-writes to GitHub. When mirroring lands, the backend can read from the
-service and stop writing GitHub itself.
+`read: github` (the default) reads the mirrored issues exactly as the
+`github` backend does: what every skill saw before, comments in the
+mirror's format. `read: service` reads the service's records: `get`, `list`,
+`ready` and `context` come from the service, with the state (`done` reads as
+closed), comments, status, decisions and provenance; the body is the
+task's done-when, since the service holds no issue body. `members`, `deps`
+and the GitHub-only fields always read GitHub.
+
+#### Keys and refs
+
+The service mints `local#<n>` keys. `create` returns the issue's `gh:` ref
+once the mirror has made it, else `task:local#<n>`; a `task:` ref resolves
+to its issue through the service's mirror record. An unmirrored task read
+from GitHub raises `NotVisibleOnGitHub`; with `read: service` it is visible.
+A `gh:` ref is matched to its task by the local record, then by the keys an
+imported issue carries (`<repo>#N`, `owner/repo#N`), then by reading the
+service's unmapped tasks once. An issue the service does not hold at all (one
+older than the adoption) is written on GitHub as the `github` backend would,
+with a notice, and cannot be claimed. Records live in
+`~/.chief-wiggum/state/tracker/<owner>/<repo>.json`, so a `claim` and a later
+`complete` in separate invocations share the run.
+
+#### The round-trip check
+
+`tracker.py service TARGET --ref REF --compare` reads a task back from the
+service and from GitHub and lists every disagreement: the title, open or
+closed against the service's state, and each comment, decision (what and
+provenance source), status field and completion summary the service holds
+that does not appear in the issue's comments. Exit 4 if there is any.
+`tests/test_tracker_service_contract.py` runs the whole round trip (create,
+claim, status, comment, decision, complete, mirror, compare from both read
+sources) against a real service binary named by `CW_TASK_SERVICE_BIN`, on a
+scratch database, with its mirror pointed at a local fake of the GitHub API;
+it is skipped when no binary is configured.
+
+#### Not supported
+
+- Writing the service from GitHub: edits made on GitHub (body, labels,
+  closing by hand) do not reach the service. Close work with `complete`.
+- Dependency edges on the service after creation: `link` writes GitHub only.
+- Looking a task up by its issue: the service is asked by key, so the first
+  sight of a service-created issue on a new machine reads the service's
+  unmapped tasks once.
+
+#### The mapping is one class
+
+The service's tool names, argument shapes, result parsing and refusal
+reasons are in `chief_wiggum.task_service.ServiceMapping` and nowhere else.
+Tests run the backend against `tests/fake_task_service.py`, in process and as
+a stdio MCP server; the fake matches the service's shapes and refusals,
+rejects missing or unexpected arguments the way the service does (-32602),
+and has the mirror command.
 
 ## Adding a backend
 
@@ -256,8 +308,7 @@ service and stop writing GitHub itself.
   Deferred to a real client need. Only `title`/`body`/`state`/`labels`/`epic`
   would map — no custom fields or workflows.
 - **Two-way sync between backends** — a ref lives in exactly one backend
-  (the `mcp` backend mirrors one way, GitHub to the service, until the
-  service mirrors back).
+  (the `mcp` backend's service mirrors one way, the service to GitHub).
 - **Migrating existing GitHub issues** anywhere.
 
 ## CLI

@@ -1156,8 +1156,8 @@ def _backend_for_ref(
     """Build the backend a fully-qualified ref names.
 
     A ``gh:`` ref is GitHub unless the target is configured for the mcp
-    backend, which then takes the write as well (GitHub first, the service
-    mirrored). A ``task:`` ref names a task-service key and needs mcp.
+    backend, which then takes the write (the task service, which mirrors it
+    to GitHub). A ``task:`` ref names a task-service key and needs mcp.
     """
     if scheme in ("gh", "task"):
         root = Path(repo_root).resolve() if repo_root else Path.cwd()
@@ -1334,6 +1334,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_service.add_argument("target")
     p_service.add_argument("--ref", help="Also show this ref's service key, task id, provenance and run")
+    p_service.add_argument(
+        "--compare", action="store_true",
+        help="With --ref: read the task back from GitHub and the service and list disagreements"
+             " (exit 4 if any)",
+    )
 
     p_caps = sub.add_parser(
         "capabilities", help="Print which optional verb groups a backend supports"
@@ -1464,18 +1469,18 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 report: dict[str, Any] = {
                     "backend": type(backend).__name__,
+                    "read": backend.read_source,
                     "mirror": backend.mirror_mode,
+                    "mirror_command": backend.run_mirror is not None,
                     "gaps": backend.service_gaps(),
                 }
                 if args.ref:
-                    ref = backend.resolve_ref(args.ref)
-                    record = dict(backend.state.task(ref))
-                    provenance = record.get("provenance") or {}
-                    record["agent_proposal"] = provenance.get("class") == "agent"
-                    record["key"] = backend.service_key(ref)
-                    record["lease"] = backend.lease(ref).to_dict()
-                    report["ref"] = {ref: record}
+                    report["ref"] = {args.ref: backend.service_report(args.ref)}
+                    if args.compare:
+                        report["compare"] = backend.compare(args.ref)
                 print(json.dumps(report, indent=2))
+                if args.ref and args.compare and report["compare"]["mismatches"]:
+                    return 4
 
         elif args.command == "capabilities":
             backend = get_tracker(args.target, repo_root=repo_root)
@@ -1521,7 +1526,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     except _mirror_error() as exc:
-        # GitHub took the write; the task service did not (#498).
+        # The task service took the write; mirroring it to GitHub failed (#498).
         print(f"Error: {exc}", file=sys.stderr)
         return 3
     except (ValueError, FileNotFoundError, NotImplementedError, TypeError, LookupError) as exc:
