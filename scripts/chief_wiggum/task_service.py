@@ -193,6 +193,7 @@ class ServiceTask:
     provenance_class: str | None = None
     provenance_source: str | None = None
     lane: str | None = None
+    repo: str | None = None         # "owner/repo" the task mirrors to
     source: str | None = None       # local | github
     issue: str | None = None        # "owner/repo#N" once mirrored
     notes: list[dict] = field(default_factory=list)       # comments
@@ -267,7 +268,15 @@ class ServiceMapping:
 
     # --- arguments ---
 
-    def create_args(self, draft: Any, provenance: Any, config: dict) -> dict:
+    def create_args(self, draft: Any, provenance: Any, config: dict, repo: str | None = None) -> dict:
+        # The service mirrors a task only to the repo it names, so a create
+        # without one would never reach GitHub. Format is the service's to
+        # judge (InvalidRepo); absence is refused here, before any call.
+        if not isinstance(repo, str) or not repo.strip():
+            raise TaskServiceError(
+                "tracker: create needs the target's GitHub repo (<owner>/<repo>) "
+                "to pass to the task service; none was resolved, so nothing was created"
+            )
         actor = config.get("actor", "worker")
         priority = config.get("priority", "P2")
         if actor not in ACTORS:
@@ -281,6 +290,7 @@ class ServiceMapping:
             "done_when": config.get("done_when") or DEFAULT_DONE_WHEN,
             "provenance_class": provenance.klass,
             "provenance_source": provenance.source,
+            "repo": repo,
         }
         lane = config.get("lane")
         if lane:
@@ -425,6 +435,7 @@ class ServiceMapping:
             provenance_class=row.get("provenance_class"),
             provenance_source=row.get("provenance_source"),
             lane=row.get("lane"),
+            repo=row.get("repo") if isinstance(row.get("repo"), str) else None,
             source=row.get("source"),
             issue=record.get("issue"),
             notes=[n for n in record.get("notes") or [] if isinstance(n, dict)],
