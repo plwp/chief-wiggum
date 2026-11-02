@@ -1,21 +1,21 @@
 """Client for an MCP task service, the tracker's ``mcp`` backend (chief-wiggum#498).
 
 A task service holds claims, run notes, statuses and a decision log with
-provenance. CW stays service-neutral: everything that names a service tool or
-shapes its arguments lives in :class:`ServiceMapping`, so when the service's
-real tool names and argument shapes are confirmed, that class is the only
-thing to edit.
+provenance, and mirrors its own writes to GitHub. CW stays service-neutral:
+everything that names a service tool, shapes its arguments or parses its
+results lives in :class:`ServiceMapping`, the only thing to edit when the
+service's shapes change.
 
 Three pieces:
 
 - a **transport** (``tools()`` and ``call(name, arguments)``); the shipped one
   speaks MCP over stdio to a configured server command;
 - the **mapping** from tracker verbs to tool calls, and from tool results
-  back to ids;
-- a **state file** recording, per target, which service key and task id each
-  GitHub ref maps to and which run this machine holds on it. Separate CLI
-  invocations share it, so ``claim`` in one step and ``complete`` in a later
-  one see the same run.
+  back to tasks, runs and leases;
+- a **state file** recording, per target, each service key's task id and
+  mirrored issue, and which run this machine holds. Separate CLI invocations
+  share it, so ``claim`` in one step and ``complete`` in a later one see the
+  same run.
 
 No secrets pass through here: the server command is launched as configured
 and authenticates itself.
@@ -26,7 +26,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -42,7 +43,11 @@ class ToolUnavailable(TaskServiceError):
 
 
 class ClaimRefused(TaskServiceError):
-    """The service declined a targeted claim (someone else holds the task)."""
+    """The service declined a targeted claim for a reason other than "held"."""
+
+
+class InvalidArguments(TaskServiceError):
+    """JSON-RPC -32602: the arguments do not match the tool's schema."""
 
 
 # --- transport ---------------------------------------------------------------
@@ -124,7 +129,11 @@ class StdioTransport:
             if message.get("id") != request_id:
                 continue  # notifications and other traffic
             if "error" in message:
-                raise TaskServiceError(f"{method}: {message['error'].get('message', message['error'])}")
+                error = message["error"]
+                text = f"{method}: {error.get('message', error) if isinstance(error, dict) else error}"
+                if isinstance(error, dict) and error.get("code") == -32602:
+                    raise InvalidArguments(f"-32602 {text}")
+                raise TaskServiceError(text)
             return message.get("result")
 
     def tools(self) -> dict[str, dict]:
@@ -157,25 +166,58 @@ class StdioTransport:
 @dataclass(frozen=True)
 class ToolSpec:
     tool: str
-    # Not in the service yet (#498): the adapter skips the mirror with a
-    # notice until the service exposes it.
-    pending: bool = False
     # Properties the tool's input schema must have for the verb to be served,
     # e.g. a targeted claim needs claim_task to accept a task.
     requires: tuple[str, ...] = ()
 
 
-_GH_KEY_RE = re.compile(r"^(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>\d+)$")
-_LOCAL_KEY_RE = re.compile(r"^local#\d+$")
-
 ACTORS = ("lead", "manager", "worker", "browser", "human")
 PRIORITIES = ("P1", "P2", "P3")
+
+# What a created task is done when, if the target does not configure one: the
+# service holds no issue body, so it points at the body.
+DEFAULT_DONE_WHEN = "the acceptance criteria in the issue body are met"
+
+
+@dataclass
+class ServiceTask:
+    """One task as the service's ``task`` read returns it."""
+
+    task_id: str
+    key: str
+    title: str
+    state: str                      # ready | doing | blocked | held | done
+    done_when: str = ""
+    created_by: str | None = None
+    provenance_class: str | None = None
+    provenance_source: str | None = None
+    lane: str | None = None
+    source: str | None = None       # local | github
+    issue: str | None = None        # "owner/repo#N" once mirrored
+    notes: list[dict] = field(default_factory=list)       # comments
+    decisions: list[dict] = field(default_factory=list)
+    status: dict = field(default_factory=dict)
+    deps: list[str] = field(default_factory=list)
+    runs: list[dict] = field(default_factory=list)
+
+    @property
+    def closed(self) -> bool:
+        return self.state == "done"
+
+    def summaries(self) -> list[str]:
+        return [
+            str(r["run"]["summary"]) for r in self.runs
+            if isinstance(r.get("run"), dict) and r["run"].get("summary")
+        ]
 
 
 class ServiceMapping:
     """Tracker verbs -> service tool calls. Swap names and shapes here only.
 
-    Shapes as confirmed by the service owner on 2026-11-03.
+    Shapes as the service exposes them on 2026-11-03, checked against a
+    running service: every row's id is ``id``, ``log_decision`` takes the
+    task's id (not its key), a comment answers ``{"note"}``, and the ``task``
+    read carries the mirrored issue as ``issue: "owner/repo#N"``.
     """
 
     TOOLS: dict[str, ToolSpec] = {
@@ -183,75 +225,25 @@ class ServiceMapping:
         "list": ToolSpec("list_tasks"),
         "create": ToolSpec("create_task"),
         "claim": ToolSpec("claim_task", requires=("task",)),
-        "status": ToolSpec("log_work"),
+        "status": ToolSpec("log_work", requires=("status",)),
+        "comment": ToolSpec("comment", requires=("task", "text")),
         "complete": ToolSpec("complete_task"),
         "decision": ToolSpec("log_decision"),
         "heartbeat": ToolSpec("heartbeat"),
         "release": ToolSpec("release"),
-        # Not built yet on the service: a comment outside a run.
-        "comment": ToolSpec("comment_task", pending=True),
     }
 
     # A claim refusal that means "not yours right now": the caller skips the
-    # task. Every other refusal (auth, actor, capability, capacity, hours,
+    # task. Every other refusal (identity, actor, capability, capacity, hours,
     # unknown task) is a configuration problem and raises.
-    LOST_CLAIM_REASONS = ("TaskHeld", "TaskNotReady")
+    LOST_CLAIM_REASONS = ("TaskHeld", "TaskNotReady", "TaskStateConflict")
 
-    # CW status -> the service's run-status note. log_work's status is a
-    # {done, in_progress, next, blocked_on} note written by the run's holder,
-    # not a state enum.
-    def status_args(self, task_id: str, run_id: str, status: str, note: str, link: str) -> dict:
-        return {
-            "task_id": task_id,
-            "run_id": run_id,
-            "text": f"status: {status}" + (f": {note}" if note else ""),
-            "links": [link],
-            "status": {
-                "done": "",
-                "in_progress": note if status == "in_progress" else "",
-                "next": note if status == "ready" else "",
-                "blocked_on": (note or "unspecified") if status == "blocked" else None,
-            },
-        }
+    # A read that finds nothing.
+    NOT_FOUND_REASONS = ("TaskNotFound",)
 
-    def comment_with_run_args(self, task_id: str, run_id: str, body: str, link: str) -> dict:
-        return {
-            "task_id": task_id, "run_id": run_id, "text": body, "links": [link],
-            "status": {"done": "", "in_progress": "", "next": ""},
-        }
+    # --- arguments ---
 
-    def comment_args(self, task_id: str, body: str, author: str | None) -> dict:
-        args = {"task_id": task_id, "text": body}
-        if author:
-            args["author"] = author
-        return args
-
-    def complete_args(self, task_id: str, run_id: str, summary: str, link: str) -> dict:
-        return {"task_id": task_id, "run_id": run_id, "summary": summary or "done", "links": [link]}
-
-    def decision_args(self, task_id: str, decision: Any) -> dict:
-        decided_by = decision.decided_by
-        channel = decision.channel or "cw-tracker"
-        if decision.relayed_by:
-            # A relayed human decision is recorded as human:<name>; the relay
-            # is named in the channel.
-            if decision.provenance.klass == "human" and not decided_by.startswith("human:"):
-                decided_by = f"human:{decided_by}"
-            channel = f"{channel} (relayed by {decision.relayed_by})"
-        return {
-            "scope": "task",
-            "task_id": task_id,
-            "decided_by": decided_by,
-            "channel": channel,
-            "what": decision.what,
-            "provenance_class": decision.provenance.klass,
-            "provenance_source": decision.provenance.source,
-            "approval_words": decision.approval_words,
-        }
-
-    def create_args(self, draft: Any, link: str, provenance: Any, config: dict) -> dict:
-        """create_task takes no body, labels or key: the service mints a
-        ``local#<n>`` key, and done_when carries the GitHub link back."""
+    def create_args(self, draft: Any, provenance: Any, config: dict) -> dict:
         actor = config.get("actor", "worker")
         priority = config.get("priority", "P2")
         if actor not in ACTORS:
@@ -262,17 +254,20 @@ class ServiceMapping:
             "title": draft.title,
             "actor": actor,
             "priority": priority,
-            "done_when": f"{link} is closed",
+            "done_when": config.get("done_when") or DEFAULT_DONE_WHEN,
             "provenance_class": provenance.klass,
             "provenance_source": provenance.source,
         }
-        if config.get("lane"):
-            args["lane"] = config["lane"]
+        lane = config.get("lane")
+        if lane:
+            args["lane"] = lane
+        if config.get("requires"):
+            args["requires"] = list(config["requires"])
         return args
 
-    def claim_args(self, task_id: str, agent: str, config: dict) -> dict:
+    def claim_args(self, task: str, agent: str, config: dict) -> dict:
         return {
-            "task": task_id,
+            "task": task,
             "agent": agent,
             "environment": config.get("environment", "chief-wiggum"),
             "state": config.get("claim_state", "GREEN"),
@@ -281,82 +276,165 @@ class ServiceMapping:
             "capabilities": list(config.get("capabilities", [])),
         }
 
-    def read_args(self, key: str) -> dict:
-        return {"key": key}
+    def status_args(self, task_id: str, run_id: str, status: str, note: str) -> dict:
+        """CW status -> a log_work status note from the run's holder.
 
-    def lease_args(self, lease_id: str) -> dict:
+        log_work's status is {done, in_progress, next, blocked_on}, not a
+        state enum: the CW status picks the field the note goes in.
+        """
+        said = note or status.replace("_", " ")
+        return {
+            "task_id": task_id,
+            "run_id": run_id,
+            "text": f"status: {status}" + (f": {note}" if note else ""),
+            "links": [],
+            "status": {
+                "done": "",
+                "in_progress": said if status == "in_progress" else "",
+                "next": said if status == "ready" else "",
+                "blocked_on": said if status == "blocked" else None,
+            },
+        }
+
+    @staticmethod
+    def comment_args(key: str, body: str) -> dict:
+        return {"task": key, "text": body}
+
+    @staticmethod
+    def complete_args(task_id: str, run_id: str, summary: str) -> dict:
+        return {"task_id": task_id, "run_id": run_id, "summary": summary or "done", "links": []}
+
+    @staticmethod
+    def decision_args(task_id: str, decision: Any, caller: str) -> dict:
+        """A CW decision -> log_decision, which checks who decided.
+
+        ``decided_by`` must be the caller or a registered ``human:<name>``
+        the caller relays. A human decision is relayed as ``human:<name>``;
+        the service refuses relayed approval words, so they travel in the
+        provenance source instead. A decision by anyone else is logged by
+        the caller on their behalf, said so in the channel.
+        """
+        channel = decision.channel or "cw-tracker"
+        source = decision.provenance.source
+        approval = decision.approval_words
+        decided_by = decision.decided_by
+        if decided_by.startswith("human:") or (
+            decision.provenance.klass == "human" and decided_by != caller
+        ):
+            decided_by = "human:" + decided_by.removeprefix("human:")
+            channel = f"{channel} (relayed by {decision.relayed_by or caller})"
+            if approval and approval not in source:
+                source = f'{source} (approval words: "{approval}")'
+            approval = None
+        elif decided_by != caller:
+            channel = f"{channel} (for {decided_by})"
+            decided_by = caller
+        args = {
+            "scope": "task",
+            "task_id": task_id,
+            "decided_by": decided_by,
+            "channel": channel,
+            "what": decision.what,
+            "provenance_class": decision.provenance.klass,
+            "provenance_source": source,
+        }
+        if approval:
+            args["approval_words"] = approval
+        return args
+
+    @staticmethod
+    def read_args(ident: str) -> dict:
+        """``task`` takes exactly one of task_id or key; keys carry a ``#``."""
+        return {"key": ident} if "#" in ident else {"task_id": ident}
+
+    @staticmethod
+    def list_args(state: str | None = None) -> dict:
+        return {"state": state} if state else {}
+
+    @staticmethod
+    def lease_args(lease_id: str) -> dict:
         return {"lease_id": lease_id}
 
     # --- results ---
 
     @staticmethod
-    def _field(obj: Any, *names: str) -> Any:
-        if isinstance(obj, dict):
-            for name in names:
-                if obj.get(name) is not None:
-                    return obj[name]
+    def _id(row: Any) -> str | None:
+        if isinstance(row, dict):
+            value = row.get("id", row.get("task_id"))
+            return str(value) if value is not None else None
         return None
 
-    def _task_row(self, result: Any) -> Any:
-        if isinstance(result, dict) and isinstance(result.get("task"), dict):
-            return result["task"]
-        return result
+    def task_from(self, result: Any) -> ServiceTask:
+        """A ``task`` read, a create reply, or a bare row -> ServiceTask."""
+        record = result if isinstance(result, dict) else {}
+        row = record.get("task") if isinstance(record.get("task"), dict) else record
+        deps = [
+            str(d.get("key") or d.get("id")) if isinstance(d, dict) else str(d)
+            for d in record.get("deps") or []
+        ]
+        return ServiceTask(
+            task_id=self._id(row) or "",
+            key=str(row.get("key") or self._id(row) or ""),
+            title=row.get("title") or "",
+            state=row.get("state") or "ready",
+            done_when=row.get("done_when") or "",
+            created_by=row.get("created_by"),
+            provenance_class=row.get("provenance_class"),
+            provenance_source=row.get("provenance_source"),
+            lane=row.get("lane"),
+            source=row.get("source"),
+            issue=record.get("issue"),
+            notes=[n for n in record.get("notes") or [] if isinstance(n, dict)],
+            decisions=[d for d in record.get("decisions") or [] if isinstance(d, dict)],
+            status=record.get("status") if isinstance(record.get("status"), dict) else {},
+            deps=deps,
+            runs=[r for r in record.get("runs") or [] if isinstance(r, dict)],
+        )
 
-    def task_id_from(self, result: Any) -> str | None:
-        value = self._field(self._task_row(result), "task_id", "id")
-        return str(value) if value is not None else None
-
-    def key_from(self, result: Any) -> str | None:
-        value = self._field(self._task_row(result), "key")
-        return str(value) if value is not None else None
+    def tasks_from(self, result: Any) -> list[ServiceTask]:
+        rows = result.get("tasks") if isinstance(result, dict) else result
+        return [self.task_from(row) for row in rows or [] if isinstance(row, dict)]
 
     def claim_from(self, result: Any) -> dict:
         """{task, run, leases, reminder} -> the run and leases to hold."""
         run = result.get("run") if isinstance(result, dict) else None
         leases = result.get("leases") if isinstance(result, dict) else None
         leases = [lease for lease in (leases or []) if isinstance(lease, dict)]
-        lease_ids = [
-            str(self._field(lease, "lease_id", "id")) for lease in leases
-            if self._field(lease, "lease_id", "id") is not None
-        ]
-        expiries = [str(lease["expires_at"]) for lease in leases if lease.get("expires_at")]
-        run_id = self._field(run, "run_id", "id")
+        lease_ids = [self._id(lease) for lease in leases if self._id(lease)]
+        expiries = [e for e in (_lease_expiry(lease) for lease in leases) if e]
         return {
-            "run_id": str(run_id) if run_id is not None else None,
+            "run_id": self._id(run),
             "lease_id": lease_ids[0] if lease_ids else None,
             "lease_ids": lease_ids,
+            "resources": [lease["resource"] for lease in leases if lease.get("resource")],
             "expires_at": min(expiries) if expiries else None,
-            "fencing_token": self._field(run, "fencing_token"),
-            "epoch": self._field(run, "epoch") or 0,
         }
 
-    def refusal_reason(self, message: str) -> str:
+    @staticmethod
+    def refusal_reason(message: str) -> str:
         """The leading ``Reason`` word of a refusal (``TaskHeld: agent-x``)."""
         return message.strip().split(":", 1)[0].strip()
 
     def is_lost_claim(self, message: str) -> bool:
         return self.refusal_reason(message) in self.LOST_CLAIM_REASONS
 
-    # --- keys: service task keys <-> GitHub refs, in one place ---
+    def is_not_found(self, message: str) -> bool:
+        return self.refusal_reason(message) in self.NOT_FOUND_REASONS
+
+    # --- keys and issues: service keys <-> GitHub refs, in one place ---
 
     @staticmethod
-    def default_key(owner_repo: str, number: int) -> str:
-        return f"{owner_repo}#{number}"
+    def candidate_keys(owner_repo: str, number: int) -> list[str]:
+        """Keys the service may know a GitHub issue by: an imported issue is
+        keyed ``<repo>#N``; ``owner/repo#N`` is accepted too."""
+        repo = owner_repo.split("/", 1)[-1]
+        return [f"{repo}#{number}", f"{owner_repo}#{number}"]
 
     @staticmethod
-    def gh_ref_for_key(key: str) -> str | None:
-        """A GitHub ref for a service key, or None for a local-only task.
-
-        ``local#<n>`` keys are tasks the service minted; they are not on
-        GitHub until the service mirrors them, so unless the state file
-        records which issue one was created for, there is no ref to give and
-        GitHub-reading skills cannot see the task.
-        """
-        if _LOCAL_KEY_RE.match(key):
-            return None
-        match = _GH_KEY_RE.match(key)
-        if match:
-            return f"gh:{match.group('repo')}#{match.group('number')}"
+    def issue_ref(issue: str | None) -> str | None:
+        """The service's ``owner/repo#N`` mirror record -> a ``gh:`` ref."""
+        if issue and _ISSUE_RE.match(issue):
+            return f"gh:{issue}"
         return None
 
     @staticmethod
@@ -364,18 +442,35 @@ class ServiceMapping:
         return bool(_LOCAL_KEY_RE.match(key))
 
 
+_ISSUE_RE = re.compile(r"^[\w.-]+/[\w.-]+#\d+$")
+_LOCAL_KEY_RE = re.compile(r"^local#\d+$")
+
+
+def _lease_expiry(lease: dict) -> str | None:
+    if lease.get("expires_at"):
+        return str(lease["expires_at"])
+    beat, ttl = lease.get("heartbeat_at"), lease.get("ttl_secs")
+    if not beat or ttl is None:
+        return None
+    try:
+        at = datetime.fromisoformat(str(beat).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (at + timedelta(seconds=int(ttl))).isoformat().replace("+00:00", "Z")
+
+
 # --- per-target state ----------------------------------------------------------
 
 
 class ServiceState:
-    """Ref <-> service key/task id, and the runs this machine holds."""
+    """Service key -> task id and issue, and the runs this machine holds."""
 
     def __init__(self, path: Path):
         self.path = path
-        self.data: dict[str, dict] = {"tasks": {}, "runs": {}}
+        self.data: dict[str, dict] = {"keys": {}, "runs": {}}
         if path.is_file():
             loaded = json.loads(path.read_text())
-            self.data["tasks"].update(loaded.get("tasks", {}))
+            self.data["keys"].update(loaded.get("keys", {}))
             self.data["runs"].update(loaded.get("runs", {}))
 
     def save(self) -> None:
@@ -384,29 +479,33 @@ class ServiceState:
         tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True) + "\n")
         tmp.replace(self.path)
 
-    def task(self, ref: str) -> dict:
-        return self.data["tasks"].get(ref, {})
+    def task(self, key: str) -> dict:
+        return self.data["keys"].get(key, {})
 
-    def remember_task(self, ref: str, **fields: Any) -> None:
-        record = self.data["tasks"].setdefault(ref, {})
+    def remember(self, key: str, **fields: Any) -> None:
+        record = self.data["keys"].setdefault(key, {})
         record.update({k: v for k, v in fields.items() if v is not None})
         self.save()
 
-    def ref_for_key(self, key: str) -> str | None:
-        for ref, record in self.data["tasks"].items():
-            if record.get("key") == key:
-                return ref
+    def forget(self, key: str, name: str) -> None:
+        if self.data["keys"].get(key, {}).pop(name, None) is not None:
+            self.save()
+
+    def key_for_issue(self, gh_ref: str) -> str | None:
+        for key, record in self.data["keys"].items():
+            if record.get("issue") == gh_ref:
+                return key
         return None
 
-    def run(self, ref: str) -> dict | None:
-        return self.data["runs"].get(ref)
+    def run(self, key: str) -> dict | None:
+        return self.data["runs"].get(key)
 
-    def hold(self, ref: str, run: dict) -> None:
-        self.data["runs"][ref] = run
+    def hold(self, key: str, run: dict) -> None:
+        self.data["runs"][key] = run
         self.save()
 
-    def drop(self, ref: str) -> None:
-        if self.data["runs"].pop(ref, None) is not None:
+    def drop(self, key: str) -> None:
+        if self.data["runs"].pop(key, None) is not None:
             self.save()
 
 
