@@ -172,6 +172,10 @@ def test_env_var_portfolio_dir_is_respected(tmp_path):
     assert (tmp_path / "envport" / "bets" / "b1" / "bet.json").is_file()
 
 
+# Pinned evaluation clock, before every fixture by_date, so a by_date that the
+# wall clock has since passed cannot flip a test's outcome.
+BEFORE = ("--as-of", "2026-09-01")
+
 # ---- seeded defect: malformed criterion (states-and-dates lint) ---------------
 
 
@@ -354,16 +358,16 @@ def test_hand_edited_criteria_detected_and_healed_by_rebaseline(portfolio, tmp_p
     doc = json.loads(crit_path.read_text())
     doc["criteria"][0]["threshold"] = 1  # goalposts quietly lowered
     crit_path.write_text(json.dumps(doc))
-    proc = _run(portfolio, "evaluate", "b1")
+    proc = _run(portfolio, "evaluate", "b1", *BEFORE)
     assert proc.returncode == 0
     assert "does not match the journaled baseline" in proc.stdout
-    assert _run(portfolio, "evaluate", "b1", "--gate").returncode == 1
+    assert _run(portfolio, "evaluate", "b1", "--gate", *BEFORE).returncode == 1
     new_p = tmp_path / "new-crit.json"
     new_p.write_text(json.dumps(doc))
     heal = _run(portfolio, "rebaseline", "b1", "--criteria", str(new_p),
                 "--reason", "threshold deliberately lowered after re-scoping")
     assert heal.returncode == 0, heal.stderr
-    assert _run(portfolio, "evaluate", "b1", "--gate").returncode == 0
+    assert _run(portfolio, "evaluate", "b1", "--gate", *BEFORE).returncode == 0
 
 
 # ---- seeded defect: dated criterion fires at evaluate --------------------------

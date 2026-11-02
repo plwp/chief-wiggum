@@ -12,6 +12,7 @@ against a tmp_path portfolio — never the real ~/.chief-wiggum.
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 import subprocess
 import sys
 from pathlib import Path
@@ -29,10 +30,14 @@ BET = str(SCRIPTS / "bet.py")
 CHANNEL = str(SCRIPTS / "channel.py")
 
 ENVELOPE = {"cash_cap_usd": 900, "time_cap_hours": 120}
+
+# Relative to the real clock: rep-cadence windows read it, so evaluate cannot be
+# pinned with --as-of; a fixed by_date would expire and trigger the criterion.
+_BY_DATE = (date.today() + timedelta(days=365)).isoformat()
 CRITERIA = {
     "criteria": [
         {"id": "KC-1", "metric": "paid_conversions", "comparator": ">=",
-         "threshold": 3, "by_date": "2026-11-01", "direction": "has"},
+         "threshold": 3, "by_date": _BY_DATE, "direction": "has"},
     ]
 }
 
