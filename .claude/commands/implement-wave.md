@@ -266,6 +266,14 @@ For each ticket in the current wave (up to `--max-parallel`):
    mkdir -p "$TICKET_TMP"
    ```
 
+   On a tracker that holds claims (a task-service target, `docs/tracker.md`), claim the ticket before the worker starts. The service takes status and completion from the holder only, and a lost claim means another worker holds the ticket, so skip it this wave. GitHub holds no claims, so on GitHub this is a no-op:
+   ```bash
+   if "${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" capabilities "$owner_repo" | jq -e '.capabilities | index("claim")' >/dev/null; then
+     "${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" claim "$owner_repo#$ticket_number" "wave-$wave_number" \
+       || { echo "ticket $ticket_number is held elsewhere; skipping it this wave" >&2; continue; }
+   fi
+   ```
+
 2. **Compute the shared dependency-cache plan** (#329) — `/implement`'s "symlink `node_modules`/`.venv`" rule is unsafe when `--max-parallel` tickets install concurrently (one install races a sibling's read). Point each package manager at a shared, concurrency-safe cache **store** instead, never at an installed tree (`chief_wiggum/dep_provisioning.py`):
    ```bash
    DEP_CACHE_ENV=$("${CW_PY:-python3}" "$CW_HOME/scripts/dep_cache.py" plan --worktree "<worker's worktree path>" --shell)
@@ -652,7 +660,7 @@ After all waves complete:
 3. Close implemented issues:
    ```bash
    "${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" complete "$owner_repo#$ticket_number" \
-     --summary "Implemented in wave $wave_number. Merged to $DEFAULT_BRANCH."
+     --summary "Implemented in wave $wave_number. Merged to $DEFAULT_BRANCH." --holder "wave-$wave_number"
    ```
 
 ## Key Principles

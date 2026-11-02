@@ -89,19 +89,27 @@ def backend_and_comments(request, tmp_path):
     return _github() if request.param == "github" else _local(tmp_path)
 
 
-HUMAN = Provenance("human", 'Pat, 2026-11-03: "ship the adapter"')
+HUMAN = Provenance("human", 'maintainer, 2026-11-03: "ship the adapter"')
+
+
+def _hold(backend, ref, holder):
+    """Claim first where the backend holds claims, as a skill would."""
+    if tracker.CAP_CLAIM in backend.capabilities():
+        assert backend.claim(ref, holder)
 
 
 class TestWorkVerbConformance:
     def test_status_with_note_is_recorded(self, backend_and_comments):
         backend, comments = backend_and_comments
         ref = backend.create(IssueDraft(title="T"))
+        _hold(backend, ref, "worker-1")
         backend.set_status(ref, "in_progress", holder="worker-1", note="tests written")
         assert comments(ref) == ["**Status: in_progress** (worker-1): tests written"]
 
     def test_status_without_note_writes_nothing(self, backend_and_comments):
         backend, comments = backend_and_comments
         ref = backend.create(IssueDraft(title="T"))
+        _hold(backend, ref, "worker-1")
         backend.set_status(ref, "blocked", holder="worker-1")
         assert comments(ref) == []
 
@@ -116,7 +124,8 @@ class TestWorkVerbConformance:
     def test_complete_closes_with_summary(self, backend_and_comments):
         backend, comments = backend_and_comments
         ref = backend.create(IssueDraft(title="T"))
-        backend.complete(ref, "Implemented in wave 2.")
+        _hold(backend, ref, "worker-1")
+        backend.complete(ref, "Implemented in wave 2.", holder="worker-1")
         assert backend.get(ref).state == "closed"
         assert comments(ref) == ["Implemented in wave 2."]
 
@@ -124,7 +133,7 @@ class TestWorkVerbConformance:
         backend, comments = backend_and_comments
         ref = backend.create(IssueDraft(title="T"))
         decision = Decision(
-            what="Use the queue", decided_by="Pat", provenance=HUMAN,
+            what="Use the queue", decided_by="maintainer", provenance=HUMAN,
             channel="chat", approval_words="ship the adapter", relayed_by="agent-7",
         )
         backend.log_decision(ref, decision)
@@ -166,7 +175,7 @@ class TestProvenanceValidation:
 
     def test_decision_needs_text_and_decider(self):
         with pytest.raises(ValueError):
-            Decision(what="", decided_by="Pat", provenance=HUMAN)
+            Decision(what="", decided_by="maintainer", provenance=HUMAN)
         with pytest.raises(ValueError):
             Decision(what="x", decided_by="", provenance=HUMAN)
 
@@ -236,7 +245,7 @@ class TestCli:
     def test_decision_cli_refuses_unprovenanced_class(self, tmp_path):
         with pytest.raises(SystemExit):
             tracker.main(["decision", "gh:acme/widget#1", "--what", "x",
-                          "--decided-by", "Pat", "--class", "to-confirm", "--source", "s"])
+                          "--decided-by", "maintainer", "--class", "to-confirm", "--source", "s"])
 
     def test_local_lease_reports_the_holder(self, tmp_path, capsys):
         backend = LocalBackend(tmp_path)

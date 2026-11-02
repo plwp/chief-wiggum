@@ -411,7 +411,7 @@ def _matches_query(issue: Issue, query: str | dict[str, Any] | None) -> bool:
 
 # --- ref parsing ---------------------------------------------------------------
 
-KNOWN_SCHEMES = ("gh", "local", "obsidian", "jira")
+KNOWN_SCHEMES = ("gh", "local", "task", "obsidian", "jira")
 
 _SCHEME_RE = re.compile(r"^(" + "|".join(KNOWN_SCHEMES) + r"):(.+)$")
 _BARE_GH_RE = re.compile(r"^[\w.-]+/[\w.-]+#\d+$")
@@ -1099,6 +1099,32 @@ def resolve_backend_name(repo_root: Path | str, *, cw_config: Path | None = None
     return "github"
 
 
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_mcp_config(repo_root: Path | str, *, cw_config: Path | None = None) -> dict:
+    """The ``mcp`` block for the mcp backend (chief-wiggum#498).
+
+    CW-side ``~/.chief-wiggum/config.json`` ``tracker.mcp`` first (where a
+    machine-local server command belongs), then the target's
+    ``<meta root>/cw/tracker.json`` ``mcp`` over it, key by key.
+    """
+    cw_config = cw_config if cw_config is not None else DEFAULT_CW_CONFIG
+    merged: dict = {}
+    if cw_config.is_file():
+        merged.update((_read_json(cw_config).get("tracker") or {}).get("mcp") or {})
+    resolver = _meta_location.Resolver.resolve(Path(repo_root))
+    target_config = resolver.meta_root / "cw" / "tracker.json"
+    if target_config.is_file():
+        merged.update(_read_json(target_config).get("mcp") or {})
+    return merged
+
+
 def get_tracker(
     target: str, *, repo_root: Path | str | None = None, runner: Runner | None = None
 ) -> Backend:
@@ -1114,18 +1140,38 @@ def get_tracker(
         return GithubBackend(target, runner=runner)
     if backend_name == "local":
         return LocalBackend(root)
+    if backend_name == "mcp":
+        import tracker_mcp  # lazy: it imports this module
+
+        return tracker_mcp.build(target, resolve_mcp_config(root), runner=runner)
     raise NotImplementedError(
         f"tracker backend {backend_name!r} is not implemented yet "
-        "(only 'github' and 'local' ship in this ticket; see docs/tracker.md)"
+        "(github, local and mcp ship; see docs/tracker.md)"
     )
 
 
 def _backend_for_ref(
     scheme: str, ident: str, repo_root: str | None, *, runner: Runner | None = None
 ) -> Backend:
-    """Build the backend a fully-qualified ref names, without config resolution."""
-    if scheme == "gh":
-        owner_repo, _ = GithubBackend._parse_ident(ident)
+    """Build the backend a fully-qualified ref names.
+
+    A ``gh:`` ref is GitHub unless the target is configured for the mcp
+    backend, which then takes the write as well (GitHub first, the service
+    mirrored). A ``task:`` ref names a task-service key and needs mcp.
+    """
+    if scheme in ("gh", "task"):
+        root = Path(repo_root).resolve() if repo_root else Path.cwd()
+        mcp = resolve_backend_name(root) == "mcp"
+        if scheme == "task":
+            if not mcp:
+                raise ValueError(f"task:{ident} names a task-service key; the target is not on the mcp backend")
+            owner_repo = resolve_mcp_config(root).get("repo") or ident.partition("#")[0]
+            if "/" not in owner_repo:
+                raise ValueError(f"task:{ident}: set mcp.repo (owner/repo) to resolve service keys")
+        else:
+            owner_repo, _ = GithubBackend._parse_ident(ident)
+        if mcp:
+            return get_tracker(owner_repo, repo_root=root, runner=runner)
         return GithubBackend(owner_repo, runner=runner)
     if scheme == "local":
         root = Path(repo_root).resolve() if repo_root else Path.cwd()
@@ -1133,6 +1179,21 @@ def _backend_for_ref(
     raise NotImplementedError(
         f"backend for scheme {scheme!r} is not implemented yet (see docs/tracker.md)"
     )
+
+
+def _mirror_error() -> type[Exception]:
+    """tracker_mcp.MirrorError when importable; a never-raised class otherwise."""
+    try:
+        import tracker_mcp
+    except ImportError:  # pragma: no cover - ships alongside this file
+        return type("NeverRaised", (Exception,), {})
+    return tracker_mcp.MirrorError
+
+
+def _service_error() -> type[Exception]:
+    from chief_wiggum.task_service import TaskServiceError
+
+    return TaskServiceError
 
 
 def _ref_backend(ref: str, repo_root: str | None) -> Backend:
@@ -1254,6 +1315,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_lease = sub.add_parser("lease", help="Show the current claim on an issue")
     p_lease.add_argument("ref")
 
+    p_service = sub.add_parser(
+        "service",
+        help="mcp backend: which verbs the task service serves, and a ref's service record",
+    )
+    p_service.add_argument("target")
+    p_service.add_argument("--ref", help="Also show this ref's service key, task id, provenance and run")
+
     p_caps = sub.add_parser(
         "capabilities", help="Print which optional verb groups a backend supports"
     )
@@ -1368,6 +1436,26 @@ def main(argv: list[str] | None = None) -> int:
             backend = _ref_backend(args.ref, repo_root)
             print(json.dumps(backend.lease(args.ref).to_dict(), indent=2))
 
+        elif args.command == "service":
+            backend = get_tracker(args.target, repo_root=repo_root)
+            if not hasattr(backend, "service_gaps"):
+                print(json.dumps({"backend": type(backend).__name__, "service": None}, indent=2))
+            else:
+                report: dict[str, Any] = {
+                    "backend": type(backend).__name__,
+                    "mirror": backend.mirror_mode,
+                    "gaps": backend.service_gaps(),
+                }
+                if args.ref:
+                    ref = backend.resolve_ref(args.ref)
+                    record = dict(backend.state.task(ref))
+                    provenance = record.get("provenance") or {}
+                    record["agent_proposal"] = provenance.get("class") == "agent"
+                    record["key"] = backend.service_key(ref)
+                    record["lease"] = backend.lease(ref).to_dict()
+                    report["ref"] = {ref: record}
+                print(json.dumps(report, indent=2))
+
         elif args.command == "capabilities":
             backend = get_tracker(args.target, repo_root=repo_root)
             caps = sorted(getattr(backend, "capabilities", lambda: frozenset())())
@@ -1411,8 +1499,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Unknown command: {args.command}", file=sys.stderr)
             return 1
 
-    except (ValueError, FileNotFoundError, NotImplementedError, TypeError) as exc:
+    except _mirror_error() as exc:
+        # GitHub took the write; the task service did not (#498).
         print(f"Error: {exc}", file=sys.stderr)
+        return 3
+    except (ValueError, FileNotFoundError, NotImplementedError, TypeError, LookupError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except _service_error() as exc:
+        print(f"Error: task service: {exc}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as exc:
         print(f"Error: gh command failed: {exc}", file=sys.stderr)
