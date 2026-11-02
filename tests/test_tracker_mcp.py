@@ -125,6 +125,39 @@ class TestWrites:
         assert _only_task(service)["repo"] == REPO
         assert backend.service_report(ref)["repo"] == REPO
 
+    def test_create_carries_cites_deps_priority_and_done_when(self, tmp_path):
+        backend, _, service = make_mcp(tmp_path)
+        backend.create(IssueDraft(title="First", provenance=HUMAN))
+        cite = "acme/REQ-3@" + "a" * 64
+        backend.create(IssueDraft(
+            title="Second", provenance=HUMAN, cites=[cite], deps=["local#1"],
+            priority="P1", done_when="the REQ-3 test passes on main"))
+        args = [a for name, a in service.calls if name == "create_task"][-1]
+        assert args["cites"] == [cite]
+        assert args["deps"] == ["local#1"]
+        assert (args["priority"], args["done_when"]) == ("P1", "the REQ-3 test passes on main")
+        second = next(t for t in service.db["tasks"].values() if t["title"] == "Second")
+        assert (second["state"], second["cites"]) == ("blocked", [cite])
+
+    def test_create_without_cites_or_deps_sends_neither(self, tmp_path):
+        backend, _, service = make_mcp(tmp_path)
+        backend.create(IssueDraft(title="T", provenance=HUMAN))
+        args = service.calls[0][1]
+        assert "cites" not in args and "deps" not in args
+        assert args["priority"] == "P2"
+
+    def test_a_malformed_cite_is_refused_by_the_service(self, tmp_path):
+        backend, _, service = make_mcp(tmp_path)
+        with pytest.raises(TaskServiceError, match="InvalidCite"):
+            backend.create(IssueDraft(title="T", provenance=HUMAN, cites=["REQ-3"]))
+        assert service.db["tasks"] == {}
+
+    def test_an_invalid_priority_is_refused_before_the_service(self, tmp_path):
+        backend, _, service = make_mcp(tmp_path)
+        with pytest.raises(ValueError, match="priority"):
+            backend.create(IssueDraft(title="T", provenance=HUMAN, priority="urgent"))
+        assert service.calls == []
+
     def test_create_without_a_repo_is_refused_before_the_service(self, tmp_path):
         backend, _, service = make_mcp(tmp_path)
         backend.github.repo = None
@@ -812,3 +845,18 @@ def test_mcp_backend_has_no_gh_issue_call_of_its_own():
         text = (TESTS.parent / "scripts" / name).read_text()
         assert find_gh_issue_calls(text) == []
     assert tracker_mcp.McpTaskBackend.__doc__
+
+
+def test_cli_create_passes_cites_deps_priority_and_done_when(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(subprocess, "run", MirroringGh(tmp_path / "svc.json"))
+    root = ["--repo-root", str(_mcp_target(tmp_path))]
+    assert tracker.main([*root, "create", "acme/app", "--title", "A"]) == 0
+    capsys.readouterr()
+    cite = "acme/REQ-7@" + "b" * 64
+    assert tracker.main([*root, "create", "acme/app", "--title", "B", "--cite", cite,
+                         "--dep", "local#1", "--priority", "P1",
+                         "--done-when", "REQ-7 is tested"]) == 0
+    db = json.loads((tmp_path / "svc.json").read_text())
+    task = next(t for t in db["tasks"].values() if t["title"] == "B")
+    assert (task["cites"], task["priority"], task["done_when"], task["state"]) == (
+        [cite], "P1", "REQ-7 is tested", "blocked")

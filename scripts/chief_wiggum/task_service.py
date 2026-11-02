@@ -278,7 +278,7 @@ class ServiceMapping:
                 "to pass to the task service; none was resolved, so nothing was created"
             )
         actor = config.get("actor", "worker")
-        priority = config.get("priority", "P2")
+        priority = getattr(draft, "priority", None) or config.get("priority", "P2")
         if actor not in ACTORS:
             raise ValueError(f"mcp.actor must be one of {ACTORS}, got {actor!r}")
         if priority not in PRIORITIES:
@@ -287,7 +287,8 @@ class ServiceMapping:
             "title": draft.title,
             "actor": actor,
             "priority": priority,
-            "done_when": config.get("done_when") or DEFAULT_DONE_WHEN,
+            "done_when": (getattr(draft, "done_when", None) or config.get("done_when")
+                          or DEFAULT_DONE_WHEN),
             "provenance_class": provenance.klass,
             "provenance_source": provenance.source,
             "repo": repo,
@@ -297,6 +298,12 @@ class ServiceMapping:
             args["lane"] = lane
         if config.get("requires"):
             args["requires"] = list(config["requires"])
+        # The service judges the ref grammar (InvalidCite) and the keys
+        # (UnknownDependency); empty lists are not sent.
+        if getattr(draft, "cites", None):
+            args["cites"] = list(draft.cites)
+        if getattr(draft, "deps", None):
+            args["deps"] = list(draft.deps)
         return args
 
     def claim_args(self, task: str, agent: str, config: dict) -> dict:

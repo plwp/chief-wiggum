@@ -177,6 +177,7 @@ below on it.
 | `mirror_command` | the operator's mirror, run after every write; `{repo}` becomes `owner/repo`. The command must be idempotent |
 | `mirror` | what a failed mirror run does: `strict` (default) raises, `best_effort` warns |
 | `actor`, `priority`, `lane`, `done_when`, `requires` | sent when a task is created (defaults `worker`, `P2`, and a done-when that points at the issue body) |
+| (per create) `--priority`, `--done-when`, `--cite`, `--dep` | `tracker.py create` flags that override `priority` and `done_when` for one task, and send its customer requirement refs (`<slug>/REQ-<n>@<body_sha256>`, the service's ref grammar; a malformed one is refused as `InvalidCite`) and the service tasks it waits on (`deps`: a task created behind an unfinished one starts `blocked`). The `github` and `local` backends ignore them |
 | `environment`, `capabilities`, `claim_state` | sent with a claim |
 | `repo` | owner/repo for `task:` refs, when the origin remote does not say |
 | `timeout_seconds`, `mirror_timeout_seconds` | transport and mirror timeouts |
@@ -340,6 +341,10 @@ python3 scripts/tracker.py get gh:acme/app#42
 python3 scripts/tracker.py get acme/app#42                      # bare = same as gh:
 python3 scripts/tracker.py --repo-root "$target_root" list acme/app --epic "Epic: Name"
 python3 scripts/tracker.py --repo-root "$target_root" create acme/app --title "Fix bug" --body "..." --label bug
+# mcp backend: a task that cites the customer's requirement and waits on another task
+python3 scripts/tracker.py --repo-root "$target_root" create acme/app --title "Fix bug" --body "..." \
+  --provenance-class customer --provenance-source "acme REQ-3, mail 2 Feb" \
+  --cite "acme/REQ-3@<body_sha256>" --dep local#12 --priority P1 --done-when "REQ-3's test passes on main"
 python3 scripts/tracker.py update gh:acme/app#42 --set state=closed
 python3 scripts/tracker.py comment gh:acme/app#42 "Looks good"
 python3 scripts/tracker.py group "Epic: Name" gh:acme/app#42 gh:acme/app#43
