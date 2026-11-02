@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI to build `$TICKET_TMP/ticket.json` from `gh issue view --json` output (#83).
+"""CLI to build `$TICKET_TMP/ticket.json` from `tracker.py context` output (#83, #498).
 
 The upstream writer half of the #83 fix: before this existed, `ticket.json`
 carried title/body/acceptance_criteria only, and comments (needed to detect
@@ -8,7 +8,7 @@ issue-author/maintainer amendments to the acceptance criteria) never reached
 array, even when empty (`[]`), never an absent key (CTR-fh-002, IT-fh-10).
 
 Example (see `/implement` Step 2):
-    gh issue view 83 --repo acme/app --json title,body,author,comments \
+    python3 scripts/tracker.py --repo-root "$TARGET_REPO" context acme/app#83 \
       > "$TICKET_TMP/issue-raw.json"
     python3 scripts/write_ticket_context.py \
       --issue-json "$TICKET_TMP/issue-raw.json" --number 83 \
@@ -17,7 +17,7 @@ Example (see `/implement` Step 2):
 
 By default this prints a ONE-LINE summary (path + counts), not the full JSON
 (#333) — the orchestrator already `tee`'d the raw issue JSON into its own
-context at Step 2 (`gh issue view ... | tee "$TICKET_TMP/issue-raw.json"`);
+context at Step 2 (`tracker.py context ... | tee "$TICKET_TMP/issue-raw.json"`);
 printing the flattened ticket.json again billed the same issue body + full
 comment thread into the orchestrator's context a second time. Pass `--print`
 to get the full JSON on stdout when you actually need to inspect it.
@@ -37,10 +37,10 @@ from chief_wiggum import review  # noqa: E402
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build ticket.json from `gh issue view --json` output"
+        description="Build ticket.json from `tracker.py context` output"
     )
     parser.add_argument(
-        "--issue-json", required=True, help="Path to `gh issue view --json ...` output"
+        "--issue-json", required=True, help="Path to `tracker.py context` output (the GitHub issue JSON shape)"
     )
     parser.add_argument("--number", type=int, default=None, help="Issue number")
     parser.add_argument(
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         "--print", dest="print_full", action="store_true",
         help="Print the full ticket.json to stdout (default: one-line summary only — "
         "the issue body + comment thread is already in the orchestrator's context "
-        "via Step 2's `gh issue view | tee`, so printing it again here is redundant)",
+        "via Step 2's `tracker.py context | tee`, so printing it again here is redundant)",
     )
     args = parser.parse_args(argv)
 

@@ -24,7 +24,7 @@ This is the improvement-loop pattern turned back on the factory. Every signal he
 
 ## Autonomy
 
-Run the analysis to completion autonomously. **Filing issues is the one checkpoint** — present the drafted issues and get confirmation before `gh issue create`, because they're outward-facing writes to the CW repo. Never file a vague issue; every issue must cite the specific evidence (commit, marker, journal record) that motivates it.
+Run the analysis to completion autonomously. **Filing issues is the one checkpoint** — present the drafted issues and get confirmation before filing them, because they're outward-facing writes to the CW repo. Never file a vague issue; every issue must cite the specific evidence (commit, marker, journal record) that motivates it.
 
 ---
 
@@ -98,8 +98,8 @@ Prefer a few high-signal issues over many speculative ones. Group related slippa
 Present the drafted issues (titles + one-line rationale). On confirmation (or `--create-issues`):
 
 ```bash
-gh --repo "$("${CW_PY:-python3}" "$CW_HOME/scripts/repo.py" home >/dev/null; echo plwp/chief-wiggum)" \
-  issue create --title "<title>" --body-file "$CW_TMP/issue-<n>.md" --label reflection --label enhancement
+"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$CW_HOME" create plwp/chief-wiggum \
+  --title "<title>" --body-file "$CW_TMP/issue-<n>.md" --label reflection --label enhancement
 ```
 
 Report the filed issue URLs and a one-paragraph factory-health summary (what's working, what's slipping, the single highest-leverage improvement).

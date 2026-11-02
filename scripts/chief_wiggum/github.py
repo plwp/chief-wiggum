@@ -1,6 +1,6 @@
 """GitHub issue / milestone / dependency metadata client.
 
-The command prompts embed repeated ``gh issue list``, ``gh issue view``,
+The command prompts used to embed repeated issue listing and viewing,
 ``gh api repos/.../milestones`` and ``gh pr`` calls, plus ad-hoc parsing of the
 machine-readable ``<!-- DEPENDENCIES ... -->`` block that ``/plan-epic`` writes
 into milestone descriptions. That dependency block is a contract the wave
@@ -201,7 +201,7 @@ def format_dependency_block(edges: dict[int, Iterable[int]]) -> str:
 
 
 def issue_from_json(data: dict[str, Any]) -> Issue:
-    """Normalize a ``gh issue`` JSON object into an :class:`Issue`."""
+    """Normalize a GitHub issue JSON object into an :class:`Issue`."""
     labels = data.get("labels") or []
     label_names = tuple(
         lbl["name"] if isinstance(lbl, dict) else str(lbl) for lbl in labels
@@ -220,7 +220,7 @@ def issue_from_json(data: dict[str, Any]) -> Issue:
 
 
 def milestone_from_json(data: dict[str, Any]) -> Milestone:
-    """Normalize a milestone JSON object (gh api or gh issue view) into one shape."""
+    """Normalize a milestone JSON object (gh api or an issue view) into one shape."""
     return Milestone(
         title=data.get("title", ""),
         description=data.get("description", "") or "",
@@ -250,28 +250,37 @@ def _run_gh(args: list[str], runner: Runner) -> str:
     return result.stdout
 
 
+def _issue_transport(repo: str, runner: Runner):
+    """The GitHub tracker adapter, which owns every ``gh issue`` call (#498).
+
+    Imported lazily: tracker.py imports this module for milestone parsing,
+    so a top-level import here would be circular.
+    """
+    import sys
+    from pathlib import Path
+
+    scripts_dir = str(Path(__file__).resolve().parents[1])
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from tracker import GithubBackend
+
+    return GithubBackend(repo, runner=runner)
+
+
+_ISSUE_FIELDS = "number,title,state,labels,milestone,body"
+
+
 def list_issues(
     repo: str, *, state: str = "open", limit: int = 200, runner: Runner = subprocess.run
 ) -> list[Issue]:
-    out = _run_gh(
-        [
-            "issue", "list", "--repo", repo, "--state", state,
-            "--limit", str(limit),
-            "--json", "number,title,state,labels,milestone,body",
-        ],
-        runner,
+    out = _issue_transport(repo, runner).raw_list(
+        state=state, limit=limit, fields=_ISSUE_FIELDS
     )
     return [issue_from_json(d) for d in json.loads(out or "[]")]
 
 
 def view_issue(repo: str, number: int, *, runner: Runner = subprocess.run) -> Issue:
-    out = _run_gh(
-        [
-            "issue", "view", str(number), "--repo", repo,
-            "--json", "number,title,state,labels,milestone,body",
-        ],
-        runner,
-    )
+    out = _issue_transport(repo, runner).raw_view(number, _ISSUE_FIELDS)
     return issue_from_json(json.loads(out))
 
 

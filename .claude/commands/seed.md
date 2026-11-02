@@ -226,7 +226,7 @@ For each issue, define:
 
 These go in the first sprint — they're needed as soon as there's code to test and deploy.
 
-Run issue creation in an **issue-authoring worker** (contract: `docs/worker-contracts.md#issue-authoring-worker`) to keep the orchestrator context clean. *Claude Code adapter:* `subagent_type: "general-purpose"`. The worker should use `gh issue create` for each issue and `gh label create` for any new labels.
+Run issue creation in an **issue-authoring worker** (contract: `docs/worker-contracts.md#issue-authoring-worker`) to keep the orchestrator context clean. *Claude Code adapter:* `subagent_type: "general-purpose"`. The worker creates each issue through the tracker interface, `"${CW_PY:-python3}" "$CW_HOME/scripts/tracker.py" --repo-root "$TARGET_REPO" create "$owner_repo" --title ... --body ... --label ... --disclose-ai` (never `gh` directly for issues; `docs/tracker.md`), and uses `gh label create` for any new labels.
 
 ### Step 9: Report
 
