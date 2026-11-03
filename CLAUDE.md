@@ -95,7 +95,7 @@ python3 scripts/consult_ai.py codex prompt.md -o response.md                    
 python3 scripts/consult_ai.py --role reviewer prompt.md --output-dir "$CW_TMP/reviews"  # a configured quorum
 ```
 
-Full detail (role semantics, timeouts, the divergence role, secrets) is in the `provider-consult` skill, `.claude/skills/provider-consult/SKILL.md`. Required providers must succeed; optional ones may fail without blocking. `optional_timeout_seconds` caps an optional delegate (chief-wiggum#188). The `divergence` role (non-Western models over OpenRouter) is opt-in and exists to widen the quorum's pretraining distribution; `deepseek-flash` fills the code-quorum seat gemini vacated. OpenRouter providers are `reads_repo=false` — prompts to them must be self-contained.
+Full detail (role semantics, timeouts, the divergence role, secrets) is in the `provider-consult` skill, `.claude/skills/provider-consult/SKILL.md`. Required providers must succeed; optional ones may fail without blocking. `optional_timeout_seconds` caps an optional delegate (chief-wiggum#188). The `divergence` role (non-Western models over OpenRouter) is opt-in and exists to widen the quorum's pretraining distribution; no OpenRouter provider sits in a default code role (`deepseek-flash` was dropped 3 Nov 2026). OpenRouter providers are `reads_repo=false` — prompts to them must be self-contained.
 
 ## User Data Directory
 
