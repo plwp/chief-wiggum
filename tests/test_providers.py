@@ -457,8 +457,7 @@ def test_models_md_role_membership_claims_match_the_config():
 
     # The claims made in models.md's OpenRouter table, transcribed.
     claimed = {
-        "deepseek-flash": ({"reviewer", "risky_diff_review"},
-                           {"explorer", "architecture_critic"}),
+        "deepseek-flash": (set(), set()),
         "deepseek": ({"divergence"}, set()),
         "kimi": ({"divergence"}, set()),
         "glm": (set(), {"divergence"}),

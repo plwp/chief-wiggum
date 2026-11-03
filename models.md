@@ -52,7 +52,7 @@ are the `config/providers.json` names, which is what roles refer to — the
 
 | Provider | Model ID | Cost tier | Use for |
 |----------|----------|-----------|---------|
-| `deepseek-flash` | `deepseek/deepseek-v4-flash` | 1 | The code-quorum seat gemini vacated. Required in `reviewer` and `risky_diff_review`, optional in `explorer` and `architecture_critic`. Chosen for cost and speed, not distribution entropy. |
+| `deepseek-flash` | `deepseek/deepseek-v4-flash` | 1 | In no default role since 3 Nov 2026 (Pat: "We can probably drop the deepseek review from CW too"). Kept for an explicit `consult_ai.py deepseek-flash` call. |
 | `deepseek` | `deepseek/deepseek-v4-pro` | 2 | Required in `divergence`. Slower and dearer than flash; note its default 300s budget is often not enough for a large diff — pass `--timeout 900`. |
 | `kimi` | `moonshotai/kimi-k3` | 2 | Required in `divergence`. Carries its own 900s `timeout_seconds`. |
 | `glm` | `z-ai/glm-5.2` | 2 | Optional in `divergence`. |
@@ -72,8 +72,9 @@ in practice:
   because no OpenRouter provider here accepts them.
 
 The `divergence` role exists to widen the quorum's *pretraining distribution*,
-not its prompting, and stays opt-in. `deepseek-flash`'s seat in the code roles
-is a separate decision made on cost and speed.
+not its prompting, and stays opt-in. No OpenRouter provider is in a default code
+role: `deepseek-flash` was dropped from `reviewer`, `risky_diff_review`,
+`explorer` and `architecture_critic` on 3 Nov 2026.
 
 ## Whisper (Local)
 

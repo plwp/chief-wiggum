@@ -449,15 +449,11 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
     for name in ("explorer", "implementer", "reviewer", "architecture_critic", "risky_diff_review"):
         assert roles[name].requires_repo_read is True, name
 
-    # The two roles deepseek-flash is REQUIRED on both need repo reading.
-    # deepseek-flash honestly declares reads_repo=False (openrouter call
-    # path, no filesystem), so workflows must inline the diff for it —
-    # same contract gemini-vertex had before the swap, minus its bespoke
-    # retrieval. gemini-vertex remains required only on design_critic,
-    # the one role that sends screenshots (openrouter providers are
-    # accepts_images=False, so they cannot fill that seat).
-    for role_name in ("reviewer", "risky_diff_review"):
-        assert "deepseek-flash" in roles[role_name].required
+    # deepseek-flash left every default role (Pat, 3 Nov 2026: "We can probably drop the
+    # deepseek review from CW too"). It declares reads_repo=False, so it could only review an
+    # inlined diff blind; the code roles now rest on providers that read the repo.
+    for role_name in ("explorer", "reviewer", "architecture_critic", "risky_diff_review"):
+        assert "deepseek-flash" not in set(roles[role_name].required) | set(roles[role_name].optional)
         assert roles[role_name].requires_repo_read is True
     assert "gemini-vertex" in roles["design_critic"].required
 

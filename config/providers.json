@@ -197,7 +197,6 @@
         "codex"
       ],
       "optional": [
-        "deepseek-flash",
         "claude-interactive"
       ],
       "optional_timeout_seconds": 300,
@@ -215,16 +214,14 @@
     },
     "reviewer": {
       "required": [
-        "codex",
-        "deepseek-flash"
+        "codex"
       ],
       "optional": [
         "claude-interactive"
       ],
       "lenses": {
         "codex": "refute-soundness",
-        "claude-interactive": "adoption-cost",
-        "deepseek-flash": "completeness"
+        "claude-interactive": "adoption-cost"
       },
       "optional_timeout_seconds": 300,
       "requires_repo_read": true
@@ -234,13 +231,11 @@
         "codex"
       ],
       "optional": [
-        "deepseek-flash",
         "claude-interactive"
       ],
       "lenses": {
         "codex": "refute-soundness",
-        "claude-interactive": "adoption-cost",
-        "deepseek-flash": "completeness"
+        "claude-interactive": "adoption-cost"
       },
       "optional_timeout_seconds": 300,
       "requires_repo_read": true
@@ -259,8 +254,7 @@
     },
     "risky_diff_review": {
       "required": [
-        "codex",
-        "deepseek-flash"
+        "codex"
       ],
       "optional": [
         "claude-interactive"
