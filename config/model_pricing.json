@@ -9,49 +9,306 @@
     "openrouter": "openrouter.ai/api/v1/models (live API response, fetched 2026-08-03)"
   },
   "models": {
-    "claude-fable-5":    {"input_per_mtok": 10.0, "output_per_mtok": 50.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-    "claude-mythos-5":   {"input_per_mtok": 10.0, "output_per_mtok": 50.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-    "claude-opus-5":     {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-08-03", "note": "same rate as Opus 4.8; Claude Opus 5 is a drop-in upgrade at Opus 4.8 pricing. Fast mode (speed=fast) bills 10.0/50.0 instead -- not modelled here, since factory telemetry has no fast-mode signal to key on"},
-    "claude-opus-4-8":   {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-    "claude-opus-4-7":   {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-    "claude-opus-4-6":   {"input_per_mtok": 5.0,  "output_per_mtok": 25.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-    "claude-sonnet-5":   {"input_per_mtok": 2.0,  "output_per_mtok": 10.0, "provider": "anthropic", "verified": true, "as_of": "2026-07-12", "note": "introductory pricing through 2026-08-31; standard 3.0/15.0 from 2026-09-01 (platform.claude.com/docs/en/about-claude/pricing)"},
-    "claude-sonnet-4-6": {"input_per_mtok": 3.0,  "output_per_mtok": 15.0, "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-    "claude-haiku-4-5":  {"input_per_mtok": 1.0,  "output_per_mtok": 5.0,  "provider": "anthropic", "verified": true, "as_of": "2026-06-04"},
-
-    "gpt-5.6-sol":   {"input_per_mtok": 5.0,  "output_per_mtok": 30.0,  "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.6-terra": {"input_per_mtok": 2.5,  "output_per_mtok": 15.0,  "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.6-luna":  {"input_per_mtok": 1.0,  "output_per_mtok": 6.0,   "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.5":       {"input_per_mtok": 5.0,  "output_per_mtok": 30.0,  "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.5-pro":   {"input_per_mtok": 30.0, "output_per_mtok": 180.0, "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.4":       {"input_per_mtok": 2.5,  "output_per_mtok": 15.0,  "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.4-mini":  {"input_per_mtok": 0.75, "output_per_mtok": 4.5,   "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-    "gpt-5.4-nano":  {"input_per_mtok": 0.2,  "output_per_mtok": 1.25,  "provider": "openai", "verified": true, "as_of": "2026-07-12"},
-
-    "gemini-3.5-flash":       {"input_per_mtok": 1.5,  "output_per_mtok": 9.0,  "provider": "google", "verified": true, "as_of": "2026-07-12"},
-    "gemini-3.1-pro-preview": {"input_per_mtok": 2.0,  "output_per_mtok": 12.0, "provider": "google", "verified": true, "as_of": "2026-07-12", "note": "base <=200k context; >200k is 4.0/18.0"},
-    "gemini-3.1-flash-lite":  {"input_per_mtok": 0.25, "output_per_mtok": 1.5,  "provider": "google", "verified": true, "as_of": "2026-07-12"},
-    "gemini-2.5-pro":         {"input_per_mtok": 1.25, "output_per_mtok": 10.0, "provider": "google", "verified": true, "as_of": "2026-07-12", "note": "base <=200k context; >200k is 2.5/15.0"},
-    "gemini-2.5-flash":       {"input_per_mtok": 0.3,  "output_per_mtok": 2.5,  "provider": "google", "verified": true, "as_of": "2026-07-12"},
-    "gemini-2.5-flash-lite":  {"input_per_mtok": 0.1,  "output_per_mtok": 0.4,  "provider": "google", "verified": true, "as_of": "2026-07-12"},
-
-    "glm-5.2":       {"input_per_mtok": 1.4, "output_per_mtok": 4.4, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
-    "glm-5.1":       {"input_per_mtok": 1.4, "output_per_mtok": 4.4, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
-    "glm-5":         {"input_per_mtok": 1.0, "output_per_mtok": 3.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
-    "glm-4.6":       {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
-    "glm-4.5":       {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "provider": "zhipu", "verified": true, "as_of": "2026-07-12"},
-    "glm-4.7-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
-    "glm-4.5-flash": {"input_per_mtok": 0.0, "output_per_mtok": 0.0, "provider": "zhipu", "verified": true, "as_of": "2026-07-12", "note": "free tier"},
-
-    "deepseek/deepseek-v4-pro": {"input_per_mtok": 0.43, "output_per_mtok": 0.87,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
-    "deepseek/deepseek-v4-flash": {"input_per_mtok": 0.084, "output_per_mtok": 0.168, "provider": "openrouter", "verified": true, "as_of": "2026-08-05"},
-    "moonshotai/kimi-k3":       {"input_per_mtok": 3.0,  "output_per_mtok": 15.0,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
-    "z-ai/glm-5.2":             {"input_per_mtok": 1.19, "output_per_mtok": 3.74,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03", "note": "OpenRouter's routed rate; the direct-from-Zhipu `glm-5.2` row above is a different price for the same weights"},
-    "qwen/qwen3.7-max":         {"input_per_mtok": 1.48, "output_per_mtok": 4.42,  "provider": "openrouter", "verified": true, "as_of": "2026-08-03"},
-    "minimax/minimax-m3":       {"input_per_mtok": 0.3,  "output_per_mtok": 1.2,   "provider": "openrouter", "verified": true, "as_of": "2026-08-03"}
+    "claude-fable-5-1": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "cache_read_per_mtok": 0.25,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-10-06",
+      "source": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-10-06",
+      "note": "cache reads $0.25/MTok (0.025x input), not the generic 0.1x"
+    },
+    "claude-opus-5-5": {
+      "input_per_mtok": 4.0,
+      "output_per_mtok": 20.0,
+      "cache_read_per_mtok": 0.2,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-10-06",
+      "source": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-10-06",
+      "note": "cache reads $0.20/MTok (0.05x input), not the generic 0.1x; fast mode 8/40 not modelled"
+    },
+    "claude-sonnet-5-5": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 10.0,
+      "cache_read_per_mtok": 0.2,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-10-06",
+      "source": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-10-06"
+    },
+    "claude-haiku-5-5": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.5,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-10-06",
+      "source": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-10-06",
+      "note": "prompts up to 100K tokens; 0.50/2.50 beyond, not modelled"
+    },
+    "claude-fable-5": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "claude-mythos-5": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "claude-opus-5": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-08-03",
+      "note": "same rate as Opus 4.8; Claude Opus 5 is a drop-in upgrade at Opus 4.8 pricing. Fast mode (speed=fast) bills 10.0/50.0 instead -- not modelled here, since factory telemetry has no fast-mode signal to key on"
+    },
+    "claude-opus-4-8": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "claude-opus-4-7": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "claude-opus-4-6": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "claude-sonnet-5": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 10.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-07-12",
+      "note": "introductory pricing through 2026-08-31; standard 3.0/15.0 from 2026-09-01 (platform.claude.com/docs/en/about-claude/pricing)"
+    },
+    "claude-sonnet-4-6": {
+      "input_per_mtok": 3.0,
+      "output_per_mtok": 15.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "claude-haiku-4-5": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 5.0,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-06-04"
+    },
+    "gpt-5.6-sol": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 30.0,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.6-terra": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 15.0,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.6-luna": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 6.0,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.5": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 30.0,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.5-pro": {
+      "input_per_mtok": 30.0,
+      "output_per_mtok": 180.0,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.4": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 15.0,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.4-mini": {
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 4.5,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gpt-5.4-nano": {
+      "input_per_mtok": 0.2,
+      "output_per_mtok": 1.25,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gemini-3.5-flash": {
+      "input_per_mtok": 1.5,
+      "output_per_mtok": 9.0,
+      "provider": "google",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gemini-3.1-pro-preview": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 12.0,
+      "provider": "google",
+      "verified": true,
+      "as_of": "2026-07-12",
+      "note": "base <=200k context; >200k is 4.0/18.0"
+    },
+    "gemini-3.1-flash-lite": {
+      "input_per_mtok": 0.25,
+      "output_per_mtok": 1.5,
+      "provider": "google",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gemini-2.5-pro": {
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 10.0,
+      "provider": "google",
+      "verified": true,
+      "as_of": "2026-07-12",
+      "note": "base <=200k context; >200k is 2.5/15.0"
+    },
+    "gemini-2.5-flash": {
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 2.5,
+      "provider": "google",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "gemini-2.5-flash-lite": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.4,
+      "provider": "google",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "glm-5.2": {
+      "input_per_mtok": 1.4,
+      "output_per_mtok": 4.4,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "glm-5.1": {
+      "input_per_mtok": 1.4,
+      "output_per_mtok": 4.4,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "glm-5": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 3.2,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "glm-4.6": {
+      "input_per_mtok": 0.6,
+      "output_per_mtok": 2.2,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "glm-4.5": {
+      "input_per_mtok": 0.6,
+      "output_per_mtok": 2.2,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12"
+    },
+    "glm-4.7-flash": {
+      "input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12",
+      "note": "free tier"
+    },
+    "glm-4.5-flash": {
+      "input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "provider": "zhipu",
+      "verified": true,
+      "as_of": "2026-07-12",
+      "note": "free tier"
+    },
+    "deepseek/deepseek-v4-pro": {
+      "input_per_mtok": 0.43,
+      "output_per_mtok": 0.87,
+      "provider": "openrouter",
+      "verified": true,
+      "as_of": "2026-08-03"
+    },
+    "deepseek/deepseek-v4-flash": {
+      "input_per_mtok": 0.084,
+      "output_per_mtok": 0.168,
+      "provider": "openrouter",
+      "verified": true,
+      "as_of": "2026-08-05"
+    },
+    "moonshotai/kimi-k3": {
+      "input_per_mtok": 3.0,
+      "output_per_mtok": 15.0,
+      "provider": "openrouter",
+      "verified": true,
+      "as_of": "2026-08-03"
+    },
+    "z-ai/glm-5.2": {
+      "input_per_mtok": 1.19,
+      "output_per_mtok": 3.74,
+      "provider": "openrouter",
+      "verified": true,
+      "as_of": "2026-08-03",
+      "note": "OpenRouter's routed rate; the direct-from-Zhipu `glm-5.2` row above is a different price for the same weights"
+    },
+    "qwen/qwen3.7-max": {
+      "input_per_mtok": 1.48,
+      "output_per_mtok": 4.42,
+      "provider": "openrouter",
+      "verified": true,
+      "as_of": "2026-08-03"
+    },
+    "minimax/minimax-m3": {
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 1.2,
+      "provider": "openrouter",
+      "verified": true,
+      "as_of": "2026-08-03"
+    }
   },
   "cache_multipliers": {
-    "$comment": "Multipliers applied to a model's INPUT rate for prompt-cached tokens (Anthropic prompt-caching pricing, claude-api skill reference, cached 2026-08-03). A cache READ costs ~0.1x the base input rate; a cache WRITE costs 1.25x at the default 5-minute TTL and 2x at the 1-hour TTL. factory_log.cost_for_usage applies these when a usage record carries cache token counts (Claude Code transcripts do; consult providers mostly do not). Vendor-published multipliers, not estimates -- but they are Anthropic's; a non-Anthropic model with cache counts would need its own row before these are applied to it.",
+    "$comment": "Multipliers applied to a model's INPUT rate for prompt-cached tokens (Anthropic prompt-caching pricing, claude-api skill reference, cached 2026-08-03). A cache READ costs ~0.1x the base input rate; a cache WRITE costs 1.25x at the default 5-minute TTL and 2x at the 1-hour TTL. factory_log.cost_for_usage applies these when a usage record carries cache token counts (Claude Code transcripts do; consult providers mostly do not). Vendor-published multipliers, not estimates -- but they are Anthropic's; a non-Anthropic model with cache counts would need its own row before these are applied to it. A model row may carry cache_read_per_mtok (USD per 1M cached-read tokens, from the vendor page) when its read rate is not 0.1x input; cost_for_usage prefers it over cache_read.",
     "cache_read": 0.1,
     "cache_write_5m": 1.25,
     "cache_write_1h": 2.0,

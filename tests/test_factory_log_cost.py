@@ -96,6 +96,29 @@ def test_shipped_pricing_table_prices_the_current_opus():
     assert factory_log.cost_for("claude-opus-5", 1_000_000, 0) == pytest.approx(5.0)
 
 
+def test_cost_for_usage_prefers_a_rows_own_cache_read_rate():
+    """Opus 5.5 reads at $0.20/MTok on a $4 input rate (0.05x); the generic 0.1x
+    multiplier would bill 1M reads at $0.40. The row's rate wins."""
+    table = {"m": {"input_per_mtok": 4.0, "output_per_mtok": 20.0, "cache_read_per_mtok": 0.20}}
+    cost = factory_log.cost_for_usage("m", 0, 0, cache_read=1_000_000, pricing=table, multipliers=MULTS)
+    assert cost == pytest.approx(0.20)
+    # Without the row rate the generic multiplier still applies (no silent change).
+    table["m"].pop("cache_read_per_mtok")
+    assert factory_log.cost_for_usage("m", 0, 0, cache_read=1_000_000, pricing=table,
+                                      multipliers=MULTS) == pytest.approx(0.40)
+
+
+def test_shipped_pricing_table_prices_the_5_5_generation():
+    """Every Opus 5.5 / Fable 5.1 turn of the Canine Resorts epic (3 Nov 2026) recorded
+    cost_usd: null because these rows were absent; 1615 of 1978 turns went unpriced."""
+    assert factory_log.cost_for("claude-opus-5-5", 1_000_000, 0) == pytest.approx(4.0)
+    assert factory_log.cost_for("claude-sonnet-5-5", 0, 1_000_000) == pytest.approx(10.0)
+    assert factory_log.cost_for("claude-fable-5-1", 1_000_000, 0) == pytest.approx(10.0)
+    assert factory_log.cost_for("claude-haiku-5-5", 1_000_000, 0) == pytest.approx(0.10)
+    assert factory_log.cost_for_usage("claude-opus-5-5", 0, 0, cache_read=1_000_000) == pytest.approx(0.20)
+    assert factory_log.cost_for_usage("claude-fable-5-1", 0, 0, cache_read=1_000_000) == pytest.approx(0.25)
+
+
 # ---- transcript ingest ------------------------------------------------------
 
 def test_ingest_reads_usage_and_prices_it(transcripts, monkeypatch, tmp_path):
@@ -302,7 +325,9 @@ def test_cost_report_splits_composition():
 
 
 def test_cost_report_flags_long_sessions_with_denominators():
-    records = _cc("long", turns=250, cost=1.0) + _cc("short", turns=5, cost=1.0)
+    # $1.00 a turn from tokens: 40k output at $25/MTok (cost is priced from
+    # tokens at report time, never read from the stored cost_usd).
+    records = _cc("long", turns=250, tout=40_000) + _cc("short", turns=5, tout=40_000)
     rep = factory_log.session_cost_report(records)
     f = next(x for x in rep["findings"] if x["code"] == "long-sessions")
     assert "1 of 2 session(s)" in f["detail"]      # denominator, not a bare count
@@ -310,7 +335,8 @@ def test_cost_report_flags_long_sessions_with_denominators():
 
 
 def test_cost_report_computes_amplification_and_unit_cost():
-    rep = factory_log.session_cost_report(_cc("s", turns=10, cr=100_000, cost=1.0))
+    # 100k reads at $0.50/MTok = $0.05 plus 38k output at $25/MTok = $0.95: $1.00 a turn.
+    rep = factory_log.session_cost_report(_cc("s", turns=10, cr=100_000, tout=38_000))
     s = rep["top_sessions"][0]
     assert s["amplification"] == 10.0          # 1M cache-read over a 100k window
     assert s["mean_context"] == 100_000
@@ -324,15 +350,33 @@ def test_cost_report_flags_1h_ttl_dominance_without_recommending_a_switch():
     assert "NOT worth switching" in f["detail"]  # advisory, not a directive
 
 
-def test_cost_report_marks_legacy_ttl_records_as_a_lower_bound():
-    """Records predating the TTL split price at the cheaper 5m rate, so the
-    write figure understates — that must be disclosed, not hidden."""
-    legacy = [{"event": "claude_code", "session_id": "s", "model": "claude-opus-5",
-               "cache_creation": 1_000_000, "cache_read": 0,
-               "tokens_in": 0, "tokens_out": 0}]
-    rep = factory_log.session_cost_report(legacy)
+def test_cost_report_prices_an_unsplit_cache_write_at_the_1h_rate_and_says_so():
+    """A record with one combined cache-write figure is Claude Code's 1h cache
+    (Pat, 1 Nov 2026: 1h writes = 2x input): $5 input x 2.0 = $10 per 1M, not
+    the 5m $6.25 — and the report discloses which turns were priced that way."""
+    unsplit = [{"event": "claude_code", "session_id": "s", "model": "claude-opus-5",
+                "cache_creation": 1_000_000, "cache_read": 0,
+                "tokens_in": 0, "tokens_out": 0}]
+    rep = factory_log.session_cost_report(unsplit)
     assert rep["legacy_ttl_turns"] == 1
-    assert "LOWER BOUND" in factory_log.render_cost_report(rep)
+    assert rep["composition_usd"]["cache_write"] == pytest.approx(10.0)
+    assert "1h rate" in factory_log.render_cost_report(rep)
+
+
+def test_cost_report_headline_is_the_sum_of_its_components_at_current_prices():
+    """The headline used the cost_usd stored at ingest (null for a model priced
+    later), while the split re-priced from tokens: $80 headline over a $294
+    read line on the Canine Resorts epic (4 Nov 2026). Both now come from the
+    same per-turn pricing, with a row's own cache-read rate honoured."""
+    recs = [{"event": "claude_code", "session_id": "s", "model": "claude-opus-5-5",
+             "cache_write_1h": 0, "cache_write_5m": 0, "cache_read": 10_000_000,
+             "tokens_in": 0, "tokens_out": 1_000_000, "cost_usd": None}]
+    rep = factory_log.session_cost_report(recs)
+    # 10M reads at $0.20/MTok = $2.00 (not $4.00 at the generic 0.1x of $4); 1M out = $20.
+    assert rep["composition_usd"]["cache_read"] == pytest.approx(2.0)
+    assert rep["composition_usd"]["output"] == pytest.approx(20.0)
+    assert rep["cost_usd"] == pytest.approx(22.0)
+    assert rep["unpriced_turns"] == 0
 
 
 def test_cost_report_counts_unpriced_turns_rather_than_pricing_them_at_zero():
@@ -565,3 +609,18 @@ def test_count_transcript_turns_cwd_prefix_does_not_cross_bill_a_lexical_sibling
     result = factory_log.count_transcript_turns(root, cwd_prefix=wt)
     assert result["scanned"] is True
     assert result["repl_main_thread"] == 1
+
+
+def test_cost_report_cli_since_ts_drops_older_turns(monkeypatch, tmp_path, capsys):
+    """A repo's ledger carries every ingest since the first; the burn question is
+    per month, so --since-ts bounds the report (Pat, 4 Nov 2026)."""
+    log = tmp_path / "factory-log.jsonl"
+    old = {"ts": 1_000.0, "event": "claude_code", "session_id": "old", "model": "claude-opus-5",
+           "repo": "r", "tokens_in": 0, "tokens_out": 1_000_000, "cache_read": 0,
+           "cache_write_5m": 0, "cache_write_1h": 0}
+    new = dict(old, ts=2_000.0, session_id="new")
+    log.write_text(json.dumps(old) + "\n" + json.dumps(new) + "\n")
+    monkeypatch.setattr(factory_log, "read_log", lambda: [json.loads(l) for l in log.read_text().splitlines()])
+    assert factory_log.main(["cost-report", "--repo", "r", "--since-ts", "1500", "--format", "json"]) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["turns"] == 1 and rep["cost_usd"] == pytest.approx(25.0)

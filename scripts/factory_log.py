@@ -329,10 +329,15 @@ def cost_for_usage(model: str, tokens_in: int, tokens_out: int, *,
     m_w5 = m.get("cache_write_5m", 1.0)
     m_w1 = m.get("cache_write_1h", 1.0)
     billed_in = (tokens_in
-                 + cache_read * m_read
                  + cache_write_5m * m_w5
                  + cache_write_1h * m_w1)
-    return round((billed_in / 1_000_000) * pin + (tokens_out / 1_000_000) * pout, 6)
+    # A row may state its own cache-read rate (USD per 1M) when the vendor's
+    # read price is not the generic multiple of input: Opus 5.5 reads at
+    # $0.20/MTok on a $4 input rate (0.05x), Fable 5.1 at $0.25 on $10
+    # (0.025x). The generic 0.1x would overstate both.
+    read_rate = row.get("cache_read_per_mtok")
+    read_usd = (cache_read / 1_000_000) * (read_rate if read_rate is not None else pin * m_read)
+    return round((billed_in / 1_000_000) * pin + read_usd + (tokens_out / 1_000_000) * pout, 6)
 
 
 def _coerce_token(value) -> int | None:
@@ -717,11 +722,13 @@ def ingest_claude_transcripts(root: Path | None = None, repo: str | None = None,
             w5 = _coerce_token(creation.get("ephemeral_5m_input_tokens"))
             w1 = _coerce_token(creation.get("ephemeral_1h_input_tokens"))
             if w5 is None and w1 is None:
-                # Older/flatter shape: one undifferentiated cache-creation count.
-                # Price it at the 5m rate — the default TTL, and the cheaper of
-                # the two, so an unknown TTL can't silently overstate cost.
-                w5 = _coerce_token(usage.get("cache_creation_input_tokens")) or 0
-                w1 = 0
+                # Flat shape: one undifferentiated cache-creation count. Claude
+                # Code writes its prompt cache at the 1h TTL, so price it at the
+                # 1h rate (Pat, 1 Nov 2026: tokens at API rates, 1h cache writes
+                # = 2x input). Pricing it at 5m understated every session's
+                # writes by 37.5% until 4 Nov 2026.
+                w1 = _coerce_token(usage.get("cache_creation_input_tokens")) or 0
+                w5 = 0
             w5, w1 = w5 or 0, w1 or 0
 
             model = msg.get("model")
@@ -1377,26 +1384,36 @@ def session_cost_report(records: list[dict], *, top: int = 10) -> dict:
         tin = r.get("tokens_in") or 0
         tout = r.get("tokens_out") or 0
         cr = r.get("cache_read") or 0
-        # Fall back to the combined figure for records written before the
-        # per-TTL split existed; assume the cheaper 5m rather than overstate.
         w5 = r.get("cache_write_5m")
         w1 = r.get("cache_write_1h")
         if w5 is None and w1 is None:
-            # Legacy record (pre-TTL-split ingest): the TTL mix is unknown, so
-            # price at the cheaper 5m rate and COUNT it, so the report can say
-            # the write figure is a lower bound rather than quietly understating.
-            w5, w1 = r.get("cache_creation") or 0, 0
-            legacy_ttl_turns += 1 if w5 else 0
+            # No per-TTL split on the record (Claude Code transcripts report one
+            # cache_creation figure). Claude Code writes its prompt cache at the
+            # 1h TTL, so the combined figure is priced at the 1h rate (Pat,
+            # 1 Nov 2026: tokens at API rates, 1h cache writes = 2x input) and
+            # COUNTED, so the report can say which turns were priced that way.
+            w5, w1 = 0, r.get("cache_creation") or 0
+            legacy_ttl_turns += 1 if w1 else 0
         w5, w1 = w5 or 0, w1 or 0
         w5_tokens += w5
         w1_tokens += w1
 
-        row = pricing.get(r.get("model")) or {}
+        # Price every turn from its tokens against the CURRENT table, so the
+        # headline, the per-session figures and the component split agree and
+        # a row added after ingest (Opus 5.5 was absent for the whole Canine
+        # Resorts epic, 3 Nov 2026) re-prices history instead of leaving it
+        # at the stored null. cost_for_usage honours a row's own cache-read rate.
+        model = r.get("model")
+        turn_cost = cost_for_usage(model, tin, tout, cache_read=cr, cache_write_5m=w5,
+                                   cache_write_1h=w1, pricing=pricing, multipliers=mult)
+        row = pricing.get(model) or {}
         pin, pout = row.get("input_per_mtok"), row.get("output_per_mtok")
-        if pin is None or pout is None:
+        if turn_cost is None:
             unpriced_turns += 1
             pin = pout = 0.0
-        comp["cache_read"] += cr / 1e6 * pin * m_read
+            turn_cost = 0.0
+        read_rate = row.get("cache_read_per_mtok")
+        comp["cache_read"] += cr / 1e6 * (read_rate if read_rate is not None else pin * m_read)
         comp["cache_write"] += (w5 * m_w5 + w1 * m_w1) / 1e6 * pin
         comp["output"] += tout / 1e6 * pout
         comp["input"] += tin / 1e6 * pin
@@ -1407,7 +1424,7 @@ def session_cost_report(records: list[dict], *, top: int = 10) -> dict:
                                       "cost_usd": 0.0, "repo": r.get("repo")})
         s["turns"] += 1
         s["cache_read"] += cr
-        s["cost_usd"] += r.get("cost_usd") or 0.0
+        s["cost_usd"] += turn_cost
         ctx = cr + w5 + w1 + tin
         s["peak_context"] = max(s["peak_context"], ctx)
         s["context_sum"] += ctx
@@ -1546,9 +1563,9 @@ def render_cost_report(rep: dict) -> str:
                  f"no price row — their tokens count, their cost does not.")
         L.append("")
     if rep.get("legacy_ttl_turns"):
-        L.append(f"  NOTE: {rep['legacy_ttl_turns']} turn(s) predate the cache-TTL split and are "
-                 f"priced at the cheaper 5m rate,\n        so cache_write below is a LOWER BOUND. "
-                 f"Re-run ingest-claude-transcripts on a fresh log to resolve.")
+        L.append(f"  NOTE: {rep['legacy_ttl_turns']} turn(s) carry one combined cache-write figure "
+                 f"and are priced at the 1h rate Claude Code uses\n        (Pat, 1 Nov 2026: 1h cache "
+                 f"writes = 2x input). Records ingested before 4 Nov 2026 stored that figure as 5m.")
         L.append("")
     L.append("  Where the money goes:")
     for k, v in sorted(rep["composition_usd"].items(), key=lambda kv: -kv[1]):
@@ -1712,6 +1729,10 @@ def main(argv: list[str] | None = None) -> int:
     cr_.add_argument("--repo")
     cr_.add_argument("--top", type=int, default=10)
     cr_.add_argument("--format", choices=["text", "json"], default="text")
+    cr_.add_argument("--since-days", type=float,
+                     help="Only turns newer than N days ago (a month's figure per repo in one call)")
+    cr_.add_argument("--since-ts", type=float,
+                     help="Only turns at/after this epoch timestamp (overrides --since-days)")
 
     sub.add_parser("path", help="Print the log path")
     args = parser.parse_args(argv)
@@ -1732,6 +1753,13 @@ def main(argv: list[str] | None = None) -> int:
         records = read_log()
         if args.repo:
             records = [r for r in records if r.get("repo") == args.repo]
+        since = (time.time() - args.since_days * 86400) if args.since_days else None
+        if args.since_ts:
+            since = args.since_ts
+        if since is not None:
+            # The per-customer burn question is "this month", not "ever": a repo's
+            # ledger carries every ingest since the first one (Pat, 4 Nov 2026).
+            records = [r for r in records if (r.get("ts") or 0) >= since]
         rep = session_cost_report(records, top=args.top)
         # Always exit 0 — report-only by construction (see session_cost_report).
         print(json.dumps(rep, indent=2) if args.format == "json" else render_cost_report(rep))
