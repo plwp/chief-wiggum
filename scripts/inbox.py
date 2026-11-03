@@ -63,7 +63,7 @@ import ssl
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.header import decode_header, make_header
 from email.message import EmailMessage
 from html.parser import HTMLParser
@@ -726,6 +726,15 @@ def cmd_move(args) -> int:
     return EXIT_OK if status == "OK" else EXIT_USAGE
 
 
+def _watch_default_since() -> str:
+    """Yesterday's local date. IMAP SINCE compares the server's date (UTC for
+    iCloud), which lags Melbourne by 10 to 11 hours, so a SINCE of today's local
+    date hides every message that arrives between local midnight and the UTC
+    date change. Seen UIDs are still tracked, so the wider window only costs a
+    slightly larger search."""
+    return (date.today() - timedelta(days=1)).isoformat()
+
+
 def cmd_watch(args) -> int:
     cfg = load_config()
     pw = _password(cfg)
@@ -736,7 +745,7 @@ def cmd_watch(args) -> int:
         try:
             uids = set(
                 search_uids(
-                    conn, args.folder, ["SINCE", _imap_date(args.since or date.today().isoformat())]
+                    conn, args.folder, ["SINCE", _imap_date(args.since or _watch_default_since())]
                 )
             )
             if seen is None:

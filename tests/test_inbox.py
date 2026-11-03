@@ -305,6 +305,33 @@ def test_watch_once_replay_emits_json_lines(wired, capsys):
     assert [r["uid"] for r in rows] == ["1", "2"]
 
 
+def test_watch_default_window_reaches_back_a_day(wired, monkeypatch):
+    """IMAP SINCE compares the server's (UTC) date. From local midnight until the
+    UTC date catches up, a SINCE of the local date hides every new message, so the
+    default window starts the day before (mail at 02:44 AEDT on 4 Nov carries a
+    3 Nov UTC date and was missed)."""
+    searches = []
+    real_uid = wired.uid
+
+    def recording_uid(cmd, *args):
+        if cmd == "SEARCH":
+            searches.append(args)
+        return real_uid(cmd, *args)
+
+    monkeypatch.setattr(wired, "uid", recording_uid)
+
+    class FixedDate(inbox.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 11, 4)
+
+    monkeypatch.setattr(inbox, "date", FixedDate)
+    assert inbox.main(["watch", "--once"]) == 0
+    flat = " ".join(str(a) for call in searches for a in call)
+    assert "03-Nov-2026" in flat
+    assert "04-Nov-2026" not in flat
+
+
 def test_missing_secret_names_the_keychain_command(wired, monkeypatch, capsys):
     monkeypatch.setattr(inbox, "get_secret", lambda name: None)
     assert inbox.main(["list"]) == inbox.EXIT_USAGE
