@@ -1,7 +1,7 @@
 {
   "gate": "perf-gate",
   "protocol_version": "1",
-  "scanner_version": "fc7aa836ed379fed978e7efd5684b40def1a09d1acc5ade80838fe115ff0d4f9",
+  "scanner_version": "8e6fb919904f86e543d57ae2e511fc569a38766a392957c9df23458853ac0bd5",
   "telemetry_dependent": false,
   "concurrency_applicable": false,
   "concurrency_note": "The static rules read source; the walk times sequential requests, first load then warm. Concurrent sweeps are the product's concern (one per site) and were not exercised.",
@@ -11,7 +11,8 @@
     "assumptions": [
       "Go only; other stacks are inapplicable, not pass",
       "the call graph is by name, so an interface call reaches every same-named method that takes a context; this over-reaches rather than misses",
-      "no flow-sensitivity: a branch made POST-only by an earlier compound condition still reads as GET-reachable (1 known false positive on the real repo)",
+      "no flow-sensitivity: a branch made POST-only by an earlier compound condition still reads as GET-reachable (1 known false positive on the real repo); method pruning happens only where it is proven (pure method tests, or a conjunct that excludes GET; code after a block only when the block always returns)",
+      "no cache awareness: a read behind a cache inside a loop is still reported (1 such finding on the real repo)",
       "unbounded-list checks that a bound exists, not that it is the asked window",
       "the walk ran against the Firestore emulator on a laptop, with a seed shaped from production aggregate counts (555 requests, 645 replica bookings, 34 prior staff decisions, 120 planned automatic confirms for the site); emulator latency is lower than production's, so this walk understates production times",
       "the walk covered the API route of the defect only; no screen was walked from a browser HAR tonight"
@@ -70,6 +71,72 @@
       "note": "the #434 fix's shape (unjoined background goroutine, windowed and batched reads): must not fire"
     },
     {
+      "seed_id": "perf-527-nested-conditional-return",
+      "seed_class": "evasion-config-indirection",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "main.go:18"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-527-compound-method-condition",
+      "seed_class": "evasion-config-indirection",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "main.go:15"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-527-shadowing-repo-method",
+      "seed_class": "evasion-omission",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "main.go:17"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-527-cold-500-warm-200",
+      "seed_class": "instrument-broken",
+      "repo": "check_perf.self_test (in-memory)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "error_status"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-527-error-page-screen",
+      "seed_class": "instrument-broken",
+      "repo": "check_perf.self_test (in-memory)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "error_status"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-527-warm-only-screen",
+      "seed_class": "evasion-sampling-gap",
+      "repo": "check_perf.self_test (in-memory)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "incomplete"
+      ],
+      "passed": true
+    },
+    {
       "seed_id": "perf-real-434-reverted-static",
       "seed_class": "direct",
       "repo": "private product repo (staff booking service), main 674031f with the #434 fix (272a900) reverted on a local scratch branch, never pushed",
@@ -87,14 +154,16 @@
         "read-in-loop staff_autoconfirm.go:146",
         "read-in-loop staff_autoconfirm.go:154",
         "read-in-loop staff_autoconfirm.go:162",
+        "write-on-read fee_hold.go:336",
         "write-on-read fee_hold_store.go:129",
         "write-on-read fee_hold_store.go:43",
         "write-on-read ledger_store.go:184",
         "write-on-read ledger_store.go:193",
         "write-on-read mail_outbox.go:328",
-        "write-on-read staff_checkin_store.go:230"
+        "write-on-read staff_checkin_store.go:230",
+        "write-on-read staff_tasks.go:271"
       ],
-      "note": "16 findings beyond main's, every one reached from the bookings GET handler through the inline sweep (applyAutoActions)"
+      "note": "18 findings beyond main's, every one reached from the bookings GET handler through the inline sweep (applyAutoActions)"
     },
     {
       "seed_id": "perf-real-434-reverted-walk",
@@ -104,7 +173,7 @@
       "result": "fired",
       "passed": true,
       "evidence": [
-        "GET /api/staff/{site}/bookings cold 20107 ms, warm 20105 ms, budget 2000 ms (default)"
+        "GET /api/staff/{site}/bookings cold 20021 ms, warm 7984 ms, budget 2000 ms (default)"
       ]
     }
   ],
@@ -126,8 +195,21 @@
       "outcome": "findings",
       "files_scanned": 91,
       "get_handlers": 31,
-      "seconds": 3.01,
+      "seconds": 2.0,
       "findings": [
+        {
+          "rule": "read-in-loop",
+          "site": "backend/cmd/server/checkin_prefill.go:550",
+          "handler": "handlePreArrival",
+          "chain": [
+            "handlePreArrival",
+            "preArrivalViewOf",
+            "preArrivalOnFile",
+            "buildPrefillLayers",
+            "recordsLayer"
+          ],
+          "triage": "true: one overlay read per record while building the check-in prefill (check-in perf ticket area)"
+        },
         {
           "rule": "read-in-loop",
           "site": "backend/cmd/server/ledger_routes.go:451",
@@ -136,7 +218,16 @@
             "handleStaffPayments",
             "paymentRows"
           ],
-          "triage": "true: payments reads each reversed booking's ledger serially (open perf ticket)"
+          "triage": "true: payments reads each reversed booking's ledger, and each paid booking for display, serially (open perf ticket)"
+        },
+        {
+          "rule": "read-in-loop",
+          "site": "backend/cmd/server/ledger_routes.go:535",
+          "handler": "handleStaffPayments",
+          "chain": [
+            "handleStaffPayments"
+          ],
+          "triage": "true: payments reads each reversed booking's ledger, and each paid booking for display, serially (open perf ticket)"
         },
         {
           "rule": "read-in-loop",
@@ -150,7 +241,36 @@
         },
         {
           "rule": "read-in-loop",
+          "site": "backend/cmd/server/staff_cc_bookings.go:777",
+          "handler": "handleStaffCCBookings",
+          "chain": [
+            "handleStaffCCBookings",
+            "listCC"
+          ],
+          "triage": "false positive in practice: the pricing read sits behind a per-tenant cache, so it is one read per cache window; the rule cannot see caches"
+        },
+        {
+          "rule": "read-in-loop",
+          "site": "backend/cmd/server/staff_records.go:388",
+          "handler": "handleStaffClient",
+          "chain": [
+            "handleStaffClient"
+          ],
+          "triage": "true: client detail reads per pet / per id (N+1), not yet ticketed"
+        },
+        {
+          "rule": "read-in-loop",
           "site": "backend/cmd/server/staff_records.go:437",
+          "handler": "handleStaffClient",
+          "chain": [
+            "handleStaffClient",
+            "petPeople"
+          ],
+          "triage": "true: client detail reads per pet / per id (N+1), not yet ticketed"
+        },
+        {
+          "rule": "read-in-loop",
+          "site": "backend/cmd/server/staff_records.go:442",
           "handler": "handleStaffClient",
           "chain": [
             "handleStaffClient",
@@ -167,6 +287,32 @@
             "LiveBookings"
           ],
           "triage": "true: client detail reads per pet / per id (N+1), not yet ticketed"
+        },
+        {
+          "rule": "read-in-loop",
+          "site": "backend/cmd/server/staff_vaccinations.go:142",
+          "handler": "handleStaffCheckins",
+          "chain": [
+            "handleStaffCheckins",
+            "getCheckin",
+            "checkinView",
+            "finishView",
+            "checkinVaccinations"
+          ],
+          "triage": "true: one check-in read per vaccination on check-in detail (check-in perf ticket area)"
+        },
+        {
+          "rule": "read-in-loop",
+          "site": "backend/cmd/server/staff_vaccinations.go:152",
+          "handler": "handleStaffCheckins",
+          "chain": [
+            "handleStaffCheckins",
+            "getCheckin",
+            "checkinView",
+            "finishView",
+            "checkinVaccinations"
+          ],
+          "triage": "true: one check-in read per vaccination on check-in detail (check-in perf ticket area)"
         },
         {
           "rule": "unbounded-list",
@@ -238,28 +384,29 @@
     },
     "fix_reverted": {
       "outcome": "findings",
-      "findings": 26,
-      "beyond_main": 16
+      "findings": 35,
+      "beyond_main": 18
     },
     "walk": {
       "main": {
         "verdict": "within_budget",
-        "cold_ms": 334,
-        "warm_ms": 362,
+        "cold_ms": 245,
+        "warm_ms": 272,
         "budget_ms": 2000,
         "budget_source": "default"
       },
       "fix_reverted": {
         "verdict": "over_budget",
-        "cold_ms": 20107,
-        "warm_ms": 20105,
+        "cold_ms": 20021,
+        "warm_ms": 7984,
         "budget_ms": 2000,
         "budget_source": "default"
       }
     },
-    "false_positive_rate": "1 of 10 on main (pre-arrival photo branch); 1 borderline (bounded per-filter query)"
+    "false_positive_rate": "2 of 17 on main (pre-arrival photo branch; a per-tenant cached pricing read); 1 borderline (bounded per-filter query)",
+    "review_fixes": "PR #527 cross-family review: 5 fail-open bugs fixed. Rescan vs 9d6fa72: main 10 -> 17 (7 read-in-loop that the global same-name suppression hid; none removed), fix reverted 26 -> 35 (the same 7, plus 2 sweep-path task writes). The walk was re-run with both statuses kept: 200/200 on both variants."
   },
   "status": "report-only",
-  "validated_at": "2026-11-06T13:00:00Z",
-  "validated_by": "chief-wiggum#524 (worker-524). Report-only: this record does not yet carry the evasion-config-indirection, evasion-sampling-gap or instrument-broken seed classes or a ratchet-journal entry, so check_gate_validation does not grant it --gate."
+  "validated_at": "2026-11-07T00:00:00Z",
+  "validated_by": "chief-wiggum#524 (worker-524); re-authored for the PR #527 review fixes, whose six repros are planted trials (perf-527-*), each confirmed to fail open on 9d6fa72 and fire now. Report-only: no ratchet-journal entry, so check_gate_validation does not grant it --gate."
 }

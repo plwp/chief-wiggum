@@ -404,3 +404,197 @@ func (s *server) save(ctx context.Context) {
     report = check_perf.scan_static(tmp_path)
     writes = [f for f in report.findings if f["rule"] == "write-on-read"]
     assert [(f["handler"], f["line"]) for f in writes] == [("handleList", 30)]
+
+
+# --- review fixes (Codex on PR #527): each repro fails open before its fix ----------
+
+GO_HEAD = 'package main\n\nimport (\n\t"context"\n\t"net/http"\n)\n\n'
+
+
+def _go(tmp_path: Path, body: str) -> Path:
+    (tmp_path / "main.go").write_text(GO_HEAD + 'func main() {\n\thttp.HandleFunc("/x", h)\n}\n\n' + body)
+    return tmp_path
+
+
+def _writes(report) -> list[int]:
+    return [f["line"] for f in report.findings if f["rule"] == "write-on-read"]
+
+
+def test_review1_nested_conditional_return_does_not_hide_the_rest(tmp_path):
+    root = _go(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if r.URL.Query().Get("dry") == "1" {
+			return
+		}
+	}
+	client.RunTransaction(r.Context(), nil)
+}
+''')
+    report = check_perf.scan_static(root)
+    assert report.outcome == "findings"
+    assert _writes(report) == [18]
+
+
+def test_review1_compound_method_condition_is_not_pruned(tmp_path):
+    root = _go(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	needsRepair := r.URL.Query().Get("repair") == "1"
+	if r.Method != http.MethodGet || needsRepair {
+		client.RunTransaction(r.Context(), nil)
+	}
+}
+''')
+    assert _writes(check_perf.scan_static(root)) == [15]
+
+
+def test_review1_pure_method_guards_still_prune(tmp_path):
+    # The narrowing must not lose what it got right: an early-return non-GET
+    # guard, a POST-only block, and a GET block that always returns.
+    root = _go(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		client.RunTransaction(r.Context(), nil)
+		return
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		w.WriteHeader(200)
+		return
+	}
+	client.RunTransaction(r.Context(), nil)
+}
+''')
+    report = check_perf.scan_static(root)
+    assert _writes(report) == [], report.findings
+
+
+def test_review2_unrelated_repo_method_does_not_hide_a_library_write(tmp_path):
+    root = _go(tmp_path, '''type Settings struct{}
+
+func (s *Settings) Set(key string, value string) {}
+
+func h(w http.ResponseWriter, r *http.Request) {
+	client.Collection("x").Doc("y").Set(r.Context(), map[string]any{})
+}
+''')
+    report = check_perf.scan_static(root)
+    assert report.outcome == "findings"
+    assert _writes(report) == [17]
+
+
+def test_review2_unrelated_repo_method_does_not_hide_a_library_read_in_loop(tmp_path):
+    root = _go(tmp_path, '''type cache struct{}
+
+func (c *cache) Get(ctx context.Context, k string) string { return "" }
+
+func h(w http.ResponseWriter, r *http.Request) {
+	for _, id := range ids(r) {
+		client.Collection("x").Doc(id).Get(r.Context())
+	}
+}
+''')
+    loops = [f["line"] for f in check_perf.scan_static(root).findings if f["rule"] == "read-in-loop"]
+    assert loops == [18]
+
+
+def test_review2_own_receiver_method_is_still_an_edge_not_a_library_call(tmp_path):
+    root = _go(tmp_path, '''type store struct{}
+
+func (s *store) Set(ctx context.Context, v string) {}
+
+func (s *store) save(ctx context.Context) { s.Set(ctx, "v") }
+
+func h(w http.ResponseWriter, r *http.Request) {
+	st := &store{}
+	st.save(r.Context())
+}
+''')
+    assert _writes(check_perf.scan_static(root)) == []
+
+
+def test_review3_a_failed_cold_request_is_not_hidden_by_a_good_warm_one(tmp_path):
+    statuses = iter([500, 200])
+    clock = FakeClock({"http://x/api/health": [0.01, 0.01]})
+
+    def fetch(url, method, headers):
+        clock.fetch(url, method, headers)
+        return next(statuses)
+
+    targets = [t for t in check_perf.load_budgets(_models(tmp_path)) if t["path"] == "/api/health"]
+    report = check_perf.walk_operations(targets, "http://x", fetch=fetch, clock=clock.time)
+    e = report["operations"][0]
+    assert (e["cold_status"], e["warm_status"]) == (500, 200)
+    assert e["verdict"] == "error_status"
+    assert report["outcome"] == "findings"
+
+
+def test_review3_an_auth_rejection_on_either_load_stays_visible(tmp_path):
+    statuses = iter([200, 401])
+    clock = FakeClock({"http://x/api/health": [0.01, 0.01]})
+
+    def fetch(url, method, headers):
+        clock.fetch(url, method, headers)
+        return next(statuses)
+
+    targets = [t for t in check_perf.load_budgets(_models(tmp_path)) if t["path"] == "/api/health"]
+    e = check_perf.walk_operations(targets, "http://x", fetch=fetch, clock=clock.time)["operations"][0]
+    assert e["verdict"] == "gated"
+
+
+def _har_status(tmp_path: Path, name: str, page: str, status: int) -> Path:
+    har = _har(page, [(0, 100, page)])
+    har["log"]["entries"][0]["response"]["status"] = status
+    p = tmp_path / name
+    p.write_text(json.dumps(har))
+    return p
+
+
+def test_review4_an_error_page_is_not_a_walked_screen(tmp_path):
+    page = "http://localhost:3000/staff/bookings"
+    cold = _har_status(tmp_path, "cold.har", page, 500)
+    warm = _har_status(tmp_path, "warm.har", page, 500)
+    models = _models(tmp_path)
+    report = check_perf.walk_screens(check_perf.load_budgets(models), cold_har=cold, warm_har=warm)
+    s = {e["path"]: e for e in report["screens"]}["/staff/bookings"]
+    assert s["verdict"] == "error_status"
+    assert report["outcome"] == "findings"
+    out = dict((n, s) for n, s, _ in check_perf.saas_findings(
+        _copy("background_sweep", tmp_path), models=[models], cold_har=cold, warm_har=warm))
+    assert out["screen-walk"] == "fail"
+
+
+def test_review4_a_failed_api_call_inside_the_screen_fails_it(tmp_path):
+    page = "http://localhost:3000/staff/bookings"
+    har = _har(page, [(0, 100, page), (120, 50, "http://localhost:8080/api/staff/hg/bookings")])
+    har["log"]["entries"][1]["response"]["status"] = 503
+    cold = tmp_path / "cold.har"
+    cold.write_text(json.dumps(har))
+    report = check_perf.walk_screens(check_perf.load_budgets(_models(tmp_path)), cold_har=cold, warm_har=cold)
+    assert {e["path"]: e for e in report["screens"]}["/staff/bookings"]["verdict"] == "error_status"
+
+
+def test_review5_a_warm_only_screen_does_not_pass(tmp_path):
+    page = "http://localhost:3000/staff/bookings"
+    warm = _har_status(tmp_path, "warm.har", page, 200)
+    models = _models(tmp_path)
+    report = check_perf.walk_screens(check_perf.load_budgets(models), cold_har=None, warm_har=warm)
+    s = {e["path"]: e for e in report["screens"]}["/staff/bookings"]
+    assert s["verdict"] == "incomplete"
+    assert "cold" in s["detail"]
+    assert report["outcome"] == "findings"
+    out = dict((n, s) for n, s, _ in check_perf.saas_findings(
+        _copy("background_sweep", tmp_path), models=[models], warm_har=warm))
+    assert out["screen-walk"] == "fail"
+
+
+def test_review1_a_conjunct_that_excludes_get_still_prunes_soundly(tmp_path):
+    # `verb == "x" && r.Method == POST` can never hold for a GET, whatever verb is;
+    # `verb == "x" || r.Method == POST` can, so it is kept.
+    root = _go(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	verb := r.URL.Path
+	switch {
+	case verb == "pay" && r.Method == http.MethodPost:
+		client.RunTransaction(r.Context(), nil)
+	case verb == "x" || r.Method == http.MethodPost:
+		client.RunTransaction(r.Context(), nil)
+	}
+}
+''')
+    assert _writes(check_perf.scan_static(root)) == [18]

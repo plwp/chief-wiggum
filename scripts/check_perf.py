@@ -316,32 +316,118 @@ def _methods_in(text: str) -> set[str]:
     return {(a or b).upper() for a, b in METHOD_TOKEN.findall(text)}
 
 
+def _method_set(cond: str, rv: str) -> tuple[str, set[str]] | None:
+    """Parse a condition made ONLY of method comparisons:
+    ``r.Method != A && r.Method != B`` -> ("not_in", {A, B});
+    ``r.Method == A || r.Method == B`` -> ("in", {A, B}).
+    Anything else (another term, mixed operators) is None: not proven, so not
+    pruned. Pruning on a guess is how a write on GET goes unreported."""
+    c = cond.strip()
+    while c.startswith("(") and _match(c, 0) == len(c) - 1:
+        c = c[1:-1].strip()
+    tok = r"(http\.Method\w+|\"[A-Z]+\")"
+    for op, join, kind in (("!=", "&&", "not_in"), ("==", "||", "in")):
+        parts = [x.strip() for x in c.split(join)]
+        found = []
+        for part in parts:
+            m = re.fullmatch(rv + r"\.Method\s*" + re.escape(op) + r"\s*" + tok, part)
+            if not m:
+                break
+            found.append(m.group(1))
+        else:
+            if found:
+                return kind, _methods_in(" ".join(found))
+    return None
+
+
+def _split_top(cond: str, op: str) -> list[str]:
+    """Split on op at paren depth 0."""
+    parts, depth, cur, i = [], 0, [], 0
+    while i < len(cond):
+        ch = cond[i]
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if depth == 0 and cond.startswith(op, i):
+            parts.append("".join(cur))
+            cur = []
+            i += len(op)
+            continue
+        cur.append(ch)
+        i += 1
+    parts.append("".join(cur))
+    return [x.strip() for x in parts]
+
+
+def _get_never_enters(cond: str, rv: str) -> bool:
+    """Proven: no GET satisfies cond. Either cond is a pure method test that
+    excludes GET, or it is a conjunction (no top-level ||) with such a
+    conjunct: ``verb == "cancel" && r.Method == http.MethodPost``."""
+    parsed = _method_set(cond, rv)
+    if parsed is not None:
+        kind, methods = parsed
+        return bool(methods & GET_LIKE) != (kind == "in")
+    if len(_split_top(cond, "||")) > 1:
+        return False
+    for conj in _split_top(cond, "&&"):
+        p = _method_set(conj, rv)
+        if p is not None and bool(p[1] & GET_LIKE) != (p[0] == "in"):
+            return True
+    return False
+
+
+def _always_returns(code: str, b_open: int, b_close: int) -> bool:
+    """True when a block's last top-level statement is a return (or panic):
+    the code after it is not reached from inside it. A return nested in
+    another block is conditional and proves nothing."""
+    inner = code[b_open + 1:b_close]
+    while True:
+        flat = re.sub(r"\{[^{}]*\}", "{}", inner)
+        if flat == inner:
+            break
+        inner = flat
+    stmts = [x.strip() for x in re.split(r"[\n;]", inner) if x.strip()]
+    return bool(stmts) and re.match(r"(return\b|panic\()", stmts[-1]) is not None
+
+
+def _enclosing_close(code: str, lo: int, pos: int) -> int:
+    """Offset of the '}' closing the innermost block around pos."""
+    depth = 0
+    for k in range(pos - 1, lo - 1, -1):
+        ch = code[k]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth == 0:
+                return _match(code, k)
+            depth -= 1
+    return len(code)
+
+
 def _get_excluded(fn: GoFunc) -> list[tuple[int, int]]:
-    """Ranges of a handler body that serve only non-GET methods."""
+    """Ranges of a handler body proven to serve only non-GET methods.
+    Only pure method conditions prune (see _method_set). Code after a block
+    is cut only when the block always returns, and only to the end of the
+    block that holds it."""
     nc = fn.file.nc
     code = fn.file.code
     rv = re.escape(fn.req_var or "r")
     out: list[tuple[int, int]] = []
     lo, hi = fn.body_start, fn.body_end
     for m in re.finditer(r"\bif\s+([^{;]*\b" + rv + r"\.Method\b[^{]*)\{", nc[lo:hi]):
-        cond = m.group(1)
         b_open = lo + m.end() - 1
         b_close = _match(code, b_open)
-        block_returns = re.search(r"\breturn\b", code[b_open:b_close]) is not None
-        neq = re.findall(rv + r"\.Method\s*!=\s*(http\.Method\w+|\"[A-Z]+\")", cond)
-        eq = re.findall(rv + r"\.Method\s*==\s*(http\.Method\w+|\"[A-Z]+\")", cond)
-        neq_m = _methods_in(" ".join(neq))
-        eq_m = _methods_in(" ".join(eq))
-        if neq_m and not eq_m:
-            if neq_m & GET_LIKE:
-                out.append((b_open, b_close))          # the block is for non-GET
-            elif block_returns:
-                out.append((b_close, hi))              # the rest is for neq_m only
-        elif eq_m and not neq_m:
-            if not eq_m & GET_LIKE:
-                out.append((b_open, b_close))
-            elif block_returns:
-                out.append((b_close, hi))
+        if _get_never_enters(m.group(1), rv):
+            out.append((b_open, b_close))      # GET never enters this block
+            continue
+        parsed = _method_set(m.group(1), rv)
+        if parsed is None:
+            continue
+        kind, methods = parsed
+        if (bool(methods & GET_LIKE) == (kind == "in")) and _always_returns(code, b_open, b_close):
+            # Every GET enters and returns: what follows serves the rest.
+            out.append((b_close, _enclosing_close(code, lo, lo + m.start())))
     for m in re.finditer(r"\bswitch\s*(" + rv + r"\.Method)?\s*\{", nc[lo:hi]):
         on_method = m.group(1) is not None
         s_open = lo + m.end() - 1
@@ -360,26 +446,32 @@ def _get_excluded(fn: GoFunc) -> list[tuple[int, int]]:
                 colon = code.find(":", k)
                 clauses.append((k, colon))
             k += 1
-        get_case = any(
-            re.search(rv + r"\.Method\s*==", nc[a:c]) and _methods_in(nc[a:c]) & GET_LIKE
-            for a, c in clauses)
-        for idx, (start, colon) in enumerate(clauses):
-            end = clauses[idx + 1][0] if idx + 1 < len(clauses) else s_close
-            label = nc[start:colon]
+
+        def clause_methods(label: str, on_method: bool = on_method) -> set[str] | None:
+            """The methods a case admits, or None when not proven."""
+            body = label[len("case"):].strip()
+            if on_method:
+                toks = [t.strip() for t in body.split(",")]
+                if all(re.fullmatch(r"http\.Method\w+|\"[A-Z]+\"", t) for t in toks):
+                    return _methods_in(body)
+                return None
+            parsed = _method_set(body, rv)
+            return parsed[1] if parsed and parsed[0] == "in" else None
+
+        labels = [(start, colon, nc[start:colon]) for start, colon in clauses]
+        get_case = any(not lb.startswith("default") and (clause_methods(lb) or set()) & GET_LIKE
+                       for _, _, lb in labels)
+        for idx, (_start, colon, label) in enumerate(labels):
+            end = labels[idx + 1][0] if idx + 1 < len(labels) else s_close
             if label.startswith("default"):
-                # In a tagless switch whose cases test the method, a GET case
-                # claims the reads; default is what is left over.
-                if not on_method and get_case:
+                # A proven GET case takes every GET: default never sees one.
+                if get_case:
                     out.append((colon, end))
                 continue
-            if on_method:
-                methods = _methods_in(label)
-            elif re.search(rv + r"\.Method\s*==", label):
-                methods = _methods_in(" ".join(re.findall(
-                    rv + r"\.Method\s*==\s*(http\.Method\w+|\"[A-Z]+\")", label)))
-            else:
-                continue
-            if methods and not methods & GET_LIKE:
+            methods = clause_methods(label)
+            if methods is not None and not methods & GET_LIKE:
+                out.append((colon, end))
+            elif methods is None and not on_method and _get_never_enters(label[len("case"):], rv):
                 out.append((colon, end))
     return out
 
@@ -555,7 +647,7 @@ def _lib_hits(model: GoModel, fn: GoFunc, pats, skip, lo=None, hi=None):
         for m in pat.finditer(code, lo, hi):
             on_tx = pat.groups >= 2
             verb = m.group(2) if on_tx else m.group(1)
-            if not on_tx and verb in model.by_name:
+            if not on_tx and _resolves_in_repo(model, fn, code, m.start(), verb):
                 continue
             if _in(m.start(), skip):
                 continue
@@ -563,11 +655,26 @@ def _lib_hits(model: GoModel, fn: GoFunc, pats, skip, lo=None, hi=None):
     return hits
 
 
+def _resolves_in_repo(model: GoModel, fn: GoFunc, code: str, dot: int, verb: str) -> bool:
+    """A generic verb (``x.Set(ctx``) is the repo's own method, and judged by
+    its body, only when that is PROVEN: the call is on the enclosing method's
+    receiver and its type defines the verb. A same-named method elsewhere in
+    the repo proves nothing about this receiver, so the library call stands
+    (chief-wiggum#527 review: an unrelated ``Settings.Set`` hid a Firestore
+    write)."""
+    if not fn.recv_var or not fn.recv:
+        return False
+    before = code[max(0, dot - 60):dot]
+    if not re.search(r"(?<![\w.])" + re.escape(fn.recv_var) + r"\s*$", before):
+        return False
+    return any(c.recv == fn.recv for c in model.by_name.get(verb, []))
+
+
 def _writes(model: GoModel, fn: GoFunc, skip) -> list[tuple[int, str]]:
     hits = _lib_hits(model, fn, WRITE_LIB, skip)
     code, nc = fn.file.code, fn.file.nc
     for m in SQL_EXEC.finditer(code, fn.body_start, fn.body_end):
-        if _in(m.start(), skip) or "Exec" in model.by_name:
+        if _in(m.start(), skip) or _resolves_in_repo(model, fn, code, m.start(), "Exec"):
             continue
         if SQL_WRITE_WORD.search(nc[m.start():m.start() + 300].split("\n\n")[0]):
             hits.append((m.start(), m.group(0)))
@@ -893,7 +1000,8 @@ def walk_operations(targets: list[dict], base_url: str, *, params: dict[str, str
     out = []
     for t in (t for t in targets if t["kind"] == "operation"):
         e = {"method": t["method"], "path": t["path"], "budget_ms": t["budget_ms"],
-             "budget_source": t["budget_source"], "cold_ms": None, "warm_ms": None, "status": None}
+             "budget_source": t["budget_source"], "cold_ms": None, "warm_ms": None, "status": None,
+             "cold_status": None, "warm_status": None}
         if t["method"] not in SAFE_METHODS and not probe_mutating:
             out.append({**e, "verdict": "not_probed",
                         "detail": "mutating; pass --probe-mutating for a disposable target"})
@@ -906,20 +1014,26 @@ def walk_operations(targets: list[dict], base_url: str, *, params: dict[str, str
         url = root + (filled if filled.startswith("/") else "/" + filled)
         e["url"] = url
         try:
-            times = []
+            times, statuses = [], []
             for _ in ("cold", "warm"):
                 s = clock()
-                status = fetch(url, t["method"], headers)
+                statuses.append(fetch(url, t["method"], headers))
                 times.append(int(round((clock() - s) * 1000)))
         except Exception as exc:  # noqa: BLE001
             out.append({**e, "verdict": "unreachable", "detail": f"{type(exc).__name__}: {exc}"})
             continue
-        e.update(cold_ms=times[0], warm_ms=times[1], status=status)
-        if status in (401, 403):
-            e["verdict"] = "gated"
-            e["detail"] = "the auth layer answered: give a QA principal (--auth-header-env)"
-        elif status >= 400:
+        # Both loads are evidence: a failed cold load is the failure this gate
+        # exists for, whatever the warm load did after it (#527 review).
+        e.update(cold_ms=times[0], warm_ms=times[1], cold_status=statuses[0],
+                 warm_status=statuses[1], status=max(statuses))
+        failed = [st for st in statuses if st >= 400 and st not in (401, 403)]
+        if failed:
             e["verdict"] = "error_status"
+            e["detail"] = f"cold {statuses[0]}, warm {statuses[1]}"
+        elif any(st in (401, 403) for st in statuses):
+            e["verdict"] = "gated"
+            e["detail"] = (f"cold {statuses[0]}, warm {statuses[1]}: the auth layer answered; "
+                           "give a QA principal (--auth-header-env)")
         else:
             e["verdict"] = _verdict(t["budget_ms"], *times)
         out.append(e)
@@ -927,7 +1041,7 @@ def walk_operations(targets: list[dict], base_url: str, *, params: dict[str, str
 
 
 def _walk_outcome(entries: list[dict]) -> str:
-    if any(e["verdict"] in ("over_budget", "error_status", "unreachable") for e in entries):
+    if any(e["verdict"] in ("over_budget", "error_status", "unreachable", "incomplete") for e in entries):
         return "findings"
     if not any(e["verdict"] == "within_budget" for e in entries):
         return "inapplicable"
@@ -972,7 +1086,13 @@ def _har_loads(har_path: Path) -> list[dict]:
                          "status": (e.get("response") or {}).get("status"),
                          "type": e.get("_resourceType")})
         total = max(f["start_ms"] + f["ms"] for f in fall)
-        loads.append({"path": path, "ms": total, "waterfall": fall})
+        # The document and every API call must have answered: timing an
+        # error page is not a walk (#527 review). HAR status 0 is a request
+        # that never completed.
+        failed = [f for f in fall if (f["type"] in ("document", "fetch", "xhr") or f is fall[0])
+                  and (not isinstance(f["status"], int) or f["status"] <= 0 or f["status"] >= 400)]
+        loads.append({"path": path, "ms": total, "waterfall": fall,
+                      "failed": [f"{f['status']} {f['url']}" for f in failed]})
     return loads
 
 
@@ -990,8 +1110,17 @@ def walk_screens(targets: list[dict], *, cold_har: Path | None, warm_har: Path |
         e = {"path": t["path"], "budget_ms": t["budget_ms"], "budget_source": t["budget_source"],
              "cold_ms": c["ms"] if c else None, "warm_ms": w["ms"] if w else None,
              "waterfall": {"cold": c["waterfall"] if c else [], "warm": w["waterfall"] if w else []}}
+        failed = (c["failed"] if c else []) + (w["failed"] if w else [])
         if not c and not w:
             e["verdict"] = "not_walked"
+        elif failed:
+            e["verdict"] = "error_status"
+            e["detail"] = "; ".join(failed[:3])
+        elif not c or not w:
+            # One observation is not the cold-and-warm requirement; a missing
+            # cold load misses exactly the regression this gate is for.
+            e["verdict"] = "incomplete"
+            e["detail"] = f"no {'cold' if not c else 'warm'} load of this screen in the HAR"
         else:
             e["verdict"] = _verdict(t["budget_ms"], e["cold_ms"], e["warm_ms"])
         out.append(e)
@@ -1145,11 +1274,12 @@ def saas_findings(repo: Path | str, *, models: list | None = None, base_url: str
                         "unprobeable, gated or mutating"))
     if cold_har or warm_har:
         sw = walk_screens(targets, cold_har=cold_har, warm_har=warm_har)
-        over = [e for e in sw["screens"] if e["verdict"] == "over_budget"]
-        if over:
+        bad = [e for e in sw["screens"] if e["verdict"] in ("over_budget", "error_status", "incomplete")]
+        if bad:
             out.append(("screen-walk", "fail", "; ".join(
-                f"{e['path']} cold {e['cold_ms']} ms, warm {e['warm_ms']} ms, budget {e['budget_ms']} ms"
-                for e in over[:5])))
+                f"{e['path']} {e['verdict']} (cold {e['cold_ms']} ms, warm {e['warm_ms']} ms, "
+                f"budget {e['budget_ms']} ms){': ' + e['detail'] if e.get('detail') else ''}"
+                for e in bad[:5])))
         elif sw["outcome"] == "pass":
             nw = f"; not walked: {', '.join(sw['not_walked'])}" if sw["not_walked"] else ""
             out.append(("screen-walk", "warn" if nw else "pass", f"walked screens within budget{nw}"))
@@ -1169,9 +1299,80 @@ VENDORED = ("package pkg\n\nimport \"net/http\"\n\n"
             "\tclient.RunTransaction(r.Context(), nil)\n}\n")
 
 
+_GO_HEAD = ('package main\n\nimport (\n\t"context"\n\t"net/http"\n)\n\n'
+            'func main() {\n\thttp.HandleFunc("/x", h)\n}\n\n')
+
+# The five fail-open shapes the cross-family review found on PR #527, each a
+# planted defect the gate must now fire on (seed class: how it evaded).
+REVIEW_STATIC_SEEDS = [
+    ("perf-527-nested-conditional-return", "evasion-config-indirection", "write-on-read",
+     '''func h(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if r.URL.Query().Get("dry") == "1" {
+			return
+		}
+	}
+	client.RunTransaction(r.Context(), nil)
+}
+'''),
+    ("perf-527-compound-method-condition", "evasion-config-indirection", "write-on-read",
+     '''func h(w http.ResponseWriter, r *http.Request) {
+	needsRepair := r.URL.Query().Get("repair") == "1"
+	if r.Method != http.MethodGet || needsRepair {
+		client.RunTransaction(r.Context(), nil)
+	}
+}
+'''),
+    ("perf-527-shadowing-repo-method", "evasion-omission", "write-on-read",
+     '''type Settings struct{}
+
+func (s *Settings) Set(key string, value string) {}
+
+func h(w http.ResponseWriter, r *http.Request) {
+	client.Collection("x").Doc("y").Set(r.Context(), map[string]any{})
+}
+'''),
+]
+
+
+def _review_walk_trials(tmp: Path) -> list[dict]:
+    """The three walk repros: a failed cold request behind a good warm one, an
+    error page timed as a screen, and a screen seen only warm."""
+    op = [{"kind": "operation", "method": "GET", "path": "/x", "budget_ms": 2000,
+           "budget_source": "default"}]
+    screen = [{"kind": "screen", "method": "GET", "path": "/staff", "budget_ms": 2000,
+               "budget_source": "default"}]
+    statuses = iter([500, 200])
+    w3 = walk_operations(op, "http://seed.invalid", fetch=lambda u, m, h: next(statuses),
+                         clock=lambda: 0.0)
+
+    def har(name: str, status: int) -> Path:
+        p = tmp / name
+        p.write_text(json.dumps({"log": {
+            "pages": [{"id": "p", "startedDateTime": "2026-11-06T10:00:00.000Z"}],
+            "entries": [{"pageref": "p", "startedDateTime": "2026-11-06T10:00:00.000Z", "time": 100,
+                         "request": {"method": "GET", "url": "http://seed.invalid/staff"},
+                         "response": {"status": status}, "_resourceType": "document"}]}}))
+        return p
+
+    w4 = walk_screens(screen, cold_har=har("err-cold.har", 500), warm_har=har("err-warm.har", 500))
+    w5 = walk_screens(screen, cold_har=None, warm_har=har("ok-warm.har", 200))
+    out = []
+    for seed, cls, w, verdict in (
+            ("perf-527-cold-500-warm-200", "instrument-broken", w3, w3["operations"][0]["verdict"]),
+            ("perf-527-error-page-screen", "instrument-broken", w4, w4["screens"][0]["verdict"]),
+            ("perf-527-warm-only-screen", "evasion-sampling-gap", w5, w5["screens"][0]["verdict"])):
+        fired = w["outcome"] == "findings"
+        out.append({"seed_id": seed, "seed_class": cls, "repo": "check_perf.self_test (in-memory)",
+                    "expected": "fire", "result": "fired" if fired else "not-fired",
+                    "evidence": [verdict], "passed": fired})
+    return out
+
+
 def self_test() -> list[dict]:
     """The planted #434 defect must fire every rule it carries; the fixed
-    shape must not fire at all; build output must never be read."""
+    shape must not fire at all; build output must never be read; and each of
+    the five fail-open shapes from PR #527's review must fire."""
     trials = []
     with tempfile.TemporaryDirectory() as tmp:
         for name in ("inline_sweep", "background_sweep"):
@@ -1201,6 +1402,15 @@ def self_test() -> list[dict]:
                                "repo": f"tests/fixtures/perf_gate/{name}", "expected": "no-fire",
                                "result": "fired" if r.findings else "not-fired",
                                "evidence": sorted(rules), "passed": not r.findings})
+        for seed, cls, rule, body in REVIEW_STATIC_SEEDS:
+            d = Path(tmp) / seed
+            d.mkdir()
+            (d / "main.go").write_text(_GO_HEAD + body)
+            hit = [f for f in scan_static(d).findings if f["rule"] == rule]
+            trials.append({"seed_id": seed, "seed_class": cls, "repo": "check_perf.self_test (planted)",
+                           "expected": "fire", "result": "fired" if hit else "not-fired",
+                           "evidence": [f"{f['file']}:{f['line']}" for f in hit], "passed": bool(hit)})
+        trials.extend(_review_walk_trials(Path(tmp)))
     return trials
 
 
