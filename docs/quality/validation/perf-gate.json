@@ -12,10 +12,11 @@
       "Go only; other stacks are inapplicable, not pass",
       "the call graph is by name, so an interface call reaches every same-named method that takes a context; this over-reaches rather than misses",
       "no flow-sensitivity: a branch made POST-only by an earlier compound condition still reads as GET-reachable (1 known false positive on the real repo); method pruning happens only where it is proven (pure method tests, or a conjunct that excludes GET; code after a block only when the block always returns)",
-      "no cache awareness: a read behind a cache inside a loop is still reported (1 such finding on the real repo)",
       "unbounded-list checks that a bound exists, not that it is the asked window",
       "the walk ran against the Firestore emulator on a laptop, with a seed shaped from production aggregate counts (555 requests, 645 replica bookings, 34 prior staff decisions, 120 planned automatic confirms for the site); emulator latency is lower than production's, so this walk understates production times",
-      "the walk covered the API route of the defect only; no screen was walked from a browser HAR tonight"
+      "the walk covered the API route of the defect only; no screen was walked from a browser HAR tonight",
+      "cache awareness is by annotation only: a function marked `// cw-perf: cached <reason>` is not followed; an unmarked cached read inside a loop is still reported",
+      "a chunk loop is recognised by shape (a `for len(V) > 0` loop that re-slices V, or a range over a variable/call from a function named *Queries/*Chunks/*Batches/chunk*/batch*); a chunk loop built any other way still reads as read-in-loop"
     ]
   },
   "seeded_defect_trials": [
@@ -137,6 +138,58 @@
       "passed": true
     },
     {
+      "seed_id": "perf-529-chunk-slicing-getall",
+      "seed_class": "false-positive-chunked-batch",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "evidence": [],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-529-range-queries-documents",
+      "seed_class": "false-positive-chunked-batch",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "evidence": [],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-529-per-item-get-in-chunk-loop",
+      "seed_class": "evasion-config-indirection",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "main.go:17"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-529-whole-collection-outside-chunk-loop",
+      "seed_class": "direct",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "fire",
+      "result": "fired",
+      "evidence": [
+        "main.go:13"
+      ],
+      "passed": true
+    },
+    {
+      "seed_id": "perf-529-cached-not-followed",
+      "seed_class": "false-positive-cached-read",
+      "repo": "check_perf.self_test (planted)",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "evidence": [
+        "suppressed=1",
+        "price"
+      ],
+      "passed": true
+    },
+    {
       "seed_id": "perf-real-434-reverted-static",
       "seed_class": "direct",
       "repo": "private product repo (staff booking service), main 674031f with the #434 fix (272a900) reverted on a local scratch branch, never pushed",
@@ -175,6 +228,21 @@
       "evidence": [
         "GET /api/staff/{site}/bookings cold 20021 ms, warm 7984 ms, budget 2000 ms (default)"
       ]
+    },
+    {
+      "seed_id": "perf-real-529-main-precision",
+      "seed_class": "false-positive",
+      "repo": "private product repo (staff booking service), main at the 7 Nov 2026 release check",
+      "expected": "no-fire",
+      "result": "not-fired",
+      "passed": true,
+      "evidence": [
+        "18 findings before, 12 after (static scan of main)",
+        "dropped, 5 read-in-loop: GetAll in 3 slice-drain chunk loops, Documents in 2 range-over-queries loops",
+        "dropped, 1 unbounded-list: Documents on the range variable of the ledger queries loop",
+        "all 12 remaining were already in the 18; none is new"
+      ],
+      "note": "The stayIncome hit stays until the product repo marks quoteStaffStay `// cw-perf: cached`; pre_arrival stays until the product repo marks its line `// cw-perf: ok`. Both are that repo's call."
     }
   ],
   "clean_corpus_runs": [

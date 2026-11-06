@@ -62,6 +62,18 @@ A reviewed exception is marked `// cw-perf: ok <reason>` on the line:
 
 Suppressions are counted in the output.
 
+To clear a reviewed POST-only branch the gate cannot prove is POST-only (a compound guard it does not prune), put `// cw-perf: ok <reason>` on the finding's line. Whether the branch is really POST-only is the owning repo's review, not the gate's.
+
+A function that reads a cache is marked `// cw-perf: cached <reason>` on the line above its declaration (a doc-comment line in the block directly above also works). The gate does not follow calls into it, counts each call site in `suppressed`, and lists the function and reason in the report (`cached` in JSON).
+
+### Chunk loops
+
+A loop that issues one batched read per chunk of ids is the fix for N+1, so it is not reported:
+- `for len(V) > 0 { ... V = V[n:] ... }`, or any body that slices `V[:`: `GetAll` (or an `in` / `array-contains-any` query) inside is not `read-in-loop`.
+- `for _, q := range xQueries(...)`, or a variable assigned from such a call, where the function is named `*Queries`, `*Chunks`, `*Batches`, `chunk*` or `batch*` (case-insensitive): a read on the range variable (`q.Documents(ctx)`) is neither `read-in-loop` nor `unbounded-list`, being bounded by the chunk's id list.
+
+A per-item `Get` / `Doc(...).Get` in a chunk loop, and a read on anything other than the range variable, still fire. A chunk loop built another way is not recognised.
+
 ### The cold, production-shaped walk
 
 The walk needs a non-production instance whose data keeps production's backlogs.
@@ -92,7 +104,7 @@ Perf (24h): 26 endpoints, 1648 requests, 2 over budget. OVER GET /api/staff/{sit
 - **Go only.** Static rules on another stack report `inapplicable`, never `pass`. A Next.js `route.ts` handler is not read.
 - **The call graph is by name.** An interface call reaches every method of that name whose first parameter is a context, and a call on the method's own receiver reaches only its own type. That is deliberate: it over-reaches rather than miss a write behind an interface. Calls through function values (callbacks passed by name) are not followed.
 - **No flow-sensitivity.** A branch that is POST-only because of an earlier compound condition (`case photo:` after `if !(GET && !photo) && != POST { return }`) still reads as GET-reachable.
-- **No cache awareness.** A read inside a loop is reported even when a cache absorbs it (a per-tenant pricing cache, for example).
+- **Cache awareness is by annotation.** A read behind a cache inside a loop is reported unless the function is marked `// cw-perf: cached <reason>`.
 - **`unbounded-list` checks that a bound exists, not that it is the asked window.** A query built by a caller and passed in as a parameter is not judged.
 - **The walk is as good as its seed.** A walk with no backlog measures what staging measured.
 

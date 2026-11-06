@@ -40,6 +40,13 @@ What it does not see (also in docs/perf-gate.md):
   window; a query built in a helper from a parameter is not judged.
 * A line marked ``// cw-perf: ok <reason>`` is a reviewed exception: a call
   so marked is not followed, a finding so marked is dropped and counted.
+* A function with ``// cw-perf: cached <reason>`` above its declaration is not
+  followed as a store read; each call site is counted in ``suppressed`` and
+  the function is listed in the report.
+* A loop that drains a slice (``for len(V) > 0`` re-slicing V) or ranges over
+  ``*Queries`` / ``*Chunks`` / ``*Batches`` / ``chunk*`` / ``batch*`` helper
+  results is a chunk loop: its batched read (GetAll, or Documents on the
+  range variable) is not read-in-loop or unbounded-list. A per-item Get still is.
 * Never walks node_modules, .next, vendor, dist, build or other build output.
 
 Gate status: REPORT-ONLY by default per docs/gate-rollout.md; ``--gate``
@@ -95,6 +102,13 @@ DEFAULT_SCOPE_FIELDS = ("site", "tenant", "tenant_id", "site_id", "org",
                         "workspace_id", "owner", "owner_id")
 
 OK_MARKER = re.compile(r"//.*\bcw-perf:\s*ok\b")
+CACHED_MARKER = re.compile(r"^\s*//.*\bcw-perf:\s*cached\b[ \t:-]*(.*)$")
+
+# A range over (a variable assigned from) a call to one of these is a loop over
+# chunks of ids, one batched query each (chief-wiggum#529).
+CHUNK_SOURCE = re.compile(r"(?i)^(?:\w*(?:queries|chunks|batches)|chunk\w*|batch\w*)$")
+CHUNK_HEAD_A = re.compile(r"^for\s+len\(\s*([A-Za-z_]\w*)\s*\)\s*>\s*0\s*$")
+CHUNK_HEAD_B = re.compile(r"^for\s+(?:[\w\s,]*?(\w+)\s*:?=\s*)range\s+(.+)$", re.S)
 
 CTX = r"(?:\w*ctx\w*|\w*Ctx\w*|[\w.]+\.Context\(\)|context\.\w+\(\))"
 CTX_ARG = re.compile(r"ctx|Ctx|Context\(\)|context\.")
@@ -234,6 +248,7 @@ class GoFunc:
     first_ctx: bool = False
     detached: list[tuple[int, int]] = field(default_factory=list)
     get_excluded: list[tuple[int, int]] = field(default_factory=list)
+    cached: str | None = None  # `// cw-perf: cached <reason>` above the declaration
 
     @property
     def label(self) -> str:
@@ -304,6 +319,13 @@ def _parse_funcs(files: list[GoFile]) -> list[GoFunc]:
             fn = GoFunc(len(funcs), m.group(3), m.group(2), f, params, body, end,
                         f.line(m.start()), recv_var=m.group(1))
             fn.first_ctx = bool(re.match(r"\s*\w+\s+context\.Context\b", params))
+            ln = fn.decl_line - 1
+            while ln >= 1 and f.text_line(ln).lstrip().startswith("//"):
+                cm = CACHED_MARKER.match(f.text_line(ln))
+                if cm:
+                    fn.cached = cm.group(1).strip() or "(no reason given)"
+                    break
+                ln -= 1
             if "http.ResponseWriter" in params and "*http.Request" in params:
                 fn.is_handler = True
                 rv = re.search(r"(\w+)\s+\*http\.Request", params)
@@ -534,6 +556,15 @@ class GoModel:
                 fn.get_excluded = _get_excluded(fn)
         self._edges: dict[int, list[tuple[GoFunc, int, bool]]] = {}
         self.suppressed = 0
+        self.cached: dict[tuple, dict] = {}  # call site -> the cached function it stopped at
+
+    def note_cached(self, fn: GoFunc, off: int, callee: GoFunc) -> None:
+        site = (fn.file.rel, fn.file.line(off), callee.key)
+        if site not in self.cached:
+            self.cached[site] = {"function": callee.label, "reason": callee.cached,
+                                 "file": callee.file.rel, "line": callee.decl_line,
+                                 "called_from": f"{fn.file.rel}:{fn.file.line(off)}"}
+            self.suppressed += 1
 
     def ranges_skip(self, fn: GoFunc, as_root_handler: bool) -> list[tuple[int, int]]:
         skip = list(fn.detached)
@@ -623,6 +654,9 @@ class GoModel:
                         self.suppressed += 1
                         continue
                     if callee.key in seen:
+                        continue
+                    if callee.cached is not None:
+                        self.note_cached(fn, off, callee)
                         continue
                     seen[callee.key] = seen[fn.key] + [callee]
                     q.append(callee)
@@ -779,6 +813,48 @@ def _loops(fn: GoFunc, skip) -> list[tuple[int, int, int]]:
     return out
 
 
+def _chunk_loop(fn: GoFunc, for_off: int, b_open: int, b_close: int):
+    """None for an ordinary loop; otherwise ("slice", V) for a loop that drains
+    a slice by re-slicing it (`for len(V) > 0 { ... V = V[n:] }`), or
+    ("range", var) for a range over chunked queries, whose value variable is
+    `var` (chief-wiggum#529)."""
+    nc, code = fn.file.nc, fn.file.code
+    head = " ".join(nc[for_off:b_open].split())
+    m = CHUNK_HEAD_A.match(head)
+    if m:
+        v = m.group(1)
+        if re.search(r"\b" + re.escape(v) + r"\s*\[\s*:", code[b_open:b_close]) or \
+                re.search(r"\b" + re.escape(v) + r"\s*=\s*" + re.escape(v) + r"\s*\[", code[b_open:b_close]):
+            return ("slice", v)
+        return None
+    m = CHUNK_HEAD_B.match(head)
+    if not m:
+        return None
+    var, src = m.group(1), m.group(2).strip()
+    if var == "_":
+        return None
+    call = re.match(r"^(?:[\w.]+\.)?([A-Za-z_]\w*)\s*\(", src)
+    if not call and re.fullmatch(r"[A-Za-z_]\w*", src):
+        asg = re.findall(r"\b" + re.escape(src) + r"\s*:?=\s*(?:[\w.]+\.)?([A-Za-z_]\w*)\s*\(",
+                         nc[fn.body_start:for_off])
+        name = asg[-1] if asg else ""
+    else:
+        name = call.group(1) if call else ""
+    return ("range", var) if name and CHUNK_SOURCE.match(name) else None
+
+
+def _batched_in_chunk(fn: GoFunc, kind: tuple, off: int, text: str) -> bool:
+    """A read at `off` that is the chunk loop's own batched read: GetAll (or an
+    `in` / `array-contains-any` query) in a slice-drain loop; any read on the
+    range variable of a query-chunk loop. A per-item Get never qualifies."""
+    code = fn.file.code
+    if kind[0] == "range":
+        return bool(re.search(r"(?<![\w.])" + re.escape(kind[1]) + r"\s*$", code[max(0, off - 80):off]))
+    if ".GetAll" in text:
+        return True
+    return ".Documents" in text and bool(re.search(r'"(?:in|array-contains-any)"', _chain_text(fn, off)))
+
+
 def scan_static(root: Path | str, *, scope_fields=DEFAULT_SCOPE_FIELDS) -> StaticReport:
     root = Path(root)
     t0 = time.monotonic()
@@ -816,6 +892,9 @@ def scan_static(root: Path | str, *, scope_fields=DEFAULT_SCOPE_FIELDS) -> Stati
             for callee, off in model.calls(fn, skip):
                 if fn.file.line(off) in fn.file.ok_lines:
                     continue
+                if callee.cached is not None:
+                    model.note_cached(fn, off, callee)
+                    continue
                 if reads_store(callee, stack):
                     hit = True
                     break
@@ -848,20 +927,32 @@ def scan_static(root: Path | str, *, scope_fields=DEFAULT_SCOPE_FIELDS) -> Stati
             off, text = w[0]
             add("write-on-read", fn, off, hroot, chain,
                 f"`{text}` runs on the request path of a GET handler")
+        chunks = [(b_open, b_close, ck) for f_off, b_open, b_close in _loops(fn, skip)
+                  if (ck := _chunk_loop(fn, f_off, b_open, b_close))]
         for off, text in _unbounded(model, fn, skip, scope):
+            if any(lo < off < hi and ck[0] == "range" and _batched_in_chunk(fn, ck, off, text)
+                   for lo, hi, ck in chunks):
+                continue
             add("unbounded-list", fn, off, hroot, chain,
                 f"`{text}` lists with no Limit or range filter (a tenant filter is not a window)")
-        for _for, b_open, b_close in _loops(fn, skip):
+        for f_off, b_open, b_close in _loops(fn, skip):
+            ck = _chunk_loop(fn, f_off, b_open, b_close)
             for off, text in _direct_reads(model, fn, skip, b_open, b_close):
+                if ck and _batched_in_chunk(fn, ck, off, text):
+                    continue
                 add("read-in-loop", fn, off, hroot, chain, f"`{text}` inside a loop: one store read per item")
             for callee, off in model.calls(fn, skip):
                 if not (b_open < off < b_close) or fn.file.line(off) in fn.file.ok_lines:
+                    continue
+                if callee.cached is not None:
+                    model.note_cached(fn, off, callee)
                     continue
                 if reads_store(callee, set()):
                     add("read-in-loop", fn, off, hroot, chain,
                         f"`{callee.name}(...)` reads the store, once per loop item")
     report.findings = sorted(findings.values(), key=lambda f: (f["rule"], f["file"], f["line"]))
     report.suppressed = model.suppressed
+    report.cached = sorted(model.cached.values(), key=lambda c: (c["file"], c["line"], c["called_from"]))
     if report.outcome != "error":
         report.outcome = "findings" if report.findings else "pass"
     report.seconds = round(time.monotonic() - t0, 2)
@@ -881,6 +972,7 @@ class StaticReport:
     seconds: float = 0.0
     unreadable: list[dict] = field(default_factory=list)
     findings: list[dict] = field(default_factory=list)
+    cached: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         counts: dict[str, int] = {}
@@ -893,6 +985,7 @@ class StaticReport:
                          "suppressed": self.suppressed, "seconds": self.seconds,
                          "excluded_dirs": sorted(EXCLUDED_DIRS)},
             "counts": counts, "unreadable": self.unreadable, "findings": self.findings,
+            "cached": self.cached,
         }
 
 
@@ -913,6 +1006,9 @@ def render_static_text(report: StaticReport) -> str:
         lines.append(f"{f['file']}:{f['line']}: {f['rule']}: {f['detail']}")
         lines.append(f"    from GET handler {f['handler']} ({f['handler_file']}:{f['handler_line']})"
                      f"{f' and {more} more' if more > 0 else ''} via {via}")
+    for c in report.cached:
+        lines.append(f"  suppressed (cached): {c['function']} ({c['file']}:{c['line']}), "
+                     f"called from {c['called_from']}: {c['reason']}")
     return "\n".join(lines) + "\n"
 
 
@@ -1334,6 +1430,72 @@ func h(w http.ResponseWriter, r *http.Request) {
 '''),
 ]
 
+# Chunked batching and cached reads (chief-wiggum#529): (seed, class, rule,
+# expected, body). `expected` "fire" needs a finding of `rule`; "no-fire"
+# needs no finding at all.
+CHUNK_STATIC_SEEDS = [
+    ("perf-529-chunk-slicing-getall", "false-positive-chunked-batch", None, "no-fire",
+     '''func h(w http.ResponseWriter, r *http.Request) {
+	ids := []string{"a"}
+	for len(ids) > 0 {
+		n := min(len(ids), 300)
+		refs := make([]int, n)
+		ids = ids[n:]
+		client.GetAll(r.Context(), refs)
+	}
+}
+'''),
+    ("perf-529-range-queries-documents", "false-positive-chunked-batch", None, "no-fire",
+     '''func h(w http.ResponseWriter, r *http.Request) {
+	for _, q := range ledgerQueries(client, nil) {
+		q.Documents(r.Context())
+	}
+}
+
+func ledgerQueries(c int, ids []string) []int { return nil }
+'''),
+    ("perf-529-per-item-get-in-chunk-loop", "evasion-config-indirection", "read-in-loop", "fire",
+     '''func h(w http.ResponseWriter, r *http.Request) {
+	ids := []string{"a"}
+	for len(ids) > 0 {
+		n := min(len(ids), 30)
+		for _, id := range ids[:n] {
+			client.Doc(id).Get(r.Context())
+		}
+		ids = ids[n:]
+	}
+}
+'''),
+    ("perf-529-whole-collection-outside-chunk-loop", "direct", "unbounded-list", "fire",
+     '''func h(w http.ResponseWriter, r *http.Request) {
+	client.Collection("pets").Documents(r.Context())
+	for _, q := range ledgerQueries(client, nil) {
+		q.Documents(r.Context())
+	}
+}
+
+func ledgerQueries(c int, ids []string) []int { return nil }
+'''),
+]
+
+# A `// cw-perf: cached` function is not followed, and is counted.
+CACHED_SEED_BODY = '''func h(w http.ResponseWriter, r *http.Request) {
+	for _, it := range []string{"a"} {
+	}
+	for _, it := range load(r.Context()) {
+		price(r.Context(), it)
+	}
+}
+
+// cw-perf: cached pricing config, one read per process
+func price(ctx context.Context, it string) int {
+	client.Doc("cfg").Get(ctx)
+	return 1
+}
+
+func load(ctx context.Context) []string { return nil }
+'''
+
 
 def _review_walk_trials(tmp: Path) -> list[dict]:
     """The three walk repros: a failed cold request behind a good warm one, an
@@ -1410,6 +1572,26 @@ def self_test() -> list[dict]:
             trials.append({"seed_id": seed, "seed_class": cls, "repo": "check_perf.self_test (planted)",
                            "expected": "fire", "result": "fired" if hit else "not-fired",
                            "evidence": [f"{f['file']}:{f['line']}" for f in hit], "passed": bool(hit)})
+        for seed, cls, rule, expected, body in CHUNK_STATIC_SEEDS:
+            d = Path(tmp) / seed
+            d.mkdir()
+            (d / "main.go").write_text(_GO_HEAD + body)
+            found = scan_static(d).findings
+            hit = [f for f in found if rule is None or f["rule"] == rule]
+            ok = bool(hit) if expected == "fire" else not found
+            trials.append({"seed_id": seed, "seed_class": cls, "repo": "check_perf.self_test (planted)",
+                           "expected": expected, "result": "fired" if hit or found else "not-fired",
+                           "evidence": [f"{f['file']}:{f['line']}" for f in found], "passed": ok})
+        d = Path(tmp) / "perf-529-cached-not-followed"
+        d.mkdir()
+        (d / "main.go").write_text(_GO_HEAD + CACHED_SEED_BODY)
+        r = scan_static(d)
+        ok = not r.findings and r.suppressed == 1 and [c["function"] for c in r.cached] == ["price"]
+        trials.append({"seed_id": "perf-529-cached-not-followed", "seed_class": "false-positive-cached-read",
+                       "repo": "check_perf.self_test (planted)", "expected": "no-fire",
+                       "result": "fired" if r.findings else "not-fired",
+                       "evidence": [f"suppressed={r.suppressed}", *[c["function"] for c in r.cached]],
+                       "passed": ok})
         trials.extend(_review_walk_trials(Path(tmp)))
     return trials
 
