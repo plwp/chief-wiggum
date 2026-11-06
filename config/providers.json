@@ -262,22 +262,6 @@
       "optional_timeout_seconds": 300,
       "requires_repo_read": true
     },
-    "kill-review": {
-      "required": [
-        "codex",
-        "opus"
-      ],
-      "optional": [
-        "claude-interactive"
-      ],
-      "lenses": {
-        "codex": "evidence-sufficiency",
-        "opus": "steelman-the-kill",
-        "claude-interactive": "is-recycle-better"
-      },
-      "optional_timeout_seconds": 300,
-      "requires_repo_read": false
-    },
     "divergence": {
       "required": [
         "deepseek",

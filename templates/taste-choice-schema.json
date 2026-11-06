@@ -11,7 +11,7 @@
     "ts": { "type": "string", "description": "ISO timestamp of the pick." },
     "context": {
       "type": "string",
-      "description": "What was being picked, free text (e.g. 'landing-page-smoke-test visual design', '/design direction', 'product name shortlist')."
+      "description": "What was being picked, free text (e.g. '/design direction', 'product name shortlist')."
     },
     "bet_id": {
       "type": ["string", "null"],

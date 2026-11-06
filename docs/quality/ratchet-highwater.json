@@ -107,7 +107,6 @@
     "pytest::tests.test_apply_pattern::test_malformed_scaffold_manifest_is_clean_apply_error[{\"files\": [{\"template\": \"t.tmpl\"}]}-string 'template']",
     "pytest::tests.test_apply_pattern::test_malformed_scaffold_manifest_is_clean_apply_error[{\"files\": {}}-non-empty 'files']",
     "pytest::tests.test_apply_pattern::test_merge_into_existing_ratchet_preserves_and_dedupes",
-    "pytest::tests.test_apply_pattern::test_presale_scaffold_stamps_honest_preorder",
     "pytest::tests.test_apply_pattern::test_provided_params_bind_and_reduce_unresolved",
     "pytest::tests.test_apply_pattern::test_scaffold_dry_run_writes_nothing",
     "pytest::tests.test_apply_pattern::test_scaffold_fails_closed_on_unbound_body_placeholder",
@@ -125,7 +124,6 @@
     "pytest::tests.test_apply_pattern::test_scaffold_stamps_to_target_paths",
     "pytest::tests.test_apply_pattern::test_second_pattern_coexists_in_adopted",
     "pytest::tests.test_apply_pattern::test_sidecar_election_routes_knowledge_but_scaffold_stays_in_repo",
-    "pytest::tests.test_apply_pattern::test_smoke_test_scaffold_stamps_with_params_bound",
     "pytest::tests.test_apply_pattern::test_unknown_param_raises",
     "pytest::tests.test_apply_pattern::test_unknown_pattern_raises",
     "pytest::tests.test_apply_pattern::test_unresolved_required_params_written_as_tbd",
@@ -173,66 +171,6 @@
     "pytest::tests.test_artifacts::test_target_id_non_github_host_is_host_qualified",
     "pytest::tests.test_artifacts::test_target_id_non_github_scp_remote_is_host_qualified",
     "pytest::tests.test_artifacts::test_target_id_stable_across_symlinked_path_variants",
-    "pytest::tests.test_assumption::test_add_assigns_stable_ids_and_journals",
-    "pytest::tests.test_assumption::test_building_floor_skips_without_assumptions_file",
-    "pytest::tests.test_assumption::test_building_without_strength4_flagged_then_passes_with_money",
-    "pytest::tests.test_assumption::test_card_for_unknown_asm_is_usage_error",
-    "pytest::tests.test_assumption::test_card_hashes_threshold_into_journal_and_moves_asm_to_testing",
-    "pytest::tests.test_assumption::test_changed_elements_without_successor_is_usage_error",
-    "pytest::tests.test_assumption::test_check_clean_bet_passes_gate",
-    "pytest::tests.test_assumption::test_check_reports_uncovered_dangling_and_unregistered",
-    "pytest::tests.test_assumption::test_check_skips_when_no_ledger_files",
-    "pytest::tests.test_assumption::test_evidence_strength_out_of_enum_is_usage_error",
-    "pytest::tests.test_assumption::test_falsified_verdict_falsifies_the_assumption",
-    "pytest::tests.test_assumption::test_generic_population_and_opinion_behavior_flagged",
-    "pytest::tests.test_assumption::test_hand_set_validated_status_without_card_verdict_is_flagged",
-    "pytest::tests.test_assumption::test_interview_only_evidence_caps_asm_at_weak",
-    "pytest::tests.test_assumption::test_non_xyz_hypothesis_flagged_report_only_and_gated",
-    "pytest::tests.test_assumption::test_pivot_reopens_dependent_asms_in_successor",
-    "pytest::tests.test_assumption::test_pivot_without_changed_elements_does_not_touch_ledger",
-    "pytest::tests.test_assumption::test_rebaseline_requires_reason_and_freezes_decided_cards",
-    "pytest::tests.test_assumption::test_tampered_journal_fails_closed_exit_4",
-    "pytest::tests.test_assumption::test_terminal_bet_takes_no_validation_work",
-    "pytest::tests.test_assumption::test_underpowered_sample_is_flagged",
-    "pytest::tests.test_assumption::test_vanity_metric_rejected_as_success_criterion",
-    "pytest::tests.test_assumption::test_verdict_against_altered_threshold_refused_and_rebaseline_heals",
-    "pytest::tests.test_assumption::test_verdict_contradicting_threshold_is_flagged",
-    "pytest::tests.test_assumption::test_verdict_updates_card_asm_and_journal",
-    "pytest::tests.test_assumption::test_verdict_without_card_is_refused",
-    "pytest::tests.test_bet::test_create_duplicate_bet_is_usage_error",
-    "pytest::tests.test_bet::test_create_hashes_goalposts_into_journal",
-    "pytest::tests.test_bet::test_distribution_unattempted_reported_never_omitted",
-    "pytest::tests.test_bet::test_env_var_portfolio_dir_is_respected",
-    "pytest::tests.test_bet::test_evaluate_fires_dated_criterion_and_blocks_spend",
-    "pytest::tests.test_bet::test_hand_edited_criteria_detected_and_healed_by_rebaseline",
-    "pytest::tests.test_bet::test_harvest_check_proposes_sold_when_sale_beats_wind_down",
-    "pytest::tests.test_bet::test_has_not_criterion_triggers_immediately",
-    "pytest::tests.test_bet::test_invalid_transition_is_usage_error",
-    "pytest::tests.test_bet::test_journal_chain_matches_ratchet_format",
-    "pytest::tests.test_bet::test_kill_override_is_journaled_and_unblocks_spend",
-    "pytest::tests.test_bet::test_kill_pending_resume_requires_override",
-    "pytest::tests.test_bet::test_killed_with_retrospective_runs_harvest_check_skipped",
-    "pytest::tests.test_bet::test_killed_without_retrospective_is_blocked",
-    "pytest::tests.test_bet::test_malformed_criterion_no_date_is_flagged_report_only",
-    "pytest::tests.test_bet::test_malformed_criterion_no_metric_blocks_under_gate",
-    "pytest::tests.test_bet::test_max_in_flight_override",
-    "pytest::tests.test_bet::test_pivot_closes_bet_and_opens_successor",
-    "pytest::tests.test_bet::test_pivot_requires_fresh_envelope_and_criteria",
-    "pytest::tests.test_bet::test_portfolio_reports_loss_distribution_and_kill_hygiene",
-    "pytest::tests.test_bet::test_rebaseline_journals_old_and_new_hashes",
-    "pytest::tests.test_bet::test_rebaseline_without_reason_rejected",
-    "pytest::tests.test_bet::test_rep_entries_count_as_attempted_distribution",
-    "pytest::tests.test_bet::test_selection_lint_flags_no_channel_no_audience",
-    "pytest::tests.test_bet::test_selection_lint_passes_once_a_channel_is_focused",
-    "pytest::tests.test_bet::test_selection_lint_passes_when_not_novice",
-    "pytest::tests.test_bet::test_selection_lint_passes_with_ecosystem_channel",
-    "pytest::tests.test_bet::test_selection_lint_skips_without_means_json",
-    "pytest::tests.test_bet::test_spend_past_tranche_flagged_and_gated",
-    "pytest::tests.test_bet::test_tampered_journal_fails_closed_exit_4",
-    "pytest::tests.test_bet::test_terminal_bets_are_frozen",
-    "pytest::tests.test_bet::test_third_in_flight_bet_over_cap",
-    "pytest::tests.test_bet::test_trivial_retrospective_does_not_unlock_killed",
-    "pytest::tests.test_bet::test_unlock_milestone_raises_the_cap",
     "pytest::tests.test_business_consultant::test_active_cost_tier_defaults_to_ladder_floor_when_nothing_bound",
     "pytest::tests.test_business_consultant::test_active_cost_tier_picks_highest_bound_tier",
     "pytest::tests.test_business_consultant::test_breakeven_count_covers_the_flat_nut",
@@ -310,29 +248,6 @@
     "pytest::tests.test_business_consultant::test_unit_economics_worst_case_is_matrix_cap_times_rate",
     "pytest::tests.test_business_consultant::test_unparseable_cap_is_indeterminate_not_coerced_and_not_finite_zero",
     "pytest::tests.test_business_consultant::test_workflow_reference_mirrors_the_slash_command",
-    "pytest::tests.test_channel::test_brainstorm_seeds_all_19_and_journals",
-    "pytest::tests.test_channel::test_brainstormed_channels_are_not_attempted_distribution",
-    "pytest::tests.test_channel::test_cac_above_target_flagged_on_focus",
-    "pytest::tests.test_channel::test_cac_join_skipped_without_target",
-    "pytest::tests.test_channel::test_cac_omitted_experiment_is_invalid",
-    "pytest::tests.test_channel::test_cadence_met_is_ok_and_respects_per_bet_override",
-    "pytest::tests.test_channel::test_cadence_not_checked_outside_probing_validating",
-    "pytest::tests.test_channel::test_enum_is_exactly_19_channels",
-    "pytest::tests.test_channel::test_evaluate_shows_channel_and_rep_evidence_together",
-    "pytest::tests.test_channel::test_focus_of_incomplete_experiment_refused_under_gate",
-    "pytest::tests.test_channel::test_focus_requires_testing_and_reentry_needs_reason",
-    "pytest::tests.test_channel::test_fourth_testing_channel_flagged_and_gated",
-    "pytest::tests.test_channel::test_headcount_on_bet_disables_the_filter",
-    "pytest::tests.test_channel::test_missed_cadence_fires_and_surfaces_in_evaluate",
-    "pytest::tests.test_channel::test_rank_records_human_order",
-    "pytest::tests.test_channel::test_referral_metrics_only_valid_on_viral_channel",
-    "pytest::tests.test_channel::test_referral_without_baseline_flow_is_invalid",
-    "pytest::tests.test_channel::test_rejected_channel_cannot_reenter_and_terminal_bet_is_frozen",
-    "pytest::tests.test_channel::test_sales_led_channel_flagged_at_headcount_zero",
-    "pytest::tests.test_channel::test_second_focus_violates_exactly_one_focused",
-    "pytest::tests.test_channel::test_traction_rule_silent_when_no_tagged_hours",
-    "pytest::tests.test_channel::test_traction_share_below_half_is_a_finding",
-    "pytest::tests.test_channel::test_unknown_channel_is_usage_error",
     "pytest::tests.test_check_architecture::test_absent_system_contracts_is_not_checked_never_passed",
     "pytest::tests.test_check_architecture::test_authored_region_crossing_caught",
     "pytest::tests.test_check_architecture::test_authored_trust_zone_crossing_caught",
@@ -705,9 +620,6 @@
     "pytest::tests.test_check_patterns::test_specified_with_success_metrics_passes",
     "pytest::tests.test_check_patterns::test_specified_without_cluster_is_error",
     "pytest::tests.test_check_patterns::test_unknown_dependency_is_error",
-    "pytest::tests.test_check_patterns::test_validation_experiment_metrics_are_per_cohort_rates",
-    "pytest::tests.test_check_patterns::test_validation_experiment_patterns_are_specified_with_honest_grounding",
-    "pytest::tests.test_check_patterns::test_validation_experiment_scaffolds_exist_and_are_honest",
     "pytest::tests.test_check_portability::test_adapter_note_bound_to_anchor_is_clean",
     "pytest::tests.test_check_portability::test_adapter_note_without_anchor_is_launder_violation",
     "pytest::tests.test_check_portability::test_anchored_worker_launch_is_clean",
@@ -1665,28 +1577,6 @@
     "pytest::tests.test_install_epic_artifacts::test_transition_map_fn_invoked_with_args",
     "pytest::tests.test_install_epic_artifacts::test_ui_spec_absent_omitted_from_comment",
     "pytest::tests.test_install_epic_artifacts::test_validate_source_lists_missing",
-    "pytest::tests.test_kill_review::test_brief_purity_clean_on_generated_brief",
-    "pytest::tests.test_kill_review::test_brief_purity_flags_seeded_impure_brief",
-    "pytest::tests.test_kill_review::test_evaluate_recommends_kill_review_on_trigger",
-    "pytest::tests.test_kill_review::test_evaluate_without_trigger_does_not_recommend_review",
-    "pytest::tests.test_kill_review::test_kill_brief_includes_open_assumption_evidence",
-    "pytest::tests.test_kill_review::test_kill_brief_is_pure_and_sources_every_measured_value",
-    "pytest::tests.test_kill_review::test_kill_brief_marks_distribution_unattempted",
-    "pytest::tests.test_kill_review::test_kill_brief_refuses_on_goalpost_tamper",
-    "pytest::tests.test_kill_review::test_kill_brief_shows_attempted_distribution_evidence",
-    "pytest::tests.test_kill_review::test_kill_brief_without_evaluation_is_unresolved_not_prose",
-    "pytest::tests.test_kill_review::test_kill_review_downgrades_kill_when_distribution_unattempted",
-    "pytest::tests.test_kill_review::test_kill_review_journals_brief_hash",
-    "pytest::tests.test_kill_review::test_kill_review_no_downgrade_when_distribution_attempted",
-    "pytest::tests.test_kill_review::test_kill_review_no_downgrade_when_only_non_demand_criterion_fired",
-    "pytest::tests.test_kill_review::test_kill_review_quorum_failure_journals_nothing",
-    "pytest::tests.test_kill_review::test_kill_review_refuses_on_goalpost_tamper",
-    "pytest::tests.test_kill_review::test_kill_review_role_configured_with_charters",
-    "pytest::tests.test_kill_review::test_kill_review_shows_verdicts_before_decision_instructions",
-    "pytest::tests.test_kill_review::test_kill_review_tolerates_malformed_verdict_output",
-    "pytest::tests.test_kill_review::test_opus_provider_pins_claude_tool_to_opus_model",
-    "pytest::tests.test_kill_review::test_parse_verdict_last_valid_fenced_block_wins",
-    "pytest::tests.test_kill_review::test_parse_verdict_tolerates_junk",
     "pytest::tests.test_languages::test_all_known_extensions_matches_pre_162_source_exts",
     "pytest::tests.test_languages::test_config_is_valid_json_with_expected_top_level_keys",
     "pytest::tests.test_languages::test_custom_path_round_trips_language_fields",
@@ -2398,6 +2288,686 @@
   "quality": {},
   "quarantined": {},
   "removed_cases": {
+    "pytest::tests.test_apply_pattern::test_presale_scaffold_stamps_honest_preorder": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_apply_pattern::test_presale_scaffold_stamps_honest_preorder",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_apply_pattern::test_smoke_test_scaffold_stamps_with_params_bound": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_apply_pattern::test_smoke_test_scaffold_stamps_with_params_bound",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_add_assigns_stable_ids_and_journals": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_add_assigns_stable_ids_and_journals",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_building_floor_skips_without_assumptions_file": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_building_floor_skips_without_assumptions_file",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_building_without_strength4_flagged_then_passes_with_money": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_building_without_strength4_flagged_then_passes_with_money",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_card_for_unknown_asm_is_usage_error": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_card_for_unknown_asm_is_usage_error",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_card_hashes_threshold_into_journal_and_moves_asm_to_testing": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_card_hashes_threshold_into_journal_and_moves_asm_to_testing",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_changed_elements_without_successor_is_usage_error": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_changed_elements_without_successor_is_usage_error",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_check_clean_bet_passes_gate": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_check_clean_bet_passes_gate",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_check_reports_uncovered_dangling_and_unregistered": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_check_reports_uncovered_dangling_and_unregistered",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_check_skips_when_no_ledger_files": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_check_skips_when_no_ledger_files",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_evidence_strength_out_of_enum_is_usage_error": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_evidence_strength_out_of_enum_is_usage_error",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_falsified_verdict_falsifies_the_assumption": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_falsified_verdict_falsifies_the_assumption",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_generic_population_and_opinion_behavior_flagged": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_generic_population_and_opinion_behavior_flagged",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_hand_set_validated_status_without_card_verdict_is_flagged": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_hand_set_validated_status_without_card_verdict_is_flagged",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_interview_only_evidence_caps_asm_at_weak": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_interview_only_evidence_caps_asm_at_weak",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_non_xyz_hypothesis_flagged_report_only_and_gated": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_non_xyz_hypothesis_flagged_report_only_and_gated",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_pivot_reopens_dependent_asms_in_successor": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_pivot_reopens_dependent_asms_in_successor",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_pivot_without_changed_elements_does_not_touch_ledger": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_pivot_without_changed_elements_does_not_touch_ledger",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_rebaseline_requires_reason_and_freezes_decided_cards": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_rebaseline_requires_reason_and_freezes_decided_cards",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_tampered_journal_fails_closed_exit_4": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_tampered_journal_fails_closed_exit_4",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_terminal_bet_takes_no_validation_work": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_terminal_bet_takes_no_validation_work",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_underpowered_sample_is_flagged": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_underpowered_sample_is_flagged",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_vanity_metric_rejected_as_success_criterion": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_vanity_metric_rejected_as_success_criterion",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_verdict_against_altered_threshold_refused_and_rebaseline_heals": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_verdict_against_altered_threshold_refused_and_rebaseline_heals",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_verdict_contradicting_threshold_is_flagged": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_verdict_contradicting_threshold_is_flagged",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_verdict_updates_card_asm_and_journal": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_verdict_updates_card_asm_and_journal",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_assumption::test_verdict_without_card_is_refused": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_assumption::test_verdict_without_card_is_refused",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_create_duplicate_bet_is_usage_error": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_create_duplicate_bet_is_usage_error",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_create_hashes_goalposts_into_journal": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_create_hashes_goalposts_into_journal",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_distribution_unattempted_reported_never_omitted": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_distribution_unattempted_reported_never_omitted",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_env_var_portfolio_dir_is_respected": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_env_var_portfolio_dir_is_respected",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_evaluate_fires_dated_criterion_and_blocks_spend": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_evaluate_fires_dated_criterion_and_blocks_spend",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_hand_edited_criteria_detected_and_healed_by_rebaseline": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_hand_edited_criteria_detected_and_healed_by_rebaseline",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_harvest_check_proposes_sold_when_sale_beats_wind_down": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_harvest_check_proposes_sold_when_sale_beats_wind_down",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_has_not_criterion_triggers_immediately": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_has_not_criterion_triggers_immediately",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_invalid_transition_is_usage_error": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_invalid_transition_is_usage_error",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_journal_chain_matches_ratchet_format": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_journal_chain_matches_ratchet_format",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_kill_override_is_journaled_and_unblocks_spend": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_kill_override_is_journaled_and_unblocks_spend",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_kill_pending_resume_requires_override": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_kill_pending_resume_requires_override",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_killed_with_retrospective_runs_harvest_check_skipped": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_killed_with_retrospective_runs_harvest_check_skipped",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_killed_without_retrospective_is_blocked": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_killed_without_retrospective_is_blocked",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_malformed_criterion_no_date_is_flagged_report_only": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_malformed_criterion_no_date_is_flagged_report_only",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_malformed_criterion_no_metric_blocks_under_gate": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_malformed_criterion_no_metric_blocks_under_gate",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_max_in_flight_override": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_max_in_flight_override",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_pivot_closes_bet_and_opens_successor": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_pivot_closes_bet_and_opens_successor",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_pivot_requires_fresh_envelope_and_criteria": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_pivot_requires_fresh_envelope_and_criteria",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_portfolio_reports_loss_distribution_and_kill_hygiene": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_portfolio_reports_loss_distribution_and_kill_hygiene",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_rebaseline_journals_old_and_new_hashes": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_rebaseline_journals_old_and_new_hashes",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_rebaseline_without_reason_rejected": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_rebaseline_without_reason_rejected",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_rep_entries_count_as_attempted_distribution": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_rep_entries_count_as_attempted_distribution",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_selection_lint_flags_no_channel_no_audience": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_selection_lint_flags_no_channel_no_audience",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_selection_lint_passes_once_a_channel_is_focused": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_selection_lint_passes_once_a_channel_is_focused",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_selection_lint_passes_when_not_novice": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_selection_lint_passes_when_not_novice",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_selection_lint_passes_with_ecosystem_channel": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_selection_lint_passes_with_ecosystem_channel",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_selection_lint_skips_without_means_json": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_selection_lint_skips_without_means_json",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_spend_past_tranche_flagged_and_gated": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_spend_past_tranche_flagged_and_gated",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_tampered_journal_fails_closed_exit_4": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_tampered_journal_fails_closed_exit_4",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_terminal_bets_are_frozen": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_terminal_bets_are_frozen",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_third_in_flight_bet_over_cap": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_third_in_flight_bet_over_cap",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_trivial_retrospective_does_not_unlock_killed": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_trivial_retrospective_does_not_unlock_killed",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_bet::test_unlock_milestone_raises_the_cap": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_bet::test_unlock_milestone_raises_the_cap",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_brainstorm_seeds_all_19_and_journals": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_brainstorm_seeds_all_19_and_journals",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_brainstormed_channels_are_not_attempted_distribution": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_brainstormed_channels_are_not_attempted_distribution",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_cac_above_target_flagged_on_focus": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_cac_above_target_flagged_on_focus",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_cac_join_skipped_without_target": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_cac_join_skipped_without_target",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_cac_omitted_experiment_is_invalid": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_cac_omitted_experiment_is_invalid",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_cadence_met_is_ok_and_respects_per_bet_override": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_cadence_met_is_ok_and_respects_per_bet_override",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_cadence_not_checked_outside_probing_validating": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_cadence_not_checked_outside_probing_validating",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_enum_is_exactly_19_channels": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_enum_is_exactly_19_channels",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_evaluate_shows_channel_and_rep_evidence_together": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_evaluate_shows_channel_and_rep_evidence_together",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_focus_of_incomplete_experiment_refused_under_gate": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_focus_of_incomplete_experiment_refused_under_gate",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_focus_requires_testing_and_reentry_needs_reason": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_focus_requires_testing_and_reentry_needs_reason",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_fourth_testing_channel_flagged_and_gated": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_fourth_testing_channel_flagged_and_gated",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_headcount_on_bet_disables_the_filter": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_headcount_on_bet_disables_the_filter",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_missed_cadence_fires_and_surfaces_in_evaluate": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_missed_cadence_fires_and_surfaces_in_evaluate",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_rank_records_human_order": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_rank_records_human_order",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_referral_metrics_only_valid_on_viral_channel": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_referral_metrics_only_valid_on_viral_channel",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_referral_without_baseline_flow_is_invalid": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_referral_without_baseline_flow_is_invalid",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_rejected_channel_cannot_reenter_and_terminal_bet_is_frozen": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_rejected_channel_cannot_reenter_and_terminal_bet_is_frozen",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_sales_led_channel_flagged_at_headcount_zero": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_sales_led_channel_flagged_at_headcount_zero",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_second_focus_violates_exactly_one_focused": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_second_focus_violates_exactly_one_focused",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_traction_rule_silent_when_no_tagged_hours": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_traction_rule_silent_when_no_tagged_hours",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_traction_share_below_half_is_a_finding": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_traction_share_below_half_is_a_finding",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_channel::test_unknown_channel_is_usage_error": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_channel::test_unknown_channel_is_usage_error",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
     "pytest::tests.test_check_architecture::test_cli_absent_model_exits_zero_even_under_gate": {
       "created_at": "2026-08-22T22:50:30.824242+00:00",
       "expiry": null,
@@ -2414,6 +2984,30 @@
       "owner": "plwp",
       "reason": "RENAMED, successor asserts the same behaviour. (1) test_gate_without_scanner_version_support_skips_the_check -> test_gate_script_genuinely_absent_skips_the_check in 01db322 (#289), which narrowed the skip to a genuinely absent script; the rename is recorded in the successor's own docstring. (2) test_no_writer_found_warns -> test_no_writer_found_is_reported_blind_not_pass in #377/PR#414, where the warning became the distinct 'blind' coverage state. Verified per chief-wiggum#361 archaeology."
     },
+    "pytest::tests.test_check_patterns::test_validation_experiment_metrics_are_per_cohort_rates": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_check_patterns::test_validation_experiment_metrics_are_per_cohort_rates",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_check_patterns::test_validation_experiment_patterns_are_specified_with_honest_grounding": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_check_patterns::test_validation_experiment_patterns_are_specified_with_honest_grounding",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_check_patterns::test_validation_experiment_scaffolds_exist_and_are_honest": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_check_patterns::test_validation_experiment_scaffolds_exist_and_are_honest",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
     "pytest::tests.test_check_single_writer::test_no_writer_found_warns": {
       "created_at": "2026-08-22T22:50:21.526345+00:00",
       "expiry": null,
@@ -2429,6 +3023,182 @@
       "kind": "removed",
       "owner": "plwp",
       "reason": "SUPERSEDED BY INVERSION \u2014 each asserted behaviour that was later declared to be the bug, so the successor asserts the opposite and the original can never pass again. (1) test_cli_absent_model_exits_zero_even_under_gate asserted rc==0 for an absent model under --gate; 01db322 (#289, fail-open family) declared that fail-open and replaced it with test_cli_absent_model_exits_one_under_gate, alongside test_cli_absent_model_exits_zero_and_reports_not_checked_never_passed for the non-gated path. (2) test_consult_provider_ignores_timeout_override_for_tool_providers asserted tool providers IGNORE the timeout override; 1c064bf (#330/#331/#332) made them honour it, successor test_consult_provider_threads_timeout_override_to_tool_providers. Verified per chief-wiggum#361 archaeology."
+    },
+    "pytest::tests.test_kill_review::test_brief_purity_clean_on_generated_brief": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_brief_purity_clean_on_generated_brief",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_brief_purity_flags_seeded_impure_brief": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_brief_purity_flags_seeded_impure_brief",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_evaluate_recommends_kill_review_on_trigger": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_evaluate_recommends_kill_review_on_trigger",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_evaluate_without_trigger_does_not_recommend_review": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_evaluate_without_trigger_does_not_recommend_review",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_brief_includes_open_assumption_evidence": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_brief_includes_open_assumption_evidence",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_brief_is_pure_and_sources_every_measured_value": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_brief_is_pure_and_sources_every_measured_value",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_brief_marks_distribution_unattempted": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_brief_marks_distribution_unattempted",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_brief_refuses_on_goalpost_tamper": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_brief_refuses_on_goalpost_tamper",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_brief_shows_attempted_distribution_evidence": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_brief_shows_attempted_distribution_evidence",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_brief_without_evaluation_is_unresolved_not_prose": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_brief_without_evaluation_is_unresolved_not_prose",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_downgrades_kill_when_distribution_unattempted": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_downgrades_kill_when_distribution_unattempted",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_journals_brief_hash": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_journals_brief_hash",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_no_downgrade_when_distribution_attempted": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_no_downgrade_when_distribution_attempted",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_no_downgrade_when_only_non_demand_criterion_fired": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_no_downgrade_when_only_non_demand_criterion_fired",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_quorum_failure_journals_nothing": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_quorum_failure_journals_nothing",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_refuses_on_goalpost_tamper": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_refuses_on_goalpost_tamper",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_role_configured_with_charters": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_role_configured_with_charters",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_shows_verdicts_before_decision_instructions": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_shows_verdicts_before_decision_instructions",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_kill_review_tolerates_malformed_verdict_output": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_kill_review_tolerates_malformed_verdict_output",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_opus_provider_pins_claude_tool_to_opus_model": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_opus_provider_pins_claude_tool_to_opus_model",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_parse_verdict_last_valid_fenced_block_wins": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_parse_verdict_last_valid_fenced_block_wins",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
+    },
+    "pytest::tests.test_kill_review::test_parse_verdict_tolerates_junk": {
+      "created_at": "2026-11-06T07:33:18.608035+00:00",
+      "expiry": null,
+      "id": "pytest::tests.test_kill_review::test_parse_verdict_tolerates_junk",
+      "kind": "removed",
+      "owner": "plwp",
+      "reason": "Business-factory layer (/plan-bet, bet ledger, kill-review, assumptions, channels, names, strategy options, validation-experiment patterns) removed from CW at Pat's request, 6 Nov 2026: 'can we remove any of the business bet shit from cw'. Bets now live in the DTD desk (strategy/bets/). The code under test is deleted; these case ids never return."
     },
     "pytest::tests.test_review_pipeline::test_synthesis_prompt_instructs_union_not_consensus": {
       "created_at": "2026-08-22T22:50:39.428474+00:00",

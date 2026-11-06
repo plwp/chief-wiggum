@@ -33,9 +33,8 @@ Our platform delivers frictionless, world-class results for every team, every
 day, without compromise, without friction, without doubt.
 """
 
-# Negative case: sequential, plain, specific — modelled on the doctrine's own
-# worked example of real customer language (docs/business-factory.md, #255
-# context), but written fresh here rather than quoting any real correspondence.
+# Negative case: sequential, plain, specific real-customer-style language,
+# written fresh here rather than quoting any real correspondence.
 HUMAN_SOURCED_COPY = """Currently we use a rostering app, then take the hours and
 enter them into a spreadsheet, then send them to accounts. Accounts enter them
 into Xero and pay staff. That takes about 3 hours every fortnight. Our tool

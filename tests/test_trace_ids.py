@@ -20,8 +20,6 @@ from chief_wiggum import trace_ids
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "templates" / "formal-models" / "tim-schema.json"
 SCHEMA = json.loads(SCHEMA_PATH.read_text())
 
-LEDGER_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "templates" / "assumptions-schema.json"
-LEDGER_ASM_PATTERN = json.loads(LEDGER_SCHEMA_PATH.read_text())["$defs"]["assumption"]["properties"]["id"]["pattern"]
 
 
 # --- single source of truth: no copies may drift ---------------------------
@@ -271,28 +269,3 @@ def test_check_architecture_asm_id_re_is_derived_from_trace_ids():
     # Not identity (check_architecture builds its own compiled pattern object
     # via kind_id_re), but the SAME pattern text — no second hand-rolled copy.
     assert check_architecture.ASM_ID_RE.pattern == trace_ids.kind_id_re("ASM").pattern
-
-
-# --- ASM namespace split: business-factory ledger vs stable-ID kind --------
-# (chief-wiggum#294). The business-factory assumption ledger
-# (bets/<bet-id>/assumptions.json, scripts/assumption.py) uses a two-segment
-# `ASM-NNN` id; `chief_wiggum.trace_ids.ID_KINDS` simultaneously reserves
-# `ASM` as a three-segment system-layer stable-ID kind (`ASM-slug-NNN`,
-# docs/epics/**, architecture.json asm_refs). Both namespaces share the
-# `ASM-` prefix but are deliberately disjoint grammars, scoped to different
-# artifacts, and never resolved against each other. This test PINS that
-# decision: if either pattern is ever loosened so the namespaces start to
-# overlap, it fails.
-
-
-def test_ledger_asm_ids_and_stable_id_asm_grammar_are_disjoint():
-    ledger_re = re.compile(LEDGER_ASM_PATTERN)
-    stable_re = trace_ids.kind_id_re("ASM")
-    ledger_shaped = ["ASM-001", "ASM-042", "ASM-999999", "ASM-000"]
-    stable_shaped = ["ASM-tts-001", "ASM-story-042", "ASM-a-000", "ASM-tts-tts-001"]
-    for token in ledger_shaped:
-        assert ledger_re.match(token), token
-        assert not stable_re.fullmatch(token), token
-    for token in stable_shaped:
-        assert stable_re.fullmatch(token), token
-        assert not ledger_re.match(token), token

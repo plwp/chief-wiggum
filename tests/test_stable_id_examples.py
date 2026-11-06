@@ -36,9 +36,7 @@ CANDIDATE_ID_TOKEN = re.compile(
 )
 
 # Scope: the skill command bodies and the worked-example corpus /architect
-# hands workers as "a concrete template to follow". Deliberately excludes the
-# separate ASM ledger namespace (bets/, templates/assumptions-schema.json,
-# scripts/assumption.py — chief-wiggum#281 codebase-context §2B) and anything
+# hands workers as "a concrete template to follow". Deliberately excludes anything
 # under docs/formal-methods/examples/generated/ (machine-regenerated, not
 # authored). ENT- prefixed ids (e.g. ENT-INV-001) are excluded structurally:
 # the negative lookbehind refuses to match "INV-001" glued after "ENT-".

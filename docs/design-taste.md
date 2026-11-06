@@ -5,9 +5,7 @@
 External source of taste for every divergent-design/outward-asset flow in the factory
 (chief-wiggum#250, companion to #249). A model's own priors date badly and converge on
 AI-default aesthetics (purple-gradient dark heroes, glassmorphism, Inter-everything) —
-this brief is the grounding input that keeps divergent variants (`/design`, the
-`landing-page-smoke-test`/`presale` patterns' INV-LPS-006/INV-PRE-006, Track H stamped
-assets) tied to what currently reads as high-craft rather than to the model's default.
+this brief is the grounding input that keeps divergent variants (`/design`) tied to what currently reads as high-craft rather than to the model's default.
 
 **Staleness rule**: any `/design` run or outward-asset variant generation MUST ground
 against a brief `as_of` no more than 90 days stale. A stale brief triggers a refresh pass
@@ -200,7 +198,3 @@ whole point (a converged single default is exactly the failure #249 exists to pr
 
 - **`/design` Step 1** reads this brief (and its `as_of`) before generating divergent
   directions; a stale brief triggers a refresh first.
-- **`landing-page-smoke-test` / `presale`** (INV-LPS-006 / INV-PRE-006, chief-wiggum#249)
-  cite this brief as the mandatory grounding input for their divergent-variant step.
-- **Track H stamped-asset flow** (docs/business-factory.md, channel-engine subsection)
-  references this brief for launch-checklist copy/positioning candidates.

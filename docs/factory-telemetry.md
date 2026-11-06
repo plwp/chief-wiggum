@@ -311,8 +311,7 @@ Claude Code subscription plan. The chief-wiggum#345 sub-agent ingest fix makes
 this total several times larger than anything reported before it (the
 sub-agent layer was previously invisible), which will read as alarming if you
 forget it's nominal. See [ticket-cost.md](ticket-cost.md)'s "Nominal, not
-billed" note and `build_cost.py`'s `plan_share_pct` for the number that
-actually reflects a fixed-plan budget.
+billed" note.
 
 ## Ticket attribution (`scripts/ticket_cost.py`)
 
@@ -322,28 +321,6 @@ UNRESOLVED below 3 samples — never guessed) and the measured actual rendered
 into the PR's `## Implementation Cost` section by `/implement` Step 11, which
 then journals a `ticket_cost` calibration event to close the loop. No records
 is reported **unmetered**, never $0. See [ticket-cost.md](ticket-cost.md).
-
-## Bet attribution (`scripts/build_cost.py`, chief-wiggum#257)
-
-This telemetry answers "what did a gate/consult cost"; `build_cost.py` answers "what
-did a **bet** cost" by attributing the same `factory_log.cost_for` pricing to a bet id
-(or the literal `factory`/`unattributed` buckets) and journaling the record into the
-portfolio's hash chain rather than the factory-log JSONL:
-
-```bash
-python3 scripts/build_cost.py record --attribute-to <bet-id|factory|unattributed> \
-    --model <model-id> --tokens-in N --tokens-out N [--plan-share-pct X]
-python3 scripts/build_cost.py portfolio                        # every bucket, sum-preserving
-```
-
-Two numbers, never conflated: `nominal_usd` (tokens × `config/model_pricing.json`,
-omitted — never zeroed — for an unpriced model, same INV-fh-002 honesty rule this
-module already enforces for gates) and `plan_share_pct` (share of the billing period's
-plan capacity consumed — supplied by the caller or recorded `{unresolved}`, since no
-harness API is assumed to expose true plan consumption). The `unattributed` bucket is
-always reported on its own, never dropped or spread pro-rata across bets. See
-`docs/business-factory.md`'s "Build-cost tracking" subsection for the full picture,
-including how `bet.py portfolio`/`kill-brief` surface it.
 
 ## Reading
 
