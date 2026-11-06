@@ -100,8 +100,7 @@ For tiered models, record the base (≤200k-context) rate. Leave a row `null` + 
 ### Step 3.7: Refresh the design-taste brief (`docs/design-taste.md`)
 
 `docs/design-taste.md` (chief-wiggum#250) is the external grounding source every
-divergent-design flow reads (`/design` Step 1, the `landing-page-smoke-test`/`presale`
-patterns' INV-LPS-006/INV-PRE-006, Track H stamped assets) — a model's own priors date
+divergent-design flow reads (`/design` Step 1) — a model's own priors date
 badly and converge on AI-default aesthetics. Refresh it the same way models.md is
 refreshed: research agents over the **pinned source roster** (§6 of the doc — curated
 galleries, type-foundry showcases, design writing, a rotating "small products with

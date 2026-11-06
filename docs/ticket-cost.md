@@ -24,8 +24,7 @@ graph LR
 
 ## Cost basis
 
-**Nominal model spend only** — the same definition as `build_cost.py`'s
-`nominal_usd`: tokens × the grounded per-model rates in
+**Nominal model spend only**: tokens × the grounded per-model rates in
 `config/model_pricing.json` (INV-fh-002: prices come from the table, never
 memory; an unpriced model's cost is *omitted* and flagged, never zeroed).
 Cache-aware for Claude Code layers (`cost_for_usage`). Three layers, summed:
@@ -36,17 +35,12 @@ Cache-aware for Claude Code layers (`cost_for_usage`). Three layers, summed:
 | Subagents (+ `worker` events) | transcript/OTEL ingest — recurses through `<session>/subagents/**` (chief-wiggum#345; a two-level glob missed ~75% of turn volume) | at ingest (`--ticket`), or by cwd+window at read time |
 | Consults (codex/gemini/…) | `consult_ai.py` | at call time (`--ticket`) — `run_review.py`'s `--ticket` flag is what makes review-quorum consults attribute (#345) |
 
-Human time, CI minutes, and plan-share economics are **out** — for the true
-economic cost of factory compute under a fixed plan, see `build_cost.py`
-(#257), which prices bets, not tickets.
+Human time, CI minutes, and plan-share economics are **out**.
 
 **Nominal, not billed.** Every figure this script renders is *nominal* API
-list pricing (tokens × `config/model_pricing.json`) — the same basis
-`build_cost.py`'s `nominal_usd` uses. On a metered API key that IS what you
+list pricing (tokens × `config/model_pricing.json`). On a metered API key that IS what you
 pay; on a Claude Code subscription plan it is not: the plan is a fixed
-periodic cost, and `build_cost.py`'s `plan_share_pct` (chief-wiggum#257) is
-the only number in this factory that expresses what a build cost against a
-fixed-plan budget. A PR section showing several dollars a day of nominal
+periodic cost. A PR section showing several dollars a day of nominal
 Claude-layer spend — now visible in full for the first time as of
 chief-wiggum#345's sub-agent capture fix — will read as an invoice to anyone
 who skims it unless they already know this. Every rendered surface keeps the

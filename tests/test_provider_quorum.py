@@ -444,7 +444,7 @@ def test_shipped_config_declares_reads_repo_and_requires_repo_read():
     for name in ("codex", "gemini", "gemini-vertex", "claude", "claude-interactive", "opus"):
         assert providers_by_name[name].reads_repo is True, name
 
-    for name in ("design_critic", "kill-review", "divergence"):
+    for name in ("design_critic", "divergence"):
         assert roles[name].requires_repo_read is False, name
     for name in ("explorer", "implementer", "reviewer", "architecture_critic", "risky_diff_review"):
         assert roles[name].requires_repo_read is True, name

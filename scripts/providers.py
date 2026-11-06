@@ -242,8 +242,7 @@ class Role:
     # False for a role whose job was never repo-grounded in the first place:
     # ``design_critic`` reviews rendered SCREENSHOTS (an image-reading gap is
     # a separate, real defect, filed rather than fixed here — see the final
-    # report), ``kill-review`` evaluates a business-bet writeup, and
-    # ``divergence`` exists purely to widen textual distribution (see its
+    # report), and ``divergence`` exists purely to widen textual distribution (see its
     # own docstring below). Declared per role rather than inferred so a role
     # that never needed repo-reading is never reported as if a provider
     # failed it.

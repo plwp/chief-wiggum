@@ -10,8 +10,7 @@ owner/repo#42 cost" and "what will an M-sized ticket probably cost", so
 ``/create-issue`` can stamp a nominal estimate on the issue and ``/implement``
 can stamp the measured actual on the PR.
 
-Cost basis — **nominal model spend only**, the same definition as
-``build_cost.py``'s ``nominal_usd``: tokens x ``config/model_pricing.json``
+Cost basis — **nominal model spend only**: tokens x ``config/model_pricing.json``
 (INV-fh-002: prices come from the grounded table, never memory; an unpriced
 model's cost is *omitted* and flagged ``cost_partial``, never zeroed). Human
 time, CI minutes, and plan-share economics are out of scope here.
