@@ -166,6 +166,7 @@ Produce a JSON file conforming to `$CW_HOME/templates/formal-models/contracts-sc
 For every entity and API endpoint the epic touches, define:
 - Entity name, description, and canonical fields (type, required, source of truth, immutability, notes)
 - Operations with REQUIRES (preconditions), ENSURES (postconditions), ERROR CASES, state transitions touched, invariants touched
+- A `latency_budget_ms` on every operation a screen waits for. Set it to the time a person can wait on production-sized data; the default is 2000 ms for a staff read. `/saas-gate`'s performance walk fails anything over it (docs/perf-gate.md).
 - Each condition carries a `description` (human-readable) and an `expression` (machine-checkable pseudo-code)
 - Provenance: every element carries `derived_from` linking back to tickets, acceptance criteria, or epic invariants
 
@@ -221,7 +222,7 @@ This is the **UI contract** that prevents workers from making conflicting design
 
 The UI spec defines:
 
-1. **Page inventory**: What routes/pages exist, what layout each uses (sidebar-main, centered, canvas, etc.)
+1. **Page inventory**: What routes/pages exist, what layout each uses (sidebar-main, centered, canvas, etc.), and each page's `latency_budget_ms` (time-to-usable; the default is 2000 ms for a staff screen)
 2. **Component tree per page**: Flat map of component ID → spec. Each component has a type, children (by ID), data bindings, and interactions.
 3. **Shared patterns**: Reusable UI patterns defined once and referenced by ID. Examples:
    - `entity-menu`: "3-dot icon → dropdown with edit/archive/delete"

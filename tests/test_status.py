@@ -209,8 +209,10 @@ def test_gate_ledger_against_this_repos_real_validation_dir(user_dir):
     and the wired state comes from the real journal's gate-authority events."""
     st = status.gather(ROOT)
     gates = {g["gate"]: g for g in st["gates"]}
-    assert len(gates) == 7, f"expected the 7 shipped records, got {sorted(gates)}"
-    failing = [n for n, g in gates.items() if g["verdict"] != "passing"]
+    assert len(gates) == 8, f"expected the 8 shipped records, got {sorted(gates)}"
+    # perf-gate (#524) is in bring-up: trials recorded, no blocking authority.
+    assert gates["perf-gate"]["verdict"] == "report_only"
+    failing = [n for n, g in gates.items() if g["verdict"] not in ("passing", "report_only")]
     assert not failing, f"stale/failing validation record(s): {failing}"
     # ratchet was journaled-wired in the real journal (chief-wiggum#198 era).
     assert gates["ratchet"]["wired"] is True
@@ -232,7 +234,7 @@ def test_gate_ledger_verifies_shared_journal_chain_once(user_dir, monkeypatch):
 
     monkeypatch.setattr(gv, "_load_and_verify_chain", spy)
     st = status.gather(ROOT)
-    assert len(st["gates"]) == 7
+    assert len(st["gates"]) == 8
     assert calls == [1], f"expected the journal to be verified exactly once, got {len(calls)} walks"
 
 
