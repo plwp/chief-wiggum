@@ -45,14 +45,20 @@ If you genuinely cannot start the app, run the gate without `--base-url` — it 
   --rate-limit-path /login --markdown
 ```
 
-Options: `--require-https` (require HSTS), `--rate-limit-path` / `--rate-limit-required` (fail if no limiter on a known endpoint), `--auth-mode bearer` (CSRF marked not-applicable for API/token auth), `--log-sample <file>` (validate structured logging), `--gate` (exit non-zero on any `fail`), `--json`.
+Options: `--perf-models <dir>` (latency budgets for the performance walk; see Step 4), `--require-https` (require HSTS), `--rate-limit-path` / `--rate-limit-required` (fail if no limiter on a known endpoint), `--auth-mode bearer` (CSRF marked not-applicable for API/token auth), `--log-sample <file>` (validate structured logging), `--gate` (exit non-zero on any `fail`), `--json`.
 
 ### Step 4: The live-app checks
 
 `saas_gate.py` covers what it can hermetically (security headers, CSRF cookie posture, rate-limit probe, health, structured-log format). Some checks genuinely need a live multi-user app — run them as part of this step and record the result:
 
 - **Tenant isolation**: create two users, have user A create a resource, confirm user B gets `401/403/404` fetching it (a `200` is a data-leak `fail`). The helper exposes `check_tenant_isolation(make_user, create_resource, fetch_resource)` for this.
-- **Performance**: sample representative endpoints under a realistic load and compare against the target SLOs.
+- **Performance** ([docs/perf-gate.md](../../docs/perf-gate.md), chief-wiggum#524). The static rules run on every `saas_gate.py` run. For the walk:
+  1. Seed a non-production instance with a production-shaped dataset that keeps its backlogs. Shape it from aggregate counts only (records, pending automatic actions per site). Use invented names, `*.invalid` emails and 0491 570 phones. Never copy records out of production.
+  2. Pass the budgets and a QA principal: `--perf-models "$TARGET_REPO/docs/epics/<epic>/models" --perf-path-param site=<qa-site> --perf-auth-header-env QA_AUTH`.
+  3. Record a HAR of the browser walk, first load and warm, and pass it with `--perf-cold-har` / `--perf-warm-har`.
+  4. Anything over its `latency_budget_ms` fails. The default budget is 2000 ms for a GET operation or a staff screen.
+
+  For the morning briefing: `"${CW_PY:-python3}" "$CW_HOME/scripts/check_perf.py" telemetry --project <p> --service <s> --region <r> --models <models> --route /api/staff/{site}/<resource>`. It is read-only and prints one p50/p95 line that flags endpoints over budget.
 - **Data integrity**: confirm an audit trail is written and soft-delete is honored (verify in the datastore / via the API).
 
 ### Step 5: The regulated-data compliance dimension (design-time)

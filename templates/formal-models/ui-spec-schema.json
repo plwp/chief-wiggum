@@ -343,6 +343,11 @@
           },
           "description": "Ordered list of top-level component IDs (the page's direct children)"
         },
+        "latency_budget_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Latency budget for this screen in milliseconds: first load to its last API response (time-to-usable), on a production-shaped dataset (chief-wiggum#524). Omitted on a signed-in (staff) screen, the gate uses 2000 ms; a public screen with none has no budget."
+        },
         "design_refs": {
           "type": "array",
           "items": {

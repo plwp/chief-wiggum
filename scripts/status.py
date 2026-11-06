@@ -10,7 +10,7 @@ Sections (text) / keys (json):
 - **resolver** — footprint mode, backing, meta root, target id
   (``artifacts.Resolver.to_dict``) + the domain-scope summary.
 - **gates** — the gate ledger: every ``<quality_dir>/validation/<gate>.json``
-  record, its verdict via ``check_gate_validation.check`` (passing / failing /
+  record, its verdict via ``check_gate_validation.check`` (passing / failing / report_only /
   missing-or-invalid), and its wired state via the tamper-evident ratchet
   journal (``ratchet.last_authority_action`` — wired means the last journaled
   gate-authority event is ``wire``).
@@ -103,6 +103,11 @@ def gate_ledger(quality_dir: Path) -> list[dict]:
             verdict = "passing"
         elif not report.record_found:
             verdict = "missing"
+        elif _declares_report_only(path):
+            # A gate still in bring-up (docs/gate-rollout.md): trial evidence,
+            # no blocking authority. Trusting this field is safe because it
+            # can only lower authority; check() above still refuses --gate.
+            verdict = "report_only"
         else:
             verdict = "failing"
         action = ratchet.last_authority_action(journal, gate)
@@ -114,6 +119,11 @@ def gate_ledger(quality_dir: Path) -> list[dict]:
             "last_authority_action": action,
         })
     return entries
+
+
+def _declares_report_only(path: Path) -> bool:
+    data = _load_json(path)
+    return isinstance(data, dict) and data.get("status") == "report-only"
 
 
 def ratchet_status(quality_dir: Path) -> dict:

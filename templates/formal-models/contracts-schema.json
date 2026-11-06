@@ -160,6 +160,11 @@
           "items": { "type": "string" },
           "description": "IDs of invariants that this operation must preserve"
         },
+        "latency_budget_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Latency budget for this operation in milliseconds, request to last byte, on a production-shaped dataset (chief-wiggum#524). The perf gate's walk and the production p95 line flag an operation over it. Omitted on a GET operation, the gate uses the default staff budget of 2000 ms."
+        },
         "derived_from": {
           "type": "array",
           "items": { "$ref": "#/$defs/provenance" }

@@ -520,6 +520,7 @@ def run_gate(
     psk_paths: list[str] | None = None,
     psk_header: str = "X-Internal-Auth",
     psk_secret: str | None = None,
+    perf: dict | None = None,
 ) -> SaasGateReport:
     report = SaasGateReport(base_url=base_url, stack=detect_stack(repo))
     if base_url:
@@ -556,7 +557,11 @@ def run_gate(
     report.findings.extend(check_secret_hygiene(secrets))
     report.findings.append(check_structured_logging(log_sample or []))
     report.add("isolation", "tenant-isolation", SKIPPED, "needs a live multi-user app; run via the /saas-gate skill")
-    report.add("performance", "response-time", SKIPPED, "needs a representative deployment; run via the /saas-gate skill")
+    # The performance gate (chief-wiggum#524): static rules always, the
+    # budget walk when budgets and a base URL are given.
+    import check_perf
+    for name, status, detail in check_perf.saas_findings(repo, base_url=base_url, **(perf or {})):
+        report.add("performance", name, status, detail)
     report.add("data-integrity", "audit-trail/soft-delete", SKIPPED, "code-level; verify in review / a follow-up check")
     return report
 
@@ -568,7 +573,8 @@ def _scanner_version() -> str:
     @cw-trace guards CTR-fh-040 CTR-fh-041 CTR-fh-042 INV-fh-005"""
     here = Path(__file__).resolve()
     cw_dir = here.parent / "chief_wiggum"
-    return scanner_version(here, cw_dir / "hashing.py")
+    return scanner_version(here, cw_dir / "hashing.py", here.parent / "check_perf.py",
+                           here.parent / "check_boot_and_hit.py")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -596,6 +602,16 @@ def main(argv: list[str] | None = None) -> int:
              "Read at call time; never logged.")
     parser.add_argument("--require-https", action="store_true")
     parser.add_argument("--log-sample", help="File with sample log lines for structured-logging check")
+    perf = parser.add_argument_group("performance (chief-wiggum#524; docs/perf-gate.md)")
+    perf.add_argument("--perf-models", action="append",
+                      help="dir holding contracts.json / ui-spec.json with latency budgets; repeatable")
+    perf.add_argument("--perf-path-param", action="append", help="name=value for the walk")
+    perf.add_argument("--perf-probe-mutating", action="store_true",
+                      help="also time mutating operations (disposable targets only)")
+    perf.add_argument("--perf-auth-header-env",
+                      help="env var holding a QA principal's Authorization header; never printed")
+    perf.add_argument("--perf-cold-har", help="HAR of the browser walk's first load")
+    perf.add_argument("--perf-warm-har", help="HAR of the browser walk's warm load")
     parser.add_argument("--gate", action="store_true", help="Exit 1 if any check failed")
     out = parser.add_mutually_exclusive_group()
     out.add_argument("--json", action="store_true")
@@ -670,8 +686,28 @@ def main(argv: list[str] | None = None) -> int:
         print("Error: --psk-path needs --base-url", file=sys.stderr)
         return 2
 
+    perf_headers = {}
+    if args.perf_auth_header_env:
+        value = os.environ.get(args.perf_auth_header_env)
+        if not value:
+            print(f"Error: --perf-auth-header-env {args.perf_auth_header_env} is unset or empty",
+                  file=sys.stderr)
+            return 2
+        perf_headers["Authorization"] = value
+    params = {}
+    for item in args.perf_path_param or []:
+        k, sep, v = item.partition("=")
+        if not sep:
+            print(f"Error: --perf-path-param expects name=value, got {item!r}", file=sys.stderr)
+            return 2
+        params[k] = v
+    perf = {"models": args.perf_models, "params": params, "headers": perf_headers,
+            "probe_mutating": args.perf_probe_mutating,
+            "cold_har": Path(args.perf_cold_har) if args.perf_cold_har else None,
+            "warm_har": Path(args.perf_warm_har) if args.perf_warm_har else None}
+
     report = run_gate(
-        args.repo, args.base_url, auth_mode=args.auth_mode, health_path=args.health_path,
+        args.repo, args.base_url, perf=perf, auth_mode=args.auth_mode, health_path=args.health_path,
         rate_limit_path=args.rate_limit_path, rate_limit_required=args.rate_limit_required,
         require_https=args.require_https, log_sample=log_sample,
         secrets=secrets, psk_paths=args.psk_paths,
