@@ -598,3 +598,125 @@ def test_review1_a_conjunct_that_excludes_get_still_prunes_soundly(tmp_path):
 }
 ''')
     assert _writes(check_perf.scan_static(root)) == [18]
+
+
+# --- chunked batching and cached reads (chief-wiggum#529) -------------------------
+
+_GO529 = ('package main\n\nimport (\n\t"context"\n\t"net/http"\n)\n\n'
+          'func main() {\n\thttp.HandleFunc("/x", h)\n}\n\n')
+
+
+def _scan529(tmp_path, body: str):
+    (tmp_path / "main.go").write_text(_GO529 + body)
+    return check_perf.scan_static(tmp_path)
+
+
+def test_529_chunk_by_slicing_getall_does_not_fire(tmp_path):
+    r = _scan529(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	ids := []string{"a"}
+	for len(ids) > 0 {
+		n := min(len(ids), 300)
+		refs := make([]int, n)
+		ids = ids[n:]
+		client.GetAll(r.Context(), refs)
+	}
+}
+
+func h2(w http.ResponseWriter, r *http.Request) {
+	refs := []int{1}
+	for len(refs) > 0 {
+		n := min(len(refs), 300)
+		client.GetAll(r.Context(), refs[:n])
+		refs = refs[n:]
+	}
+}
+''')
+    assert r.findings == []
+
+
+def test_529_range_over_queries_helper_does_not_fire(tmp_path):
+    r = _scan529(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	qs := ledgerForQueries(client, []string{"a"})
+	for i, q := range qs {
+		_ = i
+		q.Documents(r.Context())
+	}
+	for _, q := range warnedClientsQueries(client, nil) {
+		q.Documents(r.Context())
+	}
+}
+
+func ledgerForQueries(c int, ids []string) []int { return nil }
+func warnedClientsQueries(c int, ids []string) []int { return nil }
+''')
+    assert r.findings == []
+
+
+def test_529_per_item_get_in_a_chunk_loop_still_fires(tmp_path):
+    r = _scan529(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	ids := []string{"a"}
+	for len(ids) > 0 {
+		n := min(len(ids), 30)
+		for _, id := range ids[:n] {
+			client.Doc(id).Get(r.Context())
+		}
+		ids = ids[n:]
+	}
+}
+''')
+    assert [f["rule"] for f in r.findings] == ["read-in-loop"]
+
+
+def test_529_whole_collection_documents_outside_a_chunk_loop_still_fires(tmp_path):
+    r = _scan529(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	qs := ledgerForQueries(client, nil)
+	client.Collection("pets").Documents(r.Context())
+	for _, q := range qs {
+		q.Documents(r.Context())
+	}
+}
+
+func ledgerForQueries(c int, ids []string) []int { return nil }
+''')
+    assert [f["rule"] for f in r.findings] == ["unbounded-list"]
+
+
+def test_529_documents_not_on_the_range_variable_still_fires(tmp_path):
+    r = _scan529(tmp_path, '''func h(w http.ResponseWriter, r *http.Request) {
+	for _, q := range xQueries(nil) {
+		client.Collection("pets").Doc(q).Get(r.Context())
+	}
+}
+
+func xQueries(ids []string) []string { return nil }
+''')
+    assert "read-in-loop" in {f["rule"] for f in r.findings}
+
+
+def test_529_cached_function_is_not_followed_and_is_counted(tmp_path):
+    body = '''func h(w http.ResponseWriter, r *http.Request) {
+	for _, id := range []string{"a"} {
+	}
+	items := load(r.Context())
+	for _, it := range items {
+		price(r.Context(), it)
+	}
+}
+
+%sfunc price(ctx context.Context, it string) int {
+	client.Doc("cfg").Get(ctx)
+	return 1
+}
+
+func load(ctx context.Context) []string { return nil }
+'''
+    plain = _scan529(tmp_path, body % "")
+    assert [f["rule"] for f in plain.findings] == ["read-in-loop"]
+    d2 = tmp_path / "c"
+    d2.mkdir()
+    cached = _scan529(d2, body % "// cw-perf: cached pricing config, one read per process\n")
+    assert cached.findings == []
+    assert cached.suppressed == 1
+    assert [(c["function"], c["reason"]) for c in cached.cached] == [
+        ("price", "pricing config, one read per process")]
+    assert "price" in check_perf.render_static_text(cached)
