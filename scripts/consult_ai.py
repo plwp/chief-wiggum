@@ -1002,6 +1002,11 @@ def consult_claude(
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Zero data retention + no training/logging endpoints (chief-wiggum#531). A hard
+# filter: if no ZDR endpoint serves the model OpenRouter returns an error
+# (HTTP 404), which surfaces as a RuntimeError — never a silent retaining route.
+ZDR_ROUTING = {"zdr": True, "data_collection": "deny"}
+
 
 class OpenRouterBodyError(ValueError):
     """The response body could not be decoded. Carries an excerpt for diagnosis."""
@@ -1139,8 +1144,12 @@ def _parse_openrouter_payload(payload: dict, model_override: str | None) -> tupl
 
 def consult_openrouter(
     prompt: str, model: str | None = None, cwd: str | None = None, timeout: int | None = None,
+    routing: dict | None = None,
 ) -> tuple[str, Usage]:
     """Call a model over the OpenRouter HTTP API.
+
+    ``routing`` (chief-wiggum#531) is sent as the request's ``provider`` block
+    (e.g. ``ZDR_ROUTING``); ``None`` sends none.
 
     This provider exists to widen the quorum's *distribution*, not just its
     prompting: the frontier non-Western models (DeepSeek, Kimi, GLM, Qwen, MiniMax)
@@ -1170,10 +1179,13 @@ def consult_openrouter(
             "pass --model or pin one on the provider entry in config/providers.json"
         )
 
-    body = json.dumps({
+    request_body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode()
+    }
+    if routing:
+        request_body["provider"] = dict(routing)
+    body = json.dumps(request_body).encode()
     request = urllib.request.Request(
         OPENROUTER_URL, data=body, method="POST",
         headers={
@@ -1412,7 +1424,10 @@ def consult_provider(
         # (chief-wiggum#237 — e.g. the `opus` provider pins the claude tool
         # to the opus model); else the tool's configured default.
         effective_model = model or provider.model
-        text, usage = TOOLS[provider.tool](prompt, model=effective_model, cwd=cwd, timeout=timeout_override)
+        extra = {"routing": provider.routing} if provider.routing else {}
+        text, usage = TOOLS[provider.tool](
+            prompt, model=effective_model, cwd=cwd, timeout=timeout_override, **extra,
+        )
         _emit_consult_telemetry(provider.tool, effective_model, cwd, usage, ticket=ticket)
         return text, usage
     if provider.type == "delegate":
@@ -1448,6 +1463,12 @@ def main():
     parser.add_argument("--context", help="Optional context file to append")
     parser.add_argument("--model", help="Override model ID for this call")
     parser.add_argument("--cwd", help="Working directory for the AI tool (e.g., target repo path)")
+    parser.add_argument(
+        "--zdr", action="store_true",
+        help="openrouter single-tool mode only (chief-wiggum#531): require zero data "
+             "retention and deny data collection; fails if no such endpoint serves the model. "
+             "For --role, set `routing` on the provider entry in config/providers.json.",
+    )
     parser.add_argument(
         "--timeout", type=_timeout_arg, default=None, metavar="SECONDS",
         help="Override this call's provider timeout in seconds (chief-wiggum#291; highest "
@@ -1617,6 +1638,8 @@ def main():
         return
 
     assert target is not None
+    if args.zdr and target != "openrouter":
+        parser.error("--zdr applies only to the openrouter tool")
     fn = TOOLS[target]
     # --timeout (chief-wiggum#291) is the top of the override chain for a
     # single-tool call; resolved here only for the timeout-expiry message
@@ -1629,7 +1652,8 @@ def main():
         # success OR failure message — never fails with FileNotFoundError.
         out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        output, usage = fn(prompt, model=args.model, cwd=args.cwd, timeout=args.timeout)
+        extra = {"routing": ZDR_ROUTING} if getattr(args, "zdr", False) else {}
+        output, usage = fn(prompt, model=args.model, cwd=args.cwd, timeout=args.timeout, **extra)
         _emit_consult_telemetry(target, args.model, args.cwd, usage, ticket=args.ticket)
         if out_path:
             out_path.write_text(output)
