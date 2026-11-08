@@ -2506,3 +2506,79 @@ def test_cli_timeout_flag_invalid_value_falls_through_not_raises(tmp_path, monke
     )
     consult_ai.main()  # must not raise
     assert captured["timeout"] == consult_ai.TOOL_TIMEOUTS["codex"]
+
+
+def _capture_openrouter(monkeypatch, captured, status=None):
+    monkeypatch.setattr(consult_ai, "get_secret", lambda name: "sk-secret")
+
+    class FakeResponse:
+        def read(self):
+            return json.dumps(_openrouter_payload()).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = json.loads(request.data.decode())
+        if status:
+            import io
+            import urllib.error
+            raise urllib.error.HTTPError(
+                request.full_url, status, "x", {},
+                io.BytesIO(b'{"error":{"message":"No endpoints found matching your data policy"}}'),
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(consult_ai.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_openrouter_sends_no_provider_block_by_default(monkeypatch):
+    captured = {}
+    _capture_openrouter(monkeypatch, captured)
+    consult_ai.consult_openrouter("p", model="deepseek/deepseek-v4-pro")
+    assert "provider" not in captured["body"]
+
+
+def test_openrouter_routing_is_sent_in_the_request_body(monkeypatch):
+    captured = {}
+    _capture_openrouter(monkeypatch, captured)
+    consult_ai.consult_openrouter(
+        "p", model="deepseek/deepseek-v4-pro",
+        routing={"zdr": True, "data_collection": "deny"},
+    )
+    assert captured["body"]["provider"] == {"zdr": True, "data_collection": "deny"}
+
+
+def test_openrouter_no_zdr_endpoint_fails_loudly(monkeypatch):
+    captured = {}
+    _capture_openrouter(monkeypatch, captured, status=404)
+    with pytest.raises(RuntimeError, match="404"):
+        consult_ai.consult_openrouter(
+            "p", model="x/y", routing={"zdr": True, "data_collection": "deny"},
+        )
+
+
+def test_provider_routing_flows_from_config_to_the_tool(monkeypatch):
+    import providers
+    cfg = {"providers": {"zdr-model": {
+        "type": "tool", "tool": "openrouter", "model": "a/b",
+        "routing": {"zdr": True, "data_collection": "deny"}}}}
+    prov = providers.providers_from_config(cfg)["zdr-model"]
+    assert prov.routing == {"zdr": True, "data_collection": "deny"}
+    seen = {}
+
+    def fake_tool(prompt, model=None, cwd=None, timeout=None, routing=None):
+        seen["routing"] = routing
+        return "ok", consult_ai.Usage()
+
+    monkeypatch.setitem(consult_ai.TOOLS, "openrouter", fake_tool)
+    monkeypatch.setattr(consult_ai, "_emit_consult_telemetry", lambda *a, **k: None)
+    consult_ai.consult_provider(prov, "p", None, None)
+    assert seen["routing"] == {"zdr": True, "data_collection": "deny"}
+
+
+def test_cli_zdr_flag_sets_routing(monkeypatch, tmp_path):
+    assert consult_ai.ZDR_ROUTING == {"zdr": True, "data_collection": "deny"}

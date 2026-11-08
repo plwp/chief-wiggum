@@ -198,6 +198,10 @@ class Provider:
     # DOES read files) while still needing the diff inlined, because it has
     # no tool loop to fetch a pointed-to file with.
     needs_inline_diff: bool = True
+    # OpenRouter provider-routing block (chief-wiggum#531), sent verbatim as the
+    # request's ``provider`` object, e.g. {"zdr": true, "data_collection": "deny"}.
+    # ``None`` sends no routing. Only the openrouter tool reads it.
+    routing: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -343,6 +347,7 @@ def providers_from_config(config: dict[str, Any]) -> dict[str, Provider]:
             reads_repo=bool(raw.get("reads_repo", True)),
             accepts_images=bool(raw.get("accepts_images", True)),
             needs_inline_diff=bool(raw.get("needs_inline_diff", True)),
+            routing=dict(raw["routing"]) if raw.get("routing") else None,
         )
     return providers
 
