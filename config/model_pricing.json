@@ -112,6 +112,50 @@
       "verified": true,
       "as_of": "2026-06-04"
     },
+    "gpt-6-astra": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "cache_read_per_mtok": 1.0,
+      "cache_write_per_mtok": 12.5,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-11-09",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
+      "note": "cached input 1.0/MTok; 30m cache write 12.5/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+    },
+    "gpt-6.1-sol": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 10.0,
+      "cache_read_per_mtok": 0.1,
+      "cache_write_per_mtok": 2.5,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-11-09",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
+      "note": "cached input 0.1/MTok; 30m cache write 2.5/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+    },
+    "gpt-6.1-terra": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 5.0,
+      "cache_read_per_mtok": 0.05,
+      "cache_write_per_mtok": 1.25,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-11-09",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
+      "note": "cached input 0.05/MTok; 30m cache write 1.25/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+    },
+    "gpt-6-luna": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.5,
+      "cache_read_per_mtok": 0.01,
+      "cache_write_per_mtok": 0.125,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-11-09",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
+      "note": "cached input 0.01/MTok; 30m cache write 0.125/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+    },
     "gpt-5.6-sol": {
       "input_per_mtok": 5.0,
       "output_per_mtok": 30.0,
@@ -315,5 +359,5 @@
     "as_of": "2026-08-03",
     "applies_to_provider": "anthropic"
   },
-  "_codex_note": "chief-wiggum#134 investigated the codex->billed-model mapping: there is no fixed 'codex' alias row to price, because `codex exec` bills whichever real gpt-* model is configured (verified live: codex-cli 0.142.5's `--json` event stream carries no model field at all; only the plain-text banner prints `model: <id>`, and $CODEX_HOME/config.toml's top-level `model` key is the CLI's own source of truth for its default, e.g. 'gpt-5.5' on this install -- already a priced row above). scripts/consult_ai.py's codex adapter resolves the real id at call time (--model override, else config.toml) and records THAT as the billed model; a resolved-but-unlisted id still records tokens with cost_usd null (the honest degradation, ADR-fh-05) rather than reviving a bare 'codex' placeholder row, which the ConsultUsageRecord contract now forbids as a resolved model id (CTR-fh-013)."
+  "_codex_note": "chief-wiggum#134 investigated the codex->billed-model mapping: there is no fixed 'codex' alias row to price, because `codex exec` bills whichever real gpt-* model is configured. The `--json` event stream carries no model field; scripts/consult_ai.py's codex adapter resolves the real id at call time (--model override, else the top-level `model` key of $CODEX_HOME/config.toml, e.g. 'gpt-6-astra' on this install) and records THAT as the billed model. A resolved-but-unlisted id still records tokens with cost_usd null (ADR-fh-05) rather than reviving a bare 'codex' row (CTR-fh-013). Rows for the gpt-6 family (gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna) were read from developers.openai.com/api/docs/pricing on 2026-11-09. `turn.completed.usage` (codex-cli 0.165) carries input_tokens (INCLUDES cached_input_tokens and cache_write_input_tokens), cached_input_tokens, cache_write_input_tokens, output_tokens (INCLUDES reasoning_output_tokens) and reasoning_output_tokens; total_tokens = input + output. The adapter records fresh input as tokens_in, cached input as cache_read, and output as-is, so cached tokens are priced at the cached rate and nothing is double counted. Codex signed in with ChatGPT is covered by the subscription, not billed per token: such records carry billing='subscription' and their cost_usd is the API-rate equivalent, not cash. gpt-5.5 and gpt-5.6-sol have no cached rate on the current page, so cached reads fall back to 0.1x input. The page lists gpt-5.6-sol at 4.00/20.00 (cached 0.40) with a note that its promotional pricing runs to 2026-11-30; the 5.00/30.00 row above predates that and is left as is."
 }

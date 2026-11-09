@@ -1243,7 +1243,7 @@ def test_codex_usage_ok_resolves_tokens_and_model(monkeypatch):
     text, usage = consult_ai._codex_agent_text(stdout), consult_ai._parse_codex_usage(stdout, "", None)
     assert text == "PONG"
     assert usage.usage_status == "provider-json"
-    assert usage.tokens_in == 12844 and usage.tokens_out == 19
+    assert usage.tokens_in == 12844 - 9600 and usage.cache_read == 9600 and usage.tokens_out == 19
     assert usage.resolved_model == "gpt-5.5"
     assert usage.resolved_model not in consult_ai.ADAPTER_BY_TOOL  # never a bare alias
 
@@ -1274,7 +1274,7 @@ def test_codex_usage_reads_stderr_when_stdout_lacks_it(monkeypatch):
     stderr = _read("codex_stderr_only.stderr.jsonl")
     usage = consult_ai._parse_codex_usage(stdout, stderr, None)
     assert usage.usage_status == "provider-json"
-    assert usage.tokens_in == 8000 and usage.tokens_out == 25
+    assert usage.tokens_in + usage.cache_read == 8000 and usage.tokens_out == 25
 
 
 def test_codex_drifted_event_shape_never_fails_a_successful_consult(monkeypatch):
@@ -2582,3 +2582,44 @@ def test_provider_routing_flows_from_config_to_the_tool(monkeypatch):
 
 def test_cli_zdr_flag_sets_routing(monkeypatch, tmp_path):
     assert consult_ai.ZDR_ROUTING == {"zdr": True, "data_collection": "deny"}
+
+
+# ---- codex 0.165 usage: cached input and reasoning are subsets (Pat, 10 Nov 2026) ----
+# codex_0165_cached is verbatim `codex exec --json` output; codex_0165_reasoning's
+# usage line is a real rollout total_token_usage (total_tokens == input + output).
+
+def test_codex_usage_splits_cached_input_out_of_fresh_input(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_codex_configured_model", lambda: "gpt-6-astra")
+    usage = consult_ai._parse_codex_usage(_read("codex_0165_cached.stdout.jsonl"), "", None)
+    assert usage.usage_status == "provider-json"
+    assert usage.tokens_in == 14980 - 12160      # input_tokens includes the cached part
+    assert usage.cache_read == 12160
+    assert usage.cache_write == 0
+    assert usage.tokens_out == 6
+    assert usage.tokens_in + usage.cache_read + usage.cache_write == 14980  # nothing counted twice
+
+
+def test_codex_reasoning_tokens_are_not_added_to_output(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_codex_configured_model", lambda: "gpt-6-astra")
+    usage = consult_ai._parse_codex_usage(_read("codex_0165_reasoning.stdout.jsonl"), "", None)
+    assert usage.tokens_out == 4784              # reasoning (4175) is already inside it
+    assert usage.tokens_in == 137521 - 105216 and usage.cache_read == 105216
+
+
+def test_codex_usage_without_cache_fields_keeps_old_shape(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_codex_configured_model", lambda: "gpt-5.5")
+    usage = consult_ai._parse_codex_usage(_read("codex_ok.stdout.jsonl"), "", None)
+    assert usage.cache_read == 9600 and usage.tokens_in == 12844 - 9600
+
+
+def test_codex_billing_is_subscription_when_signed_in_with_chatgpt(monkeypatch):
+    consult_ai._codex_billing.cache_clear()
+    monkeypatch.setattr(consult_ai, "_codex_login_status", lambda: "Logged in using ChatGPT")
+    assert consult_ai._codex_billing() == "subscription"
+    consult_ai._codex_billing.cache_clear()
+    monkeypatch.setattr(consult_ai, "_codex_login_status", lambda: "Logged in using an API key")
+    assert consult_ai._codex_billing() == "api"
+    consult_ai._codex_billing.cache_clear()
+    monkeypatch.setattr(consult_ai, "_codex_login_status", lambda: None)
+    assert consult_ai._codex_billing() is None
+    consult_ai._codex_billing.cache_clear()

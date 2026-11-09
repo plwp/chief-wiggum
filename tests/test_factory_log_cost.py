@@ -624,3 +624,38 @@ def test_cost_report_cli_since_ts_drops_older_turns(monkeypatch, tmp_path, capsy
     assert factory_log.main(["cost-report", "--repo", "r", "--since-ts", "1500", "--format", "json"]) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["turns"] == 1 and rep["cost_usd"] == pytest.approx(25.0)
+
+
+# ---- Codex (gpt-6 family) pricing: cached input at the cached rate ---------------
+
+def test_shipped_pricing_prices_the_gpt6_codex_models():
+    table = factory_log.load_pricing()
+    for name, (i, o, c) in {"gpt-6-astra": (10.0, 50.0, 1.0), "gpt-6.1-sol": (2.0, 10.0, 0.1),
+                            "gpt-6.1-terra": (1.0, 5.0, 0.05), "gpt-6-luna": (0.1, 0.5, 0.01)}.items():
+        row = table[name]
+        assert (row["input_per_mtok"], row["output_per_mtok"], row["cache_read_per_mtok"]) == (i, o, c)
+        assert "developers.openai.com" in row["source"] and row["as_of"] == "2026-11-09"
+
+
+def test_codex_record_from_real_usage_is_priced_with_cached_rate():
+    # real rollout usage: 137521 input (105216 cached), 4784 output (4175 reasoning)
+    cost = factory_log.cost_for_usage("gpt-6-astra", 137521 - 105216, 4784, cache_read=105216)
+    assert cost == pytest.approx(32305 * 10 / 1e6 + 105216 * 1.0 / 1e6 + 4784 * 50 / 1e6)
+    # the old two-bucket price (cached billed as fresh input) overstates it
+    assert factory_log.cost_for(" gpt-6-astra".strip(), 137521, 4784) > cost
+
+
+def test_row_cache_write_rate_prices_short_ttl_writes():
+    pricing = {"m": {"input_per_mtok": 10.0, "output_per_mtok": 50.0, "cache_write_per_mtok": 12.5}}
+    assert factory_log.cost_for_usage("m", 0, 0, cache_write_5m=1_000_000, pricing=pricing,
+                                      multipliers=MULTS) == pytest.approx(12.5)
+
+
+def test_emit_consult_records_cache_read_billing_and_cost(tmp_path, monkeypatch):
+    log = tmp_path / "f.jsonl"
+    monkeypatch.setenv("CW_FACTORY_LOG", str(log))
+    assert factory_log.emit_consult("codex", "gpt-6-astra", 32305, 4784, usage_status="provider-json",
+                                    cache_read=105216, billing="subscription")
+    rec = json.loads(log.read_text().splitlines()[0])
+    assert rec["cache_read"] == 105216 and rec["billing"] == "subscription"
+    assert rec["cost_usd"] == pytest.approx(0.667466)
