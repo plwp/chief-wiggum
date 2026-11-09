@@ -499,3 +499,14 @@ def test_exit_code_on_gap_is_opt_in(monkeypatch, tmp_path):
                                      "--ticket", TICKET, "--format", "text",
                                      "--exit-code-on-gap"])
     assert ticket_cost.main() == 3
+
+
+def test_subscription_billed_consults_are_marked_as_api_rate_equivalents():
+    sub = dict(_consult(cost=0.50), billing="subscription", cache_read=9000)
+    summary = ticket_cost.summarize_ticket([sub, _consult(cost=0.25, provider="gemini")], REPO, TICKET)
+    assert summary["subscription_cost_usd"] == 0.5
+    assert summary["layers"]["consults"]["cache_tokens"] == 9000
+    md = ticket_cost.render_actual_markdown(summary)
+    assert "$0.50 of subscription-covered usage at API rates" in md
+    plain = ticket_cost.summarize_ticket([_consult(cost=0.25)], REPO, TICKET)
+    assert "subscription" not in ticket_cost.render_actual_markdown(plain)

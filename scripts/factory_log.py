@@ -328,8 +328,12 @@ def cost_for_usage(model: str, tokens_in: int, tokens_out: int, *,
     m_read = m.get("cache_read", 1.0)
     m_w5 = m.get("cache_write_5m", 1.0)
     m_w1 = m.get("cache_write_1h", 1.0)
+    # A row may also state its own short-TTL write rate (OpenAI: 30m write is
+    # 1.25x input on every gpt-6 row); it replaces the Anthropic 5m multiplier.
+    w5_rate = row.get("cache_write_per_mtok")
+    w5_usd = (cache_write_5m / 1_000_000) * w5_rate if w5_rate is not None else None
     billed_in = (tokens_in
-                 + cache_write_5m * m_w5
+                 + (0 if w5_usd is not None else cache_write_5m * m_w5)
                  + cache_write_1h * m_w1)
     # A row may state its own cache-read rate (USD per 1M) when the vendor's
     # read price is not the generic multiple of input: Opus 5.5 reads at
@@ -337,7 +341,8 @@ def cost_for_usage(model: str, tokens_in: int, tokens_out: int, *,
     # (0.025x). The generic 0.1x would overstate both.
     read_rate = row.get("cache_read_per_mtok")
     read_usd = (cache_read / 1_000_000) * (read_rate if read_rate is not None else pin * m_read)
-    return round((billed_in / 1_000_000) * pin + read_usd + (tokens_out / 1_000_000) * pout, 6)
+    return round((billed_in / 1_000_000) * pin + read_usd + (w5_usd or 0.0)
+                 + (tokens_out / 1_000_000) * pout, 6)
 
 
 def _coerce_token(value) -> int | None:
@@ -373,7 +378,9 @@ def _pricing_version(path: Path = PRICING_PATH) -> str | None:
 def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
                  tokens_out: int | None = None, *, usage_status: str | None = None,
                  adapter: str | None = None, requested_model: str | None = None,
-                 repo: str | None = None, ticket: str | None = None) -> bool:
+                 repo: str | None = None, ticket: str | None = None,
+                 cache_read: int | None = None, cache_write_5m: int | None = None,
+                 billing: str | None = None) -> bool:
     """Record an AI consultation, with token usage + grounded cost when known
     (ConsultUsageRecord, chief-wiggum#134).
 
@@ -418,14 +425,30 @@ def emit_consult(provider: str, model: str | None, tokens_in: int | None = None,
         tokens_in = tokens_out = None
         if usage_status in ("provider-json", "sdk-metadata"):
             usage_status = "partial"
+    # Cached input is recorded beside fresh input (tokens_in excludes it), the
+    # way Claude Code records are shaped, so it is priced at the cached rate and
+    # never counted twice. ``billing`` is 'subscription' when the provider is
+    # covered by a flat plan: cost_usd is then the API-rate equivalent, not cash.
+    cache_read, cache_write_5m = _coerce_token(cache_read), _coerce_token(cache_write_5m)
+    if tokens_in is None:
+        cache_read = cache_write_5m = None
+    if billing not in ("subscription", "api"):
+        billing = None
     try:
-        cost = cost_for(model, tokens_in, tokens_out) if (model and tokens_in is not None and tokens_out is not None) else None
+        if not (model and tokens_in is not None and tokens_out is not None):
+            cost = None
+        elif cache_read or cache_write_5m:
+            cost = cost_for_usage(model, tokens_in, tokens_out, cache_read=cache_read or 0,
+                                  cache_write_5m=cache_write_5m or 0)
+        else:
+            cost = cost_for(model, tokens_in, tokens_out)
     except Exception:
         # A broken pricing row must degrade cost to null, not vanish the event.
         cost = None
     return emit(CONSULT, provider=provider, adapter=adapter, requested_model=requested_model,
                 name=model, usage_status=usage_status, tokens_in=tokens_in, tokens_out=tokens_out,
-                cost_usd=cost, pricing_version=_pricing_version(), repo=repo, ticket=ticket)
+                cost_usd=cost, pricing_version=_pricing_version(), repo=repo, ticket=ticket,
+                cache_read=cache_read or None, cache_write_5m=cache_write_5m or None, billing=billing)
 
 
 def emit_phase(name: str, *, duration_ms: float, repo: str | None = None,

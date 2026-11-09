@@ -126,6 +126,7 @@ def summarize_ticket(records: list[dict], repo: str, ticket: str, *,
         for name in ("orchestrator", "subagents", "consults")
     }
     providers: set[str] = set()
+    subscription_usd = 0.0
     matched = 0
     for r in records:
         if r.get("event") not in _LAYERED_EVENTS:
@@ -141,6 +142,8 @@ def summarize_ticket(records: list[dict], repo: str, ticket: str, *,
         layer["cache_tokens"] += (r.get("cache_read") or 0) + (r.get("cache_creation") or 0)
         if r.get("cost_usd") is not None:
             layer["cost_usd"] += r["cost_usd"]
+            if r.get("billing") == "subscription":
+                subscription_usd += r["cost_usd"]
         else:
             layer["unpriced_calls"] += 1
         if r.get("event") == factory_log.CONSULT and r.get("provider"):
@@ -155,7 +158,8 @@ def summarize_ticket(records: list[dict], repo: str, ticket: str, *,
     partial = any(layer["unpriced_calls"] for layer in layers.values())
     return {"repo": repo, "ticket": str(ticket), "status": "metered",
             "records": matched, "layers": layers, "total_cost_usd": total,
-            "cost_partial": partial, "consult_providers": sorted(providers)}
+            "cost_partial": partial, "consult_providers": sorted(providers),
+            "subscription_cost_usd": round(subscription_usd, 4)}
 
 
 # ---- coverage: the capture denominator (AC4) ----------------------------------
@@ -365,6 +369,9 @@ def render_actual_markdown(summary: dict, estimate_usd: float | None = None,
         unpriced = sum(layer["unpriced_calls"] for layer in summary["layers"].values())
         note += (f" **Partial**: {unpriced} of {summary['records']} calls had no "
                  "priced model — the total understates.")
+    if summary.get("subscription_cost_usd"):
+        note += (f" Includes ${summary['subscription_cost_usd']:.2f} of subscription-covered "
+                 "usage at API rates (an equivalent, not cash spend).")
     lines.append(f"<sub>{note}</sub>")
     return "\n".join(lines)
 

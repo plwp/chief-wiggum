@@ -241,6 +241,9 @@ class Usage:
     tokens_out: int | None = None
     resolved_model: str | None = None
     usage_status: str = "unavailable"
+    cache_read: int | None = None    # cached input, NOT included in tokens_in
+    cache_write: int | None = None   # cache-write input, NOT included in tokens_in
+    billing: str | None = None       # 'subscription' | 'api' | None (unknown)
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -345,6 +348,27 @@ def _codex_configured_model() -> str | None:
     return model if isinstance(model, str) and model.strip() else None
 
 
+def _codex_login_status() -> str | None:
+    """`codex login status` output (the CLI's own report; no credential file is read)."""
+    try:
+        proc = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (proc.stdout + proc.stderr).strip() or None
+
+
+@functools.lru_cache(maxsize=1)
+def _codex_billing() -> str | None:
+    """'subscription' when codex is signed in with ChatGPT (a flat plan, so recorded
+    cost is an API-rate equivalent, not cash), 'api' for an API key, else None."""
+    status = (_codex_login_status() or "").lower()
+    if "chatgpt" in status:
+        return "subscription"
+    if "api key" in status:
+        return "api"
+    return None
+
+
 def _as_int(value) -> int | None:
     """Coerce a token count from an untrusted provider payload to an ``int``.
 
@@ -427,8 +451,17 @@ def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> 
         if tin is None or tout is None:
             # one-sided or malformed payload: both-tokens-or-null (INV-fh-011)
             return Usage(usage_status="partial", resolved_model=resolved)
-        return Usage(tokens_in=tin, tokens_out=tout, usage_status="provider-json",
-                     resolved_model=resolved)
+        # codex-cli 0.165 (verified against a live probe and rollout totals,
+        # total_tokens == input + output): input_tokens INCLUDES cached_input_tokens
+        # and cache_write_input_tokens; output_tokens INCLUDES reasoning_output_tokens.
+        # So fresh input = input - cached - written, output is taken as is, and a
+        # token is never priced twice. Absent or implausible cache fields -> 0.
+        cached = _as_int(usage.get("cached_input_tokens")) or 0
+        written = _as_int(usage.get("cache_write_input_tokens")) or 0
+        if cached < 0 or written < 0 or cached + written > tin:
+            cached = written = 0
+        return Usage(tokens_in=tin - cached - written, tokens_out=tout, usage_status="provider-json",
+                     resolved_model=resolved, cache_read=cached, cache_write=written)
     return Usage(usage_status="unavailable", resolved_model=resolved)
 
 
@@ -475,6 +508,8 @@ def consult_codex(
         text = out
     try:
         usage = _parse_codex_usage(out, err, model)
+        if usage.usage_status == "provider-json":
+            usage.billing = _codex_billing()
     except Exception:
         usage = Usage(usage_status="unavailable", resolved_model=model)
     return text, usage
@@ -1387,6 +1422,7 @@ def _emit_consult_telemetry(
             provider_label, usage.resolved_model, usage.tokens_in, usage.tokens_out,
             usage_status=usage.usage_status, adapter=ADAPTER_BY_TOOL.get(provider_label),
             requested_model=model, repo=repo, ticket=ticket,
+            cache_read=usage.cache_read, cache_write_5m=usage.cache_write, billing=usage.billing,
         )
     except Exception:
         pass
