@@ -2653,6 +2653,42 @@ def test_consult_codex_raises_on_turn_failed_in_stderr(monkeypatch):
         consult_ai.consult_codex("p")
 
 
+CODEX_ERROR_NO_COMPLETE_STREAM = "\n".join([
+    json.dumps({"type": "thread.started", "thread_id": "t-0003"}),
+    json.dumps({"type": "turn.started"}),
+    json.dumps({"type": "error", "message": "You've hit your usage limit. Try again at 4:10 PM."}),
+])
+CODEX_ERROR_THEN_COMPLETE_STREAM = "\n".join([
+    json.dumps({"type": "thread.started", "thread_id": "t-0004"}),
+    json.dumps({"type": "turn.started"}),
+    json.dumps({"type": "error", "message": "Reconnecting... 1/5"}),
+    json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Review: fine."}}),
+    json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}),
+])
+
+
+def test_consult_codex_raises_on_error_event_without_turn_completed(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_ERROR_NO_COMPLETE_STREAM, ""))
+    with pytest.raises(RuntimeError, match="usage limit.*4:10 PM"):
+        consult_ai.consult_codex("p")
+
+
+def test_consult_codex_error_event_then_turn_completed_succeeds(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_ERROR_THEN_COMPLETE_STREAM, ""))
+    monkeypatch.setattr(consult_ai, "_codex_billing", lambda: None)
+    text, _usage = consult_ai.consult_codex("p")
+    assert text == "Review: fine."
+
+
+def test_consult_codex_failure_detector_error_fails_closed(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_OK_STREAM, ""))
+    def boom(*a, **k):
+        raise ValueError("detector bug")
+    monkeypatch.setattr(consult_ai, "_codex_failure", boom)
+    with pytest.raises(ValueError):
+        consult_ai.consult_codex("p")
+
+
 def test_consult_codex_success_stream_still_returns_text(monkeypatch):
     monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_OK_STREAM, ""))
     monkeypatch.setattr(consult_ai, "_codex_billing", lambda: None)
