@@ -433,9 +433,13 @@ def _codex_agent_text(stdout: str, stderr: str = "") -> str:
 def _codex_failure(stdout: str, stderr: str = "") -> str | None:
     """The failure message when the stream shows the turn failed (``turn.failed``,
     e.g. a usage limit), else ``None``. codex exits 0 on such a run, so the event
-    stream is the only signal (chief-wiggum#520). An ``error`` event alone is not
-    a failure: codex emits non-fatal ones (retries, warnings) before a good turn."""
+    stream is the only signal (chief-wiggum#520). An ``error`` event followed by a
+    ``turn.completed`` is not a failure (non-fatal retries or warnings before a good
+    turn), but an ``error`` event in a stream with NO ``turn.completed`` is: the run
+    was cut off."""
     failed = False
+    completed = False
+    errored = False
     messages: list[str] = []
     for event in _iter_jsonl_events(stdout, stderr):
         kind = event.get("type")
@@ -445,11 +449,17 @@ def _codex_failure(stdout: str, stderr: str = "") -> str | None:
             msg = err.get("message") if isinstance(err, dict) else None
             if isinstance(msg, str) and msg:
                 messages.append(msg)
-        elif kind == "error" and isinstance(event.get("message"), str):
-            messages.append(event["message"])
-    if not failed:
+        elif kind == "turn.completed":
+            completed = True
+        elif kind == "error":
+            errored = True
+            if isinstance(event.get("message"), str):
+                messages.append(event["message"])
+    if not failed and not (errored and not completed):
         return None
-    return messages[-1] if messages else "turn.failed (no message)"
+    if messages:
+        return messages[-1]
+    return "turn.failed (no message)" if failed else "error event with no turn.completed"
 
 
 def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> Usage:
@@ -518,11 +528,9 @@ def consult_codex(
         cwd=cwd, tool="codex",
     )
     # chief-wiggum#520: codex exits 0 on a failed turn (usage limit); a failed
-    # turn is a failed consult, never a response. Fail closed.
-    try:
-        failure = _codex_failure(out, err)
-    except Exception:
-        failure = None
+    # turn is a failed consult, never a response. Fail closed: a detector error
+    # propagates (CTR-fh-011 protects only the text and usage parsing below).
+    failure = _codex_failure(out, err)
     if failure:
         raise RuntimeError(f"codex turn failed: {failure}")
     # @cw-trace guards CTR-fh-011 — BOTH text reconstruction and usage parsing
