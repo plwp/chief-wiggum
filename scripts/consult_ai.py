@@ -430,6 +430,28 @@ def _codex_agent_text(stdout: str, stderr: str = "") -> str:
     return "\n".join(parts)
 
 
+def _codex_failure(stdout: str, stderr: str = "") -> str | None:
+    """The failure message when the stream shows the turn failed (``turn.failed``,
+    e.g. a usage limit), else ``None``. codex exits 0 on such a run, so the event
+    stream is the only signal (chief-wiggum#520). An ``error`` event alone is not
+    a failure: codex emits non-fatal ones (retries, warnings) before a good turn."""
+    failed = False
+    messages: list[str] = []
+    for event in _iter_jsonl_events(stdout, stderr):
+        kind = event.get("type")
+        if kind == "turn.failed":
+            failed = True
+            err = event.get("error")
+            msg = err.get("message") if isinstance(err, dict) else None
+            if isinstance(msg, str) and msg:
+                messages.append(msg)
+        elif kind == "error" and isinstance(event.get("message"), str):
+            messages.append(event["message"])
+    if not failed:
+        return None
+    return messages[-1] if messages else "turn.failed (no message)"
+
+
 def _parse_codex_usage(stdout: str, stderr: str, model_override: str | None) -> Usage:
     """Parse ``codex exec --json``'s JSONL event stream (``turn.completed.usage``)
     for tokens. Scans BOTH stdout and stderr (CTR-fh-012) even though a live probe
@@ -495,6 +517,14 @@ def consult_codex(
         cmd, input_text=prompt, timeout=tool_timeout("codex", override=timeout),
         cwd=cwd, tool="codex",
     )
+    # chief-wiggum#520: codex exits 0 on a failed turn (usage limit); a failed
+    # turn is a failed consult, never a response. Fail closed.
+    try:
+        failure = _codex_failure(out, err)
+    except Exception:
+        failure = None
+    if failure:
+        raise RuntimeError(f"codex turn failed: {failure}")
     # @cw-trace guards CTR-fh-011 — BOTH text reconstruction and usage parsing
     # are best-effort: a drifted event shape must never turn a successful
     # provider call into a failed consult. If no agent_message text can be
