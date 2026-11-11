@@ -2623,3 +2623,59 @@ def test_codex_billing_is_subscription_when_signed_in_with_chatgpt(monkeypatch):
     monkeypatch.setattr(consult_ai, "_codex_login_status", lambda: None)
     assert consult_ai._codex_billing() is None
     consult_ai._codex_billing.cache_clear()
+
+
+# --- chief-wiggum#520: a failed Codex turn must fail the consult -----------
+# Fictional, small recorded-shape `codex exec --json` streams.
+CODEX_USAGE_LIMIT_STREAM = "\n".join([
+    json.dumps({"type": "thread.started", "thread_id": "t-0001"}),
+    json.dumps({"type": "turn.started"}),
+    json.dumps({"type": "error", "message": "You've hit your usage limit. Try again at 3:45 PM."}),
+    json.dumps({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again at 3:45 PM."}}),
+])
+CODEX_OK_STREAM = "\n".join([
+    json.dumps({"type": "thread.started", "thread_id": "t-0002"}),
+    json.dumps({"type": "turn.started"}),
+    json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Review: looks sound."}}),
+    json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}),
+])
+
+
+def test_consult_codex_raises_on_turn_failed(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_USAGE_LIMIT_STREAM, ""))
+    with pytest.raises(RuntimeError, match="usage limit"):
+        consult_ai.consult_codex("p")
+
+
+def test_consult_codex_raises_on_turn_failed_in_stderr(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: ("", CODEX_USAGE_LIMIT_STREAM))
+    with pytest.raises(RuntimeError, match="usage limit"):
+        consult_ai.consult_codex("p")
+
+
+def test_consult_codex_success_stream_still_returns_text(monkeypatch):
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_OK_STREAM, ""))
+    monkeypatch.setattr(consult_ai, "_codex_billing", lambda: None)
+    text, _usage = consult_ai.consult_codex("p")
+    assert text == "Review: looks sound."
+
+
+def test_required_codex_failure_fails_role_quorum(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text(PROMPT_TEXT)
+    config = tmp_path / "providers.json"
+    output_dir = tmp_path / "out"
+    write_config_with_delegate(config)
+    monkeypatch.setattr(consult_ai, "_run_capture", lambda *a, **k: (CODEX_USAGE_LIMIT_STREAM, ""))
+    monkeypatch.setattr(consult_ai, "_codex_billing", lambda: None)
+    monkeypatch.setattr(sys, "argv", [
+        "consult_ai.py", "--role", "reviewer", str(prompt), "--config", str(config),
+        "--output-dir", str(output_dir), "--min-bytes", "1",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        consult_ai.main()
+    assert exc.value.code != 0
+    manifest = json.loads((output_dir / "reviewer-manifest.json").read_text())
+    assert manifest["ok"] is False
+    statuses = {r["name"]: r["status"] for r in manifest["results"]}
+    assert statuses["codex"] == "failed"
