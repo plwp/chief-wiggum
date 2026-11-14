@@ -32,20 +32,28 @@
     "claude-sonnet-5-5": {
       "input_per_mtok": 2.0,
       "output_per_mtok": 10.0,
-      "cache_read_per_mtok": 0.2,
+      "cache_read_per_mtok": 0.1,
       "provider": "anthropic",
       "verified": true,
-      "as_of": "2026-10-06",
-      "source": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-10-06"
+      "as_of": "2026-11-15",
+      "source": "platform.claude.com/docs/en/about-claude/pricing, read 2026-11-15",
+      "note": "cache reads corrected 2026-11-15 from 0.20 to 0.10"
     },
     "claude-haiku-5-5": {
       "input_per_mtok": 0.1,
       "output_per_mtok": 0.5,
       "provider": "anthropic",
       "verified": true,
-      "as_of": "2026-10-06",
-      "source": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-10-06",
-      "note": "prompts up to 100K tokens; 0.50/2.50 beyond, not modelled"
+      "as_of": "2026-11-15",
+      "source": "platform.claude.com/docs/en/about-claude/pricing, read 2026-11-15",
+      "note": "cache reads added and the over-100k-token prompt tier recorded 2026-11-15",
+      "cache_read_per_mtok": 0.01,
+      "long_context": {
+        "over_input_tokens": 100000,
+        "input_per_mtok": 0.5,
+        "cache_read_per_mtok": 0.05,
+        "output_per_mtok": 2.5
+      }
     },
     "claude-fable-5": {
       "input_per_mtok": 10.0,
@@ -416,6 +424,26 @@
         "output_per_mtok": 15.0
       },
       "note": "added 2026-11-15; offered by the Codex client (models_cache.json)"
+    },
+    "claude-fable-5-2": {
+      "input_per_mtok": 8.0,
+      "output_per_mtok": 40.0,
+      "cache_read_per_mtok": 0.2,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-11-15",
+      "source": "platform.claude.com/docs/en/about-claude/pricing, read 2026-11-15",
+      "note": "added 2026-11-15; 5m cache write $10, 1h $16 (1.25x and 2x input); cache reads $0.20 (0.025x input)"
+    },
+    "claude-mythos-5-2": {
+      "input_per_mtok": 8.0,
+      "output_per_mtok": 40.0,
+      "cache_read_per_mtok": 0.2,
+      "provider": "anthropic",
+      "verified": true,
+      "as_of": "2026-11-15",
+      "source": "platform.claude.com/docs/en/about-claude/pricing, read 2026-11-15",
+      "note": "added 2026-11-15; limited availability; same rates as Fable 5.2"
     }
   },
   "cache_multipliers": {
