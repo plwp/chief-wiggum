@@ -1,5 +1,5 @@
 {
-  "$comment": "Grounded per-model token pricing (USD per 1M tokens) for factory-telemetry cost computation (scripts/factory_log.py cost_for). Every priced row was fetched from the vendor's live pricing page (see per-row `source`/`as_of`), NOT recalled from memory. Vendor prices drift — /update re-fetches this file. Tiered models list the base (<=200k-context) rate; cost_for uses it as an approximation. cost_for returns null for a model with null/absent pricing, so an un-priced call records tokens without a fabricated dollar figure.",
+  "$comment": "Grounded per-model token pricing (USD per 1M tokens) for factory-telemetry cost computation (scripts/factory_log.py cost_for). Every priced row was fetched from the vendor's live pricing page (see per-row `source`/`as_of`), NOT recalled from memory. Vendor prices drift \u2014 /update re-fetches this file. Tiered models list the base (<=200k-context) rate; cost_for uses it as an approximation. cost_for returns null for a model with null/absent pricing, so an un-priced call records tokens without a fabricated dollar figure.",
   "as_of": "2026-07-12",
   "sources": {
     "anthropic": "claude-api skill reference (platform.claude.com/docs/en/pricing), cached 2026-06-04",
@@ -119,9 +119,15 @@
       "cache_write_per_mtok": 12.5,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-11-09",
-      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
-      "note": "cached input 1.0/MTok; 30m cache write 12.5/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+      "as_of": "2026-11-15",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "note": "cached input 1.0/MTok; 30m cache write 12.5/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 20.0,
+        "cache_read_per_mtok": 2.0,
+        "output_per_mtok": 75.0
+      }
     },
     "gpt-6.1-sol": {
       "input_per_mtok": 2.0,
@@ -130,9 +136,15 @@
       "cache_write_per_mtok": 2.5,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-11-09",
-      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
-      "note": "cached input 0.1/MTok; 30m cache write 2.5/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+      "as_of": "2026-11-15",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "note": "cached input 0.1/MTok; 30m cache write 2.5/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 4.0,
+        "cache_read_per_mtok": 0.2,
+        "output_per_mtok": 15.0
+      }
     },
     "gpt-6.1-terra": {
       "input_per_mtok": 1.0,
@@ -141,9 +153,15 @@
       "cache_write_per_mtok": 1.25,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-11-09",
-      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
-      "note": "cached input 0.05/MTok; 30m cache write 1.25/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+      "as_of": "2026-11-15",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "note": "cached input 0.05/MTok; 30m cache write 1.25/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 2.0,
+        "cache_read_per_mtok": 0.1,
+        "output_per_mtok": 7.5
+      }
     },
     "gpt-6-luna": {
       "input_per_mtok": 0.1,
@@ -152,30 +170,63 @@
       "cache_write_per_mtok": 0.125,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-11-09",
-      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context), read 2026-11-09",
-      "note": "cached input 0.01/MTok; 30m cache write 0.125/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)"
+      "as_of": "2026-11-15",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "note": "cached input 0.01/MTok; 30m cache write 0.125/MTok (12h write is 2x that); reasoning tokens are billed as output and are already inside output_tokens; Fast/Ultrafast/Batch tiers not modelled (Codex runs service_tier default)",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 0.2,
+        "cache_read_per_mtok": 0.02,
+        "output_per_mtok": 0.75
+      }
     },
     "gpt-5.6-sol": {
-      "input_per_mtok": 5.0,
-      "output_per_mtok": 30.0,
+      "input_per_mtok": 4.0,
+      "output_per_mtok": 20.0,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-07-12"
+      "as_of": "2026-11-15",
+      "cache_read_per_mtok": 0.4,
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 8.0,
+        "cache_read_per_mtok": 0.8,
+        "output_per_mtok": 30.0
+      },
+      "note": "corrected 2026-11-15 from 5/30 (as_of 2026-07-12, no source) to the current page"
     },
     "gpt-5.6-terra": {
-      "input_per_mtok": 2.5,
-      "output_per_mtok": 15.0,
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 12.0,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-07-12"
+      "as_of": "2026-11-15",
+      "cache_read_per_mtok": 0.2,
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 4.0,
+        "cache_read_per_mtok": 0.4,
+        "output_per_mtok": 18.0
+      },
+      "note": "corrected 2026-11-15 from 2.5/15"
     },
     "gpt-5.6-luna": {
-      "input_per_mtok": 1.0,
-      "output_per_mtok": 6.0,
+      "input_per_mtok": 0.2,
+      "output_per_mtok": 1.2,
       "provider": "openai",
       "verified": true,
-      "as_of": "2026-07-12"
+      "as_of": "2026-11-15",
+      "cache_read_per_mtok": 0.02,
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 0.4,
+        "cache_read_per_mtok": 0.04,
+        "output_per_mtok": 1.8
+      },
+      "note": "corrected 2026-11-15 from 1/6"
     },
     "gpt-5.5": {
       "input_per_mtok": 5.0,
@@ -349,6 +400,22 @@
       "provider": "openrouter",
       "verified": true,
       "as_of": "2026-08-03"
+    },
+    "gpt-6-sol": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 10.0,
+      "cache_read_per_mtok": 0.2,
+      "provider": "openai",
+      "verified": true,
+      "as_of": "2026-11-15",
+      "source": "developers.openai.com/api/docs/pricing (Standard tier, short context <=272K input tokens), read 2026-11-15",
+      "long_context": {
+        "over_input_tokens": 272000,
+        "input_per_mtok": 4.0,
+        "cache_read_per_mtok": 0.4,
+        "output_per_mtok": 15.0
+      },
+      "note": "added 2026-11-15; offered by the Codex client (models_cache.json)"
     }
   },
   "cache_multipliers": {
