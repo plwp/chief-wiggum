@@ -631,10 +631,19 @@ def test_cost_report_cli_since_ts_drops_older_turns(monkeypatch, tmp_path, capsy
 def test_shipped_pricing_prices_the_gpt6_codex_models():
     table = factory_log.load_pricing()
     for name, (i, o, c) in {"gpt-6-astra": (10.0, 50.0, 1.0), "gpt-6.1-sol": (2.0, 10.0, 0.1),
-                            "gpt-6.1-terra": (1.0, 5.0, 0.05), "gpt-6-luna": (0.1, 0.5, 0.01)}.items():
+                            "gpt-6.1-terra": (1.0, 5.0, 0.05), "gpt-6-luna": (0.1, 0.5, 0.01),
+                            "gpt-6-sol": (2.0, 10.0, 0.2), "gpt-5.6-sol": (4.0, 20.0, 0.4),
+                            "gpt-5.6-terra": (2.0, 12.0, 0.2), "gpt-5.6-luna": (0.2, 1.2, 0.02)}.items():
         row = table[name]
         assert (row["input_per_mtok"], row["output_per_mtok"], row["cache_read_per_mtok"]) == (i, o, c)
-        assert "developers.openai.com" in row["source"] and row["as_of"] == "2026-11-09"
+        assert "developers.openai.com" in row["source"] and row["as_of"] == "2026-11-15"
+        assert row["long_context"]["over_input_tokens"] == 272000
+
+
+def test_shipped_pricing_prices_claude_fable_5_2():
+    row = factory_log.load_pricing()["claude-fable-5-2"]
+    assert (row["input_per_mtok"], row["output_per_mtok"], row["cache_read_per_mtok"]) == (8.0, 40.0, 0.2)
+    assert "platform.claude.com" in row["source"] and row["as_of"] == "2026-11-15"
 
 
 def test_codex_record_from_real_usage_is_priced_with_cached_rate():
